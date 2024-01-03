@@ -1,0 +1,508 @@
+#include <ppp/app/server/VirtualEthernetSwitcher.h>
+#include <ppp/app/server/VirtualEthernetExchanger.h>
+#include <ppp/app/server/VirtualEthernetNetworkTcpipConnection.h>
+#include <ppp/net/Ipep.h>
+#include <ppp/net/Socket.h>
+#include <ppp/net/IPEndPoint.h>
+#include <ppp/net/proxies/sniproxy.h>
+#include <ppp/collections/Dictionary.h>
+#include <ppp/threading/Executors.h>
+#include <ppp/transmissions/ITcpipTransmission.h>
+#include <ppp/transmissions/IWebsocketTransmission.h>
+
+using ppp::net::Ipep;
+using ppp::net::Socket;
+using ppp::net::IPEndPoint;
+using ppp::net::AddressFamily;
+using ppp::threading::Executors;
+using ppp::coroutines::YieldContext;
+using ppp::collections::Dictionary;
+
+namespace ppp {
+    namespace app {
+        namespace server {
+            VirtualEthernetSwitcher::VirtualEthernetSwitcher(const AppConfigurationPtr& configuration) noexcept
+                : disposed_(false)
+                , configuration_(configuration)
+                , context_(Executors::GetDefault()) {
+                boost::asio::ip::udp::udp::endpoint dnsserverEP = Ipep::ParseEndPoint(configuration_->udp.dns.redirect);
+                if (int dnsserverPort = dnsserverEP.port(); dnsserverPort <= IPEndPoint::MinPort || dnsserverPort > IPEndPoint::MaxPort) {
+                    dnsserverPort = PPP_DNS_DEFAULT_PORT;
+                    dnsserverEP = boost::asio::ip::udp::endpoint(dnsserverEP.address(), dnsserverPort);
+                }
+
+                dnsserverEP_ = dnsserverEP;
+                interfaceIP_ = Ipep::ToAddress(configuration_->ip.interface_, true);
+                statistics_ = make_shared_object<ppp::transmissions::ITransmissionStatistics>();
+            }
+
+            VirtualEthernetSwitcher::~VirtualEthernetSwitcher() noexcept {
+                Finalize();
+            }
+
+            boost::asio::ip::address VirtualEthernetSwitcher::GetInterfaceIP() noexcept {
+                return interfaceIP_;
+            }
+
+            boost::asio::ip::udp::endpoint VirtualEthernetSwitcher::GetDnsserverEndPoint() noexcept {
+                return dnsserverEP_;
+            }
+
+            VirtualEthernetSwitcher::AppConfigurationPtr VirtualEthernetSwitcher::GetConfiguration() noexcept {
+                return configuration_;
+            }
+
+            std::shared_ptr<VirtualEthernetSwitcher> VirtualEthernetSwitcher::GetReference() noexcept {
+                return shared_from_this();
+            }
+
+            VirtualEthernetSwitcher::ContextPtr VirtualEthernetSwitcher::GetContext() noexcept {
+                return context_;
+            }
+
+            VirtualEthernetSwitcher::SynchronizedObject& VirtualEthernetSwitcher::GetSynchronizedObject() noexcept {
+                return syncobj_;
+            }
+
+            bool VirtualEthernetSwitcher::Run() noexcept {
+                SynchronizedObjectScope scope(syncobj_);
+                if (disposed_) {
+                    return false;
+                }
+
+                auto self = shared_from_this();
+                auto bany = false;
+                for (int categories = NetworkAcceptorCategories_Min; categories < NetworkAcceptorCategories_Max; categories++) {
+                    std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor = acceptors_[categories];
+                    if (NULL == acceptor) {
+                        continue;
+                    }
+
+                    bool b = Socket::AcceptLoopbackAsync(acceptor,
+                        make_shared_object<Socket::AcceptLoopbackCallback>(
+                            [self, this, acceptor, categories](const Socket::AsioContext& context, const Socket::AsioTcpSocket& socket) noexcept {
+                                return !disposed_ && Accept(context, socket, categories);
+                            }));
+                    if (b) {
+                        bany = true;
+                    }
+                    else {
+                        return false;
+                    }
+                }
+                return bany;
+            }
+
+            bool VirtualEthernetSwitcher::Accept(const ContextPtr& context, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket, int categories) noexcept {
+                if (categories == NetworkAcceptorCategories_CDN1 || categories == NetworkAcceptorCategories_CDN2) {
+                    auto sniproxy = make_shared_object<ppp::net::proxies::sniproxy>(categories == NetworkAcceptorCategories_CDN1 ? 0 : 1,
+                        configuration_,
+                        context,
+                        socket);
+                    if (NULL == sniproxy) {
+                        return false;
+                    }
+
+                    bool ok = sniproxy->handshake();
+                    if (!ok) {
+                        sniproxy->close();
+                    }
+                   
+                    return ok;
+                }
+                else {
+                    ITransmissionPtr transmission = Accept(categories, context, socket);
+                    if (NULL == transmission) {
+                        return false;
+                    }
+
+                    auto allocator = transmission->BufferAllocator;
+                    auto self = shared_from_this();
+                    return YieldContext::Spawn(allocator.get(), *context,
+                        [self, this, transmission](YieldContext& y) noexcept {
+                            bool bok = false;
+                            bool mux = false;
+                            Int128 session_id = transmission->HandshakeClient(y, mux);
+                            if (session_id) {
+                                if (mux) {
+                                    bok = Establish(transmission, session_id, y);
+                                }
+                                else {
+                                    bok = Connect(transmission, session_id, y);
+                                }
+                            }
+
+                            transmission->Dispose();
+                            return bok;
+                        });
+                }
+            }
+
+            VirtualEthernetSwitcher::VirtualEthernetExchangerPtr VirtualEthernetSwitcher::AddNewExchanger(const ITransmissionPtr& transmission, const Int128& session_id) noexcept {
+                VirtualEthernetExchangerPtr channel;
+                if (NULL != transmission) {
+                    SynchronizedObjectScope scope(syncobj_);
+                    if (disposed_) {
+                        return NULL;
+                    }
+
+                    channel = Dictionary::FindObjectByKey(exchangers_, session_id);
+                    if (NULL == channel) {
+                        channel = NewExchanger(transmission, session_id);
+                        if (NULL == channel) {
+                            return NULL;
+                        }
+
+                        if (channel->Prepared()) {
+                            auto r = exchangers_.emplace(session_id, channel);
+                            if (r.second) {
+                                return channel;
+                            }
+                        }
+                    }
+                }
+
+                if (NULL != channel) {
+                    channel->Dispose();
+                }
+                return NULL;
+            }
+
+            VirtualEthernetSwitcher::VirtualEthernetExchangerPtr VirtualEthernetSwitcher::NewExchanger(const ITransmissionPtr& transmission, const Int128& session_id) noexcept {
+                if (NULL == transmission) {
+                    return NULL;
+                }
+
+                auto self = shared_from_this();
+                return make_shared_object<VirtualEthernetExchanger>(self, configuration_, transmission, session_id);
+            }
+
+            bool VirtualEthernetSwitcher::Establish(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept {
+                if (NULL == transmission) {
+                    return false;
+                }
+
+                VirtualEthernetExchangerPtr channel = AddNewExchanger(transmission, session_id);
+                if (NULL == channel) {
+                    return false;
+                }
+
+                bool ok = channel->Prepared() && channel->Run(transmission, y);
+                if (!ok) {
+                    channel->Dispose();
+                }
+
+                DeleteExchanger(channel.get());
+                return ok;
+            }
+
+            bool VirtualEthernetSwitcher::Connect(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept {
+                VirtualEthernetNetworkTcpipConnectionPtr connection = AddNewConnection(transmission, session_id);
+                if (NULL == connection) {
+                    return false;
+                }
+
+                bool ok = connection->Run(y);
+                if (!ok) {
+                    connection->Dispose();
+                }
+
+                return ok;
+            }
+
+            VirtualEthernetSwitcher::VirtualEthernetNetworkTcpipConnectionPtr VirtualEthernetSwitcher::AddNewConnection(const ITransmissionPtr& transmission, const Int128& session_id) noexcept {
+                std::shared_ptr<VirtualEthernetNetworkTcpipConnection> connection = NewConnection(transmission, session_id);
+                if (NULL == connection) {
+                    return NULL;
+                }
+                else {
+                    SynchronizedObjectScope scope(syncobj_);
+                    if (disposed_) {
+                        return NULL;
+                    }
+
+                    auto r = connections_.emplace(connection.get(), connection);
+                    if (r.second) {
+                        return connection;
+                    }
+                }
+
+                connection->Dispose();
+                return NULL;
+            }
+
+            VirtualEthernetSwitcher::VirtualEthernetExchangerPtr VirtualEthernetSwitcher::DeleteExchanger(VirtualEthernetExchanger* exchanger) noexcept {
+                VirtualEthernetExchangerPtr channel; 
+                if (NULL != exchanger) {
+                    SynchronizedObjectScope scope(syncobj_);
+                    auto tail = exchangers_.find(exchanger->GetId());
+                    auto endl = exchangers_.end();
+                    if (tail != endl) {
+                        const VirtualEthernetExchangerPtr& p = tail->second;
+                        if (p.get() == exchanger) {
+                            channel = std::move(tail->second);
+                            exchangers_.erase(tail);
+                        }
+                    }
+                }
+
+                if (channel) {
+                    channel->Dispose();
+                }
+                return channel;
+            }
+
+            VirtualEthernetSwitcher::VirtualEthernetNetworkTcpipConnectionPtr VirtualEthernetSwitcher::NewConnection(const ITransmissionPtr& transmission, const Int128& session_id) noexcept {
+                if (NULL == transmission) {
+                    return NULL;
+                }
+
+                std::shared_ptr<VirtualEthernetSwitcher> self = shared_from_this();
+                return make_shared_object<VirtualEthernetNetworkTcpipConnection>(self, session_id, transmission);
+            }
+
+            bool VirtualEthernetSwitcher::CreateAllAcceptors() noexcept {
+                int acceptor_ports[NetworkAcceptorCategories_Max];
+                for (int i = NetworkAcceptorCategories_Min; i < NetworkAcceptorCategories_Max; i++) {
+                    std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor = acceptors_[i];
+                    if (NULL != acceptor) {
+                        return false;
+                    }
+
+                    acceptor_ports[i] = IPEndPoint::MinPort;
+                }
+
+                acceptor_ports[NetworkAcceptorCategories_Tcpip] = configuration_->tcp.listen.port;
+                acceptor_ports[NetworkAcceptorCategories_WebSocket] = configuration_->websocket.listen.ws;
+                acceptor_ports[NetworkAcceptorCategories_WebSocketSSL] = configuration_->websocket.listen.wss;
+                acceptor_ports[NetworkAcceptorCategories_CDN1] = configuration_->cdn[0];
+                acceptor_ports[NetworkAcceptorCategories_CDN2] = configuration_->cdn[1];
+
+                bool bany = false;
+                auto& cfg = configuration_->tcp;
+                for (int i = NetworkAcceptorCategories_Min; i < NetworkAcceptorCategories_Max; i++) {
+                    int port = acceptor_ports[i];
+                    if (port <= IPEndPoint::MinPort || port > IPEndPoint::MaxPort) {
+                        continue;
+                    }
+
+                    std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor = make_shared_object<boost::asio::ip::tcp::acceptor>(*context_);
+                    if (NULL == acceptor) {
+                        return false;
+                    }
+
+                    boost::asio::ip::address bind_ips[] = {
+                            interfaceIP_,
+                            boost::asio::ip::address_v6::any(),
+                            boost::asio::ip::address_v4::any()
+                        };
+                    for (boost::asio::ip::address& bind_ip : bind_ips) {
+                        bool opened = Socket::OpenAcceptor(*acceptor, bind_ip, port, cfg.backlog, cfg.fast_open, cfg.turbo);
+                        if (!opened) {
+                            boost::system::error_code ec;
+                            acceptor->close(ec);
+
+                            if (ec) {
+                                return false;
+                            }
+                        }
+                        else {
+                            bany |= true;
+                            acceptors_[i] = std::move(acceptor);
+                            break;
+                        }
+                    }
+                }
+                return bany;
+            }
+
+            bool VirtualEthernetSwitcher::Open() noexcept {
+                SynchronizedObjectScope scope(syncobj_);
+                if (disposed_) {
+                    return false;
+                }
+
+                if (timeout_) {
+                    return false;
+                }
+
+                bool ok = CreateAllAcceptors();
+                if (ok) {
+                    ok = CreateAlwaysTimeout();
+                }
+                return ok;
+            }
+
+            VirtualEthernetSwitcher::ITransmissionPtr VirtualEthernetSwitcher::Accept(int categories, const ContextPtr& context, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket) noexcept {
+                if (NULL == context || NULL == socket) {
+                    return NULL;
+                }
+
+                std::shared_ptr<ppp::transmissions::ITransmission> transmission;
+                if (categories == NetworkAcceptorCategories_Tcpip) {
+                    transmission = make_shared_object<ppp::transmissions::ITcpipTransmission>(context, socket, configuration_);
+                }
+                elif(categories == NetworkAcceptorCategories_WebSocket) {
+                    transmission = NewWebsocketTransmission<ppp::transmissions::IWebsocketTransmission>(context, socket);
+                }
+                elif(categories == NetworkAcceptorCategories_WebSocketSSL) {
+                    transmission = NewWebsocketTransmission<ppp::transmissions::ISslWebsocketTransmission>(context, socket);
+                }
+
+                if (NULL != transmission) {
+                    transmission->Statistics = GetStatistics();
+                }
+                return transmission;
+            }
+
+            void VirtualEthernetSwitcher::Dispose() noexcept {
+                auto self = shared_from_this();
+                std::shared_ptr<boost::asio::io_context> context = GetContext();
+                context->post(std::bind(&VirtualEthernetSwitcher::Finalize, self));
+            }
+
+            bool VirtualEthernetSwitcher::IsDisposed() noexcept {
+                return disposed_;
+            }
+
+            VirtualEthernetSwitcher::ITransmissionStatisticsPtr& VirtualEthernetSwitcher::GetStatistics() noexcept {
+                SynchronizedObjectScope scope(GetSynchronizedObject());
+                if (NULL == statistics_) {
+                    statistics_ = NewStatistics();
+                }
+                return statistics_;
+            }
+
+            VirtualEthernetSwitcher::ITransmissionStatisticsPtr VirtualEthernetSwitcher::NewStatistics() noexcept {
+                return make_shared_object<ITransmissionStatistics>();
+            }
+
+            void VirtualEthernetSwitcher::Finalize() noexcept {
+                exchangeof(disposed_, true); {
+                    VirtualEthernetExchangerTable exchangers;
+                    VirtualEthernetNetworkTcpipConnectionTable connections; {
+                        SynchronizedObjectScope scope(syncobj_);
+                        CloseAllAcceptors();
+
+                        exchangers = std::move(exchangers_);
+                        exchangers_.clear();
+
+                        connections = std::move(connections_);
+                        connections_.clear();
+                    }
+
+                    Dictionary::ReleaseAllObjects(exchangers);
+                    Dictionary::ReleaseAllObjects(connections);
+                }
+
+                CloseAlwaysTimeout();
+            }
+
+            void VirtualEthernetSwitcher::CloseAllAcceptors() noexcept {
+                for (int i = NetworkAcceptorCategories_Min; i < NetworkAcceptorCategories_Max; i++) {
+                    std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor = std::move(acceptors_[i]);
+                    if (NULL == acceptor) {
+                        continue;
+                    }
+
+                    Socket::Closesocket(acceptor);
+                    if (NULL != acceptor) {
+                        acceptors_[i] = NULL;
+                    }
+                }
+            }
+
+            bool VirtualEthernetSwitcher::CloseAlwaysTimeout() noexcept {
+                TimerPtr timeout = std::move(timeout_);
+                if (timeout) {
+                    timeout_.reset();
+                    timeout->Dispose();
+                    return true;
+                }
+                else {
+                    return false;
+                }
+            }
+
+            bool VirtualEthernetSwitcher::CreateAlwaysTimeout() noexcept {
+                std::shared_ptr<boost::asio::io_context> context = GetContext();
+                if (NULL == context) {
+                    return false;
+                }
+
+                auto timeout = make_shared_object<Timer>(context);
+                if (!timeout) {
+                    return false;
+                }
+
+                auto self = shared_from_this();
+                timeout->TickEvent = make_shared_object<Timer::TickEventHandler>(
+                    [self, this](Timer* sender, Timer::TickEventArgs& e) noexcept {
+                        UInt64 now = Executors::GetTickCount();
+                        OnTick(now);
+                    });
+
+                bool ok = timeout->SetInterval(1000) && timeout->Start();
+                if (ok) {
+                    timeout_ = timeout;
+                    return true;
+                }
+                else {
+                    timeout->Dispose();
+                    return false;
+                }
+            }
+
+            void VirtualEthernetSwitcher::TickAllExchangers(UInt64 now) noexcept {
+                SynchronizedObjectScope scope(syncobj_);
+                ppp::collections::Dictionary::UpdateAllObjects2(exchangers_, now);
+            }
+
+            void VirtualEthernetSwitcher::TickAllConnections(UInt64 now) noexcept {
+                SynchronizedObjectScope scope(syncobj_);
+                Dictionary::UpdateAllObjects(connections_, now);
+            }
+
+            bool VirtualEthernetSwitcher::OnTick(UInt64 now) noexcept {
+                if (disposed_) {
+                    return false;
+                }
+
+                TickAllExchangers(now);
+                TickAllConnections(now);
+                return true;
+            }
+
+            bool VirtualEthernetSwitcher::DeleteConnection(const VirtualEthernetNetworkTcpipConnection* connection) noexcept {
+                VirtualEthernetNetworkTcpipConnectionPtr ntcp;
+                if (connection) {
+                    SynchronizedObjectScope scope(syncobj_);
+                    Dictionary::RemoveValueByKey(connections_, (void*)connection, &ntcp);
+                }
+
+                if (ntcp) {
+                    ntcp->Dispose();
+                    return true;
+                }
+
+                return false;
+            }
+
+            boost::asio::ip::tcp::endpoint VirtualEthernetSwitcher::GetLocalEndPoint(NetworkAcceptorCategories categories) noexcept {
+                if (categories >= NetworkAcceptorCategories_Min && categories < NetworkAcceptorCategories_Max) {
+                    std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor = acceptors_[categories];
+                    if (NULL != acceptor) {
+                        if (acceptor->is_open()) {
+                            boost::system::error_code ec;
+                            boost::asio::ip::tcp::endpoint localEP = acceptor->local_endpoint(ec);
+                            if (ec == boost::system::errc::success) {
+                                return localEP;
+                            }
+                        }
+                    }
+                }
+                return IPEndPoint::ToEndPoint<boost::asio::ip::tcp>(IPEndPoint::Any(IPEndPoint::MinPort));
+            }
+        }
+    }
+}
