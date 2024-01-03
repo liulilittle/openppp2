@@ -71,7 +71,7 @@ namespace ppp {
                 }
 
                 auto self = shared_from_this();
-                auto bany = false;
+                bool bany = false;
                 for (int categories = NetworkAcceptorCategories_Min; categories < NetworkAcceptorCategories_Max; categories++) {
                     std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor = acceptors_[categories];
                     if (NULL == acceptor) {
@@ -87,7 +87,8 @@ namespace ppp {
                         bany = true;
                     }
                     else {
-                        return false;
+                        Socket::Closesocket(acceptor);
+                        acceptors_[categories] = NULL;
                     }
                 }
                 return bany;

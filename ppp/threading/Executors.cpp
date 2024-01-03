@@ -238,10 +238,21 @@ namespace ppp
 
         void Executors::GetAllContexts(ppp::vector<ContextPtr>& contexts) noexcept
         {
+            bool any = false;
             SynchronizedObjectScope scope(Internal.Lock);
             for (auto&& kv : Internal.ContextTable)
             {
+                any = true;
                 contexts.emplace_back(kv.second);
+            }
+            
+            if (!any)
+            {
+                ExecutorContextPtr context = Internal.Default;
+                if (NULL != context)
+                {
+                    contexts.emplace_back(context);
+                }
             }
         }
 
@@ -259,7 +270,10 @@ namespace ppp
             {
                 return NULL;
             }
-            return tail->second;
+            else
+            {
+                return tail->second;
+            }
         }
 
         std::shared_ptr<boost::asio::io_context> Executors::GetCurrent() noexcept
@@ -292,7 +306,7 @@ namespace ppp
             ExecutorLinkedList::iterator endl = fifo.end();
             if (tail == endl)
             {
-                return NULL;
+                return Internal.Default;
             }
             else
             {
