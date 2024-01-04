@@ -14,8 +14,8 @@ namespace ppp
             typedef std::shared_ptr<boost::asio::io_context>            ContextPtr;
             class Awaitable
             {
-                typedef std::mutex                                      SynchronizedObjectt;
-                typedef std::unique_lock<SynchronizedObjectt>           LK;
+                typedef std::mutex                                      SynchronizedObject;
+                typedef std::unique_lock<SynchronizedObject>            LK;
 
             public:
                 Awaitable() noexcept;
@@ -28,7 +28,7 @@ namespace ppp
             private:
                 bool                                                    completed;
                 bool                                                    processed;
-                std::shared_ptr<SynchronizedObjectt>                    mtx;
+                std::shared_ptr<SynchronizedObject>                     mtx;
                 std::shared_ptr<std::condition_variable>                cv;
                 std::shared_ptr<LK>                                     lk;
             };

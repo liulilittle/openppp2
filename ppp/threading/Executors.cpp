@@ -390,7 +390,7 @@ namespace ppp
             : completed(false)
             , processed(false)
         {
-            mtx = make_shared_object<SynchronizedObjectt>();
+            mtx = make_shared_object<SynchronizedObject>();
             cv = make_shared_object<std::condition_variable>();
             lk = make_shared_object<LK>(*mtx);
         }
@@ -400,7 +400,7 @@ namespace ppp
             completed = true;
             processed = true;
 
-            std::shared_ptr<SynchronizedObjectt> pmtx = mtx;
+            std::shared_ptr<SynchronizedObject> pmtx = mtx;
             std::shared_ptr<std::condition_variable> pcv = cv;
             std::shared_ptr<LK> plk = lk;
             if (NULL != pcv) 
@@ -411,7 +411,7 @@ namespace ppp
 
         bool Executors::Awaitable::Await() noexcept
         {
-            std::shared_ptr<SynchronizedObjectt> pmtx = mtx;
+            std::shared_ptr<SynchronizedObject> pmtx = mtx;
             std::shared_ptr<std::condition_variable> pcv = cv;
             std::shared_ptr<LK> plk = lk;
             if (NULL == pcv)

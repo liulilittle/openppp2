@@ -278,6 +278,7 @@
     <ClCompile Include="ppp\ethernet\VNetstack.cpp" />
     <ClCompile Include="ppp\io\File.cpp" />
     <ClCompile Include="ppp\net\asio\websocket.cpp" />
+    <ClCompile Include="ppp\net\Firewall.cpp" />
     <ClCompile Include="ppp\net\native\checksum.cpp" />
     <ClCompile Include="ppp\net\packet\IcmpFrame.cpp" />
     <ClCompile Include="ppp\net\packet\IPFragment.cpp" />
@@ -520,6 +521,7 @@
     <ClInclude Include="ppp\cryptography\Ciphertext.h" />
     <ClInclude Include="ppp\DateTime.h" />
     <ClInclude Include="ppp\diagnostics\Stopwatch.h" />
+    <ClInclude Include="ppp\net\Firewall.h" />
     <ClInclude Include="ppp\net\native\rib.h" />
     <ClInclude Include="ppp\threading\BufferblockAllocator.h" />
     <ClInclude Include="ppp\threading\BufferswapAllocator.h" />

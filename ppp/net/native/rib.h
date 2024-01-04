@@ -54,8 +54,10 @@ namespace ppp
 
             public:
                 uint32_t                                                GetNextHop(uint32_t ip) noexcept;
+                static uint32_t                                         GetNextHop(uint32_t ip, RouteEntriesTable& routes) noexcept;
                 void                                                    Fill(RouteInformationTable& rib) noexcept;
                 void                                                    Clear() noexcept;
+                RouteEntriesTable&                                      GetAllRoutes() noexcept;
                 bool                                                    IsAvailable() noexcept { return routes.begin() != routes.end(); }
 
             private:

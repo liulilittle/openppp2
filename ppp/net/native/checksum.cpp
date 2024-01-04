@@ -445,7 +445,7 @@ namespace ppp
                 Fill(rib);
             }
 
-            uint32_t ForwardInformationTable::GetNextHop(uint32_t ip) noexcept
+            uint32_t ForwardInformationTable::GetNextHop(uint32_t ip, RouteEntriesTable& routes) noexcept
             {
                 for (int prefix = MAX_PREFIX_VALUE; prefix >= MIN_PREFIX_VALUE; prefix--)
                 {
@@ -467,6 +467,16 @@ namespace ppp
                     }
                 }
                 return IPEndPoint::NoneAddress;
+            }
+
+            uint32_t ForwardInformationTable::GetNextHop(uint32_t ip) noexcept
+            {
+                return GetNextHop(ip, routes);
+            }
+
+            RouteEntriesTable& ForwardInformationTable::GetAllRoutes() noexcept
+            {
+                return routes;
             }
 
             void ForwardInformationTable::Fill(RouteInformationTable& rib) noexcept
