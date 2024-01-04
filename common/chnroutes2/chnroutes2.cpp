@@ -73,7 +73,7 @@ enum {
 typedef
 struct {
     unsigned char*  stream_;
-    unsigned long	length_;
+    unsigned long   length_;
 } WebResponseStream;
 
 static size_t
@@ -111,8 +111,8 @@ static int curl_easy_request(
     unsigned long*  response_headers_size,
     long*           status_code,
     const char*     cacert_file_path,
-    bool			support_verbose,
-    bool			support_keep_alive,
+    bool            support_verbose,
+    bool            support_keep_alive,
     const char*     request_user_agent,
     const char*     auth_user_and_password) {
     if (NULL == open_url || *open_url == '\x0') {

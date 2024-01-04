@@ -41,12 +41,12 @@
 // https://elixir.bootlin.com/linux/latest/source/include/uapi/linux/ip.h#L26
 // https://man7.org/linux/man-pages/man7/ip.7.html
 #ifdef _WIN32
-#define IPTOS_TOS_MASK		0x1E
-#define IPTOS_TOS(tos)		((tos) & IPTOS_TOS_MASK)
-#define	IPTOS_LOWDELAY		0x10
-#define	IPTOS_THROUGHPUT	0x08
-#define	IPTOS_RELIABILITY	0x04
-#define	IPTOS_MINCOST		0x02
+#define IPTOS_TOS_MASK      0x1E
+#define IPTOS_TOS(tos)      ((tos) & IPTOS_TOS_MASK)
+#define IPTOS_LOWDELAY      0x10
+#define IPTOS_THROUGHPUT    0x08
+#define IPTOS_RELIABILITY   0x04
+#define IPTOS_MINCOST       0x02
 #endif
 
 namespace ppp {

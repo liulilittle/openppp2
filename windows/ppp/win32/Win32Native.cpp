@@ -46,7 +46,7 @@ namespace ppp
     namespace win32
     {
         typedef std::mutex                                  SynchronizedObject;
-        typedef std::lock_guard<SynchronizedObject>		    SynchronizedObjectScope;
+        typedef std::lock_guard<SynchronizedObject>         SynchronizedObjectScope;
 
         static SynchronizedObject                           SYNCHRONIZED_OBJECT_LOCK;
         static Win32Native::ShutdownApplicationEventHandler SHUTDOWN_APPLICATION_EVENT;
@@ -950,8 +950,8 @@ namespace ppp
             si.cb = sizeof(si);
             si.hStdError = hStdout;
             si.hStdOutput = hStdout;
-            si.dwFlags |= STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW; // Ìí¼Ó±êÖ¾ÒÔÊ¹ÓÃ±ê×¼¾ä±úºÍÒþ²Ø´°¿Ú
-            si.wShowWindow = SW_HIDE; // Òþ²Ø´°¿Ú
+            si.dwFlags |= STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW; // ï¿½ï¿½ï¿½Ó±ï¿½Ö¾ï¿½ï¿½Ê¹ï¿½Ã±ï¿½×¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ø´ï¿½ï¿½ï¿½
+            si.wShowWindow = SW_HIDE; // ï¿½ï¿½ï¿½Ø´ï¿½ï¿½ï¿½
 
             PROCESS_INFORMATION pi;
             ZeroMemory(&pi, sizeof(pi));

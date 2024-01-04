@@ -7,8 +7,8 @@ namespace ppp
     {
         typedef std::mutex                          SynchronizedObject;
         typedef std::lock_guard<SynchronizedObject> SynchronizedObjectScope;
-        typedef std::shared_ptr<Thread>				ThreadPtr;
-        typedef ppp::unordered_map<int, ThreadPtr>	ThreadTable;
+        typedef std::shared_ptr<Thread>             ThreadPtr;
+        typedef ppp::unordered_map<int, ThreadPtr>  ThreadTable;
 
         static struct ThreadInternal
         {

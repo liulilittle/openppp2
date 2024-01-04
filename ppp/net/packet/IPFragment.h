@@ -30,16 +30,16 @@ namespace ppp {
             public:
                 typedef struct {
                     IPFramePtr                                                      Packet;
-                }																    PacketInputEventArgs;
+                }                                                                   PacketInputEventArgs;
                 typedef ppp::function<void(IPFragment*, PacketInputEventArgs&)>     PacketInputEventHandler;
                 typedef struct {
                     std::shared_ptr<Byte>                                           Packet;
-                    int															    PacketLength;
-                }																    PacketOutputEventArgs;
+                    int                                                             PacketLength;
+                }                                                                   PacketOutputEventArgs;
                 typedef ppp::function<void(IPFragment*, PacketOutputEventArgs&)>    PacketOutputEventHandler;
 
             public:
-                std::shared_ptr<PacketInputEventHandler>						    PacketInput;
+                std::shared_ptr<PacketInputEventHandler>                            PacketInput;
                 std::shared_ptr<PacketOutputEventHandler>                           PacketOutput;
                 std::shared_ptr<ppp::threading::BufferswapAllocator>                BufferAllocator;
 

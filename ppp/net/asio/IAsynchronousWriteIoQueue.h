@@ -13,7 +13,7 @@ namespace ppp {
                 typedef ppp::coroutines::YieldContext                   YieldContext;
                 typedef ppp::threading::BufferswapAllocator             BufferswapAllocator;
                 typedef std::mutex                                      SynchronizedObject;
-                typedef std::lock_guard<SynchronizedObject>		        SynchronizedObjectScope;
+                typedef std::lock_guard<SynchronizedObject>             SynchronizedObjectScope;
 
             public:
                 const std::shared_ptr<BufferswapAllocator>              BufferAllocator;

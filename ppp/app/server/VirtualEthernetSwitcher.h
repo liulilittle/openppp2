@@ -32,7 +32,7 @@ namespace ppp {
                 typedef std::shared_ptr<boost::asio::io_context>        ContextPtr;
                 typedef ppp::coroutines::YieldContext                   YieldContext;
                 typedef std::mutex                                      SynchronizedObject;
-                typedef std::lock_guard<SynchronizedObject>		        SynchronizedObjectScope;
+                typedef std::lock_guard<SynchronizedObject>             SynchronizedObjectScope;
                 typedef ppp::transmissions::ITransmissionStatistics     ITransmissionStatistics;
                 typedef std::shared_ptr<ITransmissionStatistics>        ITransmissionStatisticsPtr;
                 typedef std::shared_ptr<

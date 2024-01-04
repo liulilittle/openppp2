@@ -12,11 +12,11 @@ namespace ppp
     namespace threading
     {
         typedef std::shared_ptr<Byte>                                           BufferArray;
-        typedef std::mutex									                    SynchronizedObject;
-        typedef std::lock_guard<SynchronizedObject>			                    SynchronizedObjectScope;
-        typedef std::shared_ptr<boost::asio::io_context>	                    ExecutorContextPtr;
+        typedef std::mutex                                                      SynchronizedObject;
+        typedef std::lock_guard<SynchronizedObject>                             SynchronizedObjectScope;
+        typedef std::shared_ptr<boost::asio::io_context>                        ExecutorContextPtr;
         typedef ppp::unordered_map<int, ExecutorContextPtr>                     ExecutorTable;
-        typedef ppp::list<ExecutorContextPtr>				                    ExecutorLinkedList;
+        typedef ppp::list<ExecutorContextPtr>                                   ExecutorLinkedList;
         typedef std::shared_ptr<Thread>                                         ExecutorThreadPtr;
         typedef ppp::unordered_map<boost::asio::io_context*, ExecutorThreadPtr> ExecutorThreadTable;
         typedef ppp::unordered_map<boost::asio::io_context*, BufferArray>       ExecutorBufferArrayTable;
@@ -27,10 +27,10 @@ namespace ppp
             std::atomic<int>                                    DefaultThreadId = 0;
             std::atomic<uint64_t>                               TickCount = 0;
             std::shared_ptr<boost::asio::deadline_timer>        Tick;
-            ExecutorContextPtr								    Default;
-            SynchronizedObject								    Lock;
-            ExecutorLinkedList								    ContextFifo;
-            ExecutorTable									    ContextTable;
+            ExecutorContextPtr                                  Default;
+            SynchronizedObject                                  Lock;
+            ExecutorLinkedList                                  ContextFifo;
+            ExecutorTable                                       ContextTable;
             ExecutorThreadTable                                 Threads;
             ExecutorBufferArrayTable                            Buffers;
             std::shared_ptr<Executors::Awaitable>               NetstackExitAwaitable;

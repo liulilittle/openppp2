@@ -257,25 +257,28 @@ namespace ppp {
                 if (value < 0) {
                     return false;
                 }
+
                 int& capacity = this->_capacity;
                 if (value > capacity) {
-			        int num = value;
-			        if (num < 256) {
-			        	num = 256;
-			        }
+                    int num = value;
+                    if (num < 256) {
+                        num = 256;
+                    }
+                    
                     int ndw = capacity * 2;
-			        if (num < ndw) {
-			        	num = ndw;
-			        }
-			        if ((UInt32)(ndw) > 2147483591u) {
+                    if (num < ndw) {
+                        num = ndw;
+                    }
+                    
+                    if ((UInt32)(ndw) > 2147483591u) {
                         if (value > 2147483591) {
                             return false;
                         }
                         num = 2147483591;
-			        }
-			        return this->SetCapacity(num);
-		        }
-		        return true;
+                    }
+                    return this->SetCapacity(num);
+                }
+                return true;
             }
 
         private:

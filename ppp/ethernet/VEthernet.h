@@ -22,7 +22,7 @@ namespace ppp
             typedef ppp::net::packet::UdpFrame                              UdpFrame;
             typedef ppp::net::packet::IcmpFrame                             IcmpFrame;
             typedef std::mutex                                              SynchronizedObject;
-            typedef std::lock_guard<SynchronizedObject>		                SynchronizedObjectScope;
+            typedef std::lock_guard<SynchronizedObject>                     SynchronizedObjectScope;
 
         public:
             VEthernet(const std::shared_ptr<boost::asio::io_context>& context, bool lwip) noexcept;

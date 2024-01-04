@@ -512,18 +512,8 @@ namespace boost {
 #endif
 
 #ifdef JEMALLOC
-#ifdef _Win32
+#define JEMALLOC_NO_DEMANGLE
 #include <jemalloc/jemalloc.h>
-#else
-#ifdef __cplusplus 
-extern "C" {
-#endif
-    void*                                                                   je_malloc(size_t size);
-    void                                                                    je_free(void* size);
-#ifdef __cplusplus 
-}
-#endif
-#endif
 #endif
 
 #ifdef ANDROID

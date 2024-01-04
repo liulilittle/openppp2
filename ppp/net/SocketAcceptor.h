@@ -11,8 +11,8 @@ namespace ppp
         public:
             typedef struct
             {
-                int															        Socket;
-            }																        AcceptSocketEventArgs;
+                int                                                                 Socket;
+            }                                                                       AcceptSocketEventArgs;
             typedef ppp::function<void(SocketAcceptor*, AcceptSocketEventArgs&)>    AcceptSocketEventHandler;
 
         public:

@@ -8,7 +8,7 @@ namespace ppp {
         class EVP : public std::enable_shared_from_this<EVP> {
         public:
             typedef std::mutex                                  SynchronizedObject;
-            typedef std::lock_guard<SynchronizedObject>		    SynchronizedObjectScope;
+            typedef std::lock_guard<SynchronizedObject>         SynchronizedObjectScope;
 
         public:
             EVP(const ppp::string& method, const ppp::string& password) noexcept;
