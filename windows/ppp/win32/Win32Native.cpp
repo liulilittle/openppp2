@@ -950,8 +950,8 @@ namespace ppp
             si.cb = sizeof(si);
             si.hStdError = hStdout;
             si.hStdOutput = hStdout;
-            si.dwFlags |= STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW; // ���ӱ�־��ʹ�ñ�׼��������ش���
-            si.wShowWindow = SW_HIDE; // ���ش���
+            si.dwFlags |= STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW; // 添加标志以使用标准句柄和隐藏窗口
+            si.wShowWindow = SW_HIDE; // 隐藏窗口
 
             PROCESS_INFORMATION pi;
             ZeroMemory(&pi, sizeof(pi));
