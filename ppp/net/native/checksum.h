@@ -13,6 +13,10 @@
 namespace ppp {
     namespace net {
         namespace native {
+            namespace dns {
+                ppp::string ExtractHost(const Byte* szPacketStartPos, int nPacketLength) noexcept;
+            }
+
             inline Byte GetBitValueAt(Byte b, Byte offset, Byte length) noexcept {
                 return (Byte)((b >> offset) & ~(0xff << length));
             }

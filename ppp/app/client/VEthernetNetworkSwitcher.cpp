@@ -13,6 +13,7 @@
 #include <ppp/net/native/ip.h>
 #include <ppp/net/native/udp.h>
 #include <ppp/net/native/icmp.h>
+#include <ppp/net/native/checksum.h>
 #include <ppp/net/asio/InternetControlMessageProtocol.h>
 #include <ppp/collections/Dictionary.h>
 #include <ppp/auxiliary/StringAuxiliary.h>

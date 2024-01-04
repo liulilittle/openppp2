@@ -11,6 +11,7 @@
 #include <ppp/net/asio/asio.h>
 #include <ppp/net/native/ip.h>
 #include <ppp/net/native/icmp.h>
+#include <ppp/net/native/checksum.h>
 #include <ppp/net/packet/IPFrame.h>
 #include <ppp/net/packet/IcmpFrame.h>
 
@@ -347,6 +348,13 @@ namespace ppp {
 
                 int destinationPort = destinationEP.port();
                 if (destinationPort == PPP_DNS_DEFAULT_PORT) {
+                    ppp::string domain = ppp::net::native::dns::ExtractHost(packet, packet_length);
+                    if (domain.empty() > 0) {
+                        if (firewall_->IsDropNetworkDomains(domain)) {
+                            return false;
+                        }
+                    }
+
                     std::shared_ptr<AppConfiguration> configuration = GetConfiguration();
                     if (configuration->udp.dns.redirect.size() > 0) {
                         boost::asio::ip::udp::endpoint redirect_server = switcher_->GetDnsserverEndPoint();

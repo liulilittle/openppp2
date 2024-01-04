@@ -11,6 +11,7 @@
 #include <ppp/net/native/tcp.h>
 #include <ppp/net/native/udp.h>
 #include <ppp/net/native/icmp.h>
+#include <ppp/threading/Executors.h>
 
 namespace ppp
 {
@@ -496,6 +497,138 @@ namespace ppp
             void ForwardInformationTable::Clear() noexcept
             {
                 routes.clear();
+            }
+
+            namespace dns
+            {
+#pragma pack(push, 1)
+                struct dns_hdr
+                {
+                    uint16_t usTransID;         // 标识符
+                    uint16_t usFlags;           // 各种标志位
+                    uint16_t usQuestionCount;   // Question字段个数 
+                    uint16_t usAnswerCount;     // Answer字段个数
+                    uint16_t usAuthorityCount;  // Authority字段个数
+                    uint16_t usAdditionalCount; // Additional字段个数
+                };
+#pragma pack(pop)
+
+                /*
+                 * convert "\x03www\x05baidu\x03com\x00" to "www.baidu.com"
+                 * 0x0000 03 77 77 77 05 62 61 69 64 75 03 63 6f 6d 00 ff
+                 * convert "\x03www\x05baidu\xc0\x13" to "www.baidu.com"
+                 * 0x0000 03 77 77 77 05 62 61 69 64 75 c0 13 ff ff ff ff
+                 * 0x0010 ff ff ff 03 63 6f 6d 00 ff ff ff ff ff ff ff ff
+                 */
+                static bool ExtractName(char* szEncodedStr, uint16_t* pusEncodedStrLen, char* szDotStr, uint16_t nDotStrSize, char* szPacketStartPos, char* szPacketEndPos) noexcept
+                {
+                    if (NULL == szEncodedStr || NULL == pusEncodedStrLen || NULL == szDotStr || szPacketStartPos >= szPacketEndPos)
+                    {
+                        return false;
+                    }
+
+                    char* pDecodePos = szEncodedStr;
+                    uint16_t usPlainStrLen = 0;
+                    uint8_t nLabelDataLen = 0;
+                    *pusEncodedStrLen = 0;
+
+                    while ((nLabelDataLen = *pDecodePos) != 0x00)
+                    {
+                        if ((nLabelDataLen & 0xc0) == 0) //普通格式，LabelDataLen + Label
+                        {
+                            if (usPlainStrLen + nLabelDataLen + 1 > nDotStrSize || pDecodePos + nLabelDataLen + 1 > szPacketEndPos)
+                            {
+                                return false;
+                            }
+
+                            memcpy(szDotStr + usPlainStrLen, pDecodePos + 1, nLabelDataLen);
+                            memcpy(szDotStr + usPlainStrLen + nLabelDataLen, ".", 1);
+                            pDecodePos += (nLabelDataLen + 1);
+                            usPlainStrLen += (nLabelDataLen + 1);
+                            *pusEncodedStrLen += (nLabelDataLen + 1);
+
+                            if (pDecodePos >= szPacketEndPos)
+                            {
+                                return false;
+                            }
+                        }
+                        else //消息压缩格式，11000000 00000000，两个字节，前2位为跳转标志，后14位为跳转的偏移
+                        {
+                            if (NULL == szPacketStartPos)
+                            {
+                                return false;
+                            }
+
+                            uint16_t usJumpPos = ntohs(*(uint16_t*)(pDecodePos)) & 0x3fff;
+                            uint16_t nEncodeStrLen = 0;
+                            if (!ExtractName(szPacketStartPos + usJumpPos, &nEncodeStrLen, szDotStr + usPlainStrLen, nDotStrSize - usPlainStrLen, szPacketStartPos, szPacketEndPos))
+                            {
+                                return false;
+                            }
+                            else
+                            {
+                                *pusEncodedStrLen += 2;
+                                return true;
+                            }
+                        }
+                    }
+
+                    szDotStr[usPlainStrLen - 1] = '\0';
+                    *pusEncodedStrLen += 1;
+                    return true;
+                }
+
+                static constexpr int MAX_DOMAINNAME_LEN = 255;
+                static constexpr int DNS_PORT = 53;
+                static constexpr int DNS_TYPE_SIZE = 2;
+                static constexpr int DNS_CLASS_SIZE = 2;
+                static constexpr int DNS_TTL_SIZE = 4;
+                static constexpr int DNS_DATALEN_SIZE = 2;
+                static constexpr int DNS_TYPE_A = 0x0001; //1 a host address
+                static constexpr int DNS_TYPE_CNAME = 0x0005; //5 the canonical name for an alias
+                static constexpr int DNS_PACKET_MAX_SIZE = (sizeof(dns_hdr) + MAX_DOMAINNAME_LEN + DNS_TYPE_SIZE + DNS_CLASS_SIZE);
+
+                ppp::string ExtractHost(const Byte* szPacketStartPos, int nPacketLength) noexcept
+                {
+                    dns_hdr* pDnsHeader = (dns_hdr*)szPacketStartPos;
+                    if (NULL == pDnsHeader || nPacketLength < sizeof(pDnsHeader))
+                    {
+                        return ppp::string();
+                    }
+
+                    if (0 == (htons(pDnsHeader->usFlags) & 0x0100) || 0 == htons(pDnsHeader->usQuestionCount))
+                    {
+                        return ppp::string();
+                    }
+
+                    auto context = ppp::threading::Executors::GetCurrent();
+                    auto buffers = ppp::threading::Executors::GetCachedBuffer(context.get());
+                    if (NULL == buffers)
+                    {
+                        buffers = make_shared_alloc<Byte>(PPP_BUFFER_SIZE);
+                    }
+
+                    uint16_t pusEncodedStrLen;
+                    char* szDomain = (char*)buffers.get();
+
+                    if (!ExtractName((char*)(pDnsHeader + 1), &pusEncodedStrLen, szDomain,
+                        (uint16_t)std::min<int>(UINT16_MAX, PPP_BUFFER_SIZE), (char*)szPacketStartPos, (char*)szPacketStartPos + nPacketLength))
+                    {
+                        return ppp::string();
+                    }
+
+                    while (pusEncodedStrLen > 0 && szDomain[pusEncodedStrLen - 1] == '\x0')
+                    {
+                        pusEncodedStrLen--;
+                    }
+
+                    if (pusEncodedStrLen == 0)
+                    {
+                        return ppp::string();
+                    }
+
+                    return  ppp::string(szDomain, pusEncodedStrLen);
+                }
             }
         }
     }

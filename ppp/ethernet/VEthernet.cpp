@@ -49,8 +49,8 @@ namespace ppp
             std::shared_ptr<IPFragment> fragment = std::move(fragment_);
             if (NULL != fragment)
             {
-                fragment->Release();
                 fragment_.reset();
+                fragment->Release();
             }
 
             std::shared_ptr<ITap> tap = NULL;
@@ -64,8 +64,8 @@ namespace ppp
                     netstack_tap.reset();
                 }
 
-                netstack->Release();
                 netstack_.reset();
+                netstack->Release();
             }
 
             lwip::netstack::output = NULL;
@@ -88,8 +88,8 @@ namespace ppp
             std::shared_ptr<ppp::threading::Timer> timeout = std::move(timeout_);
             if (NULL != timeout)
             {
-                timeout->Dispose();
                 timeout_.reset();
+                timeout->Dispose();
             }
         }
 
@@ -343,7 +343,7 @@ namespace ppp
             std::shared_ptr<VEthernet> self = shared_from_this();
             StopTimeout();
 
-            auto fx = make_shared_object<Timer::TimeoutEventHandler>(
+            timeout_ = Timer::Timeout(context_, 1000, make_shared_object<Timer::TimeoutEventHandler>(
                 [self, this]() noexcept
                 {
                     bool b = disposed_;
@@ -353,8 +353,7 @@ namespace ppp
                         OnTick(now);
                         NextTimeout();
                     }
-                });
-            timeout_ = Timer::Timeout(1000, fx);
+                }));
         }
 
         std::shared_ptr<VEthernet::IPFragment> VEthernet::NewFragment() noexcept
