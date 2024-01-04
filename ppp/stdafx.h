@@ -512,8 +512,19 @@ namespace boost {
 #endif
 
 #ifdef JEMALLOC
+#ifdef _WIN32
+#ifdef __cplusplus 
+extern "C" {
+#endif
+    void*                                                                   je_malloc(size_t size);
+    void                                                                    je_free(void* size);
+#ifdef __cplusplus 
+}
+#endif
+#else
 #define JEMALLOC_NO_DEMANGLE
 #include <jemalloc/jemalloc.h>
+#endif
 #endif
 
 #ifdef ANDROID
@@ -751,6 +762,10 @@ namespace ppp {
     };
 
     using string = std::basic_string<char, std::char_traits<char>, allocator<char>>;
+    using stringbuf = std::basic_stringbuf<char, std::char_traits<char>, allocator<char>>;
+    using istringstream = std::basic_istringstream<char, std::char_traits<char>, allocator<char>>;
+    using ostringstream = std::basic_ostringstream<char, std::char_traits<char>, allocator<char>>;
+    using stringstream = std::basic_stringstream<char, std::char_traits<char>, allocator<char>>;
 
     template <typename TValue>
     using list = std::list<TValue, allocator<TValue>>;

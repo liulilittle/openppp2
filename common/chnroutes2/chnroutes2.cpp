@@ -267,7 +267,7 @@ static int curl_easy_request(
     return error;
 }
 #else
-static int httplib_easy_request(bool post, const char* host, const char* path, const char* cacert_path, const char* data, size_t size, std::string& response_text) noexcept {
+static int httplib_easy_request(bool post, const char* host, const char* path, const char* cacert_path, const char* data, size_t size, ppp::string& response_text) noexcept {
     if (!host) {
         return -1;
     }
@@ -321,7 +321,7 @@ const char* chnroutes2_filepath_default() {
 }
 
 #ifdef _CURLINC_CURL
-std::string chnroutes2_getiplist() {
+ppp::string chnroutes2_getiplist() {
     unsigned char* response_body;
     unsigned long response_body_size;
     unsigned char* response_headers;
@@ -344,7 +344,7 @@ std::string chnroutes2_getiplist() {
         NULL,
         NULL);
 
-    std::string iplist;
+    ppp::string iplist;
     if (call_err != CURL_EASY_ERROR_Success) {
         return std::move(iplist);
     }
@@ -353,45 +353,45 @@ std::string chnroutes2_getiplist() {
         ppp::Mfree(response_headers);
     }
 
-    iplist = std::move(std::string((char*)response_body, response_body_size));
+    iplist = std::move(ppp::string((char*)response_body, response_body_size));
     if (response_body) {
         ppp::Mfree(response_body);
     }
     return std::move(iplist);
 }
 #else
-std::string chnroutes2_getiplist() {
-    std::string iplist;
+ppp::string chnroutes2_getiplist() {
+    ppp::string iplist;
     int status_code = httplib_easy_request(false, APNIC_IP_FILE_HOST, APNIC_IP_FILE_PATH, NULL, NULL, 0, iplist);
     if (status_code >= 200 && status_code < 300) {
         return std::move(iplist);
     }
     else {
-        return std::string();
+        return ppp::string();
     }
 }
 #endif
 
-int chnroutes2_getiplist(std::set<std::string>& out_, const std::string& iplist_) {
+int chnroutes2_getiplist(ppp::set<ppp::string>& out_, const ppp::string& iplist_) {
     if (iplist_.empty()) {
         return 0;
     }
 
-    ppp::vector<std::string> lines_;
-    ppp::Tokenize<std::string>(iplist_, lines_, "\r\n");
+    ppp::vector<ppp::string> lines_;
+    ppp::Tokenize<ppp::string>(iplist_, lines_, "\r\n");
 
     char fmt[260];
     snprintf(fmt, sizeof(fmt), "%s|%s|%s|%%d.%%d.%%d.%%d|%%d|%%d|allocated", APNIC_KEY, APNIC_NATION, APNIC_IP);
 
     int length_ = 0;
     for (size_t i = 0, l = lines_.size(); i < l; i++) {
-        std::string& line_ = lines_[i];
+        ppp::string& line_ = lines_[i];
         if (line_.empty()) {
             continue;
         }
 
         size_t pos = line_.find_first_of('#');
-        if (pos == 0 || pos == std::string::npos) {
+        if (pos == 0 || pos == ppp::string::npos) {
             continue;
         }
 
@@ -424,12 +424,12 @@ int chnroutes2_getiplist(std::set<std::string>& out_, const std::string& iplist_
     return length_;
 }
 
-int chnroutes2_getiplist(std::set<std::string>& out_) {
-    std::string iplist_ = chnroutes2_getiplist();
+int chnroutes2_getiplist(ppp::set<ppp::string>& out_) {
+    ppp::string iplist_ = chnroutes2_getiplist();
     return chnroutes2_getiplist(out_, iplist_);
 }
 
-bool chnroutes2_saveiplist(const std::string& path_, const std::set<std::string>& ips_) {
+bool chnroutes2_saveiplist(const ppp::string& path_, const ppp::set<ppp::string>& ips_) {
     if (path_.empty()) {
         return false;
     }
@@ -439,11 +439,11 @@ bool chnroutes2_saveiplist(const std::string& path_, const std::set<std::string>
         return false;
     }
 
-    std::string data_;
-    std::set<std::string>::iterator tail_ = ips_.begin();
-    std::set<std::string>::iterator endl_ = ips_.end();
+    ppp::string data_;
+    ppp::set<ppp::string>::iterator tail_ = ips_.begin();
+    ppp::set<ppp::string>::iterator endl_ = ips_.end();
     while (tail_ != endl_) {
-        const std::string& line_ = *tail_++;
+        const ppp::string& line_ = *tail_++;
         data_.append(line_);
         data_.append("\r\n");
     }
@@ -454,19 +454,19 @@ bool chnroutes2_saveiplist(const std::string& path_, const std::set<std::string>
     return true;
 }
 
-void chnroutes2_getiplist_async(const ppp::function<void(std::string&)>& cb) {
+void chnroutes2_getiplist_async(const ppp::function<void(ppp::string&)>& cb) {
     if (NULL == cb) {
         throw std::runtime_error("cb not allow is null.");
     }
 
     std::thread(
         [cb]() {
-            std::string iplist = chnroutes2_getiplist();
+            ppp::string iplist = chnroutes2_getiplist();
             cb(iplist);
         }).detach();
 }
 
-std::string chnroutes2_gettime(time_t time_) {
+ppp::string chnroutes2_gettime(time_t time_) {
     if (time_ == 0) {
         time_ = time(NULL);
     }

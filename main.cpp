@@ -187,10 +187,10 @@ void PppApplication::PullIPList() noexcept
 
     // Getting the latest IPlist routing table information from APNIC, synchronized execution will block the main thread.
     bool ok = false;
-    std::set<std::string> ips;
+    ppp::set<ppp::string> ips;
     if (chnroutes2_getiplist(ips) > 0)
     {
-        std::string path = chnroutes2_filepath_default();
+        ppp::string path = chnroutes2_filepath_default();
         ok = chnroutes2_saveiplist(path, ips);
     }
 

@@ -1,24 +1,20 @@
 #pragma once
 
-#include <string>
+#include <ppp/stdafx.h>
 
 class HttpClient {
 public:
-    HttpClient(const std::string& host, const std::string& cacert_path) noexcept;
+    HttpClient(const ppp::string& host, const ppp::string& cacert_path) noexcept;
 
 public:
-    std::string                             Get(const std::string& api, int& status) noexcept { 
-        return this->HttpGetOrPostImpl(false, api, NULL, 0, status);
-    }
-    std::string                             Post(const std::string& api, const char* data, size_t size, int& status) noexcept {
-        return this->HttpGetOrPostImpl(true, api, data, size, status); 
-    }
+    ppp::string                             Get(const ppp::string& api, int& status) noexcept;
+    ppp::string                             Post(const ppp::string& api, const char* data, size_t size, int& status) noexcept;
 
 private:
-    std::string                             HttpGetOrPostImpl(bool post, const std::string& api, const char* data, size_t size, int& status) noexcept;
+    ppp::string                             HttpGetOrPostImpl(bool post, const ppp::string& api, const char* data, size_t size, int& status) noexcept;
 
 private:        
-    std::string                             _host;
-    std::string                             _cacert_path;
+    ppp::string                             _host;
+    ppp::string                             _cacert_path;
     bool                                    _cacert_exist;
 };
