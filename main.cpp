@@ -1278,13 +1278,6 @@ int main(int argc, const char* argv[]) noexcept
     std::shared_ptr<PppApplication> APP = ppp::make_shared_object<PppApplication>();
     PPP_APPLICATION_DEFAULT_APP_DOMAIN = APP;
 
-    // Check whether the cli command to pull the IPList list for a specific locale from the APNIC is executed.
-    if (ppp::HasCommandArgument("--pull-iplist", argc, argv))
-    {
-        APP->PullIPList();
-        return -1;
-    }
-
     // Prepare the environment for the current console command line input parameters.
     if (APP->PreparedArgumentEnvironment(argc, argv))
     {
@@ -1295,6 +1288,13 @@ int main(int argc, const char* argv[]) noexcept
     return Executors::Run(APP->GetBufferAllocator(), /* std::bind(&PppApplication::Main, PPP_APPLICATION_DEFAULT_APP_DOMAIN, std::placeholders::_1, std::placeholders::_2); */
         [APP](int argc, const char* argv[]) noexcept -> int
         {
+            // Check whether the cli command to pull the IPList list for a specific locale from the APNIC is executed.
+            if (ppp::HasCommandArgument("--pull-iplist", argc, argv))
+            {
+                APP->PullIPList();
+                return -1;
+            }
+
             PppApplication::AddShutdownApplicationEventHandler();
             return APP->Main(argc, argv);
         }, argc, argv);

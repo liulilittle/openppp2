@@ -12,6 +12,12 @@
 
 #include <ppp/stdafx.h>
 #include <ppp/io/File.h>
+#include <ppp/threading/Executors.h>
+#include <ppp/threading/Timer.h>
+#include <ppp/net/asio/asio.h>
+#include <ppp/net/Socket.h>
+#include <ppp/coroutines/asio/asio.h>
+#include <ppp/coroutines/YieldContext.h>
 
 #ifdef _WIN32
 #include <io.h>
@@ -23,17 +29,9 @@
 #ifdef _CURLINC_CURL
 #include <curl/curl.h>
 #include <curl/easy.h>
-#else
-#include "HttpClient.h"
 #endif
 
-#ifdef _CURLINC_CURL
 #define APNIC_IP_FILE "http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest"
-#else
-#define APNIC_IP_FILE_HOST "http://ftp.apnic.net"
-#define APNIC_IP_FILE_PATH "/apnic/stats/apnic/delegated-apnic-latest"
-#endif
-
 #define APNIC_KEY "apnic"
 #define APNIC_NATION "CN"
 #define APNIC_IP "ipv4"
@@ -267,52 +265,199 @@ static int curl_easy_request(
     return error;
 }
 #else
-static int httplib_easy_request(bool post, const char* host, const char* path, const char* cacert_path, const char* data, size_t size, ppp::string& response_text) noexcept {
-    if (!host) {
-        return -1;
+static constexpr int HTTP_EASY_OPEN_TIMEOUT = 20000;
+static constexpr int HTTP_EASY_READ_TIMEOUT = 20000;
+static constexpr int HTTP_EASY_SENT_TIMEOUT = 20000;
+
+static ppp::function<void()> http_easy_timeout(boost::asio::ip::tcp::socket& socket, int milliseconds) {
+    if (milliseconds < 0) {
+        milliseconds = 0;
     }
 
-    if (!data && size) {
-        return -1;
+    auto t = ppp::make_shared_object<boost::asio::deadline_timer>(socket.get_executor());
+    t->expires_from_now(ppp::threading::Timer::DurationTime(milliseconds));
+    t->async_wait(
+        [t, &socket](const boost::system::error_code& ec) noexcept {
+            if (ec == boost::system::errc::success) {
+                ppp::net::Socket::Closesocket(socket);
+            }
+        });
+
+    return [t]()
+        {
+            boost::system::error_code ec;
+            try {
+                t->cancel(ec);
+            }
+            catch (const std::exception&) {}
+        };
+}
+
+static std::shared_ptr<boost::asio::ip::tcp::socket> http_easy_connect(const ppp::string& host, int port, ppp::coroutines::YieldContext& y) {
+    if (host.empty() || port <= ppp::net::IPEndPoint::MinPort || port > ppp::net::IPEndPoint::MaxPort) {
+        return NULL;
     }
 
-    size_t host_size = strlen(host);
-    if (host_size < 7) {
-        return -1;
+    auto resolver = ppp::make_shared_object<boost::asio::ip::tcp::resolver>(y.GetContext());
+    auto remoteEP = ppp::coroutines::asio::GetAddressByHostName<boost::asio::ip::tcp>(*resolver, host.data(), port, y);
+    auto remoteIP = remoteEP.address();
+    if (ppp::net::IPEndPoint::IsInvalid(remoteIP)) {
+        return NULL;
     }
 
-    if (strncasecmp(host, "http://", 7) != 0) {
-        if (host_size < 8) {
-            return -1;
-        }
-
-        if (strncasecmp(host, "https://", 8) != 0) {
-            return -1;
-        }
+    if (remoteIP.is_unspecified()) {
+        return NULL;
     }
 
-    if (!path || (int)strlen(path) < 1) {
-        path = "/";
+    if (remoteIP.is_multicast()) {
+        return NULL;
     }
 
-    if (*path != '/') {
-        return -1;
+    auto socket = ppp::make_shared_object<boost::asio::ip::tcp::socket>(y.GetContext());
+    auto timeout = http_easy_timeout(*socket, HTTP_EASY_OPEN_TIMEOUT);
+    if (!ppp::coroutines::asio::async_connect(*socket, remoteEP, y)) {
+        return NULL;
     }
 
-    int status = 0;
-    if (!cacert_path) {
-        cacert_path = "cacert.pem";
-    }
-    
-    HttpClient http = HttpClient(host, cacert_path);
-    if (post) {
-        response_text = http.Post(path, data, size, status);
+    timeout();
+    return socket;
+}
+
+static bool http_easy_request(boost::asio::ip::tcp::socket& socket, const ppp::string& host, int port, const ppp::string& path, bool http_or_ssl_httpd, ppp::coroutines::YieldContext& y) {
+    auto timeout = http_easy_timeout(socket, HTTP_EASY_SENT_TIMEOUT);
+    ppp::string headers =
+        "GET {HTTP_HEADER_PATH} HTTP/1.1\r\n"
+        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7\r\n"
+        "Accept-Language: en-US,en;q=0.9\r\n"
+        "Cache-Control: max-age=0\r\n"
+        "Connection: close\r\n"
+        "DNT: 1\r\n"
+        "Host: {HTTP_HEADER_HOST}\r\n"
+        "Upgrade-Insecure-Requests: 1\r\n"
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0\r\n\r\n";
+
+    headers = ppp::Replace<ppp::string>(headers, "{HTTP_HEADER_PATH}", path);
+    if (http_or_ssl_httpd ? port == 80 : port == 443) {
+        headers = ppp::Replace<ppp::string>(headers, "{HTTP_HEADER_HOST}", host);
     }
     else {
-        response_text = http.Get(path, status);
+        std::string port_string = std::to_string(port);
+        ppp::string header_host = host + ":" + port_string.data();
+        headers = ppp::Replace<ppp::string>(headers, "{HTTP_HEADER_HOST}", header_host.data());
     }
 
-    return status;
+    return ppp::coroutines::asio::async_write(socket, boost::asio::buffer(headers.data(), headers.size()), y);
+}
+
+static bool htpp_easy_response(boost::asio::ip::tcp::socket& socket, ppp::string& response_text, ppp::coroutines::YieldContext& y) {
+    auto timeout = http_easy_timeout(socket, HTTP_EASY_READ_TIMEOUT);
+    for (;;) {
+        char buf[1024];
+        int transferred_bytes = ppp::coroutines::asio::async_read_some(socket, boost::asio::buffer(buf, sizeof(buf)), y);
+        if (transferred_bytes < 1) {
+            break;
+        }
+
+        response_text.append(buf, transferred_bytes);
+    }
+
+    if (response_text.empty()) {
+        return false;
+    }
+
+    int next[4];
+    int index = ppp::FindIndexOf(next, (char*)response_text.data(), response_text.size(), (char*)("\r\n\r\n"), 4); // KMP
+    if (index < 0) {
+        return false;
+    }
+
+    response_text = response_text.substr(index + 4);
+    return true;
+}
+
+static bool http_easy_query(const ppp::string& url, ppp::string& host, int& port, ppp::string& path, bool& http_or_ssl_httpd) {
+    http_or_ssl_httpd = true;
+    if (url.size() < 7) {
+        return false;
+    }
+
+    int hard = 7;
+    int default_port = 80;
+    char* p = (char*)url.data();
+    int status = strncasecmp(p, "http://", hard);
+    if (status != 0) {
+        if (url.size() < 8) {
+            return false;
+        }
+
+        status = strncasecmp(p, "https://", ++hard);
+        if (status != 0) {
+            return false;
+        }
+        else {
+            default_port = 443;
+            http_or_ssl_httpd = false;
+        }
+    }
+    else {
+        default_port = 80;
+        http_or_ssl_httpd = true;
+    }
+
+    char* c = (char*)strchr(p + hard, '/');
+    if (NULL != c) {
+        char t = *c;
+        *c = '\x0';
+        host = p + hard;
+        *c = t;
+        path = c;
+    }
+    else {
+        path = "/";
+        host = p + hard;
+    }
+
+    std::size_t i = host.rfind(':');
+    if (i == std::string::npos) {
+        port = default_port;
+    }
+    else {
+        char* d = (char*)host.data();
+        p = d + i;
+        *p = '\x0';
+        port = atoi(p + 1);
+        host = d;
+        if (port <= ppp::net::IPEndPoint::MinPort || port > ppp::net::IPEndPoint::MaxPort) {
+            port = default_port;
+        }
+    }
+
+    return true;
+}
+
+static bool http_easy_get(const ppp::string& url, ppp::coroutines::YieldContext& y, ppp::string& response_text) {
+    ppp::string host;
+    ppp::string path;
+    int port = 0;
+    bool http_or_ssl_httpd = false;
+    if (!http_easy_query(url, host, port, path, http_or_ssl_httpd)) {
+        return false;
+    }
+
+    if (!http_or_ssl_httpd) {
+        return false;
+    }
+
+    std::shared_ptr<boost::asio::ip::tcp::socket> socket = http_easy_connect(host, port, y);
+    if (!socket) {
+        return false;
+    }
+
+    if (!http_easy_request(*socket, host, port, path, http_or_ssl_httpd, y)) {
+        return false;
+    }
+
+    return htpp_easy_response(*socket, response_text, y);
 }
 #endif
 
@@ -361,14 +506,25 @@ ppp::string chnroutes2_getiplist() {
 }
 #else
 ppp::string chnroutes2_getiplist() {
-    ppp::string iplist;
-    int status_code = httplib_easy_request(false, APNIC_IP_FILE_HOST, APNIC_IP_FILE_PATH, NULL, NULL, 0, iplist);
-    if (status_code >= 200 && status_code < 300) {
-        return std::move(iplist);
-    }
-    else {
+    auto context = ppp::threading::Executors::GetExecutor();
+    if (NULL == context) {
         return ppp::string();
     }
+
+    ppp::string iplist;
+    auto awaitable = ppp::make_shared_object<ppp::threading::Executors::Awaitable>();
+    bool ok = ppp::coroutines::YieldContext::Spawn(*context, 
+        [awaitable, &iplist](ppp::coroutines::YieldContext& y) {
+            bool b = http_easy_get(APNIC_IP_FILE, y, iplist);
+            if (!b) {
+                iplist.clear();
+            }
+
+            awaitable->Processed();
+        });
+
+    ok = ok && awaitable->Await();
+    return ok ? iplist : ppp::string();
 }
 #endif
 
@@ -381,7 +537,11 @@ int chnroutes2_getiplist(ppp::set<ppp::string>& out_, const ppp::string& iplist_
     ppp::Tokenize<ppp::string>(iplist_, lines_, "\r\n");
 
     char fmt[260];
+    char sz[1000];
     snprintf(fmt, sizeof(fmt), "%s|%s|%s|%%d.%%d.%%d.%%d|%%d|%%d|allocated", APNIC_KEY, APNIC_NATION, APNIC_IP);
+
+    int ip[4];
+    int cidr;
 
     int length_ = 0;
     for (size_t i = 0, l = lines_.size(); i < l; i++) {
@@ -389,22 +549,29 @@ int chnroutes2_getiplist(ppp::set<ppp::string>& out_, const ppp::string& iplist_
         if (line_.empty()) {
             continue;
         }
+        else {
+            size_t pos = line_.find_first_of('#');
+            if (pos != ppp::string::npos) {
+                line_ = line_.substr(0, pos);
+            }
 
-        size_t pos = line_.find_first_of('#');
-        if (pos == 0 || pos == ppp::string::npos) {
-            continue;
+            line_ = ppp::LTrim(ppp::RTrim(line_));
+            if (line_.empty()) {
+                continue;
+            }
+
+            int st = sscanf(line_.data(), "%d.%d.%d.%d/%d", ip, ip + 1, ip + 2, ip + 3, &cidr);
+            if (st == 5 && cidr >= 0 && cidr <= 32) {
+                snprintf(sz, sizeof(sz), "%d.%d.%d.%d/%d", ip[0], ip[1], ip[2], ip[3], cidr);
+                if (out_.insert(sz).second) {
+                    length_++;
+                    continue;
+                }
+            }
         }
 
-
-        int ip[4];
-        int cidr;
         int tm;
-
-#ifdef _WIN32
-        int by = sscanf_s(line_.data(), fmt, ip, ip + 1, ip + 2, ip + 3, &cidr, &tm);
-#else
         int by = sscanf(line_.data(), fmt, ip, ip + 1, ip + 2, ip + 3, &cidr, &tm);
-#endif
         if (by != 6) {
             continue;
         }
@@ -415,7 +582,6 @@ int chnroutes2_getiplist(ppp::set<ppp::string>& out_, const ppp::string& iplist_
             prefix = prefix - 1;
         }
 
-        char sz[1000];
         snprintf(sz, sizeof(sz), "%d.%d.%d.%d/%d", ip[0], ip[1], ip[2], ip[3], prefix);
         if (out_.insert(sz).second) {
             length_++;

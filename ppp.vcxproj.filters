@@ -378,9 +378,6 @@
     <ClCompile Include="windows\ppp\win32\Win32PerformanceCounter.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="common\chnroutes2\HttpClient.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ppp\stdafx.h">
@@ -1239,12 +1236,6 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="windows\ppp\win32\Win32PerformanceCounter.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="common\chnroutes2\HttpClient.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="common\chnroutes2\httplib.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
