@@ -21,7 +21,7 @@ namespace ppp {
             namespace checksum = ppp::net::native;
             namespace global {
                 template<class TProtocol>
-                static boost::asio::ip::basic_endpoint<TProtocol>       PACKET_IPEndPoint(Byte*& stream, int& packet_length, YieldContext& y) noexcept {
+                static boost::asio::ip::basic_endpoint<TProtocol>       PACKET_IPEndPoint(const std::shared_ptr<ppp::net::Firewall>& firewall, Byte*& stream, int& packet_length, YieldContext& y) noexcept {
                     /* ACTION(1BYTE) ADDR_LEN(1BYTE) ... PORT_LEN(1BYTE) ... */
                     if (--packet_length < 0) {
                         return boost::asio::ip::basic_endpoint<TProtocol>(boost::asio::ip::address_v4::any(), 0);
@@ -53,19 +53,39 @@ namespace ppp {
                         port = IPEndPoint::MinPort;
                     }
 
+                    if (NULL != firewall) {
+                        if (firewall->IsDropNetworkPort(port, std::is_same<boost::asio::ip::tcp, TProtocol>::value)) {
+                            return boost::asio::ip::basic_endpoint<TProtocol>(boost::asio::ip::address_v4::any(), 0);
+                        }
+                    }
+
                     stream += port_length;
                     packet_length -= port_length;
 
                     boost::system::error_code ec;
                     boost::asio::ip::address address = boost::asio::ip::address::from_string(hostname.data(), ec);
                     if (ec) {
+                        if (NULL != firewall) {
+                            if (firewall->IsDropNetworkDomains(hostname)) {
+                                return boost::asio::ip::basic_endpoint<TProtocol>(boost::asio::ip::address_v4::any(), 0);
+                            }
+                        }
+
                         if (y) {
                             boost::asio::ip::basic_resolver<TProtocol> resolver(y.GetContext());
                             return ppp::coroutines::asio::GetAddressByHostName(resolver, hostname.data(), port, y);
                         }
-                        return boost::asio::ip::basic_endpoint<TProtocol>(boost::asio::ip::address_v4::any(), 0);
+                        else {
+                            return boost::asio::ip::basic_endpoint<TProtocol>(boost::asio::ip::address_v4::any(), 0);
+                        }
                     }
                     else {
+                        if (NULL != firewall) {
+                            if (firewall->IsDropNetworkSegment(address)) {
+                                return boost::asio::ip::basic_endpoint<TProtocol>(boost::asio::ip::address_v4::any(), 0);
+                            }
+                        }
+
                         return boost::asio::ip::basic_endpoint<TProtocol>(address, port);
                     }
                 }
@@ -276,6 +296,10 @@ namespace ppp {
                 return context_;
             }
 
+            std::shared_ptr<ppp::net::Firewall> VirtualEthernetLinklayer::GetFirewall() noexcept {
+                return NULL;
+            }
+
             bool VirtualEthernetLinklayer::Run(const ITransmissionPtr& transmission, YieldContext& y) noexcept {
                 if (NULL == transmission) {
                     return false;
@@ -320,7 +344,7 @@ namespace ppp {
                 elif(packet_action == PacketAction_SYN) {
                     int connection_id = global::PACKET_ConnectId(p, packet_length);
                     if (connection_id) {
-                        boost::asio::ip::tcp::endpoint destinationEP = global::PACKET_IPEndPoint<boost::asio::ip::tcp>(p, packet_length, y);
+                        boost::asio::ip::tcp::endpoint destinationEP = global::PACKET_IPEndPoint<boost::asio::ip::tcp>(GetFirewall(), p, packet_length, y);
                         if (destinationEP.port()) {
                             return OnConnect(transmission, connection_id, destinationEP, y);
                         }
@@ -341,9 +365,9 @@ namespace ppp {
                     }
                 }
                 elif(packet_action == PacketAction_SENDTO) {
-                    boost::asio::ip::udp::endpoint destinationEP = global::PACKET_IPEndPoint<boost::asio::ip::udp>(p, packet_length, y);
+                    boost::asio::ip::udp::endpoint destinationEP = global::PACKET_IPEndPoint<boost::asio::ip::udp>(GetFirewall(), p, packet_length, y);
                     if (destinationEP.port()) {
-                        boost::asio::ip::udp::endpoint sourceEP = global::PACKET_IPEndPoint<boost::asio::ip::udp>(p, packet_length, y);
+                        boost::asio::ip::udp::endpoint sourceEP = global::PACKET_IPEndPoint<boost::asio::ip::udp>(GetFirewall(), p, packet_length, y);
                         if (sourceEP.port() && packet_length > -1) {
                             return OnSendTo(transmission, sourceEP, destinationEP, p, packet_length, y);
                         }

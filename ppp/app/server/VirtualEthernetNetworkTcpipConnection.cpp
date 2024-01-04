@@ -86,7 +86,28 @@ namespace ppp {
             }
 
             std::shared_ptr<VirtualEthernetNetworkTcpipConnection::VirtualEthernetTcpipConnection> VirtualEthernetNetworkTcpipConnection::AcceptConnection(ppp::coroutines::YieldContext& y) noexcept {
-                using VEthernetTcpipConnection = ppp::app::protocol::templates::VEthernetTcpipConnection<VirtualEthernetNetworkTcpipConnection>;
+                class VirtualEthernetTcpipConnection : public ppp::app::protocol::templates::VEthernetTcpipConnection<VirtualEthernetNetworkTcpipConnection> {
+                public:
+                    VirtualEthernetTcpipConnection(
+                        const std::shared_ptr<VirtualEthernetNetworkTcpipConnection>&   connection,
+                        const AppConfigurationPtr&                                      configuration,
+                        const ContextPtr&                                               context,
+                        const Int128&                                                   id,
+                        const std::shared_ptr<boost::asio::ip::tcp::socket>&            socket) noexcept
+                        : VEthernetTcpipConnection(connection, configuration, context, id, socket) {
+
+                    }
+
+                public:
+                    virtual std::shared_ptr<ppp::net::Firewall>                         GetFirewall() noexcept {
+                        std::shared_ptr<VirtualEthernetNetworkTcpipConnection> connection = GetConnection();
+                        std::shared_ptr<VirtualEthernetSwitcher> switcher = connection->GetSwitcher();
+                        return switcher->GetFirewall();
+                    }
+
+                private:
+                    FirewallPtr                                                         firewall_;
+                };
 
                 if (disposed_) {
                     return NULL;
@@ -111,10 +132,10 @@ namespace ppp {
                 if (NULL == socket) {
                     return NULL;
                 }
-
+                
                 auto self = shared_from_this();
-                std::shared_ptr<VEthernetTcpipConnection> connection =
-                    make_shared_object<VEthernetTcpipConnection>(self, configuration, context, id_, socket);
+                std::shared_ptr<VirtualEthernetTcpipConnection> connection =
+                    make_shared_object<VirtualEthernetTcpipConnection>(self, configuration, context, id_, socket);
                 if (NULL == connection) {
                     return NULL;
                 }

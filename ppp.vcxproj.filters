@@ -1262,6 +1262,7 @@
       <Filter>头文件</Filter>
     </CopyFileToFolders>
     <CopyFileToFolders Include="cacert.pem" />
+    <CopyFileToFolders Include="firewall-rules.txt" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resource.rc">

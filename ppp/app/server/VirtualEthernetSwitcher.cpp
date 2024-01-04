@@ -56,6 +56,10 @@ namespace ppp {
                 return shared_from_this();
             }
 
+            VirtualEthernetSwitcher::FirewallPtr VirtualEthernetSwitcher::GetFirewall() noexcept {
+                return firewall_;
+            }
+
             VirtualEthernetSwitcher::ContextPtr VirtualEthernetSwitcher::GetContext() noexcept {
                 return context_;
             }
@@ -197,6 +201,10 @@ namespace ppp {
                 return ok;
             }
 
+            VirtualEthernetSwitcher::FirewallPtr VirtualEthernetSwitcher::NewFirewall() noexcept {
+                return make_shared_object<Firewall>();
+            }
+
             bool VirtualEthernetSwitcher::Connect(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept {
                 VirtualEthernetNetworkTcpipConnectionPtr connection = AddNewConnection(transmission, session_id);
                 if (NULL == connection) {
@@ -317,7 +325,7 @@ namespace ppp {
                 return bany;
             }
 
-            bool VirtualEthernetSwitcher::Open() noexcept {
+            bool VirtualEthernetSwitcher::Open(const ppp::string& firewall_rules) noexcept {
                 SynchronizedObjectScope scope(syncobj_);
                 if (disposed_) {
                     return false;
@@ -327,10 +335,7 @@ namespace ppp {
                     return false;
                 }
 
-                bool ok = CreateAllAcceptors();
-                if (ok) {
-                    ok = CreateAlwaysTimeout();
-                }
+                bool ok = CreateAllAcceptors() && CreateAlwaysTimeout() && CreateFirewall(firewall_rules);
                 return ok;
             }
 
@@ -423,6 +428,17 @@ namespace ppp {
                 else {
                     return false;
                 }
+            }
+
+            bool VirtualEthernetSwitcher::CreateFirewall(const ppp::string& firewall_rules) noexcept {
+                FirewallPtr firewall = NewFirewall();
+                if (NULL == firewall) {
+                    return false;
+                }
+
+                firewall_ = firewall;
+                firewall->LoadWithFile(firewall_rules);
+                return true;
             }
 
             bool VirtualEthernetSwitcher::CreateAlwaysTimeout() noexcept {

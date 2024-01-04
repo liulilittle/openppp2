@@ -223,6 +223,11 @@ namespace ppp {
                 return false;
             }
 
+            ppp::string file_path = File::GetFullPath(File::RewritePath(path.data()).data());
+            if (file_path.empty()) {
+                return false;
+            }
+
             ppp::string json_string = File::ReadAllText(path.data());
             if (json_string.empty()) {
                 return false;
@@ -232,8 +237,9 @@ namespace ppp {
             if (json.isNull()) {
                 return false;
             }
-
-            return Load(json);
+            else {
+                return Load(json);
+            }
         }
 
         /*

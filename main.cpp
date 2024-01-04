@@ -13,7 +13,6 @@
 #include <ppp/app/server/VirtualEthernetSwitcher.h>
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
-
 #include <common/chnroutes2/chnroutes2.h>
 
 #ifdef _WIN32
@@ -69,10 +68,13 @@ struct NetworkInterface
 
     ppp::string                                     BypassIplist;
     ppp::string                                     ComponentId;
+    ppp::string                                     FirewallRules;
+
+    ppp::vector<boost::asio::ip::address>           DnsAddresses;
+
     boost::asio::ip::address                        IPAddress;
     boost::asio::ip::address                        GatewayServer;
     boost::asio::ip::address                        SubmaskAddress;
-    ppp::vector<boost::asio::ip::address>           DnsAddresses;
 };
 
 class PppApplication
@@ -608,7 +610,7 @@ bool PppApplication::PreparedLoopbackEnvironment(bool client_or_server, const st
         {
             // Instantiate and open a vpn virtual ethernet network switcher object in server-mode.
             ethernet = ppp::make_shared_object<VirtualEthernetSwitcher>(configuration);
-            if (!ethernet->Open())
+            if (!ethernet->Open(network_interface->FirewallRules))
             {
                 fprintf(stdout, "%s\r\n", "Try open remote vEthernet switcher instance fails in server-mode, possibly because any public service that can be accessed by users is not turned on..");
                 break;
@@ -708,8 +710,10 @@ void PppApplication::PrintHelpInformation() noexcept
 #endif
 
     messages += "        --dns=8.8.8.8,8.8.4.4 \\\r\n";
-    messages += "        --bypass-iplist=[./ip.txt] \\\r\n";
     messages += "        --block-quic=[yes|no] \\\r\n";
+    messages += "        --bypass-iplist=[./ip.txt] \\\r\n";
+    messages += "        --firewall-rules=[./firewall-rules.txt] \\\r\n";
+
 #ifdef _WIN32
     messages += "        --set-http-proxy=[yes|no] \r\n";
 #endif
@@ -844,6 +848,7 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
         ni->IPAddress = Ipep::FixedIPAddress(ni->IPAddress, ni->GatewayServer, ni->SubmaskAddress);
         ni->HostedNetwork = ppp::ToBoolean(ppp::GetCommandArgument("--tun-host", argc, argv, "y").data());
         ni->BypassIplist = ppp::GetCommandArgument("--bypass-iplist", argc, argv, "./ip.txt");
+        ni->FirewallRules = ppp::GetCommandArgument("--firewall-rules", argc, argv, "./firewall-rules.txt");
 
 #ifdef _WIN32
         ni->SetHttpProxy = ppp::ToBoolean(ppp::GetCommandArgument("--set-http-proxy", argc, argv).data());

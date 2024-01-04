@@ -58,6 +58,7 @@ namespace ppp {
 
             public:
                 STATIC_VIRTUAL_ETHERNET_TCPIP_CONNECTOR_NEST(
+                    VirtualEthernetTcpipConnection*                         connection,
                     const AppConfigurationPtr&                              configuration, 
                     const ContextPtr&                                       context,
                     const Int128&                                           id) noexcept 
@@ -66,7 +67,7 @@ namespace ppp {
                     , ConnectOK(false)
                     , ErrorCode(0)
                     , Connect(false) {
-                    
+                    connection_ = connection;
                 }
 
             public:
@@ -89,6 +90,12 @@ namespace ppp {
                     ConnectId = connection_id;
                     return true;
                 }
+                virtual std::shared_ptr<ppp::net::Firewall>                 GetFirewall() noexcept {
+                    return connection_->GetFirewall();
+                }
+
+            private:
+                VirtualEthernetTcpipConnection*                             connection_;
             };
 
             bool VirtualEthernetTcpipConnection::Connect(YieldContext& y, ITransmissionPtr& transmission, const ppp::string& host, int port) noexcept {
@@ -106,7 +113,7 @@ namespace ppp {
                     return false;
                 }
 
-                auto connector = make_shared_object<STATIC_VIRTUAL_ETHERNET_TCPIP_CONNECTOR_NEST>(configuration_, context_, id_);
+                auto connector = make_shared_object<STATIC_VIRTUAL_ETHERNET_TCPIP_CONNECTOR_NEST>(this, configuration_, context_, id_);
                 if (!connector->DoConnect(transmission, RandomNext(1, INT_MAX), host, port, y)) {
                     return false;
                 }
@@ -156,7 +163,7 @@ namespace ppp {
                     return false;
                 }
 
-                auto connector = make_shared_object<STATIC_VIRTUAL_ETHERNET_TCPIP_CONNECTOR_NEST>(configuration_, context_, id_);
+                auto connector = make_shared_object<STATIC_VIRTUAL_ETHERNET_TCPIP_CONNECTOR_NEST>(this, configuration_, context_, id_);
                 if (!connector->PacketInput(transmission, packet.get(), packet_size, y)) {
                     return false;
                 }

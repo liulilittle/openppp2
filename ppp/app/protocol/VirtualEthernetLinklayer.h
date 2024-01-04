@@ -2,6 +2,7 @@
 
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/Int128.h>
+#include <ppp/net/Firewall.h>
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/transmissions/ITransmission.h>
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
@@ -87,6 +88,7 @@ namespace ppp {
                 virtual bool                                                OnSendTo(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length, YieldContext& y) noexcept;
 
             protected:
+                virtual std::shared_ptr<ppp::net::Firewall>                 GetFirewall() noexcept;
                 virtual bool                                                PacketInput(const ITransmissionPtr& transmission, Byte* p, int packet_length, YieldContext& y) noexcept;
 
             private:

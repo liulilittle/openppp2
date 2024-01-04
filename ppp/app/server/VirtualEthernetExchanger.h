@@ -3,6 +3,7 @@
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/IPEndPoint.h>
+#include <ppp/net/Firewall.h>
 #include <ppp/threading/Timer.h>
 
 namespace ppp {
@@ -23,6 +24,8 @@ namespace ppp {
             private:
                 typedef ppp::threading::Timer                                           Timer;
                 typedef std::shared_ptr<Timer>                                          TimerPtr;
+                typedef ppp::net::Firewall                                              Firewall;
+                typedef std::shared_ptr<ppp::net::Firewall>                             FirewallPtr;
                 typedef std::weak_ptr<Timer::TimeoutEventHandler>                       TimeoutEventHandlerWeakPtr;
                 typedef ppp::unordered_map<void*, TimeoutEventHandlerWeakPtr>           TimeoutEventHandlerTable;
                 typedef ppp::net::Ipep                                                  Ipep;
@@ -58,6 +61,7 @@ namespace ppp {
                 virtual bool                                                            OnSendTo(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length, YieldContext& y) noexcept override;
 
             protected:
+                virtual FirewallPtr                                                     GetFirewall() noexcept override;
                 virtual VirtualInternetControlMessageProtocolPtr                        NewEchoTransmissions(const ITransmissionPtr& transmission) noexcept;
                 virtual VirtualEthernetDatagramPortPtr                                  NewDatagramPort(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP) noexcept;
                 virtual VirtualEthernetDatagramPortPtr                                  GetDatagramPort(const boost::asio::ip::udp::endpoint& sourceEP) noexcept;
@@ -89,10 +93,12 @@ namespace ppp {
 
             private:
                 bool                                                                    SendEchoToDestination(const ITransmissionPtr& transmission, Byte* packet, int packet_length) noexcept;
+                bool                                                                    SendPacketToDestination(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length, YieldContext& y) noexcept;
 
             private:
                 bool                                                                    disposed_;
                 VirtualEthernetSwitcherPtr                                              switcher_;
+                FirewallPtr                                                             firewall_;
                 TimeoutEventHandlerTable                                                timeouts_;
                 VirtualInternetControlMessageProtocolPtr                                echo_;
                 VirtualEthernetDatagramPortTable                                        datagrams_;

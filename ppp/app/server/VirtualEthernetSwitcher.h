@@ -2,6 +2,7 @@
 
 #include <ppp/stdafx.h>
 #include <ppp/Int128.h>
+#include <ppp/net/Firewall.h>
 #include <ppp/threading/Timer.h>
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/transmissions/ITransmission.h>
@@ -29,6 +30,8 @@ namespace ppp {
                 typedef std::shared_ptr<ITransmission>                  ITransmissionPtr;
                 typedef ppp::threading::Timer                           Timer;
                 typedef std::shared_ptr<Timer>                          TimerPtr;
+                typedef ppp::net::Firewall                              Firewall;
+                typedef std::shared_ptr<ppp::net::Firewall>             FirewallPtr;
                 typedef std::shared_ptr<boost::asio::io_context>        ContextPtr;
                 typedef ppp::coroutines::YieldContext                   YieldContext;
                 typedef std::mutex                                      SynchronizedObject;
@@ -46,12 +49,13 @@ namespace ppp {
 
             public:
                 std::shared_ptr<VirtualEthernetSwitcher>                GetReference() noexcept;
+                FirewallPtr                                             GetFirewall() noexcept;
                 ContextPtr                                              GetContext() noexcept;
                 AppConfigurationPtr                                     GetConfiguration() noexcept;
                 SynchronizedObject&                                     GetSynchronizedObject() noexcept;
 
             public:
-                virtual bool                                            Open() noexcept;
+                virtual bool                                            Open(const ppp::string& firewall) noexcept;
                 virtual bool                                            Run() noexcept;
                 virtual void                                            Dispose() noexcept;
                 virtual bool                                            IsDisposed() noexcept;
@@ -81,6 +85,7 @@ namespace ppp {
 
             protected:
                 virtual ITransmissionStatisticsPtr                      NewStatistics() noexcept;
+                virtual FirewallPtr                                     NewFirewall() noexcept;
                 virtual VirtualEthernetExchangerPtr                     NewExchanger(const ITransmissionPtr& transmission, const Int128& session_id) noexcept;
                 virtual VirtualEthernetNetworkTcpipConnectionPtr        NewConnection(const ITransmissionPtr& transmission, const Int128& session_id) noexcept;
 
@@ -97,6 +102,7 @@ namespace ppp {
                 void                                                    TickAllConnections(UInt64 now) noexcept;
 
             private:
+                bool                                                    CreateFirewall(const ppp::string& path) noexcept;
                 void                                                    CloseAllAcceptors() noexcept;
                 bool                                                    CreateAllAcceptors() noexcept;
                 bool                                                    CloseAlwaysTimeout() noexcept;
@@ -118,6 +124,7 @@ namespace ppp {
 
             private:
                 bool                                                    disposed_;
+                FirewallPtr                                             firewall_;
                 VirtualEthernetExchangerTable                           exchangers_;
                 SynchronizedObject                                      syncobj_;
                 TimerPtr                                                timeout_;

@@ -40,7 +40,7 @@ namespace ppp {
                 , disposed_(false)
                 , switcher_(switcher)
                 , transmission_(transmission) {
-                
+                firewall_ = switcher->GetFirewall();
             }
 
             VirtualEthernetExchanger::~VirtualEthernetExchanger() noexcept {
@@ -86,6 +86,10 @@ namespace ppp {
                 return switcher_;
             }
 
+            VirtualEthernetExchanger::FirewallPtr VirtualEthernetExchanger::GetFirewall() noexcept {
+                return firewall_;
+            }
+
             bool VirtualEthernetExchanger::OnConnect(const ITransmissionPtr& transmission, int connection_id, const boost::asio::ip::tcp::endpoint& destinationEP, YieldContext& y) noexcept {
                 return false; // Immediate return false and forcefully close the connection due to a suspected malicious attack on the server.
             }
@@ -109,53 +113,8 @@ namespace ppp {
             }
 
             bool VirtualEthernetExchanger::OnSendTo(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length, YieldContext& y) noexcept {
-                if (disposed_) {
-                    return false;
-                }
-
-                bool fin = false;
-                if (NULL == packet && packet_length != 0) {
-                    return false;
-                }
-                elif(NULL == packet || packet_length < 1) {
-                    fin = true;
-                }
-
-                VirtualEthernetDatagramPortPtr datagram = GetDatagramPort(sourceEP);
-                if (NULL != datagram) {
-                    if (fin) {
-                        datagram->MarkFinalize();
-                        datagram->Dispose();
-                        return true;
-                    }
-                    else {
-                        return datagram->SendTo(packet, packet_length, destinationEP);
-                    }
-                }
-                elif(fin) {
-                    return true;
-                }
-                else {
-                    datagram = NewDatagramPort(transmission, sourceEP);
-                    if (NULL != datagram) {
-                        bool ok = false;
-                        auto r = datagrams_.emplace(sourceEP, datagram);
-                        if (r.second) {
-                            ok = datagram->Open();
-                            if (!ok) {
-                                datagrams_.erase(r.first);
-                            }
-                        }
-
-                        if (ok) {
-                            return datagram->SendTo(packet, packet_length, destinationEP);
-                        }
-                        else {
-                            datagram->Dispose();
-                        }
-                    }
-                    return false;
-                }
+                SendPacketToDestination(transmission, sourceEP, destinationEP, packet, packet_length, y);
+                return true;
             }
 
             bool VirtualEthernetExchanger::OnConnectOK(const ITransmissionPtr& transmission, int connection_id, Byte error_code, YieldContext& y) noexcept {
@@ -181,6 +140,70 @@ namespace ppp {
                 }
                 else {
                     return Dictionary::RemoveValueByKey(resolvers_, k);
+                }
+            }
+
+            bool VirtualEthernetExchanger::SendPacketToDestination(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length, YieldContext& y) noexcept {
+                if (disposed_) {
+                    return false;
+                }
+
+                bool fin = false;
+                if (NULL == packet && packet_length != 0) {
+                    return false;
+                }
+                elif(NULL == packet || packet_length < 1) {
+                    fin = true;
+                }
+
+                int destinationPort = destinationEP.port();
+                if (firewall_->IsDropNetworkPort(destinationPort, false)) {
+                    return false;
+                }
+
+                boost::asio::ip::address destinationIP = destinationEP.address();
+                if (firewall_->IsDropNetworkSegment(destinationIP)) {
+                    return false;
+                }
+
+                if (RedirectDnsQuery(transmission, sourceEP, destinationEP, packet, packet_length) < 0) {
+                    return false;
+                }
+
+                VirtualEthernetDatagramPortPtr datagram = GetDatagramPort(sourceEP);
+                if (NULL != datagram) {
+                    if (fin) {
+                        datagram->MarkFinalize();
+                        datagram->Dispose();
+                        return true;
+                    }
+                    else {
+                        return datagram->SendTo(packet, packet_length, destinationEP);
+                    }
+                }
+                elif(fin) {
+                    return false;
+                }
+                else {
+                    datagram = NewDatagramPort(transmission, sourceEP);
+                    if (NULL != datagram) {
+                        bool ok = false;
+                        auto r = datagrams_.emplace(sourceEP, datagram);
+                        if (r.second) {
+                            ok = datagram->Open();
+                            if (!ok) {
+                                datagrams_.erase(r.first);
+                            }
+                        }
+
+                        if (ok) {
+                            return datagram->SendTo(packet, packet_length, destinationEP);
+                        }
+                        else {
+                            datagram->Dispose();
+                        }
+                    }
+                    return false;
                 }
             }
 
@@ -423,12 +446,17 @@ namespace ppp {
                     return false;
                 }
 
+                boost::asio::ip::address destinationIP = Ipep::ToAddress(ip->Destination);
+                if (firewall_->IsDropNetworkSegment(destinationIP)) {
+                    return false;
+                }
+
                 std::shared_ptr<IcmpFrame> icmp = IcmpFrame::Parse(ip.get());
                 if (NULL == icmp) {
                     return false;
                 }
 
-                return echo->Echo(ip, icmp, IPEndPoint(icmp->Destination, 0));
+                return echo->Echo(ip, icmp, IPEndPoint(icmp->Destination, IPEndPoint::MinPort));
             }
         }
     }

@@ -2,6 +2,7 @@
 
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/coroutines/YieldContext.h>
+#include <ppp/net/Firewall.h>
 #include <ppp/transmissions/ITransmission.h>
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
@@ -13,10 +14,12 @@ namespace ppp {
             public:
                 typedef ppp::configurations::AppConfiguration                   AppConfiguration;
                 typedef std::shared_ptr<AppConfiguration>                       AppConfigurationPtr;
-                typedef ppp::transmissions::ITransmission                       ITransmission;
-                typedef std::shared_ptr<ITransmission>                          ITransmissionPtr;
+                typedef ppp::net::Firewall                                      Firewall;
+                typedef std::shared_ptr<ppp::net::Firewall>                     FirewallPtr;
                 typedef std::shared_ptr<boost::asio::io_context>                ContextPtr;
                 typedef ppp::coroutines::YieldContext                           YieldContext;
+                typedef ppp::transmissions::ITransmission                       ITransmission;
+                typedef std::shared_ptr<ITransmission>                          ITransmissionPtr;
 
             public:
                 VirtualEthernetTcpipConnection(
@@ -39,6 +42,7 @@ namespace ppp {
                 virtual bool                                                    Accept(YieldContext& y, ITransmissionPtr& transmission) noexcept;
                 virtual bool                                                    Run(YieldContext& y) noexcept;
                 virtual void                                                    Dispose() noexcept;
+                virtual std::shared_ptr<ppp::net::Firewall>                     GetFirewall() noexcept { return NULL; }
 
             protected:
                 virtual void                                                    Update() noexcept = 0;
@@ -95,6 +99,7 @@ namespace ppp {
                             connection->Update();
                         }
                     }
+                    virtual std::shared_ptr<TConnection>                        GetConnection() noexcept { return connection_; }
 
                 private:
                     std::shared_ptr<TConnection>                                connection_;

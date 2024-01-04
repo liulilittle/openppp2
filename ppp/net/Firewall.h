@@ -25,6 +25,8 @@ namespace ppp
             virtual bool                                            DropNetworkSegment(const boost::asio::ip::address& ip, int prefix) noexcept;
             virtual bool                                            DropNetworkDomains(const ppp::string& host) noexcept;
             virtual void                                            Clear() noexcept;
+            bool                                                    LoadWithFile(const ppp::string& path) noexcept;
+            virtual bool                                            LoadWithRules(const ppp::string& configuration) noexcept;
 
         public:
             virtual bool                                            IsDropNetworkPort(int port, bool tcp_or_udp) noexcept;
