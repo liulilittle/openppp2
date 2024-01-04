@@ -522,7 +522,7 @@ namespace ppp
                  */
                 static bool ExtractName(char* szEncodedStr, uint16_t* pusEncodedStrLen, char* szDotStr, uint16_t nDotStrSize, char* szPacketStartPos, char* szPacketEndPos) noexcept
                 {
-                    if (NULL == szEncodedStr || NULL == pusEncodedStrLen || NULL == szDotStr || szPacketStartPos >= szPacketEndPos)
+                    if (NULL == szEncodedStr || NULL == pusEncodedStrLen || NULL == szDotStr || szEncodedStr >= szPacketEndPos)
                     {
                         return false;
                     }
@@ -536,7 +536,7 @@ namespace ppp
                     {
                         if ((nLabelDataLen & 0xc0) == 0) //ÆÕÍ¨¸ñÊ½£¬LabelDataLen + Label
                         {
-                            if (usPlainStrLen + nLabelDataLen + 1 > nDotStrSize || pDecodePos + nLabelDataLen + 1 > szPacketEndPos)
+                            if ((usPlainStrLen + nLabelDataLen + 1) > nDotStrSize || (pDecodePos + nLabelDataLen + 1) > szPacketEndPos)
                             {
                                 return false;
                             }
