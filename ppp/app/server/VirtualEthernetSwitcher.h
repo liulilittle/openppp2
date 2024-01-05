@@ -48,6 +48,7 @@ namespace ppp {
                 virtual ~VirtualEthernetSwitcher() noexcept;
 
             public:
+                int                                                     GetNodeId() noexcept;
                 std::shared_ptr<VirtualEthernetSwitcher>                GetReference() noexcept;
                 FirewallPtr                                             GetFirewall() noexcept;
                 ContextPtr                                              GetContext() noexcept;
@@ -93,6 +94,7 @@ namespace ppp {
                 void                                                    Finalize() noexcept;
                 bool                                                    Accept(const ContextPtr& context, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket, int categories) noexcept;
                 VirtualEthernetExchangerPtr                             DeleteExchanger(VirtualEthernetExchanger* exchanger) noexcept;
+                VirtualEthernetExchangerPtr                             GetExchanger(const Int128& session_id) noexcept;
                 VirtualEthernetExchangerPtr                             AddNewExchanger(const ITransmissionPtr& transmission, const Int128& session_id) noexcept;
                 VirtualEthernetNetworkTcpipConnectionPtr                AddNewConnection(const ITransmissionPtr& transmission, const Int128& session_id) noexcept;
                 bool                                                    DeleteConnection(const VirtualEthernetNetworkTcpipConnection* connection) noexcept;
@@ -125,6 +127,7 @@ namespace ppp {
 
             private:
                 bool                                                    disposed_;
+                int                                                     nodeId_;
                 FirewallPtr                                             firewall_;
                 VirtualEthernetExchangerTable                           exchangers_;
                 SynchronizedObject                                      syncobj_;

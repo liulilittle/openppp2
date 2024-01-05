@@ -263,6 +263,13 @@ namespace ppp {
                 if (disposed_) {
                     return NULL;
                 }
+                else {
+                    // VPN client A link can be created only after a link is established between the local switch and the remote VPN server.
+                    ITransmissionPtr link = transmission_;
+                    if (NULL == link) {
+                        return NULL;
+                    }
+                }
 
                 ITransmissionPtr transmission = OpenTransmission(context, y);
                 if (NULL == transmission) {

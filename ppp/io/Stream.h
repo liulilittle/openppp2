@@ -31,7 +31,6 @@ namespace ppp {
             virtual int                                             Read(const void* buffer, int offset, int count) = 0;
 
         public:
-            void                                                    Close() { this->Dispose(); }
             virtual void                                            Dispose() = 0;
         };
     }

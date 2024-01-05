@@ -23,6 +23,7 @@ namespace ppp {
         namespace server {
             VirtualEthernetSwitcher::VirtualEthernetSwitcher(const AppConfigurationPtr& configuration) noexcept
                 : disposed_(false)
+                , nodeId_(0)
                 , configuration_(configuration)
                 , context_(Executors::GetDefault()) {
                 boost::asio::ip::udp::udp::endpoint dnsserverEP = ParseDNSEndPoint(configuration_->udp.dns.redirect);
@@ -33,6 +34,10 @@ namespace ppp {
 
             VirtualEthernetSwitcher::~VirtualEthernetSwitcher() noexcept {
                 Finalize();
+            }
+
+            int VirtualEthernetSwitcher::GetNodeId() noexcept {
+                return nodeId_;
             }
 
             boost::asio::ip::address VirtualEthernetSwitcher::GetInterfaceIP() noexcept {
@@ -118,7 +123,7 @@ namespace ppp {
 
                     auto allocator = transmission->BufferAllocator;
                     auto self = shared_from_this();
-                    return YieldContext::Spawn(allocator.get(), *context,
+                    return YieldContext::Spawn(allocator.get(), *context_,
                         [self, this, transmission](YieldContext& y) noexcept {
                             bool bok = false;
                             bool mux = false;
@@ -136,6 +141,15 @@ namespace ppp {
                             return bok;
                         });
                 }
+            }
+
+            VirtualEthernetSwitcher::VirtualEthernetExchangerPtr VirtualEthernetSwitcher::GetExchanger(const Int128& session_id) noexcept {
+                SynchronizedObjectScope scope(syncobj_);
+                if (disposed_) {
+                    return NULL;
+                }
+
+                return Dictionary::FindObjectByKey(exchangers_, session_id);
             }
 
             VirtualEthernetSwitcher::VirtualEthernetExchangerPtr VirtualEthernetSwitcher::AddNewExchanger(const ITransmissionPtr& transmission, const Int128& session_id) noexcept {
@@ -201,6 +215,12 @@ namespace ppp {
             }
 
             bool VirtualEthernetSwitcher::Connect(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept {
+                // VPN client A link can be created only after a link is established between the local switch and the remote VPN server.
+                VirtualEthernetExchangerPtr exchanger = GetExchanger(session_id);
+                if (NULL == exchanger) {
+                    return false;
+                }
+
                 VirtualEthernetNetworkTcpipConnectionPtr connection = AddNewConnection(transmission, session_id);
                 if (NULL == connection) {
                     return false;

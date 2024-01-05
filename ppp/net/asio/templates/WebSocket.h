@@ -42,7 +42,6 @@ namespace ppp {
                     virtual void                                                SetAddressString(const ppp::string& address) noexcept = 0;
 
                 public:
-                    void                                                        Dispose() noexcept { Dispose(); }
                     bool                                                        Run(bool handshaked_client, YieldContext& y) noexcept {
                         if (host_.empty() || path_.empty()) {
                             return false;

@@ -11,11 +11,15 @@ namespace ppp {
 
             ppp::string VirtualEthernetInformation::ToJson() noexcept {
                 Json::Value json;
+                ToJson(json);
+                return JsonAuxiliary::ToString(json);
+            }
+
+            void VirtualEthernetInformation::ToJson(Json::Value& json) noexcept {
                 json["BandwidthQoS"] = this->BandwidthQoS;
                 json["IncomingTraffic"] = stl::to_string<ppp::string>(this->IncomingTraffic);
                 json["OutgoingTraffic"] = stl::to_string<ppp::string>(this->OutgoingTraffic);
                 json["ForbiddenTime"] = this->ForbiddenTime;
-                return JsonAuxiliary::ToString(json);
             }
 
             std::shared_ptr<VirtualEthernetInformation> VirtualEthernetInformation::FromJson(const Json::Value& json) noexcept {

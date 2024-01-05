@@ -388,9 +388,9 @@ namespace ppp {
                     if (packet_length >= sizeof(VirtualEthernetInformation)) {
                         VirtualEthernetInformation info = *reinterpret_cast<VirtualEthernetInformation*>(p);
                         info.BandwidthQoS = ntohl(info.BandwidthQoS);
-                        info.ForbiddenTime = checksum::ntohll(info.ForbiddenTime);
+                        info.ForbiddenTime = ntohl(info.ForbiddenTime);
                         info.IncomingTraffic = checksum::ntohll(info.IncomingTraffic);
-                        info.OutgoingTraffic = ntohl(info.OutgoingTraffic);
+                        info.OutgoingTraffic = checksum::ntohll(info.OutgoingTraffic);
                         return OnInformation(transmission, info, y);
                     }
                 }
@@ -404,9 +404,9 @@ namespace ppp {
 
                 VirtualEthernetInformation info;
                 info.BandwidthQoS = htonl(information.BandwidthQoS);
-                info.ForbiddenTime = checksum::htonll(information.ForbiddenTime);
+                info.ForbiddenTime = htonl(information.ForbiddenTime);
                 info.IncomingTraffic = checksum::htonll(information.IncomingTraffic);
-                info.OutgoingTraffic = htonl(information.OutgoingTraffic);
+                info.OutgoingTraffic = checksum::htonll(information.OutgoingTraffic);
                 return global::PACKET_Push(PacketAction_INFO, transmission, (Byte*)&info, sizeof(info), y);
             }
 

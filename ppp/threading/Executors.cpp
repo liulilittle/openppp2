@@ -592,7 +592,12 @@ namespace ppp
         int Executors::GetMaxConcurrency() noexcept
         {
             SynchronizedObjectScope scope(Internal.Lock);
-            return Internal.Threads.size();
+            int max_concurrency = Internal.Threads.size();
+            if (Internal.Default)
+            {
+                max_concurrency++;
+            }
+            return max_concurrency;
         }
     }
 }

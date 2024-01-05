@@ -18,6 +18,7 @@ namespace ppp {
 
             public:
                 void                                                Clear() noexcept;
+                void                                                ToJson(Json::Value& json) noexcept;
                 ppp::string                                         ToJson() noexcept;
                 static std::shared_ptr<VirtualEthernetInformation>  FromJson(const ppp::string& json) noexcept;
                 static std::shared_ptr<VirtualEthernetInformation>  FromJson(const Json::Value& json) noexcept;

@@ -665,9 +665,9 @@ int PppApplication::PreparedArgumentEnvironment(int argc, const char* argv[]) no
     {
         return -1;
     }
-    else
+    elif(configuration->concurrent > 1)
     {
-        Executors::SetMaxThreads(configuration->GetBufferAllocator(), configuration->concurrent);
+        Executors::SetMaxThreads(configuration->GetBufferAllocator(), configuration->concurrent - 1);
     }
 
     std::shared_ptr<NetworkInterface> network_interface = GetNetworkInterface(argc, argv);

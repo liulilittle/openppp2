@@ -41,7 +41,6 @@ namespace ppp {
                     virtual ~SslSocket() noexcept = default;
 
                 public:
-                    void                                                Dispose() noexcept { Dispose(); }
                     bool                                                Run(bool handshaked_client, YieldContext& y) noexcept {
                         typedef typename stl::remove_pointer<T>::type SslSocket; /* decltype(*ssl_socket_); */
 
