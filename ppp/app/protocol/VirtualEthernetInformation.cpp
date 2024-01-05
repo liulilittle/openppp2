@@ -19,7 +19,7 @@ namespace ppp {
                 json["BandwidthQoS"] = this->BandwidthQoS;
                 json["IncomingTraffic"] = stl::to_string<ppp::string>(this->IncomingTraffic);
                 json["OutgoingTraffic"] = stl::to_string<ppp::string>(this->OutgoingTraffic);
-                json["ForbiddenTime"] = this->ForbiddenTime;
+                json["ExpiredTime"] = this->ExpiredTime;
             }
 
             std::shared_ptr<VirtualEthernetInformation> VirtualEthernetInformation::FromJson(const Json::Value& json) noexcept {
@@ -31,7 +31,7 @@ namespace ppp {
                 infomartion->BandwidthQoS    = JsonAuxiliary::AsValue<long long>(json["BandwidthQoS"]);
                 infomartion->IncomingTraffic = JsonAuxiliary::AsValue<unsigned long long>(json["IncomingTraffic"]);
                 infomartion->OutgoingTraffic = JsonAuxiliary::AsValue<unsigned long long>(json["OutgoingTraffic"]);
-                infomartion->ForbiddenTime   = JsonAuxiliary::AsValue<long long>(json["ForbiddenTime"]);
+                infomartion->ExpiredTime   = JsonAuxiliary::AsValue<long long>(json["ExpiredTime"]);
                 return infomartion;
             }
 
@@ -43,7 +43,7 @@ namespace ppp {
                 this->BandwidthQoS    = 0;
                 this->IncomingTraffic = 0;
                 this->OutgoingTraffic = 0;
-                this->ForbiddenTime   = 0;
+                this->ExpiredTime   = 0;
             }
         }
     }

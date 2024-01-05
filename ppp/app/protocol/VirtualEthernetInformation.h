@@ -11,7 +11,7 @@ namespace ppp {
                 UInt32 BandwidthQoS;    // Maximum Quality of Service (QoS) bandwidth throughput speed per second, 0 for unlimited, 1 for 1 Kbps.
                 UInt64 IncomingTraffic; // The remaining network traffic allowance that can be allowed for incoming clients, 0 is unlimited.
                 UInt64 OutgoingTraffic; // The remaining network traffic allowance that can be allowed for outgoing clients, 0 is unlimited.
-                UInt32 ForbiddenTime;   // The time duration during which clients are prohibited from using PPP (Point-to-Point Protocol) VPN services, 0 for no restrictions, measured in seconds.
+                UInt32 ExpiredTime;     // The time duration during which clients are expired time from using PPP (Point-to-Point Protocol) VPN services, 0 for no restrictions, measured in seconds.
 
             public:
                 VirtualEthernetInformation() noexcept;

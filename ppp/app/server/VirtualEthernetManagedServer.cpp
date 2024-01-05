@@ -331,11 +331,17 @@ namespace ppp {
                 AuthenticationToManagedServerAsyncCallback f = DeleteAuthenticationToManagedServer(session_id);
                 if (f) {
                     std::shared_ptr<VirtualEthernetInformation> i = VirtualEthernetInformation::FromJson(json);
-                    if (i) {
+                    if (!i) {
+                        f(false, NULL);
+                        return;
+                    }
+
+                    UInt32 now = (UInt32)(ppp::threading::Executors::GetTickCount() / 1000);
+                    if ((i->IncomingTraffic > 0 && i->OutgoingTraffic > 0) || (now >= i->ExpiredTime)) {
                         f(true, i.get());
                     }
                     else {
-                        f(false, NULL);
+                        f(false, i.get());
                     }
                 }
             }
