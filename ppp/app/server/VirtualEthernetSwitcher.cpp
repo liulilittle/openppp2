@@ -505,6 +505,10 @@ namespace ppp {
                 return true;
             }
 
+            bool VirtualEthernetSwitcher::OnInformation(const Int128& session_id, const std::shared_ptr<VirtualEthernetInformation>& info) noexcept {
+                return false;
+            }
+
             bool VirtualEthernetSwitcher::DeleteConnection(const VirtualEthernetNetworkTcpipConnection* connection) noexcept {
                 VirtualEthernetNetworkTcpipConnectionPtr ntcp;
                 if (connection) {

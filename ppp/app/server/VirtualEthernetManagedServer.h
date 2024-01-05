@@ -36,6 +36,11 @@ namespace ppp {
                 typedef ppp::net::asio::websocket                               WebSocket;
                 typedef std::shared_ptr<WebSocket>                              WebSocketPtr;
                 typedef ppp::unordered_map<void*, TimerPtr>                     TimerTable;
+                struct UploadTrafficTask {
+                    int64_t                                                     in = 0;
+                    int64_t                                                     out = 0;
+                };
+                typedef ppp::unordered_map<Int128, UploadTrafficTask>           UploadTrafficTaskTable;
 
             public:
                 VirtualEthernetManagedServer(const std::shared_ptr<VirtualEthernetSwitcher>& switcher) noexcept;
@@ -47,11 +52,12 @@ namespace ppp {
                 SynchronizedObject&                                             GetSynchronizedObject() noexcept;
                 virtual bool                                                    TryVerifyUriAsync(const ppp::string& url, const TryVerifyUriAsyncCallback& ac) noexcept;
                 virtual bool                                                    ConnectToManagedServer(const ppp::string& url) noexcept;
-                virtual void                                                    Update() noexcept;
+                virtual void                                                    Update(UInt64 now) noexcept;
                 virtual bool                                                    LinkIsAvailable() noexcept;
 
             public:
                 virtual bool                                                    AuthenticationToManagedServer(const ppp::Int128& session_id, const AuthenticationToManagedServerAsyncCallback& ac) noexcept;
+                virtual void                                                    UploadTrafficToManagedServer(const ppp::Int128& session_id, int64_t in, int64_t out) noexcept;
 
             protected:
                 bool                                                            SendToManagedServer(const ppp::Int128& session_id, int cmd) noexcept;
@@ -60,24 +66,28 @@ namespace ppp {
 
             private:
                 AuthenticationToManagedServerAsyncCallback                      DeleteAuthenticationToManagedServer(const ppp::Int128& session_id) noexcept;
-                void                                                            TickAllAuthenticationToManagedServer() noexcept;
+                void                                                            TickAllAuthenticationToManagedServer(UInt64 now) noexcept;
                 void                                                            RunInner(const ppp::string& url, YieldContext& y) noexcept;
                 bool                                                            TryGetManagedServerEndPoint(const ppp::string& url, ppp::string& host, ppp::string& path, boost::asio::ip::tcp::endpoint& remoteEP, YieldContext& y) noexcept;
+                void                                                            TickAllUploadTrafficToManagedServer(UInt64 now) noexcept;
 
             private:
                 void                                                            Run(WebSocketPtr& websocket, YieldContext& y) noexcept;
-                void                                                            AckAuthenticationToManagedServer(Json::Value& json) noexcept;
+                bool                                                            AckAuthenticationToManagedServer(Json::Value& json) noexcept;
+                bool                                                            AckAllUploadTrafficToManagedServer(Json::Value& json) noexcept;
                 WebSocketPtr                                                    NewWebSocketConnectToManagedServer2(const ppp::string& url, YieldContext& y) noexcept;
                 WebSocketPtr                                                    NewWebSocketConnectToManagedServer(const ppp::string& url, YieldContext& y) noexcept;
 
             private:
                 SynchronizedObject                                              syncobj_;
                 bool                                                            disposed_;
+                UInt64                                                          traffics_next_;
                 std::shared_ptr<VirtualEthernetSwitcher>                        switcher_;
                 std::shared_ptr<boost::asio::io_context>                        context_;
                 WebSocketPtr                                                    server_;
                 std::shared_ptr<ppp::threading::BufferswapAllocator>            allocator_;
                 AppConfigurationPtr                                             configuration_;
+                UploadTrafficTaskTable                                          traffics_;
                 AuthenticationWaitableTable                                     authentications_;
             };
         }

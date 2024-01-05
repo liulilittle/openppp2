@@ -376,7 +376,7 @@ namespace ppp {
                     [self, this, ei]() noexcept {
                         information_ = ei;
                         if (!disposed_) {
-                            switcher_->ReplaceInformation(ei);
+                            switcher_->OnInformation(ei);
                         }
                     });
                 return true;

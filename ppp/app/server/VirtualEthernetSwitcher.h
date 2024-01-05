@@ -12,6 +12,7 @@
 namespace ppp {
     namespace app {
         namespace server {
+            class VirtualEthernetManagedServer;
             class VirtualEthernetExchanger;
             class VirtualEthernetNetworkTcpipConnection;
 
@@ -19,11 +20,13 @@ namespace ppp {
             class VirtualEthernetSwitcher : public std::enable_shared_from_this<VirtualEthernetSwitcher> { 
                 friend class VirtualEthernetNetworkTcpipConnection;
                 friend class VirtualEthernetExchanger;
+                friend class VirtualEthernetManagedServer;
 
             public:
                 typedef std::shared_ptr<VirtualEthernetExchanger>       VirtualEthernetExchangerPtr;
                 typedef ppp::unordered_map<Int128,
                     VirtualEthernetExchangerPtr>                        VirtualEthernetExchangerTable;
+                typedef ppp::app::protocol::VirtualEthernetInformation  VirtualEthernetInformation;
                 typedef ppp::configurations::AppConfiguration           AppConfiguration;
                 typedef std::shared_ptr<AppConfiguration>               AppConfigurationPtr;
                 typedef ppp::transmissions::ITransmission               ITransmission;
@@ -83,6 +86,7 @@ namespace ppp {
                 virtual bool                                            Establish(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept;
                 virtual bool                                            Connect(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept;
                 virtual bool                                            OnTick(UInt64 now) noexcept;
+                virtual bool                                            OnInformation(const Int128& session_id, const std::shared_ptr<VirtualEthernetInformation>& info) noexcept;
 
             protected:
                 virtual ITransmissionStatisticsPtr                      NewStatistics() noexcept;

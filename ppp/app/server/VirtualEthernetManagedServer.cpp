@@ -24,14 +24,18 @@ namespace ppp {
             enum {
                 PACKET_CMD_CONNECT = 1001,
                 PACKET_CMD_AUTHENTICATION = 1002,
+                PACKET_CMD_TRAFFIC = 1003,
 
                 PACKET_TIMEOUT_AUTHENTICATION = 5000,
                 PACKET_TIMEOUT_CONNECT = 5000,
                 PACKET_TIMEOUT_RECONNECT = 5000,
+
+                PACKET_TIMEOUT_TRAFFIC = 10000,
             };
 
             VirtualEthernetManagedServer::VirtualEthernetManagedServer(const std::shared_ptr<VirtualEthernetSwitcher>& switcher) noexcept
                 : disposed_(false)
+                , traffics_next_(0)
                 , switcher_(switcher) {
                 context_ = switcher->GetContext();
                 configuration_ = switcher->GetConfiguration();
@@ -83,13 +87,12 @@ namespace ppp {
                 return f;
             }
 
-            void VirtualEthernetManagedServer::TickAllAuthenticationToManagedServer() noexcept {
+            void VirtualEthernetManagedServer::TickAllAuthenticationToManagedServer(UInt64 now) noexcept {
                 typedef struct {
                     ppp::Int128 k;
                     AuthenticationToManagedServerAsyncCallback f;
                 } ReleaseInfo;
 
-                UInt64 now = Executors::GetTickCount();
                 ppp::vector<ReleaseInfo> releases; {
                     SynchronizedObjectScope scope(syncobj_);
                     for (auto&& kv : authentications_) {
@@ -135,8 +138,9 @@ namespace ppp {
                 return true;
             }
 
-            void VirtualEthernetManagedServer::Update() noexcept {
-                TickAllAuthenticationToManagedServer();
+            void VirtualEthernetManagedServer::Update(UInt64 now) noexcept {
+                TickAllAuthenticationToManagedServer(now);
+                TickAllUploadTrafficToManagedServer(now);
             }
 
             template <typename TWebSocket, typename TWebSocketPtr, typename TData>
@@ -319,30 +323,95 @@ namespace ppp {
                     if (cmd == PACKET_CMD_AUTHENTICATION) {
                         AckAuthenticationToManagedServer(json);
                     }
+                    elif(cmd == PACKET_CMD_TRAFFIC) {
+                        AckAllUploadTrafficToManagedServer(json);
+                    }
                     else {
                         break;
                     }
                 }
             }
 
-            void VirtualEthernetManagedServer::AckAuthenticationToManagedServer(Json::Value& json) noexcept {
-                ppp::string guid = JsonAuxiliary::ToString(json["guid"]);
-                Int128 session_id = StringAuxiliary::GuidStringToInt128(guid);
-                AuthenticationToManagedServerAsyncCallback f = DeleteAuthenticationToManagedServer(session_id);
-                if (f) {
-                    std::shared_ptr<VirtualEthernetInformation> i = VirtualEthernetInformation::FromJson(json);
-                    if (!i) {
-                        f(false, NULL);
-                        return;
+            bool VirtualEthernetManagedServer::AckAllUploadTrafficToManagedServer(Json::Value& json) noexcept {
+                Json::Value json_array = json["data"];
+                if (!json_array.isArray()) {
+                    return false;
+                }
+
+                Json::ArrayIndex json_array_size = json_array.size();
+                UInt32 now = (UInt32)(ppp::threading::Executors::GetTickCount() / 1000);
+         
+                bool any = false;
+                for (Json::ArrayIndex json_array_index = 0; json_array_index < json_array_size; json_array_index++) {
+                    Json::Value& json_object = json_array[json_array_index];
+                    if (!json_object.isObject()) {
+                        continue;
                     }
 
-                    UInt32 now = (UInt32)(ppp::threading::Executors::GetTickCount() / 1000);
-                    if ((i->IncomingTraffic > 0 && i->OutgoingTraffic > 0) || (now >= i->ExpiredTime)) {
-                        f(true, i.get());
+                    ppp::string guid = JsonAuxiliary::ToString(json["guid"]);
+                    if (guid.empty()) {
+                        return false;
                     }
-                    else {
-                        f(false, i.get());
+
+                    Int128 session_id = StringAuxiliary::GuidStringToInt128(guid);
+                    any |= switcher_->OnInformation(session_id, VirtualEthernetInformation::FromJson(json["data"]));
+                }
+                return any;
+            }
+
+            bool VirtualEthernetManagedServer::AckAuthenticationToManagedServer(Json::Value& json) noexcept {
+                ppp::string guid = JsonAuxiliary::ToString(json["guid"]);
+                if (guid.empty()) {
+                    return false;
+                }
+
+                Int128 session_id = StringAuxiliary::GuidStringToInt128(guid);
+                AuthenticationToManagedServerAsyncCallback f = DeleteAuthenticationToManagedServer(session_id);
+                if (!f) {
+                    return false;
+                }
+
+                std::shared_ptr<VirtualEthernetInformation> i = VirtualEthernetInformation::FromJson(json["data"]);
+                if (!i) {
+                    f(false, NULL);
+                    return true;
+                }
+
+                UInt32 now = (UInt32)(ppp::threading::Executors::GetTickCount() / 1000);
+                if ((i->IncomingTraffic > 0 && i->OutgoingTraffic > 0) || (now >= i->ExpiredTime)) {
+                    f(true, i.get());
+                }
+                else {
+                    f(false, i.get());
+                }
+                return true;
+            }
+
+            void VirtualEthernetManagedServer::UploadTrafficToManagedServer(const ppp::Int128& session_id, int64_t in, int64_t out) noexcept {
+                SynchronizedObjectScope scope(syncobj_);
+                UploadTrafficTask& task = traffics_[session_id];
+                task.in += in;
+                task.out += out;
+            }
+ 
+            void VirtualEthernetManagedServer::TickAllUploadTrafficToManagedServer(UInt64 now) noexcept {
+                if (now >= traffics_next_) {
+                    Json::Value json;
+                    UploadTrafficTaskTable traffics; {
+                        SynchronizedObjectScope scope(syncobj_);
+                        traffics = std::move(traffics_);
+                        traffics_.clear();
                     }
+
+                    for (auto&& kv : traffics) {
+                        UploadTrafficTask& task = kv.second;
+                        json["guid"] = StringAuxiliary::Int128ToGuidString(kv.first);
+                        json["in"] = std::to_string(task.in).data();
+                        json["out"] = std::to_string(task.out).data();
+                    }
+
+                    traffics_next_ = now + PACKET_TIMEOUT_TRAFFIC;
+                    SendToManagedServer(0, PACKET_CMD_TRAFFIC, json);
                 }
             }
 

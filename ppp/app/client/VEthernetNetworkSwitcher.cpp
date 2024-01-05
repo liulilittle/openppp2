@@ -402,7 +402,7 @@ namespace ppp {
                 return false;
             }
 
-            bool VEthernetNetworkSwitcher::ReplaceInformation(const std::shared_ptr<VirtualEthernetInformation>& info) noexcept {
+            bool VEthernetNetworkSwitcher::OnInformation(const std::shared_ptr<VirtualEthernetInformation>& info) noexcept {
                 std::shared_ptr<ppp::transmissions::ITransmissionQoS> qos = qos_;
                 if (NULL != qos) {
                     int64_t bandwidth = static_cast<int64_t>(info->BandwidthQoS) * (1024 >> 3); /* kbps. */

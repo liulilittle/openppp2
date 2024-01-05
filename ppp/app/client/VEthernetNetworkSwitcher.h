@@ -121,6 +121,7 @@ namespace ppp {
             protected:
                 virtual bool                                                    OnPacketInput(const std::shared_ptr<IPFrame>& packet) noexcept override;
                 virtual bool                                                    OnTick(uint64_t now) noexcept override;
+                virtual bool                                                    OnInformation(const std::shared_ptr<VirtualEthernetInformation>& information) noexcept;
 
             protected:
                 virtual std::shared_ptr<VEthernetExchanger>                     NewExchanger() noexcept;
@@ -161,7 +162,6 @@ namespace ppp {
                 bool                                                            IPAddressIsGatewayServer(UInt32 ip, UInt32 gw, UInt32 mask) noexcept { return ip == gw ? true : htonl((ntohl(gw) & ntohl(mask)) + 1) == ip; }
                 bool                                                            EchoOtherServer(const std::shared_ptr<VEthernetExchanger>& exchanger, const std::shared_ptr<IPFrame>& packet, const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator) noexcept;
                 bool                                                            EchoGatewayServer(const std::shared_ptr<VEthernetExchanger>& exchanger, const std::shared_ptr<IPFrame>& packet, const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator) noexcept;
-                bool                                                            ReplaceInformation(const std::shared_ptr<VirtualEthernetInformation>& info) noexcept;
 
             private:
                 typedef ppp::set<ppp::string>                                   LoadIPListFileSet;
