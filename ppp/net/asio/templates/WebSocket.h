@@ -48,13 +48,13 @@ namespace ppp {
                         }
 
                         bool ok = false;
-                        YieldContext* p = y.GetPtr();
                         const std::shared_ptr<Reference> reference = GetReference();
                         if (handshaked_client) {
                             websocket_.async_handshake(host_, path_,
-                                [reference, this, &ok, p](const boost::system::error_code& ec) noexcept {
+                                [reference, this, &ok, &y](const boost::system::error_code& ec) noexcept {
+                                    auto& context = y.GetContext();
                                     ok = ec == boost::system::errc::success;
-                                    p->GetContext().dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, p));
+                                    context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
                                 });
                             y.Suspend();
                         }
@@ -67,9 +67,10 @@ namespace ppp {
 
                             // Receive the HTTP response.
                             boost::beast::http::async_read(websocket_.next_layer(), *buffer, *req,
-                                [reference, this, buffer, req, &ok, p](boost::system::error_code ec, std::size_t sz) noexcept {
+                                [reference, this, buffer, req, &ok, &y](boost::system::error_code ec, std::size_t sz) noexcept {
+                                    auto& context = y.GetContext();
                                     ok = ec == boost::system::errc::success;
-                                    p->GetContext().dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, p));
+                                    context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
                                 });
                             y.Suspend();
 
@@ -90,9 +91,10 @@ namespace ppp {
                                 ok = ppp::net::asio::templates::websocket::CheckRequestPath(path_, req->target());
                                 if (ok) {
                                     websocket_.async_accept(*req,
-                                        [reference, this, req, &ok, p](const boost::system::error_code& ec) noexcept {
+                                        [reference, this, req, &ok, &y](const boost::system::error_code& ec) noexcept {
+                                            auto& context = y.GetContext();
                                             ok = ec == boost::system::errc::success;
-                                            p->GetContext().dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, p));
+                                            context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
                                         });
                                     y.Suspend();
                                 }

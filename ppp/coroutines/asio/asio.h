@@ -9,26 +9,47 @@
 namespace ppp {
     namespace coroutines {
         namespace asio {
-            template<typename AsyncWriteStream, typename MutableBufferSequence>
-            inline bool                                                         async_read(AsyncWriteStream& stream, const MutableBufferSequence& buffers, YieldContext& y) noexcept {
+            template <typename AsyncWriteStream, typename MutableBufferSequence>
+            bool                                                                async_read_post(AsyncWriteStream& stream, const MutableBufferSequence& buffers, ppp::coroutines::YieldContext& y) noexcept {
                 if (!buffers.data() || !buffers.size()) {
                     return false;
                 }
 
                 int len = -1;
-                YieldContext* p = y.GetPtr();
-                boost::asio::async_read(stream, constantof(buffers),
-                    [p, &len](const boost::system::error_code& ec, std::size_t sz) noexcept {
-                        len = std::max<int>(ec ? -1 : sz, -1);
-                        p->GetContext().dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, p));
+                boost::asio::post(stream.get_executor(),
+                    [&stream, &buffers, &y, &len]() noexcept {
+                        boost::asio::async_read(stream, constantof(buffers),
+                            [&y, &len](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                                auto& context = y.GetContext();
+                                len = std::max<int>(ec ? -1 : sz, -1);
+                                context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
+                            });
                     });
 
                 y.Suspend();
                 return len == buffers.size();
             }
 
-            template<typename AsyncWriteStream, typename ConstBufferSequence>
-            inline bool                                                         async_write(AsyncWriteStream& stream, const ConstBufferSequence& buffers, YieldContext& y) noexcept {
+            template <typename AsyncWriteStream, typename MutableBufferSequence>
+            bool                                                                async_read(AsyncWriteStream& stream, const MutableBufferSequence& buffers, YieldContext& y) noexcept {
+                if (!buffers.data() || !buffers.size()) {
+                    return false;
+                }
+
+                int len = -1;
+                boost::asio::async_read(stream, constantof(buffers),
+                    [&y, &len](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                        auto& context = y.GetContext();
+                        len = std::max<int>(ec ? -1 : sz, -1);
+                        context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
+                    });
+
+                y.Suspend();
+                return len == buffers.size();
+            }
+
+            template <typename AsyncWriteStream, typename ConstBufferSequence>
+            bool                                                                async_write(AsyncWriteStream& stream, const ConstBufferSequence& buffers, YieldContext& y) noexcept {
                 if (!buffers.data() || !buffers.size()) {
                     return false;
                 }
@@ -36,17 +57,40 @@ namespace ppp {
                 bool ok = false;
                 YieldContext* p = y.GetPtr();
                 boost::asio::async_write(stream, constantof(buffers),
-                    [p, &ok](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                    [&y, &ok](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                        auto& context = y.GetContext();
                         ok = ec == boost::system::errc::success; /* b is boost::system::errc::success. */
-                        p->GetContext().dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, p));
+                        context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
                     });
 
                 y.Suspend();
                 return ok;
             }
 
-            template<typename AsyncWriteStream, typename MutableBufferSequence>
-            inline int                                                          async_read_some(AsyncWriteStream& stream, const MutableBufferSequence& buffers, YieldContext& y) noexcept {
+            template <typename AsyncWriteStream, typename MutableBufferSequence>
+            int                                                                 async_read_some_post(AsyncWriteStream& stream, const MutableBufferSequence& buffers, YieldContext& y) noexcept {
+                int len = -1;
+                if (!buffers.data() || !buffers.size()) {
+                    return len;
+                }
+
+                int len = -1;
+                boost::asio::post(stream.get_executor(),
+                    [&stream, &buffers, &y, &len]() noexcept {
+                        stream.async_read_some(constantof(buffers),
+                            [&y, &len](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                                auto& context = y.GetContext();
+                                len = std::max<int>(ec ? -1 : sz, -1);
+                                context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
+                            });
+                    });
+
+                y.Suspend();
+                return len;
+            }
+
+            template <typename AsyncWriteStream, typename MutableBufferSequence>
+            int                                                                 async_read_some(AsyncWriteStream& stream, const MutableBufferSequence& buffers, YieldContext& y) noexcept {
                 int len = -1;
                 if (!buffers.data() || !buffers.size()) {
                     return len;
@@ -54,9 +98,10 @@ namespace ppp {
 
                 YieldContext* p = y.GetPtr();
                 stream.async_read_some(constantof(buffers),
-                    [p, &len](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                    [&y, &len](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                        auto& context = y.GetContext();
                         len = std::max<int>(ec ? -1 : sz, -1);
-                        p->GetContext().dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, p));
+                        context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
                     });
 
                 y.Suspend();
@@ -77,9 +122,10 @@ namespace ppp {
                 bool ok = false;
                 YieldContext* p = y.GetPtr();
                 socket.async_connect(remoteEP,
-                    [p, &ok](const boost::system::error_code& ec) noexcept {
+                    [&y, &ok](const boost::system::error_code& ec) noexcept {
+                        auto& context = y.GetContext();
                         ok = ec == boost::system::errc::success; /* b is boost::system::errc::success. */
-                        p->GetContext().dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, p));
+                        context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
                     });
 
                 y.Suspend();
@@ -90,40 +136,41 @@ namespace ppp {
                 return ppp::threading::Timer::Timeout(context, milliseconds, y);
             }
 
-            template<class TProtocol>
-            inline boost::asio::ip::basic_endpoint<TProtocol>                   GetAddressByHostName(boost::asio::ip::basic_resolver<TProtocol>& resolver, const char* hostname, int port, YieldContext& y) noexcept {
+            template <class TProtocol>
+            boost::asio::ip::basic_endpoint<TProtocol>                          GetAddressByHostName(boost::asio::ip::basic_resolver<TProtocol>& resolver, const char* hostname, int port, YieldContext& y) noexcept {
                 typedef boost::asio::ip::basic_resolver<TProtocol> protocol_resolver;
 
-                YieldContext* p = y.GetPtr();
-                auto f = [p](protocol_resolver& resolver, typename protocol_resolver::query& q, boost::system::error_code& ec) noexcept {
+                auto f = [&y](protocol_resolver& resolver, typename protocol_resolver::query& q, boost::system::error_code& ec) noexcept {
 #ifndef _WIN32
                     using results_iterator = typename protocol_resolver::iterator;
 
                     results_iterator r{};
                     resolver.async_resolve(q,
-                        [p, &ec, &r](const boost::system::error_code& e_, const results_iterator& i_) noexcept {
+                        [&y, &ec, &r](const boost::system::error_code& e_, const results_iterator& i_) noexcept {
                             if (ec == boost::system::errc::success) {
                                 ec = e_;
                                 r = i_;
                             }
 
-                            p->GetContext().dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, p));
+                            auto& context = y.GetContext();
+                            context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
                         });
 #else
                     using results_type = typename protocol_resolver::results_type;
 
                     results_type r{};
                     resolver.async_resolve(q,
-                        [p, &ec, &r](const boost::system::error_code& e_, const results_type& i_) noexcept {
+                        [&y, &ec, &r](const boost::system::error_code& e_, const results_type& i_) noexcept {
                             if (ec == boost::system::errc::success) {
                                 ec = e_;
                                 r = i_;
                             }
 
-                            p->GetContext().dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, p));
+                            auto& context = y.GetContext();
+                            context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
                         });
 #endif
-                    p->Suspend();
+                    y.Suspend();
                     return r;
                 };
                 return ppp::net::asio::internal::GetAddressByHostName(resolver, hostname, port, f);

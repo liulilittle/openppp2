@@ -49,7 +49,6 @@ namespace ppp {
             private:
                 bool                                                            disposed_;
                 bool                                                            binary_;
-                bool                                                            handshaked_;
                 AsioWebSocket                                                   websocket_;
                 IPEndPoint                                                      localEP_;
                 IPEndPoint                                                      remoteEP_;
@@ -109,7 +108,6 @@ namespace ppp {
             private:
                 bool                                                            disposed_;
                 bool                                                            binary_;
-                bool                                                            handshaked_;
                 std::shared_ptr<boost::asio::ssl::context>                      ssl_context_;
                 std::shared_ptr<SslvWebSocket>                                  ssl_websocket_;
                 IPEndPoint                                                      localEP_;

@@ -44,7 +44,7 @@ namespace ssl = boost::asio::ssl; // from <boost/asio/ssl.hpp>
 
 namespace detail {
 
-    void load_root_certificates(ssl::context& ctx, boost::system::error_code& ec) noexcept
+    inline void load_root_certificates(ssl::context& ctx, boost::system::error_code& ec) noexcept
     {
         ppp::string cert =
             "# ACCVRAIZ1\n"
@@ -3945,12 +3945,12 @@ namespace detail {
 } // detail
 
 // Load the root certificates into an ssl::context
-void load_root_certificates(ssl::context& ctx, boost::system::error_code& ec) noexcept
+inline void load_root_certificates(ssl::context& ctx, boost::system::error_code& ec) noexcept
 {
     detail::load_root_certificates(ctx, ec);
 }
 
-void load_root_certificates(ssl::context& ctx)
+inline void load_root_certificates(ssl::context& ctx)
 {
     boost::system::error_code ec;
     detail::load_root_certificates(ctx, ec);

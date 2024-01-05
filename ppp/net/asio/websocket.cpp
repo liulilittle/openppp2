@@ -31,7 +31,6 @@ namespace ppp {
             websocket::websocket(const std::shared_ptr<boost::asio::io_context> context, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket, bool binary) noexcept
                 : disposed_(false)
                 , binary_(binary)
-                , handshaked_(false)
                 , context_(context)
                 , websocket_(std::move(*socket)) {
 
@@ -73,23 +72,15 @@ namespace ppp {
                     return false;
                 }
 
-                if (!handshaked_) {
-                    return false;
-                }
-
                 if (IsDisposed()) {
                     return false;
                 }
 
-                return ppp::coroutines::asio::async_read(websocket_, boost::asio::buffer((char*)buffer + offset, length), y);
+                return ppp::coroutines::asio::async_read_post(websocket_, boost::asio::buffer((char*)buffer + offset, length), y);
             }
 
             bool websocket::Write(const void* buffer, int offset, int length, const std::shared_ptr<AsynchronousWriteCallback>& cb) noexcept {
                 if (NULL == buffer || offset < 0 || length < 1) {
-                    return false;
-                }
-
-                if (!handshaked_) {
                     return false;
                 }
 
@@ -164,15 +155,9 @@ namespace ppp {
                     std::shared_ptr<websocket>                          reference_;
                 };
 
-                bool binary = binary_;
                 auto self = shared_from_this();
-                std::shared_ptr<AcceptWebSocket> accept = make_shared_object<AcceptWebSocket>(self, websocket_, binary, host, path);
-                if (type != HandshakeType_Client) {
-                    return accept->Run(true, y);
-                }
-                else {
-                    return accept->Run(false, y);
-                }
+                std::shared_ptr<AcceptWebSocket> accept = make_shared_object<AcceptWebSocket>(self, websocket_, binary_, host, path);
+                return accept->Run(type == HandshakeType::HandshakeType_Client, y);
             }
 
             namespace templates {
@@ -257,7 +242,6 @@ namespace ppp {
             sslwebsocket::sslwebsocket(const std::shared_ptr<boost::asio::io_context>& context, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket, bool binary) noexcept
                 : disposed_(false)
                 , binary_(binary)
-                , handshaked_(false)
                 , context_(context)
                 , socket_native_(socket) {
 
@@ -327,10 +311,6 @@ namespace ppp {
                     return false;
                 }
 
-                if (!handshaked_) {
-                    return false;
-                }
-
                 if (IsDisposed()) {
                     return false;
                 }
@@ -340,15 +320,11 @@ namespace ppp {
                     return false;
                 }
 
-                return ppp::coroutines::asio::async_read(*ssl_websocket, boost::asio::buffer((char*)buffer + offset, length), y);
+                return ppp::coroutines::asio::async_read_post(*ssl_websocket, boost::asio::buffer((char*)buffer + offset, length), y);
             }
 
             bool sslwebsocket::Write(const void* buffer, int offset, int length, const std::shared_ptr<AsynchronousWriteCallback>& cb) noexcept {
                 if (NULL == buffer || offset < 0 || length < 1) {
-                    return false;
-                }
-
-                if (!handshaked_) {
                     return false;
                 }
 
@@ -453,8 +429,7 @@ namespace ppp {
                             return false;
                         }
 
-                        bool binary = binary_;
-                        std::shared_ptr<AcceptSslvWebSocket> accept = make_shared_object<AcceptSslvWebSocket>(reference_, *ssl_websocket, binary, host_, path_);
+                        std::shared_ptr<AcceptSslvWebSocket> accept = make_shared_object<AcceptSslvWebSocket>(reference_, *ssl_websocket, binary_, host_, path_);
                         return accept->Run(handshaked_client, y);
                     }
                     virtual void                                                    Dispose() noexcept override {
@@ -482,11 +457,11 @@ namespace ppp {
                         }
 
                         bool ok = false;
-                        YieldContext* p = y.GetPtr();
                         ssl_websocket->next_layer().async_handshake(handshaked_client ? boost::asio::ssl::stream_base::client : boost::asio::ssl::stream_base::server,
-                            [reference, this, handshaked_client, &ok, p](const boost::system::error_code& ec) noexcept {
+                            [reference, this, handshaked_client, &ok, &y](const boost::system::error_code& ec) noexcept {
+                                auto& context = y.GetContext();
                                 ok = ec == boost::system::errc::success;
-                                p->GetContext().dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, p));
+                                context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
                             });
 
                         y.Suspend();
@@ -512,14 +487,13 @@ namespace ppp {
                     ciphersuites = GetDefaultCipherSuites();
                 }
 
-                bool binary = binary_;
                 std::shared_ptr<AsyncSslvWebSocket> accept = make_shared_object<AsyncSslvWebSocket>(
                     shared_from_this(),
                     socket,
                     ssl_context_,
                     ssl_websocket_,
                     verify_peer,
-                    binary,
+                    binary_,
                     host,
                     path,
                     certificate_file,
@@ -527,13 +501,7 @@ namespace ppp {
                     certificate_chain_file,
                     certificate_key_password,
                     ciphersuites);
-
-                if (type != HandshakeType::HandshakeType_Client) {
-                    return accept->Run(true, y);
-                }
-                else {
-                    return accept->Run(false, y);
-                }
+                return accept->Run(type == HandshakeType::HandshakeType_Client, y);
             }
         }
     }

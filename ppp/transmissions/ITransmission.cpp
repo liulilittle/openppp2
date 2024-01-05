@@ -116,8 +116,8 @@ namespace ppp {
                     return false;
                 }
 
-                YieldContext* context = y.GetPtr();
-                if (NULL != context) {
+                YieldContext* py = y.GetPtr();
+                if (NULL != py) {
                     return ITransmission::DoWriteYield<AsynchronousWriteCallback>(y, packet, packet_length,
                         [transmission](const void* packet, int packet_length, std::shared_ptr<AsynchronousWriteCallback>&& cb) noexcept {
                             return ITransmissionBridge::Write(transmission, packet, packet_length, cb);

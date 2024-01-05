@@ -212,12 +212,12 @@ namespace ppp {
                 return false;
             }
 
-            auto* p = y.GetPtr();
-            auto initiate = make_shared_object<Int128>(false);
+            bool initiate =false;
             auto timeout_cb = make_shared_object<Timer::TimeoutEventHandler>(
-                [p, initiate]() noexcept {
-                    if (*initiate) {
-                        p->GetContext().dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, p));
+                [&y, &initiate]() noexcept {
+                    if (initiate) {
+                        auto& context = y.GetContext();
+                        context.dispatch(std::bind(&ppp::coroutines::YieldContext::Resume, y.GetPtr()));
                     }
                 });
 
@@ -225,8 +225,9 @@ namespace ppp {
             if (!timeout) {
                 return false;
             }
-            elif(!aop || aop(timeout.get(), true)) {
-                *initiate = true;
+            
+            if (!aop || aop(timeout.get(), true)) {
+                initiate = true;
                 y.Suspend();
             }
             else {

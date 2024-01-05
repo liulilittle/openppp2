@@ -41,10 +41,10 @@ namespace ppp {
                     ITransmission::Dispose();
                 }
                 virtual Int128                                              HandshakeClient(YieldContext& y, bool& mux) noexcept {
-                    return HandshakeWebsocket(true, y) && ITransmission::HandshakeClient(y, mux);
+                    return HandshakeWebsocket(false, y) && ITransmission::HandshakeClient(y, mux);
                 }
                 virtual bool                                                HandshakeServer(YieldContext& y, const Int128& session_id, bool mux) noexcept {
-                    return HandshakeWebsocket(false, y) && ITransmission::HandshakeServer(y, session_id, mux);
+                    return HandshakeWebsocket(true, y) && ITransmission::HandshakeServer(y, session_id, mux);
                 }
 
             protected:

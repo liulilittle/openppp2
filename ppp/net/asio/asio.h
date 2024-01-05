@@ -7,8 +7,8 @@ namespace ppp {
     namespace net {
         namespace asio {
             namespace internal {
-                template<class TProtocol, class TIterator>
-                inline boost::asio::ip::basic_endpoint<TProtocol>               GetAddressByHostName(TIterator& i, TIterator& l, int port) noexcept {
+                template <class TProtocol, class TIterator>
+                boost::asio::ip::basic_endpoint<TProtocol>                      GetAddressByHostName(TIterator& i, TIterator& l, int port) noexcept {
                     typedef boost::asio::ip::basic_resolver<TProtocol> protocol_resolver;
 
                     typename protocol_resolver::iterator tail = i;
@@ -33,8 +33,8 @@ namespace ppp {
                     return ppp::net::IPEndPoint::AnyAddressV4<TProtocol>(port);
                 }
 
-                template<class TProtocol, class ResolveCall>
-                inline boost::asio::ip::basic_endpoint<TProtocol>               GetAddressByHostName(boost::asio::ip::basic_resolver<TProtocol>& resolver, const char* hostname, int port, ResolveCall&& resolver_resolve) noexcept {
+                template <class TProtocol, class ResolveCall>
+                boost::asio::ip::basic_endpoint<TProtocol>                      GetAddressByHostName(boost::asio::ip::basic_resolver<TProtocol>& resolver, const char* hostname, int port, ResolveCall&& resolver_resolve) noexcept {
                     typedef boost::asio::ip::basic_resolver<TProtocol> protocol_resolver;
 
                     boost::system::error_code ec;
@@ -78,8 +78,8 @@ namespace ppp {
                 }
             }
 
-            template<typename AsyncWriteStream, typename MutableBufferSequence>
-            inline bool                                                         async_read(AsyncWriteStream& stream, const MutableBufferSequence& buffers, const boost::asio::yield_context& y) noexcept {
+            template <typename AsyncWriteStream, typename MutableBufferSequence>
+            bool                                                                async_read(AsyncWriteStream& stream, const MutableBufferSequence& buffers, const boost::asio::yield_context& y) noexcept {
                 if (!buffers.data() || !buffers.size()) {
                     return false;
                 }
@@ -97,8 +97,8 @@ namespace ppp {
                 }
             }
 
-            template<typename AsyncWriteStream, typename MutableBufferSequence>
-            inline bool                                                         async_read_some(AsyncWriteStream& stream, const MutableBufferSequence& buffers, const boost::asio::yield_context& y) noexcept {
+            template <typename AsyncWriteStream, typename MutableBufferSequence>
+            bool                                                                async_read_some(AsyncWriteStream& stream, const MutableBufferSequence& buffers, const boost::asio::yield_context& y) noexcept {
                 if (!buffers.data() || !buffers.size()) {
                     return false;
                 }
@@ -116,8 +116,8 @@ namespace ppp {
                 }
             }
 
-            template<typename AsyncWriteStream, typename ConstBufferSequence>
-            inline bool                                                         async_write(AsyncWriteStream& stream, const ConstBufferSequence& buffers, const boost::asio::yield_context& y) noexcept {
+            template <typename AsyncWriteStream, typename ConstBufferSequence>
+            bool                                                                async_write(AsyncWriteStream& stream, const ConstBufferSequence& buffers, const boost::asio::yield_context& y) noexcept {
                 if (!buffers.data() || !buffers.size()) {
                     return false;
                 }
@@ -151,8 +151,8 @@ namespace ppp {
                 return ec == boost::system::errc::success; /* b is boost::system::errc::success. */
             }
 
-            template<class TProtocol>
-            inline boost::asio::ip::basic_endpoint<TProtocol>                   GetAddressByHostName(boost::asio::ip::basic_resolver<TProtocol>& resolver, const char* hostname, int port) noexcept {
+            template <class TProtocol>
+            boost::asio::ip::basic_endpoint<TProtocol>                          GetAddressByHostName(boost::asio::ip::basic_resolver<TProtocol>& resolver, const char* hostname, int port) noexcept {
                 typedef boost::asio::ip::basic_resolver<TProtocol> protocol_resolver;
 
                 return ppp::net::asio::internal::GetAddressByHostName(resolver, hostname, port,
@@ -161,8 +161,8 @@ namespace ppp {
                     });
             }
 
-            template<class TProtocol>
-            inline boost::asio::ip::basic_endpoint<TProtocol>                   GetAddressByHostName(boost::asio::ip::basic_resolver<TProtocol>& resolver, const char* hostname, int port, const boost::asio::yield_context& y) noexcept {
+            template <class TProtocol>
+            boost::asio::ip::basic_endpoint<TProtocol>                          GetAddressByHostName(boost::asio::ip::basic_resolver<TProtocol>& resolver, const char* hostname, int port, const boost::asio::yield_context& y) noexcept {
                 typedef boost::asio::ip::basic_resolver<TProtocol> protocol_resolver;
 
                 return ppp::net::asio::internal::GetAddressByHostName(resolver, hostname, port,

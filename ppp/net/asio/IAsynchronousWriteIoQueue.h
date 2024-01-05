@@ -62,18 +62,22 @@ namespace ppp {
                 template <typename AsynchronousWriteCallback, typename WriteHandler, typename PacketBuffer>
                 static bool                                             DoWriteYield(YieldContext& y, const PacketBuffer& packet, int packet_length, WriteHandler&& h) noexcept {
                     bool ok = false;
-                    YieldContext* p = y.GetPtr();
-                    bool initiate = h(packet, packet_length, make_shared_object<AsynchronousWriteCallback>(
-                        [p, &ok, h](bool b) noexcept {
-                            ok = b;
-                            p->GetContext().dispatch(std::bind(&YieldContext::Resume, p));
+                    bool initiate = false;
+                    initiate = h(packet, packet_length, make_shared_object<AsynchronousWriteCallback>(
+                        [&y, &ok, &initiate, h](bool b) noexcept {
+                            if (initiate) {
+                                auto& context = y.GetContext();
+                                ok = b;
+                                context.dispatch(std::bind(&YieldContext::Resume, y.GetPtr()));
+                            }
                         }));
 
                     if (initiate) {
-                        p->Suspend();
+                        y.Suspend();
                     }
                     return ok;
                 }
+                
                 virtual bool                                            DoWriteBytes(std::shared_ptr<Byte> packet, int offset, int packet_length, const std::shared_ptr<AsynchronousWriteBytesCallback>& cb) noexcept = 0;
 
             private:
