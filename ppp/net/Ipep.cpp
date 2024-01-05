@@ -28,11 +28,13 @@ namespace ppp {
             int destinationPort = IPEndPoint::MinPort;
             ppp::string destinationIP;
 
-            if (!Ipep::ParseEndPoint(address, destinationIP, destinationPort)) {
+            bool b = Ipep::ParseEndPoint(address, destinationIP, destinationPort);
+            if (!b) {
                 return IPEndPoint(IPEndPoint::NoneAddress, IPEndPoint::MinPort);
             }
-
-            return Ipep::GetEndPoint(destinationIP, destinationPort, resolver);
+            else {
+                return Ipep::GetEndPoint(destinationIP, destinationPort, resolver);
+            }
         }
 
         bool Ipep::ParseEndPoint(const ppp::string& address, ppp::string& destinationAddress, int& destinationPort) noexcept {

@@ -132,6 +132,11 @@ namespace ppp
 
         bool Firewall::IsDropNetworkPort(int port, bool tcp_or_udp) noexcept
         {
+            if (port <= IPEndPoint::MinPort || port > IPEndPoint::MaxPort)
+            {
+                return false;
+            }
+
             SynchronizedObjectScope scope(syncobj_);
             ppp::unordered_set<int>* lists[] =
             {

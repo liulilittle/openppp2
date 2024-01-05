@@ -144,7 +144,12 @@ namespace ppp {
                 }
             }
 
-            bool VirtualEthernetExchanger::SendPacketToDestination(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length, YieldContext& y) noexcept {
+            bool VirtualEthernetExchanger::SendPacketToDestination(const ITransmissionPtr& transmission, 
+                const boost::asio::ip::udp::endpoint&   sourceEP, 
+                const boost::asio::ip::udp::endpoint&   destinationEP, 
+                Byte*                                   packet, 
+                int                                     packet_length, 
+                YieldContext&                           y) noexcept {
                 if (disposed_) {
                     return false;
                 }
@@ -166,9 +171,17 @@ namespace ppp {
                 if (firewall_->IsDropNetworkSegment(destinationIP)) {
                     return false;
                 }
+                elif(destinationPort == PPP_DNS_DEFAULT_PORT) {
+                    ppp::string hostDomain = ppp::net::native::dns::ExtractHost(packet, packet_length);
+                    if (hostDomain.size() > 0) {
+                        if (firewall_->IsDropNetworkDomains(hostDomain)) {
+                            return false;
+                        }
+                    }
 
-                if (RedirectDnsQuery(transmission, sourceEP, destinationEP, packet, packet_length) < 0) {
-                    return false;
+                    if (RedirectDnsQuery(transmission, sourceEP, destinationEP, packet, packet_length) < 0) {
+                        return false;
+                    }
                 }
 
                 VirtualEthernetDatagramPortPtr datagram = GetDatagramPort(sourceEP);
@@ -346,33 +359,23 @@ namespace ppp {
                 Byte*                                               packet,
                 int                                                 packet_length) noexcept {
 
-                int destinationPort = destinationEP.port();
-                if (destinationPort == PPP_DNS_DEFAULT_PORT) {
-                    ppp::string domain = ppp::net::native::dns::ExtractHost(packet, packet_length);
-                    if (domain.empty() > 0) {
-                        if (firewall_->IsDropNetworkDomains(domain)) {
-                            return false;
-                        }
-                    }
-
-                    std::shared_ptr<AppConfiguration> configuration = GetConfiguration();
-                    if (configuration->udp.dns.redirect.size() > 0) {
-                        boost::asio::ip::udp::endpoint redirect_server = switcher_->GetDnsserverEndPoint();
-                        boost::asio::ip::address dnsserverIP = redirect_server.address();
-                        if (dnsserverIP.is_unspecified()) {
-                            return INTERNAL_RedirectDnsQuery(transmission, sourceEP, destinationEP, packet, packet_length);
-                        }
-                        else {
-                            boost::asio::ip::udp::endpoint dnsserverEP(dnsserverIP, PPP_DNS_DEFAULT_PORT);
-                            return INTERNAL_RedirectDnsQuery(transmission,
-                                dnsserverEP,
-                                sourceEP,
-                                destinationEP,
-                                std::shared_ptr<Byte>(packet, [](Byte*) noexcept {}), packet_length);
-                        }
-                    }
+                std::shared_ptr<AppConfiguration> configuration = GetConfiguration();
+                if (configuration->udp.dns.redirect.empty()) {
+                    return -1;
                 }
-                return -1;
+
+                boost::asio::ip::udp::endpoint redirect_server = switcher_->GetDnsserverEndPoint();
+                boost::asio::ip::address dnsserverIP = redirect_server.address();
+                if (dnsserverIP.is_unspecified()) {
+                    return INTERNAL_RedirectDnsQuery(transmission, sourceEP, destinationEP, packet, packet_length);
+                }
+
+                boost::asio::ip::udp::endpoint dnsserverEP(dnsserverIP, PPP_DNS_DEFAULT_PORT);
+                return INTERNAL_RedirectDnsQuery(transmission,
+                    dnsserverEP,
+                    sourceEP,
+                    destinationEP,
+                    std::shared_ptr<Byte>(packet, [](Byte*) noexcept {}), packet_length);
             }
 
             bool VirtualEthernetExchanger::Update(UInt64 now) noexcept {
