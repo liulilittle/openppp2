@@ -175,8 +175,8 @@ namespace ppp {
                 return NULL;
             }
 
-            if (milliseconds < 0) {
-                milliseconds = 0;
+            if (milliseconds < 1) {
+                milliseconds = 1;
             }
 
             std::shared_ptr<TimeoutEventHandler> f = handler;

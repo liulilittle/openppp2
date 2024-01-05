@@ -41,13 +41,17 @@ namespace ppp {
             }
 
             void websocket::Dispose() noexcept {
-                exchangeof(disposed_, true); {
-                    const std::shared_ptr<websocket> reference = GetReference();
-                    websocket_.async_close(boost::beast::websocket::close_code::normal,
-                        [reference, this](const boost::system::error_code& ec_) noexcept {
-                            Socket::Closesocket(websocket_.next_layer());
-                        });
-                }
+                auto self = shared_from_this();
+                context_->post(
+                    [self, this]() noexcept {
+                        exchangeof(disposed_, true); {
+                            const std::shared_ptr<websocket> reference = GetReference();
+                            websocket_.async_close(boost::beast::websocket::close_code::normal,
+                                [reference, this](const boost::system::error_code& ec_) noexcept {
+                                    Socket::Closesocket(websocket_.next_layer());
+                                });
+                        }
+                    });
             }
 
             bool websocket::IsDisposed() noexcept {
@@ -77,6 +81,18 @@ namespace ppp {
                 }
 
                 return ppp::coroutines::asio::async_read_post(websocket_, boost::asio::buffer((char*)buffer + offset, length), y);
+            }
+
+            bool websocket::ReadSome(const void* buffer, int offset, int length, YieldContext& y) noexcept {
+                if (NULL == buffer || offset < 0 || length < 1) {
+                    return false;
+                }
+
+                if (IsDisposed()) {
+                    return false;
+                }
+
+                return ppp::coroutines::asio::async_read_some_post(websocket_, boost::asio::buffer((char*)buffer + offset, length), y);
             }
 
             bool websocket::Write(const void* buffer, int offset, int length, const std::shared_ptr<AsynchronousWriteCallback>& cb) noexcept {
@@ -270,20 +286,24 @@ namespace ppp {
             }
 
             void sslwebsocket::Dispose() noexcept {
-                exchangeof(disposed_, true); {
-                    const std::shared_ptr<SslvWebSocket> websocket = ssl_websocket_;
-                    if (NULL != websocket) {
-                        const std::shared_ptr<sslwebsocket> reference = shared_from_this();
-                        websocket->async_close(boost::beast::websocket::close_code::normal,
-                            [reference, this, websocket](const boost::system::error_code& ec_) noexcept {
-                                SslvTcpSocket* ssl_socket = addressof(websocket->next_layer());
-                                ssl_socket->async_shutdown(
-                                    [reference, this, ssl_socket](const boost::system::error_code& ec_) noexcept {
-                                        Socket::Closesocket(ssl_socket->next_layer());
+                auto self = shared_from_this();
+                context_->post(
+                    [self, this]() noexcept {
+                        exchangeof(disposed_, true); {
+                            const std::shared_ptr<SslvWebSocket> websocket = ssl_websocket_;
+                            if (NULL != websocket) {
+                                const std::shared_ptr<sslwebsocket> reference = shared_from_this();
+                                websocket->async_close(boost::beast::websocket::close_code::normal,
+                                    [reference, this, websocket](const boost::system::error_code& ec_) noexcept {
+                                        SslvTcpSocket* ssl_socket = addressof(websocket->next_layer());
+                                        ssl_socket->async_shutdown(
+                                            [reference, this, ssl_socket](const boost::system::error_code& ec_) noexcept {
+                                                Socket::Closesocket(ssl_socket->next_layer());
+                                            });
                                     });
-                            });
-                    }
-                }
+                            }
+                        }
+                    });
             }
 
             sslwebsocket::IPEndPoint sslwebsocket::GetLocalEndPoint() noexcept {

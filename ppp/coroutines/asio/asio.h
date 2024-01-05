@@ -74,7 +74,6 @@ namespace ppp {
                     return len;
                 }
 
-                int len = -1;
                 boost::asio::post(stream.get_executor(),
                     [&stream, &buffers, &y, &len]() noexcept {
                         stream.async_read_some(constantof(buffers),

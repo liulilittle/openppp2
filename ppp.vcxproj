@@ -258,6 +258,7 @@
     <ClCompile Include="ppp\app\protocol\VirtualEthernetTcpipConnection.cpp" />
     <ClCompile Include="ppp\app\server\VirtualEthernetDatagramPort.cpp" />
     <ClCompile Include="ppp\app\server\VirtualEthernetExchanger.cpp" />
+    <ClCompile Include="ppp\app\server\VirtualEthernetManagedServer.cpp" />
     <ClCompile Include="ppp\app\server\VirtualEthernetNetworkTcpipConnection.cpp" />
     <ClCompile Include="ppp\app\server\VirtualEthernetSwitcher.cpp" />
     <ClCompile Include="ppp\app\server\VirtualInternetControlMessageProtocol.cpp" />
@@ -511,6 +512,7 @@
     <ClInclude Include="ppp\app\protocol\VirtualEthernetTcpipConnection.h" />
     <ClInclude Include="ppp\app\server\VirtualEthernetDatagramPort.h" />
     <ClInclude Include="ppp\app\server\VirtualEthernetExchanger.h" />
+    <ClInclude Include="ppp\app\server\VirtualEthernetManagedServer.h" />
     <ClInclude Include="ppp\app\server\VirtualEthernetNetworkTcpipConnection.h" />
     <ClInclude Include="ppp\app\server\VirtualEthernetSwitcher.h" />
     <ClInclude Include="ppp\app\server\VirtualInternetControlMessageProtocol.h" />

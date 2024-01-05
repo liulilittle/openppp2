@@ -45,6 +45,7 @@ namespace ppp {
                 virtual bool                                                    Run(HandshakeType type, const ppp::string& host, const ppp::string& path, YieldContext& y) noexcept;
                 virtual bool                                                    Write(const void* buffer, int offset, int length, const std::shared_ptr<AsynchronousWriteCallback>& cb) noexcept;
                 virtual bool                                                    Read(const void* buffer, int offset, int length, YieldContext& y) noexcept;
+                virtual bool                                                    ReadSome(const void* buffer, int offset, int length, YieldContext& y) noexcept;
 
             private:
                 bool                                                            disposed_;
