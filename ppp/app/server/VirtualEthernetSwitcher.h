@@ -98,6 +98,7 @@ namespace ppp {
                 bool                                                    DeleteConnection(const VirtualEthernetNetworkTcpipConnection* connection) noexcept;
 
             private:
+                boost::asio::ip::udp::endpoint                          ParseDNSEndPoint(const ppp::string& dnserver_endpoint) noexcept;
                 void                                                    TickAllExchangers(UInt64 now) noexcept;
                 void                                                    TickAllConnections(UInt64 now) noexcept;
 

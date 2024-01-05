@@ -25,12 +25,7 @@ namespace ppp {
                 : disposed_(false)
                 , configuration_(configuration)
                 , context_(Executors::GetDefault()) {
-                boost::asio::ip::udp::udp::endpoint dnsserverEP = Ipep::ParseEndPoint(configuration_->udp.dns.redirect);
-                if (int dnsserverPort = dnsserverEP.port(); dnsserverPort <= IPEndPoint::MinPort || dnsserverPort > IPEndPoint::MaxPort) {
-                    dnsserverPort = PPP_DNS_DEFAULT_PORT;
-                    dnsserverEP = boost::asio::ip::udp::endpoint(dnsserverEP.address(), dnsserverPort);
-                }
-
+                boost::asio::ip::udp::udp::endpoint dnsserverEP = ParseDNSEndPoint(configuration_->udp.dns.redirect);
                 dnsserverEP_ = dnsserverEP;
                 interfaceIP_ = Ipep::ToAddress(configuration_->ip.interface_, true);
                 statistics_ = make_shared_object<ppp::transmissions::ITransmissionStatistics>();
@@ -503,6 +498,32 @@ namespace ppp {
                 }
 
                 return false;
+            }
+
+            boost::asio::ip::udp::endpoint VirtualEthernetSwitcher::ParseDNSEndPoint(const ppp::string& dnserver_endpoint) noexcept {
+                boost::asio::ip::address dnsserverIP = boost::asio::ip::address_v4::any();
+                int dnsserverPort = PPP_DNS_DEFAULT_PORT;
+                if (dnserver_endpoint.empty()) {
+                    return boost::asio::ip::udp::endpoint(dnsserverIP, dnsserverPort);
+                }
+
+                boost::asio::ip::udp::udp::endpoint dnsserverEP = Ipep::ParseEndPoint(dnserver_endpoint);
+                dnsserverPort = dnsserverEP.port();
+                if (dnsserverPort <= IPEndPoint::MinPort || dnsserverPort > IPEndPoint::MaxPort) {
+                    dnsserverPort = PPP_DNS_DEFAULT_PORT;
+                }
+
+                dnsserverIP = dnsserverEP.address();
+                dnsserverEP = boost::asio::ip::udp::endpoint(dnsserverIP, dnsserverPort);
+                if (IPEndPoint::IsInvalid(dnsserverEP.address())) {
+                    dnsserverIP = boost::asio::ip::address_v4::any();
+                }
+                elif(dnsserverIP.is_multicast()) {
+                    dnsserverIP = boost::asio::ip::address_v4::any();
+                }
+
+                dnsserverEP = boost::asio::ip::udp::endpoint(dnsserverIP, dnsserverPort);
+                return dnsserverEP;
             }
 
             boost::asio::ip::tcp::endpoint VirtualEthernetSwitcher::GetLocalEndPoint(NetworkAcceptorCategories categories) noexcept {
