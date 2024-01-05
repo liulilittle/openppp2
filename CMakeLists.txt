@@ -41,7 +41,7 @@ ELSE()
 ENDIF()
 
 # 设置三方库目录
-SET(THIRD_PARTY_LIBRARY_DIR /root/dev)
+SET(THIRD_PARTY_LIBRARY_DIR /usr/lib)
 
 # 设置编译的头文件搜索目录
 INCLUDE_DIRECTORIES(
