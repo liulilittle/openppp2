@@ -45,7 +45,7 @@ namespace ppp {
 
             public:
                 virtual VirtualEthernetSwitcherPtr                                      GetSwitcher() noexcept;
-                virtual bool                                                            Prepared() noexcept;
+                virtual bool                                                            Open() noexcept;
                 virtual void                                                            Dispose() noexcept;
                 virtual bool                                                            Update(UInt64 now) noexcept;
                 virtual ITransmissionPtr                                                GetTransmission() noexcept;

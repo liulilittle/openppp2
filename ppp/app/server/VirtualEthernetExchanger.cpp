@@ -396,7 +396,7 @@ namespace ppp {
                 return transmission_;
             }
 
-            bool VirtualEthernetExchanger::Prepared() noexcept {
+            bool VirtualEthernetExchanger::Open() noexcept {
                 if (disposed_) {
                     return false;
                 }

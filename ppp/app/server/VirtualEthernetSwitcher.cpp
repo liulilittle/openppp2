@@ -153,7 +153,7 @@ namespace ppp {
                             return NULL;
                         }
 
-                        if (channel->Prepared()) {
+                        if (channel->Open()) {
                             auto r = exchangers_.emplace(session_id, channel);
                             if (r.second) {
                                 return channel;
@@ -187,7 +187,7 @@ namespace ppp {
                     return false;
                 }
 
-                bool ok = channel->Prepared() && channel->Run(transmission, y);
+                bool ok = channel->Open() && channel->Run(transmission, y);
                 if (!ok) {
                     channel->Dispose();
                 }
