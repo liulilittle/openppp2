@@ -28,6 +28,15 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <assert.h>
+#if defined(__FreeBSD__)
+#include <sys/param.h> /* FreeBSD sucks */
+#endif
+
 #ifndef ANCILLARY_H__
 #define ANCILLARY_H__
 
@@ -35,7 +44,10 @@
  * Start of the readable part.
  ***************************************************************************/
 
+#ifndef ANCIL_MAX_N_FDS
 #define ANCIL_MAX_N_FDS 960
+#endif
+
 /*
  * Maximum number of fds that can be sent or received using the "esay"
  * functions; this is so that all can fit in one page.
@@ -66,12 +78,15 @@ ancil_recv_fds_with_buffer(int, int *, unsigned, void *) noexcept;
  * in case of success
  */
 
-#define ANCIL_FD_BUFFER(n)    \
-    struct                    \
-    {                         \
-        struct cmsghdr h;     \
-        int            fd[n]; \
+#ifndef ANCIL_FD_BUFFER
+#define ANCIL_FD_BUFFER(n)       \
+    struct                       \
+    {                            \
+        struct cmsghdr h;        \
+        int            fd[n];    \
+        int            reserved; \
     }
+#endif
 
 /* ANCIL_FD_BUFFER(n)
  *
