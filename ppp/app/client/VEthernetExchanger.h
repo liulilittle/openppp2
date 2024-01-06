@@ -86,6 +86,7 @@ namespace ppp {
             protected:
                 virtual std::shared_ptr<boost::asio::ip::tcp::socket>                   NewAsynchronousSocket(const ContextPtr& context, const boost::asio::ip::tcp& protocol) noexcept;
                 virtual bool                                                            Loopback(const ContextPtr& context, YieldContext& y) noexcept;
+                virtual bool                                                            PacketInput(const ITransmissionPtr& transmission, Byte* p, int packet_length, YieldContext& y) noexcept;
 
             private:
                 void                                                                    Finalize() noexcept;
@@ -109,6 +110,7 @@ namespace ppp {
 
             private:
                 bool                                                                    disposed_;
+                UInt64                                                                  sekap_last_;
                 UInt64                                                                  sekap_next_;
                 VEthernetNetworkSwitcherPtr                                             switcher_;
                 std::shared_ptr<VirtualEthernetInformation>                             information_;

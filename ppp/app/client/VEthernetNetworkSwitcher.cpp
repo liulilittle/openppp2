@@ -403,12 +403,30 @@ namespace ppp {
             }
 
             bool VEthernetNetworkSwitcher::OnInformation(const std::shared_ptr<VirtualEthernetInformation>& info) noexcept {
+                std::shared_ptr<VEthernetExchanger> exchanger = exchanger_;
+                if (NULL == exchanger) {
+                    return false;
+                }
+
                 std::shared_ptr<ppp::transmissions::ITransmissionQoS> qos = qos_;
                 if (NULL != qos) {
                     int64_t bandwidth = static_cast<int64_t>(info->BandwidthQoS) * (1024 >> 3); /* kbps. */
                     qos->SetBandwidth(bandwidth);
                 }
-                return true;
+
+                // If the user still has the remaining incoming/outgoing traffic and the expiration time is not reached, 
+                // The VPN link is regarded as successful. Otherwise, the VPN link needs to be disconnected.
+                UInt32 now = (UInt32)(GetTickCount() / 1000);
+                if ((info->IncomingTraffic > 0 && info->OutgoingTraffic > 0) && (info->ExpiredTime != 0 && info->ExpiredTime > now)) {
+                    return true;
+                }
+                
+                // If the VPN link needs to be disconnected, the client requires the active end, and the server forcibly disconnects. 
+                // This prevents you from bypassing the disconnection problem by modifying the code of the client switch.
+                if (auto transmission = exchanger->GetTransmission(); NULL != transmission) {
+                    transmission->Dispose();
+                }
+                return false;
             }
 
             VEthernetNetworkSwitcher::RouteInformationTablePtr VEthernetNetworkSwitcher::GetRib() noexcept {

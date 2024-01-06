@@ -39,6 +39,7 @@ namespace ppp {
                 const Int128&                           id) noexcept
                 : VirtualEthernetLinklayer(configuration, context, id)
                 , disposed_(false)
+                , sekap_last_(0)
                 , sekap_next_(0)
                 , switcher_(switcher)
                 , network_state_(NetworkState_Connecting) {
@@ -316,11 +317,12 @@ namespace ppp {
                         }
                     }
 
-                    network_state_.exchange(NetworkState_Reconnecting); {
-                        uint64_t reconnections_timeout = (uint64_t)configuration->client.reconnections.timeout * 1000;
-                        if (!Sleep(reconnections_timeout, context, y)) {
-                            break;
-                        }
+                    sekap_last_ = 0;
+                    network_state_.exchange(NetworkState_Reconnecting);
+
+                    uint64_t reconnections_timeout = (uint64_t)configuration->client.reconnections.timeout * 1000;
+                    if (!Sleep(reconnections_timeout, context, y)) {
+                        break;
                     }
                 }
                 return run_once;
@@ -549,13 +551,31 @@ namespace ppp {
                 return Dictionary::ReleaseObjectByKey(datagrams_, sourceEP);
             }
 
+            static constexpr int SEND_ECHO_KEEP_ALIVE_PACKET_MIN_TIMEOUT = 1000;
+            static constexpr int SEND_ECHO_KEEP_ALIVE_PACKET_MAX_TIMEOUT = 5000;
+            static constexpr int SEND_ECHO_KEEP_ALIVE_PACKET_MMX_TIMEOUT = SEND_ECHO_KEEP_ALIVE_PACKET_MAX_TIMEOUT << 1;
+
             bool VEthernetExchanger::SendEchoKeepAlivePacket(UInt64 now, bool immediately) noexcept {
-                static constexpr int MIN_TIMEOUT = 1000;
-                static constexpr int MAX_TIMEOUT = 30000;
+                if (network_state_ != NetworkState_Established) {
+                    return false;
+                }
+
+                if (sekap_last_ == 0) {
+                    sekap_last_ = now;
+                }
+                else  {
+                    UInt64 next = sekap_last_ + SEND_ECHO_KEEP_ALIVE_PACKET_MMX_TIMEOUT;
+                    if (now >= next) {
+                        ITransmissionPtr transmission = transmission_;
+                        if (transmission) {
+                            transmission->Dispose();
+                        }
+                    }
+                }
 
                 if (!immediately) {
                     if (sekap_next_ == 0) {
-                        sekap_next_ = now + RandomNext(MIN_TIMEOUT, MAX_TIMEOUT);
+                        sekap_next_ = now + RandomNext(SEND_ECHO_KEEP_ALIVE_PACKET_MIN_TIMEOUT, SEND_ECHO_KEEP_ALIVE_PACKET_MAX_TIMEOUT);
                         return false;
                     }
 
@@ -565,7 +585,17 @@ namespace ppp {
                 }
 
                 bool ok = Echo(0);
-                sekap_next_ = now + RandomNext(MIN_TIMEOUT, MAX_TIMEOUT);
+                sekap_next_ = now + RandomNext(SEND_ECHO_KEEP_ALIVE_PACKET_MIN_TIMEOUT, SEND_ECHO_KEEP_ALIVE_PACKET_MAX_TIMEOUT);
+                return ok;
+            }
+
+            bool VEthernetExchanger::PacketInput(const ITransmissionPtr& transmission, Byte* p, int packet_length, YieldContext& y) noexcept {
+                bool ok = VirtualEthernetLinklayer::PacketInput(transmission, p, packet_length, y);
+                if (ok) {
+                    if (network_state_ == NetworkState_Established) {
+                        sekap_last_ = Executors::GetTickCount();
+                    }
+                }
                 return ok;
             }
         }

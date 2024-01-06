@@ -348,10 +348,9 @@ namespace ppp {
                     return false;
                 }
 
-                Json::ArrayIndex json_array_size = json_array.size();
-                UInt32 now = (UInt32)(ppp::threading::Executors::GetTickCount() / 1000);
-
                 bool any = false;
+                Json::ArrayIndex json_array_size = json_array.size();
+
                 for (Json::ArrayIndex json_array_index = 0; json_array_index < json_array_size; json_array_index++) {
                     Json::Value& json_object = json_array[json_array_index];
                     if (!json_object.isObject()) {
@@ -387,8 +386,8 @@ namespace ppp {
                     return true;
                 }
 
-                UInt32 now = (UInt32)(ppp::threading::Executors::GetTickCount() / 1000);
-                if ((i->IncomingTraffic > 0 && i->OutgoingTraffic > 0) || (now >= i->ExpiredTime)) {
+                UInt32 now = (UInt32)(GetTickCount() / 1000);
+                if ((i->IncomingTraffic > 0 && i->OutgoingTraffic > 0) && (i->ExpiredTime != 0 && i->ExpiredTime > now)) {
                     f(true, i.get());
                 }
                 else {
