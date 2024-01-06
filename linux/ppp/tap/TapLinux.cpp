@@ -583,7 +583,7 @@ namespace ppp {
                         p++;
                     }
 
-                    status = sscanf(p, "%lx%lx%lx%lx%lx%lx%lx", &d, &g, &fl, &rc, &us, &metric, &mask);
+                    status = sscanf_s(p, "%lx%lx%lx%lx%lx%lx%lx", &d, &g, &fl, &rc, &us, &metric, &mask);
                     if (status >= 7) {
                         calli = true;
                     }
@@ -596,7 +596,7 @@ namespace ppp {
                     /* default */
                     if (calli) {
                         *eth = '\x0';
-                        if (sscanf(buf, "%[^\t\x20]", eth) > 0) {
+                        if (sscanf_s(buf, "%[^\t\x20]", eth) > 0) {
                             if (predicate(eth, d, g, mask, metric)) {
                                 *address = g;
                                 fclose(f);

@@ -121,7 +121,7 @@ namespace ppp
                 }
 
                 int hdrlen_bytes = TCPH_HDRLEN_BYTES(tcphdr);
-                if (hdrlen_bytes < TCP_HLEN || hdrlen_bytes > size) // ´íÎóµÄÊý¾Ý±¨
+                if (hdrlen_bytes < TCP_HLEN || hdrlen_bytes > size) // é”™è¯¯çš„æ•°æ®æŠ¥
                 {
                     return NULL;
                 }
@@ -161,7 +161,7 @@ namespace ppp
                     return NULL;
                 }
 
-                if (size != ntohs(udphdr->len)) // ´íÎóµÄÊý¾Ý±¨
+                if (size != ntohs(udphdr->len)) // é”™è¯¯çš„æ•°æ®æŠ¥
                 {
                     return NULL;
                 }
@@ -504,12 +504,12 @@ namespace ppp
 #pragma pack(push, 1)
                 struct dns_hdr
                 {
-                    uint16_t usTransID;         // ±êÊ¶·û
-                    uint16_t usFlags;           // ¸÷ÖÖ±êÖ¾Î»
-                    uint16_t usQuestionCount;   // Question×Ö¶Î¸öÊý 
-                    uint16_t usAnswerCount;     // Answer×Ö¶Î¸öÊý
-                    uint16_t usAuthorityCount;  // Authority×Ö¶Î¸öÊý
-                    uint16_t usAdditionalCount; // Additional×Ö¶Î¸öÊý
+                    uint16_t usTransID;         // æ ‡è¯†ç¬¦
+                    uint16_t usFlags;           // å„ç§æ ‡å¿—ä½
+                    uint16_t usQuestionCount;   // Questionå­—æ®µä¸ªæ•° 
+                    uint16_t usAnswerCount;     // Answerå­—æ®µä¸ªæ•°
+                    uint16_t usAuthorityCount;  // Authorityå­—æ®µä¸ªæ•°
+                    uint16_t usAdditionalCount; // Additionalå­—æ®µä¸ªæ•°
                 };
 #pragma pack(pop)
 
@@ -537,7 +537,7 @@ namespace ppp
 
                     while ((nLabelDataLen = *pDecodePos) != 0x00)
                     {
-                        // Normal Format£¬LabelDataLen + Label
+                        // Normal Formatï¼ŒLabelDataLen + Label
                         if ((nLabelDataLen & 0xc0) == 0) 
                         {
                             if ((usPlainStrLen + nLabelDataLen + 1) > nDotStrSize || (pDecodePos + nLabelDataLen + 1) >= szPacketEndPos)
@@ -554,7 +554,7 @@ namespace ppp
                         else  
                         {
                             // Message compression format is 11000000 00000000, consisting of two bytes. 
-                            // The first two bits are the jump flag, and the last 14 bits are the offset of the jump¡£
+                            // The first two bits are the jump flag, and the last 14 bits are the offset of the jumpã€‚
                             if (NULL == szPacketStartPos)
                             {
                                 return false;

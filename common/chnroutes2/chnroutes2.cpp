@@ -560,7 +560,7 @@ int chnroutes2_getiplist(ppp::set<ppp::string>& out_, const ppp::string& iplist_
                 continue;
             }
 
-            int st = sscanf(line_.data(), "%d.%d.%d.%d/%d", ip, ip + 1, ip + 2, ip + 3, &cidr);
+            int st = sscanf_s(line_.data(), "%d.%d.%d.%d/%d", ip, ip + 1, ip + 2, ip + 3, &cidr);
             if (st == 5 && cidr >= 0 && cidr <= 32) {
                 snprintf(sz, sizeof(sz), "%d.%d.%d.%d/%d", ip[0], ip[1], ip[2], ip[3], cidr);
                 if (out_.insert(sz).second) {
@@ -571,7 +571,7 @@ int chnroutes2_getiplist(ppp::set<ppp::string>& out_, const ppp::string& iplist_
         }
 
         int tm;
-        int by = sscanf(line_.data(), fmt, ip, ip + 1, ip + 2, ip + 3, &cidr, &tm);
+        int by = sscanf_s(line_.data(), fmt, ip, ip + 1, ip + 2, ip + 3, &cidr, &tm);
         if (by != 6) {
             continue;
         }

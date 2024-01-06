@@ -72,8 +72,7 @@ int ancil_send_fds_with_buffer(int sock, const int *fds, unsigned n_fds, void *b
 #ifndef SPARE_SEND_FDS
 int ancil_send_fds(int sock, const int *fds, unsigned n_fds) noexcept
 {
-    ANCIL_FD_BUFFER(ANCIL_MAX_N_FDS)
-    buffer;
+    ANCIL_FD_BUFFER(ANCIL_MAX_N_FDS) buffer;
 
     assert(n_fds <= ANCIL_MAX_N_FDS);
     return (ancil_send_fds_with_buffer(sock, fds, n_fds, &buffer));
@@ -83,8 +82,7 @@ int ancil_send_fds(int sock, const int *fds, unsigned n_fds) noexcept
 #ifndef SPARE_SEND_FD
 int ancil_send_fd(int sock, int fd) noexcept
 {
-    ANCIL_FD_BUFFER(1)
-    buffer;
+    ANCIL_FD_BUFFER(1) buffer;
 
     return (ancil_send_fds_with_buffer(sock, &fd, 1, &buffer));
 }

@@ -126,7 +126,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetManagedServer::LinkIsAvailable() noexcept {
-                WebSocketPtr websocket = server_;
+                IWebScoketPtr websocket = server_;
                 if (NULL == websocket) {
                     return false;
                 }
@@ -166,6 +166,7 @@ namespace ppp {
                             websocket->Dispose();
                         }
                     });
+
                 return websocket->Write(packet->data(), 0, packet->size(), cb);
             }
 
@@ -237,8 +238,9 @@ namespace ppp {
                         ppp::string host;
                         ppp::string path;
                         boost::asio::ip::tcp::endpoint remoteEP;
+                        bool ssl;
                         auto& context = y.GetContext();
-                        auto verify_ok = TryGetManagedServerEndPoint(url, host, path, remoteEP, y);
+                        auto verify_ok = TryGetManagedServerEndPoint(url, host, path, remoteEP, ssl, y);
                         context.post(
                             [verify_ok, ac]() noexcept {
                                 ac(verify_ok);
@@ -246,7 +248,7 @@ namespace ppp {
                     });
             }
 
-            bool VirtualEthernetManagedServer::TryGetManagedServerEndPoint(const ppp::string& url, ppp::string& host, ppp::string& path, boost::asio::ip::tcp::endpoint& remoteEP, YieldContext& y) noexcept {
+            bool VirtualEthernetManagedServer::TryGetManagedServerEndPoint(const ppp::string& url, ppp::string& host, ppp::string& path, boost::asio::ip::tcp::endpoint& remoteEP, bool& ssl, YieldContext& y) noexcept {
                 using ProtocolType = UriAuxiliary::ProtocolType;
 
                 if (disposed_) {
@@ -279,7 +281,15 @@ namespace ppp {
                     return false;
                 }
 
-                if (protocol_type != ProtocolType::ProtocolType_Http && protocol_type != ProtocolType::ProtocolType_WebSocket) {
+                if (protocol_type == ProtocolType::ProtocolType_Http ||
+                    protocol_type == ProtocolType::ProtocolType_WebSocket) {
+                    ssl = false;
+                }
+                elif(protocol_type == ProtocolType::ProtocolType_HttpSSL ||
+                    protocol_type == ProtocolType::ProtocolType_WebSocketSSL) {
+                    ssl = true;
+                }
+                else {
                     return false;
                 }
 
@@ -293,7 +303,7 @@ namespace ppp {
 
             void VirtualEthernetManagedServer::RunInner(const ppp::string& url, YieldContext& y) noexcept {
                 while (!disposed_) {
-                    WebSocketPtr websocket = NewWebSocketConnectToManagedServer2(url, y);
+                    IWebScoketPtr websocket = NewWebSocketConnectToManagedServer2(url, y);
                     if (websocket) {
                         server_ = websocket; {
                             Run(websocket, y); {
@@ -307,7 +317,7 @@ namespace ppp {
                 }
             }
 
-            void VirtualEthernetManagedServer::Run(WebSocketPtr& websocket, YieldContext& y) noexcept {
+            void VirtualEthernetManagedServer::Run(IWebScoketPtr& websocket, YieldContext& y) noexcept {
                 int node = switcher_->GetNodeId();
                 while (!disposed_) {
                     Json::Value json;
@@ -340,7 +350,7 @@ namespace ppp {
 
                 Json::ArrayIndex json_array_size = json_array.size();
                 UInt32 now = (UInt32)(ppp::threading::Executors::GetTickCount() / 1000);
-         
+
                 bool any = false;
                 for (Json::ArrayIndex json_array_index = 0; json_array_index < json_array_size; json_array_index++) {
                     Json::Value& json_object = json_array[json_array_index];
@@ -393,7 +403,7 @@ namespace ppp {
                 task.in += in;
                 task.out += out;
             }
- 
+
             void VirtualEthernetManagedServer::TickAllUploadTrafficToManagedServer(UInt64 now) noexcept {
                 if (now >= traffics_next_) {
                     Json::Value json;
@@ -415,8 +425,8 @@ namespace ppp {
                 }
             }
 
-            VirtualEthernetManagedServer::WebSocketPtr VirtualEthernetManagedServer::NewWebSocketConnectToManagedServer2(const ppp::string& url, YieldContext& y) noexcept {
-                WebSocketPtr websocket = NewWebSocketConnectToManagedServer(url, y);
+            VirtualEthernetManagedServer::IWebScoketPtr VirtualEthernetManagedServer::NewWebSocketConnectToManagedServer2(const ppp::string& url, YieldContext& y) noexcept {
+                IWebScoketPtr websocket = NewWebSocketConnectToManagedServer(url, y);
                 if (NULL == websocket) {
                     return NULL;
                 }
@@ -460,12 +470,13 @@ namespace ppp {
                 return websocket;
             }
 
-            VirtualEthernetManagedServer::WebSocketPtr VirtualEthernetManagedServer::NewWebSocketConnectToManagedServer(const ppp::string& url, YieldContext& y) noexcept {
+            VirtualEthernetManagedServer::IWebScoketPtr VirtualEthernetManagedServer::NewWebSocketConnectToManagedServer(const ppp::string& url, YieldContext& y) noexcept {
                 ppp::string host;
                 ppp::string path;
                 boost::asio::ip::tcp::endpoint remoteEP;
+                bool ssl;
 
-                auto verify_ok = TryGetManagedServerEndPoint(url, host, path, remoteEP, y);
+                auto verify_ok = TryGetManagedServerEndPoint(url, host, path, remoteEP, ssl, y);
                 if (!verify_ok) {
                     return NULL;
                 }
@@ -486,7 +497,14 @@ namespace ppp {
                 }
 
                 bool binary = false;
-                auto websocket = make_shared_object<WebSocket>(context_, socket, binary);
+                auto websocket = make_shared_object<IWebSocket>();
+                if (ssl) {
+                    websocket->wss = make_shared_object<WebSocketSsl>(context_, socket, binary);
+                }
+                else {
+                    websocket->ws = make_shared_object<WebSocket>(context_, socket, binary);
+                }
+
                 if (!websocket->Run(WebSocket::HandshakeType_Client, host, path, y)) {
                     return NULL;
                 }
@@ -498,6 +516,80 @@ namespace ppp {
                 else {
                     return websocket;
                 }
+            }
+        
+            void VirtualEthernetManagedServer::IWebSocket::Dispose() noexcept {
+                if (ws) {
+                    ws->Dispose();
+                }
+
+                if (wss) {
+                    wss->Dispose();
+                }
+            }
+
+            bool VirtualEthernetManagedServer::IWebSocket::IsDisposed() noexcept {
+                if (ws) {
+                    return ws->IsDisposed();
+                }
+
+                if (wss) {
+                    return wss->IsDisposed();
+                }
+
+                return true;
+            }
+
+            bool VirtualEthernetManagedServer::IWebSocket::Read(const void* buffer, int offset, int length, YieldContext& y) noexcept {
+                if (ws) {
+                    return ws->Read(buffer, offset, length, y);
+                }
+
+                if (wss) {
+                    return wss->Read(buffer, offset, length, y);
+                }
+
+                return false;
+            }
+
+            bool VirtualEthernetManagedServer::IWebSocket::Run(HandshakeType type, const ppp::string& host, const ppp::string& path, YieldContext& y) noexcept {
+                if (ws) {
+                    return ws->Run(type, host, path, y);
+                }
+
+                // Do not verify SSL server and only perform one-way authentication instead of mutual authentication, 
+                // As the server's certificate may have expired or it could be a private certificate. 
+                // There is no need for SSL/TLS mutual authentication in this cases.
+                if (wss) {
+                    std::string ssl_certificate_file;
+                    std::string ssl_certificate_key_file;
+                    std::string ssl_certificate_chain_file;
+                    std::string ssl_certificate_key_password;
+                    std::string ssl_ciphersuites = GetDefaultCipherSuites();
+                    bool verify_peer = false;
+
+                    return wss->Run(type, host, path, verify_peer, 
+                        ssl_certificate_file,
+                        ssl_certificate_key_file,
+                        ssl_certificate_chain_file,
+                        ssl_certificate_key_password,
+                        ssl_ciphersuites,
+                        y);
+                }
+                
+                return false;
+            }
+
+            bool VirtualEthernetManagedServer::IWebSocket::Write(const void* buffer, int offset, int length, const std::shared_ptr<AsynchronousWriteCallback>& cb) noexcept {
+                if (ws) {
+                    return ws->Write(buffer, offset, length, cb);
+                }
+
+                if (wss) {
+                    return wss->Write(buffer, offset, length, cb);
+                }
+
+                return false;
             }
         }
     }

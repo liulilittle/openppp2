@@ -148,6 +148,10 @@
 #define arraysizeof(array_) (sizeof(array_) / sizeof(*array_))
 #endif
 
+#ifndef _WIN32
+#define sscanf_s sscanf
+#endif
+
 #include <stdint.h>
 #include <signal.h>
 #include <limits.h>

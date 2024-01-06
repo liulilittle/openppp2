@@ -66,12 +66,13 @@ ancil_recv_fds_with_buffer(int, int *, unsigned, void *) noexcept;
  * in case of success
  */
 
-#define ANCIL_FD_BUFFER(n) \
-    struct                 \
-    {                      \
-        int fd[n];         \
-        struct cmsghdr h;  \
+#define ANCIL_FD_BUFFER(n)    \
+    struct                    \
+    {                         \
+        struct cmsghdr h;     \
+        int            fd[n]; \
     }
+
 /* ANCIL_FD_BUFFER(n)
  *
  * A structure type suitable to be used as buffer for n file descriptors.
