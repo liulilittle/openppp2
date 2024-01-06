@@ -74,6 +74,9 @@ namespace ppp {
             config.key.delta_encode = true;
             config.key.shuffle_data = true;
 
+            config.server.node = 0;
+            config.server.backend = "";
+
             config.client.guid = StringAuxiliary::Int128ToGuidString(Int128(UINT64_MAX, UINT64_MAX));
             config.client.server = "";
             config.client.reconnections.timeout = PPP_TCP_CONNECT_TIMEOUT;
@@ -82,6 +85,44 @@ namespace ppp {
 #ifdef _WIN32
             config.client.paper_airplane.tcp = true;
 #endif
+        }
+
+        template <class _Uty>
+        static void LRTrim(_Uty* s, int length) noexcept {
+            for (int i = 0; i < length; i++) {
+                *s[i] = LTrim(RTrim(*s[i]));
+            }
+        }
+
+        static void LRTrim(AppConfiguration& config, int level) noexcept {
+            if (level) {
+                ppp::string* strings[] = {
+                    &config.ip.public_,
+                    &config.ip.interface_,
+                    &config.udp.dns.redirect,
+                    &config.vmem.path,
+                    &config.server.backend,
+                    &config.client.guid,
+                    &config.client.server,
+                    &config.websocket.host,
+                    &config.websocket.path,
+                    &config.key.protocol,
+                    &config.key.protocol_key,
+                    &config.key.transport,
+                    &config.key.transport_key,
+                };
+                LRTrim(strings, arraysizeof(strings));
+            }
+            else {
+                std::string* strings[] = {
+                    &config.websocket.ssl.certificate_file,
+                    &config.websocket.ssl.certificate_key_file,
+                    &config.websocket.ssl.certificate_chain_file,
+                    &config.websocket.ssl.certificate_key_password,
+                    &config.websocket.ssl.ciphersuites,
+                };
+                LRTrim(strings, arraysizeof(strings));
+            }
         }
 
         bool AppConfiguration::Loaded() noexcept {
@@ -109,6 +150,9 @@ namespace ppp {
             if (config.tcp.inactive.timeout < 1) {
                 config.tcp.inactive.timeout = PPP_DEFAULT_TCP_TIMEOUT;
             }
+
+            LRTrim(config, 0);
+            LRTrim(config, 1);
 
             if (config.client.guid.empty()) {
                 config.client.guid = StringAuxiliary::Int128ToGuidString(Int128(UINT64_MAX, UINT64_MAX));
@@ -303,6 +347,9 @@ namespace ppp {
             config.key.delta_encode = JsonAuxiliary::AsValue<bool>(json["key"]["delta-encode"]);
             config.key.shuffle_data = JsonAuxiliary::AsValue<bool>(json["key"]["shuffle-data"]);
 
+            config.server.node = JsonAuxiliary::AsValue<int>(json["server"]["node"]);
+            config.server.backend = JsonAuxiliary::AsValue<ppp::string>(json["server"]["backend"]);
+
             config.client.reconnections.timeout = JsonAuxiliary::AsValue<int>(json["client"]["reconnections"]["timeout"]);
             config.client.guid = JsonAuxiliary::AsValue<ppp::string>(json["client"]["guid"]);
             config.client.server = JsonAuxiliary::AsValue<ppp::string>(json["client"]["server"]);
@@ -393,6 +440,12 @@ namespace ppp {
             key["delta-encode"] = config.key.delta_encode;
             key["shuffle-data"] = config.key.shuffle_data;
             root["key"] = key;
+
+            // Set server structure
+            Json::Value server;
+            server["node"] = config.server.node;
+            server["backend"] = config.server.backend;
+            root["server"] = server;
 
             // Set client structure
             Json::Value client;

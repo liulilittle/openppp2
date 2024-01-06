@@ -1,6 +1,7 @@
 #include <ppp/app/server/VirtualEthernetSwitcher.h>
 #include <ppp/app/server/VirtualEthernetExchanger.h>
 #include <ppp/app/server/VirtualEthernetNetworkTcpipConnection.h>
+#include <ppp/app/server/VirtualEthernetManagedServer.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/Socket.h>
 #include <ppp/net/IPEndPoint.h>
@@ -23,7 +24,6 @@ namespace ppp {
         namespace server {
             VirtualEthernetSwitcher::VirtualEthernetSwitcher(const AppConfigurationPtr& configuration) noexcept
                 : disposed_(false)
-                , nodeId_(0)
                 , configuration_(configuration)
                 , context_(Executors::GetDefault()) {
                 boost::asio::ip::udp::udp::endpoint dnsserverEP = ParseDNSEndPoint(configuration_->udp.dns.redirect);
@@ -36,8 +36,8 @@ namespace ppp {
                 Finalize();
             }
 
-            int VirtualEthernetSwitcher::GetNodeId() noexcept {
-                return nodeId_;
+            int VirtualEthernetSwitcher::GetNode() noexcept {
+                return configuration_->server.node;
             }
 
             boost::asio::ip::address VirtualEthernetSwitcher::GetInterfaceIP() noexcept {
@@ -62,6 +62,10 @@ namespace ppp {
 
             VirtualEthernetSwitcher::ContextPtr VirtualEthernetSwitcher::GetContext() noexcept {
                 return context_;
+            }
+
+            VirtualEthernetSwitcher::VirtualEthernetManagedServerPtr VirtualEthernetSwitcher::GetManagedServer() noexcept {
+                return server_;
             }
 
             VirtualEthernetSwitcher::SynchronizedObject& VirtualEthernetSwitcher::GetSynchronizedObject() noexcept {
@@ -123,14 +127,48 @@ namespace ppp {
 
                     auto allocator = transmission->BufferAllocator;
                     auto self = shared_from_this();
-                    return YieldContext::Spawn(allocator.get(), *context_,
-                        [self, this, transmission](YieldContext& y) noexcept {
+                    return YieldContext::Spawn(allocator.get(), *context,
+                        [self, this, transmission, context](YieldContext& y) noexcept {
                             bool bok = false;
+                            if (disposed_) {
+                                transmission->Dispose();
+                                return bok;
+                            }
+
                             bool mux = false;
                             Int128 session_id = transmission->HandshakeClient(y, mux);
                             if (session_id) {
                                 if (mux) {
-                                    bok = Establish(transmission, session_id, y);
+                                    VirtualEthernetManagedServerPtr server = server_;
+                                    if (NULL == server) {
+                                        bok = Establish(transmission, session_id, NULL, y);
+                                    }
+                                    elif(VirtualEthernetExchangerPtr exchanger = GetExchanger(session_id); NULL != exchanger) {
+                                        bok = Establish(transmission, session_id, NULL, y);
+                                    }
+                                    else {
+                                        bok = server->AuthenticationToManagedServer(session_id,
+                                            [self, this, transmission, session_id, context](bool bok, VirtualEthernetManagedServer::VirtualEthernetInformationPtr& i) noexcept {
+                                                if (bok) {
+                                                    bok = YieldContext::Spawn(*context,
+                                                        [self, this, transmission, session_id, i](YieldContext& y) noexcept {
+                                                            if (y) {
+                                                                Establish(transmission, session_id, i, y);
+                                                            }
+
+                                                            transmission->Dispose();
+                                                        });
+                                                }
+
+                                                if (!bok) {
+                                                    transmission->Dispose();
+                                                }
+                                            });
+
+                                        if (bok) {
+                                            return bok;
+                                        }
+                                    }
                                 }
                                 else {
                                     bok = Connect(transmission, session_id, y);
@@ -191,7 +229,7 @@ namespace ppp {
                 return make_shared_object<VirtualEthernetExchanger>(self, configuration_, transmission, session_id);
             }
 
-            bool VirtualEthernetSwitcher::Establish(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept {
+            bool VirtualEthernetSwitcher::Establish(const ITransmissionPtr& transmission, const Int128& session_id, const VirtualEthernetInformationPtr& i, YieldContext& y) noexcept {
                 if (NULL == transmission) {
                     return false;
                 }
@@ -201,13 +239,17 @@ namespace ppp {
                     return false;
                 }
 
-                bool ok = channel->Open() && channel->Run(transmission, y);
-                if (!ok) {
-                    channel->Dispose();
+                bool bok = channel->Open();
+                if (bok && NULL != i) {
+                    bok = channel->DoInformation(transmission, *i, y);
+                }
+
+                if (bok) {
+                    bok = channel->Run(transmission, y);
                 }
 
                 DeleteExchanger(channel.get());
-                return ok;
+                return bok;
             }
 
             VirtualEthernetSwitcher::FirewallPtr VirtualEthernetSwitcher::NewFirewall() noexcept {
@@ -216,9 +258,23 @@ namespace ppp {
 
             bool VirtualEthernetSwitcher::Connect(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept {
                 // VPN client A link can be created only after a link is established between the local switch and the remote VPN server.
-                VirtualEthernetExchangerPtr exchanger = GetExchanger(session_id);
-                if (NULL == exchanger) {
-                    return false;
+                if (y) {
+                    VirtualEthernetExchangerPtr exchanger = GetExchanger(session_id);
+                    if (NULL == exchanger) {
+                        return false;
+                    }
+
+                    ITransmissionPtr owner = exchanger->GetTransmission();
+                    if (NULL != owner) {
+                        std::shared_ptr<ITransmissionStatistics> left = owner->Statistics;
+                        std::shared_ptr<ITransmissionStatistics> reft = transmission->Statistics;
+                        if (NULL != reft) {
+                            left->IncomingTraffic += reft->IncomingTraffic;
+                            left->OutgoingTraffic += reft->OutgoingTraffic;
+                        }
+
+                        transmission->Statistics = left;
+                    }
                 }
 
                 VirtualEthernetNetworkTcpipConnectionPtr connection = AddNewConnection(transmission, session_id);
@@ -350,8 +406,41 @@ namespace ppp {
                     return false;
                 }
 
-                bool ok = CreateAllAcceptors() && CreateAlwaysTimeout() && CreateFirewall(firewall_rules);
+                bool ok = CreateAllAcceptors() &&
+                    CreateAlwaysTimeout() &&
+                    CreateFirewall(firewall_rules) &&
+                    OpenManagedServerIfNeed();
                 return ok;
+            }
+
+            bool VirtualEthernetSwitcher::OpenManagedServerIfNeed() noexcept {
+                if (configuration_->server.node < 1 || configuration_->server.backend.empty()) {
+                    return true;
+                }
+
+                VirtualEthernetManagedServerPtr server = NewManagedServer();
+                if (NULL == server) {
+                    return false;
+                }
+
+                auto self = shared_from_this();
+                return server->TryVerifyUriAsync(configuration_->server.backend,
+                    [self, this, server](bool ok) noexcept {
+                        if (ok) {
+                            SynchronizedObjectScope scope(syncobj_);
+                            ok = false;
+                            if (!disposed_) {
+                                ok = server->ConnectToManagedServer(configuration_->server.backend);
+                                if (ok) {
+                                    server_ = server;
+                                }
+                            }
+                        }
+
+                        if (!ok) {
+                            server->Dispose();
+                        }
+                    });
             }
 
             VirtualEthernetSwitcher::ITransmissionPtr VirtualEthernetSwitcher::Accept(int categories, const ContextPtr& context, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket) noexcept {
@@ -371,7 +460,7 @@ namespace ppp {
                 }
 
                 if (NULL != transmission) {
-                    transmission->Statistics = GetStatistics();
+                    transmission->Statistics = NewStatistics();
                 }
                 return transmission;
             }
@@ -387,15 +476,44 @@ namespace ppp {
             }
 
             VirtualEthernetSwitcher::ITransmissionStatisticsPtr& VirtualEthernetSwitcher::GetStatistics() noexcept {
-                SynchronizedObjectScope scope(GetSynchronizedObject());
-                if (NULL == statistics_) {
-                    statistics_ = NewStatistics();
-                }
                 return statistics_;
             }
 
             VirtualEthernetSwitcher::ITransmissionStatisticsPtr VirtualEthernetSwitcher::NewStatistics() noexcept {
-                return make_shared_object<ITransmissionStatistics>();
+                class NetworkStatistics : public ITransmissionStatistics {
+                public:
+                    NetworkStatistics(const ITransmissionStatisticsPtr& owner) noexcept
+                        : ITransmissionStatistics()
+                        , owner_(owner) {
+
+                    }
+
+                public:
+                    virtual uint64_t                                    AddIncomingTraffic(uint64_t incoming_traffic) noexcept {
+                        owner_->AddIncomingTraffic(incoming_traffic);
+                        return ITransmissionStatistics::AddIncomingTraffic(incoming_traffic);
+                    }
+                    virtual uint64_t                                    AddOutgoingTraffic(uint64_t outcoming_traffic) noexcept {
+                        owner_->AddOutgoingTraffic(outcoming_traffic);
+                        return ITransmissionStatistics::AddOutgoingTraffic(outcoming_traffic);
+                    }
+
+                private:
+                    ITransmissionStatisticsPtr                          owner_;
+                };
+
+                VirtualEthernetManagedServerPtr server = server_;
+                if (NULL == server) {
+                    return make_shared_object<ITransmissionStatistics>();
+                }
+                else {
+                    return make_shared_object<NetworkStatistics>(statistics_);
+                }
+            }
+
+            VirtualEthernetSwitcher::VirtualEthernetManagedServerPtr VirtualEthernetSwitcher::NewManagedServer() noexcept {
+                std::shared_ptr<VirtualEthernetSwitcher> self = shared_from_this();
+                return make_shared_object<VirtualEthernetManagedServer>(self);
             }
 
             void VirtualEthernetSwitcher::Finalize() noexcept {
@@ -502,6 +620,10 @@ namespace ppp {
 
                 TickAllExchangers(now);
                 TickAllConnections(now);
+
+                if (VirtualEthernetManagedServerPtr server = server_; NULL != server) {
+                    server->Update(now);
+                }
                 return true;
             }
 
@@ -564,7 +686,7 @@ namespace ppp {
                     }
                 }
                 return IPEndPoint::ToEndPoint<boost::asio::ip::tcp>(IPEndPoint::Any(IPEndPoint::MinPort));
-            }
+            }        
         }
     }
 }

@@ -43,7 +43,23 @@ namespace ppp {
             }
 
             bool VirtualEthernetManagedServer::ConnectToManagedServer(const ppp::string& url) noexcept {
-                return false;
+                if (uri_.empty() || url.empty()) {
+                    return false;
+                }
+
+                if (disposed_) {
+                    return false;
+                }
+
+                auto self = shared_from_this();
+                return YieldContext::Spawn(*context_,
+                    [self, this, url](YieldContext& y) noexcept {
+                        RunInner(url, y);
+                    });
+            }
+
+            ppp::string VirtualEthernetManagedServer::GetUri() noexcept {
+                return uri_;
             }
 
             bool VirtualEthernetManagedServer::AuthenticationToManagedServer(const ppp::Int128& session_id, const AuthenticationToManagedServerAsyncCallback& ac) noexcept {
@@ -104,8 +120,9 @@ namespace ppp {
                     }
                 }
 
+                VirtualEthernetInformationPtr nullVEI;
                 for (ReleaseInfo& ri : releases) {
-                    ri.f(false, NULL);
+                    ri.f(false, nullVEI);
                 }
             }
 
@@ -212,11 +229,11 @@ namespace ppp {
             }
 
             bool VirtualEthernetManagedServer::SendToManagedServer(const ppp::Int128& session_id, int cmd, const Json::Value& data) noexcept {
-                return PACKET_SendToManagedServer<WebSocket>(switcher_->GetNodeId(), server_, session_id, cmd, data);
+                return PACKET_SendToManagedServer<WebSocket>(switcher_->GetNode(), server_, session_id, cmd, data);
             }
 
             bool VirtualEthernetManagedServer::SendToManagedServer(const ppp::Int128& session_id, int cmd, const ppp::string& data) noexcept {
-                return PACKET_SendToManagedServer<WebSocket>(switcher_->GetNodeId(), server_, session_id, cmd, data);
+                return PACKET_SendToManagedServer<WebSocket>(switcher_->GetNode(), server_, session_id, cmd, data);
             }
 
             bool VirtualEthernetManagedServer::TryVerifyUriAsync(const ppp::string& url, const TryVerifyUriAsyncCallback& ac) noexcept {
@@ -240,7 +257,12 @@ namespace ppp {
                         boost::asio::ip::tcp::endpoint remoteEP;
                         bool ssl;
                         auto& context = y.GetContext();
-                        auto verify_ok = TryGetManagedServerEndPoint(url, host, path, remoteEP, ssl, y);
+                        auto url_new = GetManagedServerEndPoint(url, host, path, remoteEP, ssl, y);
+                        auto verify_ok = url_new.size() > 0;
+                        if (verify_ok) {
+                            uri_ = std::move(url_new);
+                        }
+
                         context.post(
                             [verify_ok, ac]() noexcept {
                                 ac(verify_ok);
@@ -248,15 +270,15 @@ namespace ppp {
                     });
             }
 
-            bool VirtualEthernetManagedServer::TryGetManagedServerEndPoint(const ppp::string& url, ppp::string& host, ppp::string& path, boost::asio::ip::tcp::endpoint& remoteEP, bool& ssl, YieldContext& y) noexcept {
+            ppp::string VirtualEthernetManagedServer::GetManagedServerEndPoint(const ppp::string& url, ppp::string& host, ppp::string& path, boost::asio::ip::tcp::endpoint& remoteEP, bool& ssl, YieldContext& y) noexcept {
                 using ProtocolType = UriAuxiliary::ProtocolType;
 
                 if (disposed_) {
-                    return false;
+                    return "";
                 }
 
                 if (url.empty()) {
-                    return false;
+                    return "";
                 }
 
                 ppp::string address;
@@ -266,19 +288,19 @@ namespace ppp {
 
                 ppp::string url_new = UriAuxiliary::Parse(url, host, address, path, port, protocol_type, y);
                 if (url_new.empty()) {
-                    return false;
+                    return "";
                 }
 
                 if (host.empty()) {
-                    return false;
+                    return "";
                 }
 
                 if (address.empty()) {
-                    return false;
+                    return "";
                 }
 
                 if (port <= IPEndPoint::MinPort || port > IPEndPoint::MaxPort) {
-                    return false;
+                    return "";
                 }
 
                 if (protocol_type == ProtocolType::ProtocolType_Http ||
@@ -290,15 +312,18 @@ namespace ppp {
                     ssl = true;
                 }
                 else {
-                    return false;
+                    return "";
                 }
 
                 IPEndPoint ipep(address.data(), port);
                 if (IPEndPoint::IsInvalid(ipep)) {
-                    return false;
+                    return "";
                 }
 
-                return disposed_ ? false : true;
+                if (disposed_) {
+                    return "";
+                }
+                return url_new;
             }
 
             void VirtualEthernetManagedServer::RunInner(const ppp::string& url, YieldContext& y) noexcept {
@@ -317,8 +342,17 @@ namespace ppp {
                 }
             }
 
+            void VirtualEthernetManagedServer::Dispose() noexcept {
+                disposed_ = true;
+
+                if (IWebScoketPtr websocket = std::move(server_); NULL != websocket) {
+                    server_.reset();
+                    websocket->Dispose();
+                }
+            }
+
             void VirtualEthernetManagedServer::Run(IWebScoketPtr& websocket, YieldContext& y) noexcept {
-                int node = switcher_->GetNodeId();
+                int node = switcher_->GetNode();
                 while (!disposed_) {
                     Json::Value json;
                     if (!PACKET_ReadJsonPacket(allocator_, websocket, json, y)) {
@@ -382,16 +416,17 @@ namespace ppp {
 
                 std::shared_ptr<VirtualEthernetInformation> i = VirtualEthernetInformation::FromJson(json["data"]);
                 if (!i) {
-                    f(false, NULL);
+                    VirtualEthernetInformationPtr nullVEI;
+                    f(false, nullVEI);
                     return true;
                 }
 
                 UInt32 now = (UInt32)(GetTickCount() / 1000);
                 if ((i->IncomingTraffic > 0 && i->OutgoingTraffic > 0) && (i->ExpiredTime != 0 && i->ExpiredTime > now)) {
-                    f(true, i.get());
+                    f(true, i);
                 }
                 else {
-                    f(false, i.get());
+                    f(false, i);
                 }
                 return true;
             }
@@ -430,7 +465,7 @@ namespace ppp {
                     return NULL;
                 }
 
-                int node = switcher_->GetNodeId();
+                int node = switcher_->GetNode();
                 bool ok = PACKET_SendToManagedServer<WebSocket>(node, websocket, 0, PACKET_CMD_CONNECT, ppp::string());
                 if (!ok) {
                     return NULL;
@@ -475,8 +510,8 @@ namespace ppp {
                 boost::asio::ip::tcp::endpoint remoteEP;
                 bool ssl;
 
-                auto verify_ok = TryGetManagedServerEndPoint(url, host, path, remoteEP, ssl, y);
-                if (!verify_ok) {
+                auto url_new = GetManagedServerEndPoint(url, host, path, remoteEP, ssl, y);
+                if (url_new.empty()) {
                     return NULL;
                 }
 
@@ -493,6 +528,11 @@ namespace ppp {
                 else {
                     std::shared_ptr<ppp::configurations::AppConfiguration> configuration = GetConfiguration();
                     ppp::net::Socket::AdjustSocketOptional(*socket, configuration->tcp.fast_open, configuration->tcp.turbo);
+                }
+
+                bool connect_ok = ppp::coroutines::asio::async_connect(*socket, remoteEP, y);
+                if (!connect_ok) {
+                    return NULL;
                 }
 
                 bool binary = false;

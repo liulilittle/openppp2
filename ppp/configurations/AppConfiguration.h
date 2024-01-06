@@ -73,6 +73,10 @@ namespace ppp {
                 ppp::string                                                 path;
             }                                                               vmem;
             struct {
+                int                                                         node;
+                ppp::string                                                 backend;
+            }                                                               server;
+            struct {
                 ppp::string                                                 guid;
                 ppp::string                                                 server;
                 struct {
