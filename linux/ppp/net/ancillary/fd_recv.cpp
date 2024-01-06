@@ -82,8 +82,8 @@ int ancil_recv_fds(int sock, int* fd, unsigned n_fds) noexcept
     /* ANCIL_FD_BUFFER(ANCIL_MAX_N_FDS) buffer; */
     struct ANCIL_FD_BUFFER_BLOCK
     {
-        struct cmsghdr h;
         int            fd;
+	struct cmsghdr h;
     };
 
     assert(n_fds <= ANCIL_MAX_N_FDS);
@@ -99,8 +99,8 @@ int ancil_recv_fd(int sock, int* fd) noexcept
     /* ANCIL_FD_BUFFER(1) buffer; */
     struct
     {
-        struct cmsghdr h;
         int            fd;
+	struct cmsghdr h;
     } buffer;
 
     return (ancil_recv_fds_with_buffer(sock, fd, 1, &buffer) > 0 ? 0 : -1);
