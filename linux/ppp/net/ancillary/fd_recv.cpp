@@ -79,7 +79,6 @@ int ancil_recv_fds_with_buffer(int sock, int* fds, unsigned n_fds, void* buffer)
 #ifndef SPARE_RECV_FDS
 int ancil_recv_fds(int sock, int* fd, unsigned n_fds) noexcept
 {
-    ANCIL_FD_BUFFER(ANCIL_MAX_N_FDS) buffer;
     /* ANCIL_FD_BUFFER(ANCIL_MAX_N_FDS) buffer; */
     struct ANCIL_FD_BUFFER_BLOCK
     {
