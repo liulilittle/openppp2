@@ -105,10 +105,19 @@ namespace ppp {
                 }
                 return packet;
             }
-#ifdef _LINUX
+#if defined(_WIN32)
+#pragma optimize("", off)
+#pragma optimize("gsyb2", on) /* /O1 = /Og /Os /Oy /Ob2 /GF /Gy */
+#elif defined(_LINUX)
 #pragma GCC push_options
 #pragma GCC optimize("O1")
 #endif
+            // This function cannot be optimized or the optimization level cannot be greater than O1, 
+            // Otherwise it will cause problems with the compiler. In fact, there will be no problems under WIN, 
+            // And there will be no problems with higher versions of GCC. 
+            // The problem is that the compiler version is GCC7.X or above. 
+            // Found, but in order to maintain consistency, 
+            // Both VC++ and GCC should uniformly require the compiler to use the corresponding range of C/C++ code optimization levels.
             static bool                                 Write(ITransmission* transmission, YieldContext& y, const void* packet, int packet_length) noexcept {
                 using AsynchronousWriteCallback = ITransmission::AsynchronousWriteCallback;
 
@@ -132,7 +141,9 @@ namespace ppp {
                         }));
                 }
             }
-#ifdef _LINUX
+#if defined(_WIN32)
+#pragma optimize("", on)
+#elif defined(_LINUX)
 #pragma GCC pop_options
 #endif
             static bool                                 Write(ITransmission* transmission, const void* packet, int packet_length, const std::shared_ptr<ITransmission::AsynchronousWriteBytesCallback>& cb) noexcept {

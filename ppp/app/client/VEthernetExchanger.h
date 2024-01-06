@@ -89,6 +89,7 @@ namespace ppp {
 
             private:
                 void                                                                    Finalize() noexcept;
+                bool                                                                    SendEchoKeepAlivePacket(UInt64 now, bool immediately) noexcept;
                 bool                                                                    Sleep(uint64_t milliseconds, const ContextPtr& context, YieldContext& y) noexcept;
                 bool                                                                    ReceiveFromDestination(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length) noexcept;
                 VEthernetDatagramPortPtr                                                AddNewDatagramPort(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP) noexcept;
@@ -107,8 +108,8 @@ namespace ppp {
                 }
 
             private:
-                Int128                                                                  guid_;
                 bool                                                                    disposed_;
+                UInt64                                                                  sekap_next_;
                 VEthernetNetworkSwitcherPtr                                             switcher_;
                 std::shared_ptr<VirtualEthernetInformation>                             information_;
                 TimerTable                                                              timeouts_;

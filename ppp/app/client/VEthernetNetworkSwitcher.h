@@ -139,12 +139,12 @@ namespace ppp {
             protected:
                 virtual void                                                    AddRoute() noexcept;
                 virtual void                                                    DeleteRoute() noexcept;
+                virtual bool                                                    OnUdpPacketInput(const std::shared_ptr<IPFrame>& packet) noexcept;
+                virtual bool                                                    OnIcmpPacketInput(const std::shared_ptr<IPFrame>& packet) noexcept;
 
             private:
                 void                                                            Finalize() noexcept;
                 void                                                            ReleaseAllObjects(bool ctor) noexcept;
-                bool                                                            OnUdpPacketInput(const std::shared_ptr<IPFrame>& packet) noexcept;
-                bool                                                            OnIcmpPacketInput(const std::shared_ptr<IPFrame>& packet) noexcept;
 
             private:
 #ifdef _WIN32

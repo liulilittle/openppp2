@@ -294,7 +294,7 @@ namespace ppp {
                     static constexpr int max_icmppackets_aid = (1 << 24) - 1;
 
                     int ack_id = ++icmppackets_aid_;
-                    if (ack_id < 0) {
+                    if (ack_id < 1) {
                         icmppackets_aid_ = 0;
                         continue;
                     }

@@ -108,10 +108,6 @@ namespace ppp {
                         return false;
                     }
 
-                    if (connection_id == 0) {
-                        return false;
-                    }
-
                     Byte packet_header[4] = {
                         (Byte)(packet_action),
                         (Byte)(connection_id >> 16),
@@ -380,9 +376,7 @@ namespace ppp {
                 }
                 elif(packet_action == PacketAction_ECHOACK) {
                     int ack_id = global::PACKET_ConnectId(p, packet_length);
-                    if (ack_id) {
-                        return OnEcho(transmission, ack_id, y);
-                    }
+                    return OnEcho(transmission, ack_id, y);
                 }
                 elif(packet_action == PacketAction_INFO) {
                     if (packet_length >= sizeof(VirtualEthernetInformation)) {

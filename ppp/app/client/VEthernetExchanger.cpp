@@ -39,9 +39,10 @@ namespace ppp {
                 const Int128&                           id) noexcept
                 : VirtualEthernetLinklayer(configuration, context, id)
                 , disposed_(false)
+                , sekap_next_(0)
                 , switcher_(switcher)
                 , network_state_(NetworkState_Connecting) {
-                guid_ = StringAuxiliary::GuidStringToInt128(configuration->client.guid);
+
             }
 
             VEthernetExchanger::~VEthernetExchanger() noexcept {
@@ -75,11 +76,11 @@ namespace ppp {
             }
 
             VEthernetExchanger::ITransmissionPtr VEthernetExchanger::NewTransmission(
-                const ContextPtr&                                                   context,
-                const std::shared_ptr<boost::asio::ip::tcp::socket>&                socket,
+                const ContextPtr& context,
+                const std::shared_ptr<boost::asio::ip::tcp::socket>& socket,
                 ProtocolType                                                        protocol_type,
-                const ppp::string&                                                  host,
-                const ppp::string&                                                  path) noexcept {
+                const ppp::string& host,
+                const ppp::string& path) noexcept {
 
                 ITransmissionPtr transmission;
                 if (protocol_type == ProtocolType::ProtocolType_Http ||
@@ -181,7 +182,7 @@ namespace ppp {
                 ppp::string server;
                 int port;
                 ProtocolType protocol_type = ProtocolType::ProtocolType_PPP;
-  
+
                 if (!GetRemoteEndPoint(y.GetPtr(), hostname, address, path, port, protocol_type, server, remoteEP)) {
                     return NULL;
                 }
@@ -250,6 +251,7 @@ namespace ppp {
                 std::shared_ptr<boost::asio::io_context> context = GetContext();
                 context->dispatch(
                     [self, this, now]() noexcept {
+                        SendEchoKeepAlivePacket(now, false);
                         Dictionary::UpdateAllObjects(datagrams_, now);
                     });
                 return true;
@@ -276,7 +278,7 @@ namespace ppp {
                     return NULL;
                 }
 
-                bool ok = transmission->HandshakeServer(y, guid_, false);
+                bool ok = transmission->HandshakeServer(y, GetId(), false);
                 if (!ok) {
                     transmission->Dispose();
                     return NULL;
@@ -296,7 +298,7 @@ namespace ppp {
                     network_state_.exchange(NetworkState_Connecting); {
                         ITransmissionPtr transmission = OpenTransmission(context, y);
                         if (transmission) {
-                            if (transmission->HandshakeServer(y, guid_, true)) {
+                            if (transmission->HandshakeServer(y, GetId(), true)) {
                                 if (y) {
                                     network_state_.exchange(NetworkState_Established); {
                                         transmission_ = transmission; {
@@ -399,7 +401,9 @@ namespace ppp {
             }
 
             bool VEthernetExchanger::OnEcho(const ITransmissionPtr& transmission, int ack_id, YieldContext& y) noexcept {
-                switcher_->ERORTE(ack_id);
+                if (ack_id) {
+                    switcher_->ERORTE(ack_id);
+                }
                 return true;
             }
 
@@ -429,7 +433,7 @@ namespace ppp {
                     return false;
                 }
             }
-            
+
             bool VEthernetExchanger::SendTo(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const void* packet, int packet_size) noexcept {
                 if (NULL == packet || packet_size < 1) {
                     return false;
@@ -528,7 +532,7 @@ namespace ppp {
                 if (NULL == transmission) {
                     return NULL;
                 }
-                
+
                 std::shared_ptr<VEthernetExchanger> exchanger = std::dynamic_pointer_cast<VEthernetExchanger>(shared_from_this());
                 if (NULL == exchanger) { /* ??? */
                     return NULL;
@@ -543,6 +547,26 @@ namespace ppp {
 
             VEthernetExchanger::VEthernetDatagramPortPtr VEthernetExchanger::ReleaseDatagramPort(const boost::asio::ip::udp::endpoint& sourceEP) noexcept {
                 return Dictionary::ReleaseObjectByKey(datagrams_, sourceEP);
+            }
+
+            bool VEthernetExchanger::SendEchoKeepAlivePacket(UInt64 now, bool immediately) noexcept {
+                static constexpr int MIN_TIMEOUT = 1000;
+                static constexpr int MAX_TIMEOUT = 30000;
+
+                if (!immediately) {
+                    if (sekap_next_ == 0) {
+                        sekap_next_ = now + RandomNext(MIN_TIMEOUT, MAX_TIMEOUT);
+                        return false;
+                    }
+
+                    if (now < sekap_next_) {
+                        return false;
+                    }
+                }
+
+                bool ok = Echo(0);
+                sekap_next_ = now + RandomNext(MIN_TIMEOUT, MAX_TIMEOUT);
+                return ok;
             }
         }
     }
