@@ -12,7 +12,15 @@ namespace ppp {
 
         public:
             ITransmissionStatistics() noexcept { Clear(); }
-            
+            virtual uint64_t                                    AddIncomingTraffic(uint64_t incoming_traffic) noexcept {
+                IncomingTraffic += incoming_traffic;
+                return IncomingTraffic;
+            }
+            virtual uint64_t                                    AddOutgoingTraffic(uint64_t outcoming_traffic) noexcept {
+                OutgoingTraffic += outcoming_traffic;
+                return OutgoingTraffic;
+            }
+
         public:
             virtual std::shared_ptr<ITransmissionStatistics>    Clone() noexcept {
                 std::shared_ptr<ITransmissionStatistics> statistics = make_shared_object<ITransmissionStatistics>();

@@ -76,7 +76,7 @@ namespace ppp {
 
             std::shared_ptr<ITransmissionStatistics> statistics = this->Statistics;
             if (statistics) {
-                statistics->IncomingTraffic += length;
+                statistics->AddIncomingTraffic(length);
             }
             return packet;
         }
@@ -103,7 +103,7 @@ namespace ppp {
                     if (ok) {
                         std::shared_ptr<ITransmissionStatistics> statistics = this->Statistics;
                         if (statistics) {
-                            statistics->OutgoingTraffic += packet_length;
+                            statistics->AddOutgoingTraffic(packet_length);
                         }
                     }
 

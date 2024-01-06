@@ -79,16 +79,19 @@ int ancil_recv_fds_with_buffer(int sock, int* fds, unsigned n_fds, void* buffer)
 #ifndef SPARE_RECV_FDS
 int ancil_recv_fds(int sock, int* fd, unsigned n_fds) noexcept
 {
-    /* ANCIL_FD_BUFFER(ANCIL_MAX_N_FDS) buffer; */
+#ifdef ANCIL_FD_BUFFER_STRUCT
+    ANCIL_FD_BUFFER(ANCIL_MAX_N_FDS) buffer;
+#else
     struct ANCIL_FD_BUFFER_BLOCK
     {
         struct cmsghdr h;
         int            fd;
     };
-
-    assert(n_fds <= ANCIL_MAX_N_FDS);
+#endif
 
     void* buffer = (void*)alloca(sizeof(ANCIL_FD_BUFFER_BLOCK) + ((ANCIL_MAX_N_FDS - 1) * sizeof(int)));
+    assert(n_fds <= ANCIL_MAX_N_FDS);
+
     return (ancil_recv_fds_with_buffer(sock, fd, n_fds, &buffer));
 }
 #endif /* SPARE_RECV_FDS */
@@ -96,12 +99,15 @@ int ancil_recv_fds(int sock, int* fd, unsigned n_fds) noexcept
 #ifndef SPARE_RECV_FD
 int ancil_recv_fd(int sock, int* fd) noexcept
 {
-    /* ANCIL_FD_BUFFER(1) buffer; */
+#ifdef ANCIL_FD_BUFFER_STRUCT
+    ANCIL_FD_BUFFER(1) buffer;
+#else
     struct
     {
         struct cmsghdr h;
         int            fd;
     } buffer;
+#endif
 
     return (ancil_recv_fds_with_buffer(sock, fd, 1, &buffer) > 0 ? 0 : -1);
 }

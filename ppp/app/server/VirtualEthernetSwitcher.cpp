@@ -371,7 +371,7 @@ namespace ppp {
                 }
 
                 if (NULL != transmission) {
-                    transmission->Statistics = GetStatistics();
+                    transmission->Statistics = NewStatistics();
                 }
                 return transmission;
             }
@@ -387,15 +387,33 @@ namespace ppp {
             }
 
             VirtualEthernetSwitcher::ITransmissionStatisticsPtr& VirtualEthernetSwitcher::GetStatistics() noexcept {
-                SynchronizedObjectScope scope(GetSynchronizedObject());
-                if (NULL == statistics_) {
-                    statistics_ = NewStatistics();
-                }
                 return statistics_;
             }
 
             VirtualEthernetSwitcher::ITransmissionStatisticsPtr VirtualEthernetSwitcher::NewStatistics() noexcept {
-                return make_shared_object<ITransmissionStatistics>();
+                class NetworkStatistics : public ITransmissionStatistics {
+                public:
+                    NetworkStatistics(const ITransmissionStatisticsPtr& owner) noexcept
+                        : ITransmissionStatistics()
+                        , owner_(owner) {
+
+                    }
+
+                public:
+                    virtual uint64_t                                    AddIncomingTraffic(uint64_t incoming_traffic) noexcept {
+                        owner_->AddIncomingTraffic(incoming_traffic);
+                        return ITransmissionStatistics::AddIncomingTraffic(incoming_traffic);
+                    }
+                    virtual uint64_t                                    AddOutgoingTraffic(uint64_t outcoming_traffic) noexcept {
+                        owner_->AddOutgoingTraffic(outcoming_traffic);
+                        return ITransmissionStatistics::AddOutgoingTraffic(outcoming_traffic);
+                    }
+
+                private:
+                    ITransmissionStatisticsPtr                          owner_;
+                };
+
+                return make_shared_object<NetworkStatistics>(statistics_);
             }
 
             void VirtualEthernetSwitcher::Finalize() noexcept {
@@ -564,7 +582,7 @@ namespace ppp {
                     }
                 }
                 return IPEndPoint::ToEndPoint<boost::asio::ip::tcp>(IPEndPoint::Any(IPEndPoint::MinPort));
-            }
+            }        
         }
     }
 }

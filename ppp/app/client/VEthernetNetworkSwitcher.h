@@ -86,6 +86,13 @@ namespace ppp {
                 virtual ~VEthernetNetworkSwitcher() noexcept;
 
             public:
+#ifdef _WIN32
+                PaperAirplaneControllerPtr                                      GetPaperAirplaneController() noexcept;
+                virtual bool                                                    SetHttpProxyToSystemEnv() noexcept;
+                virtual bool                                                    ClearHttpProxyToSystemEnv() noexcept;
+#elif _LINUX
+                ProtectorNetworkPtr                                             GetProtectorNetwork() noexcept;
+#endif
                 std::shared_ptr<ppp::configurations::AppConfiguration>          GetConfiguration() noexcept;
                 std::shared_ptr<VEthernetExchanger>                             GetExchanger() noexcept;
                 std::shared_ptr<ppp::transmissions::ITransmissionQoS>           GetQoS() noexcept;
@@ -95,13 +102,6 @@ namespace ppp {
                 RouteInformationTablePtr                                        GetRib() noexcept;
                 ForwardInformationTablePtr                                      GetFib() noexcept;
                 bool                                                            IsBlockQUIC() noexcept;
-#ifdef _WIN32
-                PaperAirplaneControllerPtr                                      GetPaperAirplaneController() noexcept;
-                virtual bool                                                    SetHttpProxyToSystemEnv() noexcept;
-                virtual bool                                                    ClearHttpProxyToSystemEnv() noexcept;
-#elif _LINUX
-                ProtectorNetworkPtr                                             GetProtectorNetwork() noexcept;
-#endif
 
             public:
                 std::shared_ptr<NetworkInterface>                               GetTapNetworkInterface() noexcept;

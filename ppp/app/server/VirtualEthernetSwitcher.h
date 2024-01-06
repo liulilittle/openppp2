@@ -89,8 +89,8 @@ namespace ppp {
                 virtual bool                                            OnInformation(const Int128& session_id, const std::shared_ptr<VirtualEthernetInformation>& info) noexcept;
 
             protected:
-                virtual ITransmissionStatisticsPtr                      NewStatistics() noexcept;
                 virtual FirewallPtr                                     NewFirewall() noexcept;
+                virtual ITransmissionStatisticsPtr                      NewStatistics() noexcept;
                 virtual VirtualEthernetExchangerPtr                     NewExchanger(const ITransmissionPtr& transmission, const Int128& session_id) noexcept;
                 virtual VirtualEthernetNetworkTcpipConnectionPtr        NewConnection(const ITransmissionPtr& transmission, const Int128& session_id) noexcept;
 
