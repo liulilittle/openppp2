@@ -32,7 +32,10 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
+
 #include <assert.h>
+#include <alloca.h>
+
 #if defined(__FreeBSD__)
 #include <sys/param.h> /* FreeBSD sucks */
 #endif
@@ -84,7 +87,6 @@ ancil_recv_fds_with_buffer(int, int *, unsigned, void *) noexcept;
     {                            \
         struct cmsghdr h;        \
         int            fd[n];    \
-        int            reserved; \
     }
 #endif
 
