@@ -23,9 +23,12 @@ namespace ppp {
                 friend class VirtualEthernetManagedServer;
 
             public:
+                typedef ppp::app::protocol::VirtualEthernetInformation  VirtualEthernetInformation;
+                typedef std::shared_ptr<VirtualEthernetInformation>     VirtualEthernetInformationPtr;
                 typedef std::shared_ptr<VirtualEthernetExchanger>       VirtualEthernetExchangerPtr;
                 typedef ppp::unordered_map<Int128,
                     VirtualEthernetExchangerPtr>                        VirtualEthernetExchangerTable;
+                typedef std::shared_ptr<VirtualEthernetManagedServer>   VirtualEthernetManagedServerPtr;
                 typedef ppp::app::protocol::VirtualEthernetInformation  VirtualEthernetInformation;
                 typedef ppp::configurations::AppConfiguration           AppConfiguration;
                 typedef std::shared_ptr<AppConfiguration>               AppConfigurationPtr;
@@ -51,12 +54,13 @@ namespace ppp {
                 virtual ~VirtualEthernetSwitcher() noexcept;
 
             public:
-                int                                                     GetNodeId() noexcept;
+                int                                                     GetNode() noexcept;
                 std::shared_ptr<VirtualEthernetSwitcher>                GetReference() noexcept;
                 FirewallPtr                                             GetFirewall() noexcept;
                 ContextPtr                                              GetContext() noexcept;
                 AppConfigurationPtr                                     GetConfiguration() noexcept;
                 SynchronizedObject&                                     GetSynchronizedObject() noexcept;
+                VirtualEthernetManagedServerPtr                         GetManagedServer() noexcept;
 
             public:
                 virtual bool                                            Open(const ppp::string& firewall) noexcept;
@@ -83,12 +87,13 @@ namespace ppp {
 
             protected:
                 virtual ITransmissionPtr                                Accept(int categories, const ContextPtr& context, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket) noexcept;
-                virtual bool                                            Establish(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept;
+                virtual bool                                            Establish(const ITransmissionPtr& transmission, const Int128& session_id, const VirtualEthernetInformationPtr& i, YieldContext& y) noexcept;
                 virtual bool                                            Connect(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept;
                 virtual bool                                            OnTick(UInt64 now) noexcept;
                 virtual bool                                            OnInformation(const Int128& session_id, const std::shared_ptr<VirtualEthernetInformation>& info) noexcept;
 
             protected:
+                virtual VirtualEthernetManagedServerPtr                 NewManagedServer() noexcept;
                 virtual FirewallPtr                                     NewFirewall() noexcept;
                 virtual ITransmissionStatisticsPtr                      NewStatistics() noexcept;
                 virtual VirtualEthernetExchangerPtr                     NewExchanger(const ITransmissionPtr& transmission, const Int128& session_id) noexcept;
@@ -107,6 +112,7 @@ namespace ppp {
                 boost::asio::ip::udp::endpoint                          ParseDNSEndPoint(const ppp::string& dnserver_endpoint) noexcept;
                 void                                                    TickAllExchangers(UInt64 now) noexcept;
                 void                                                    TickAllConnections(UInt64 now) noexcept;
+                bool                                                    OpenManagedServerIfNeed() noexcept;
 
             private:
                 bool                                                    CreateFirewall(const ppp::string& path) noexcept;
@@ -131,7 +137,7 @@ namespace ppp {
 
             private:
                 bool                                                    disposed_;
-                int                                                     nodeId_;
+                VirtualEthernetManagedServerPtr                         server_;
                 FirewallPtr                                             firewall_;
                 VirtualEthernetExchangerTable                           exchangers_;
                 SynchronizedObject                                      syncobj_;
