@@ -84,6 +84,7 @@ int ancil_recv_fds(int sock, int* fd, unsigned n_fds) noexcept
 #ifdef ANCIL_FD_BUFFER_STRUCT
     ANCIL_FD_BUFFER(ANCIL_MAX_N_FDS) buffer;
 
+
     return (ancil_recv_fds_with_buffer(sock, fd, n_fds, &buffer));
 #else
     void* buffer = (void*)alloca(ppp::Malign<int>(sizeof(cmsghdr) + (sizeof(int) * ANCIL_MAX_N_FDS), 128));

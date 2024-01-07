@@ -41,7 +41,7 @@ ELSE()
 ENDIF()
 
 # 设置三方库目录
-SET(THIRD_PARTY_LIBRARY_DIR /root/dev)
+SET(THIRD_PARTY_LIBRARY_DIR /usr/lib)
 
 # 设置编译的头文件搜索目录
 INCLUDE_DIRECTORIES(
@@ -59,10 +59,9 @@ INCLUDE_DIRECTORIES(
 
 # 设置搜索的第三库连接目录
 LINK_DIRECTORIES(
+    ${THIRD_PARTY_LIBRARY_DIR}
     ${THIRD_PARTY_LIBRARY_DIR}/boost/stage/lib
     ${THIRD_PARTY_LIBRARY_DIR}/jemalloc/lib
-    ${THIRD_PARTY_LIBRARY_DIR}/openssl
-    ${THIRD_PARTY_LIBRARY_DIR}/curl/lib/.libs
 )
 
 # 设置编译的源文件搜索目录
@@ -93,9 +92,9 @@ SET(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
 # 设置与依赖库之间的库连接
 TARGET_LINK_LIBRARIES(${NAME} 
     libc.a 
-    libssl.a 
-    libcrypto.a 
-    libjemalloc.a
+    libssl.so 
+    libcrypto.so 
+    libjemalloc.so
 
     dl
     pthread

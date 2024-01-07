@@ -90,8 +90,8 @@ ancil_recv_fds_with_buffer(int, int *, unsigned, void *) noexcept;
 #define ANCIL_FD_BUFFER(n)       \
     struct                       \
     {                            \
-        struct cmsghdr h;        \
         int            fd[n];    \
+	struct cmsghdr h;	 \
     }
 #endif
 
