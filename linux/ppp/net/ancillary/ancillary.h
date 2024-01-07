@@ -30,6 +30,8 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <ppp/stdafx.h>
+
 #include <stdlib.h>
 #include <stddef.h>
 

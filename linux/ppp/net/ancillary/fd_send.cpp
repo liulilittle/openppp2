@@ -68,20 +68,17 @@ int ancil_send_fds_with_buffer(int sock, const int* fds, unsigned n_fds, void* b
 #ifndef SPARE_SEND_FDS
 int ancil_send_fds(int sock, const int* fds, unsigned n_fds) noexcept
 {
-#ifdef ANCIL_FD_BUFFER_STRUCT
-    ANCIL_FD_BUFFER(ANCIL_MAX_N_FDS) buffer;
-#else
-    typedef struct 
-    {
-        struct cmsghdr h;
-        int            fd;
-    } ANCIL_FD_BUFFER_BLOCK;
-#endif
-
-    void* buffer = (void*)alloca(sizeof(ANCIL_FD_BUFFER_BLOCK) + ((ANCIL_MAX_N_FDS - 1) * sizeof(int)));
     assert(n_fds <= ANCIL_MAX_N_FDS);
 
+#ifdef ANCIL_FD_BUFFER_STRUCT
+    ANCIL_FD_BUFFER(ANCIL_MAX_N_FDS) buffer;
+
+    return (ancil_send_fds_with_buffer(sock, fds, n_fds, &buffer));
+#else
+    void* buffer = (void*)alloca(ppp::Malign<int>(sizeof(cmsghdr) + (sizeof(int) * ANCIL_MAX_N_FDS), 128));
+
     return (ancil_send_fds_with_buffer(sock, fds, n_fds, buffer));
+#endif
 }
 #endif /* SPARE_SEND_FDS */
 
@@ -90,14 +87,12 @@ int ancil_send_fd(int sock, int fd) noexcept
 {
 #ifdef ANCIL_FD_BUFFER_STRUCT
     ANCIL_FD_BUFFER(1) buffer;
-#else
-    struct
-    {
-        struct cmsghdr h;
-        int            f;
-    } buffer;
-#endif
 
     return (ancil_send_fds_with_buffer(sock, &fd, 1, &buffer));
+#else
+    void* buffer = (void*)alloca(ppp::Malign<int>(sizeof(cmsghdr) + sizeof(int), 128));
+
+    return (ancil_send_fds_with_buffer(sock, &fd, 1, buffer));
+#endif
 }
 #endif /* SPARE_SEND_FD */
