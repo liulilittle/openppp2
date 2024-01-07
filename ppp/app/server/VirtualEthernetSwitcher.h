@@ -29,7 +29,6 @@ namespace ppp {
                 typedef ppp::unordered_map<Int128,
                     VirtualEthernetExchangerPtr>                        VirtualEthernetExchangerTable;
                 typedef std::shared_ptr<VirtualEthernetManagedServer>   VirtualEthernetManagedServerPtr;
-                typedef ppp::app::protocol::VirtualEthernetInformation  VirtualEthernetInformation;
                 typedef ppp::configurations::AppConfiguration           AppConfiguration;
                 typedef std::shared_ptr<AppConfiguration>               AppConfigurationPtr;
                 typedef ppp::transmissions::ITransmission               ITransmission;

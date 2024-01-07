@@ -82,14 +82,14 @@ int ancil_recv_fds(int sock, int* fd, unsigned n_fds) noexcept
 #ifdef ANCIL_FD_BUFFER_STRUCT
     ANCIL_FD_BUFFER(ANCIL_MAX_N_FDS) buffer;
 #else
-    struct ANCIL_FD_BUFFER_BLOCK
+    typedef struct 
     {
         struct cmsghdr h;
         int            fd;
-    };
+    } ANCIL_FD_BUFFER_BLOCK;
 #endif
-
-    void* buffer = (void*)alloca(sizeof(ANCIL_FD_BUFFER_BLOCK) + ((ANCIL_MAX_N_FDS - 1) * sizeof(int)));
+ 
+    void* buffer = (void*)alloca(sizeof(ANCIL_FD_BUFFER_BLOCK) + (ANCIL_MAX_N_FDS * sizeof(int)));
     assert(n_fds <= ANCIL_MAX_N_FDS);
 
     return (ancil_recv_fds_with_buffer(sock, fd, n_fds, &buffer));

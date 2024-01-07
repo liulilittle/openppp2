@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdio.h>
+#include <stddef.h>
 
 #ifdef _DEBUG
 #ifndef DEBUG
@@ -150,6 +151,14 @@
 
 #ifndef _WIN32
 #define sscanf_s sscanf
+#endif
+
+#ifndef offset_of
+#define offset_of(type, member) ((size_t)&reinterpret_cast<char const volatile&>((((type*)0)->member)))
+#endif
+ 
+#ifndef container_of
+#define container_of(ptr, type, member) ((type*)((char*)static_cast<const decltype(((type*)0)->member)*>(ptr) - offsetof(type,member)))
 #endif
 
 #include <stdint.h>
