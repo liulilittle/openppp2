@@ -1,3 +1,5 @@
+#pragma once
+
 /***************************************************************************
  * libancillary - black magic on Unix domain sockets
  * (C) Nicolas George
@@ -28,10 +30,13 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <ppp/stdafx.h>
+
 #include <stdlib.h>
-#include <sys/types.h>
+#include <stddef.h>
+
+#include <sys/types.h> /* #include <sys/uio.h> */
 #include <sys/socket.h>
-#include <sys/uio.h>
 
 #include <assert.h>
 #include <alloca.h>

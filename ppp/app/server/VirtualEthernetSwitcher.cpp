@@ -116,7 +116,7 @@ namespace ppp {
                     if (!ok) {
                         sniproxy->close();
                     }
-                   
+
                     return ok;
                 }
                 else {
@@ -268,12 +268,14 @@ namespace ppp {
                     if (NULL != owner) {
                         std::shared_ptr<ITransmissionStatistics> left = owner->Statistics;
                         std::shared_ptr<ITransmissionStatistics> reft = transmission->Statistics;
-                        if (NULL != reft) {
-                            left->IncomingTraffic += reft->IncomingTraffic;
-                            left->OutgoingTraffic += reft->OutgoingTraffic;
-                        }
+                        if (left != reft) {
+                            if (NULL != reft) {
+                                left->IncomingTraffic += reft->IncomingTraffic;
+                                left->OutgoingTraffic += reft->OutgoingTraffic;
+                            }
 
-                        transmission->Statistics = left;
+                            transmission->Statistics = left;
+                        }
                     }
                 }
 
@@ -312,7 +314,7 @@ namespace ppp {
             }
 
             VirtualEthernetSwitcher::VirtualEthernetExchangerPtr VirtualEthernetSwitcher::DeleteExchanger(VirtualEthernetExchanger* exchanger) noexcept {
-                VirtualEthernetExchangerPtr channel; 
+                VirtualEthernetExchangerPtr channel;
                 if (NULL != exchanger) {
                     SynchronizedObjectScope scope(syncobj_);
                     auto tail = exchangers_.find(exchanger->GetId());
@@ -375,7 +377,7 @@ namespace ppp {
                             interfaceIP_,
                             boost::asio::ip::address_v6::any(),
                             boost::asio::ip::address_v4::any()
-                        };
+                    };
                     for (boost::asio::ip::address& bind_ip : bind_ips) {
                         bool opened = Socket::OpenAcceptor(*acceptor, bind_ip, port, cfg.backlog, cfg.fast_open, cfg.turbo);
                         if (!opened) {
@@ -480,7 +482,7 @@ namespace ppp {
             }
 
             VirtualEthernetSwitcher::ITransmissionStatisticsPtr VirtualEthernetSwitcher::NewStatistics() noexcept {
-                class NetworkStatistics : public ITransmissionStatistics {
+                class NetworkStatistics : public ppp::transmissions::ITransmissionStatistics {
                 public:
                     NetworkStatistics(const ITransmissionStatisticsPtr& owner) noexcept
                         : ITransmissionStatistics()
@@ -504,7 +506,7 @@ namespace ppp {
 
                 VirtualEthernetManagedServerPtr server = server_;
                 if (NULL == server) {
-                    return make_shared_object<ITransmissionStatistics>();
+                    return statistics_;
                 }
                 else {
                     return make_shared_object<NetworkStatistics>(statistics_);
@@ -686,7 +688,7 @@ namespace ppp {
                     }
                 }
                 return IPEndPoint::ToEndPoint<boost::asio::ip::tcp>(IPEndPoint::Any(IPEndPoint::MinPort));
-            }        
+            }
         }
     }
 }
