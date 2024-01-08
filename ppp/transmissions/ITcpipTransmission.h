@@ -1,0 +1,33 @@
+#pragma once
+
+#include <ppp/transmissions/ITransmission.h>
+
+namespace ppp {
+    namespace transmissions {
+        class ITcpipTransmission : public ITransmission {
+            friend class ITransmissionQoS;
+
+        public:
+            ITcpipTransmission(
+                const ContextPtr&                                       context, 
+                const std::shared_ptr<boost::asio::ip::tcp::socket>&    socket, 
+                const AppConfigurationPtr&                              configuration) noexcept;
+            virtual ~ITcpipTransmission() noexcept;
+
+        public:
+            virtual void                                                Dispose() noexcept override;
+            std::shared_ptr<Byte>                                       ReadBytes(YieldContext& y, int length) noexcept;
+
+        protected:
+            virtual std::shared_ptr<Byte>                               DoReadBytes(YieldContext& y, int length) noexcept;
+            virtual bool                                                DoWriteBytes(std::shared_ptr<Byte> packet, int offset, int packet_length, const std::shared_ptr<AsynchronousWriteBytesCallback>& cb) noexcept;
+        
+        private:
+            void                                                        Finalize() noexcept;
+
+        private:
+            bool                                                        disposed_;
+            std::shared_ptr<boost::asio::ip::tcp::socket>               socket_;
+        };
+    }
+}
