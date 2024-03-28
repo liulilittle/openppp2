@@ -1,0 +1,128 @@
+# Copyright  : Copyright (C) 2017 ~ 2035 SupersocksR ORG. All rights reserved.
+# Description: PPP PRIVATE NETWORK™ 2 ANDROID BUILD SCRIPT CROSS.(X) 1.0.0 VERSION.
+# Author     : Kyou.
+# Date-Time  : 2024/03/01
+
+name: PPP PRIVATE NETWORK™ 2 ANDROID BUILD SCRIPT CROSS.(X) 1.0.0 VERSION.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest] # ubuntu-22.04, ubuntu-20.04, ubuntu-18.04
+        arch: [amd64] # ${{ runner.arch }}
+        platform: 
+          - android/arm64-v8a
+          - android/armeabi-v7a
+          - android/x86
+          - android/x86_64
+
+    runs-on: ${{ matrix.os }}
+    env:
+      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+
+    steps:
+    - name: Checkout openppp2
+      run: git clone https://github.com/liulilittle/openppp2.git openppp2 # uses: actions/checkout@v2
+
+    - name: Checkout ndk
+      run: |
+        mkdir -p ndk
+        cd ndk
+        wget https://dl.google.com/android/repository/android-ndk-r20b-linux-x86_64.zip
+        unzip android-ndk-r20b-linux-x86_64.zip && rm -rf android-ndk-r20b-linux-x86_64.zip
+        mv * abi
+
+    - name: Checkout boost
+      run: |
+        mkdir -p ndk
+        cd ndk
+        git clone https://github.com/liulilittle/boost-1.74-for-android-r20b-fpic.git boost
+
+    - name: Checkout openssl
+      run: |
+        mkdir -p ndk
+        cd ndk
+        git clone https://github.com/liulilittle/openssl-1.1.1i-for-android-r20b.git openssl
+
+    - name: Get number of cpus
+      run: |
+        echo ::set-env name=ncpu::$(nproc)
+
+    - name: Set THIRD_PARTY_LIBRARY_DIR environment variables
+      run: |
+        echo ::set-env name=NDK_ROOT::${GITHUB_WORKSPACE}/ndk/abi
+        echo ::set-env name=THIRD_PARTY_LIBRARY_DIR::${GITHUB_WORKSPACE}/ndk
+
+    - name: Checkout abi
+      run: |
+        case ${{ matrix.platform }} in
+          android/arm64-v8a)
+            echo ::set-env name=ANDROID_ABI::arm64-v8a
+            echo ::set-env name=PPP_ANDROID_ABI::aarch64
+            ;;
+          android/armeabi-v7a)
+            echo ::set-env name=ANDROID_ABI::armeabi-v7a
+            echo ::set-env name=PPP_ANDROID_ABI::armv7a
+            ;;
+          android/x86)
+            echo ::set-env name=ANDROID_ABI::x86
+            echo ::set-env name=PPP_ANDROID_ABI::x86
+            ;;
+          android/x86_64)
+            echo ::set-env name=ANDROID_ABI::x86_64
+            echo ::set-env name=PPP_ANDROID_ABI::x64
+            ;;
+          *)
+            echo "Unsupported platform: ${{ matrix.platform }}"
+            exit 1
+            ;;
+        esac
+
+    - name: Print environment variables
+      run: echo "ncpu:$ncpu, NDK_ROOT:$NDK_ROOT, ANDROID_ABI:$ANDROID_ABI, PPP_ANDROID_ABI:$PPP_ANDROID_ABI, THIRD_PARTY_LIBRARY_DIR:$THIRD_PARTY_LIBRARY_DIR"
+
+    - name: Replace THIRD_PARTY_LIBRARY_DIR in CMakeFiles.txt.
+      run: |
+        cd openppp2/android
+        sed -i 's/SET(THIRD_PARTY_LIBRARY_DIR \/root\/android)/SET(THIRD_PARTY_LIBRARY_DIR $ENV{THIRD_PARTY_LIBRARY_DIR})/' CMakeLists.txt
+
+    - name: Build openppp2
+      run: |
+        PLATFORM=${{ matrix.platform }}
+        PLATFORM=${PLATFORM//\//-}
+
+        cd openppp2/android
+        mkdir -p build
+        cd build
+
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_TOOLCHAIN_FILE=$NDK_ROOT/build/cmake/android.toolchain.cmake \
+          -DCMAKE_SYSTEM_NAME=Android \
+          -DANDROID_ABI=$ANDROID_ABI \
+          -DANDROID_NATIVE_API_LEVEL=21 \
+          -DANDROID_STL=c++_static \
+          $OTHER_ARGS
+        make -j $ncpu
+      
+        ARTIFACT_NAME=openppp2-$PLATFORM.zip
+        echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
+
+        cd ../../bin/android/$ANDROID_ABI
+        zip -r $ARTIFACT_NAME libopenppp2.so
+        mv $ARTIFACT_NAME ../../
+
+    - name: Archive openppp2
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        path: openppp2/bin/${{ env.ARTIFACT_NAME }}

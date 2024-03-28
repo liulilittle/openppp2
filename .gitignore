@@ -12,9 +12,9 @@
 *.pch
 
 # Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
+# *.so
+# *.dylib
+# *.dll
 
 # Fortran module files
 *.mod
@@ -27,6 +27,44 @@
 *.lib
 
 # Executables
-*.exe
+# *.exe
 *.out
 *.app
+/.vs/ppp
+
+/Debug
+/Release
+/x64/Debug
+/x64/Release
+
+/sln/client/Debug
+/sln/server/Debug
+/sln/client/Release
+/sln/server/Release
+
+/sln/PaperAirplane/Debug
+/sln/PaperAirplane/Release
+/sln/PaperAirplane/x64
+
+/sln/sysproxy32/Debug
+/sln/sysproxy32/Release
+/sln/sysproxy32/x64
+.vs/cmake.db
+
+bin/
+build/
+android/build/
+
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+
+# Local History for Visual Studio Code
+.history/
+
+# Built Visual Studio Code Extensions
+*.vsix
+ppp.log

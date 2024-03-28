@@ -1,0 +1,97 @@
+# Copyright  : Copyright (C) 2017 ~ 2035 SupersocksR ORG. All rights reserved.
+# Description: PPP PRIVATE NETWORK™ 2 MACOS BUILD SCRIPT.(X) 1.0.0 VERSION.
+# Author     : Kyou.
+# Date-Time  : 2024/03/01
+
+name: PPP PRIVATE NETWORK™ 2 MACOS BUILD SCRIPT.(X) 1.0.0 VERSION.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+        arch: [amd64]
+        platform:
+          - darwin/arm64
+          - darwin/amd64
+
+    runs-on: ${{ matrix.os }}
+    env:
+      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+
+    steps:
+    - name: Checkout openppp2
+      run: git clone https://github.com/liulilittle/openppp2.git openppp2 # uses: actions/checkout@v2
+
+    - name: Checkout 3rd
+      run: |
+        case ${{ matrix.platform }} in
+          darwin/arm64)
+            git clone https://github.com/Liz-Nozomi/openppp2-macos-arm64-environment.git 3rd
+            ;;
+          darwin/amd64)
+            git clone https://github.com/liulilittle/openppp2-macos-amd64-environment.git 3rd
+            ;;
+          *)
+            echo "Unsupported platform: ${{ matrix.platform }}"
+            exit 1
+            ;;
+        esac
+
+    - name: Get number of cpus
+      run: |
+        echo ::set-env name=ncpu::$(sysctl -n hw.physicalcpu)
+
+    - name: Set THIRD_PARTY_LIBRARY_DIR environment variables
+      run: echo ::set-env name=THIRD_PARTY_LIBRARY_DIR::${GITHUB_WORKSPACE}/3rd
+
+    - name: Print environment variables
+      run: echo "ncpu:$ncpu, THIRD_PARTY_LIBRARY_DIR:$THIRD_PARTY_LIBRARY_DIR"
+
+    - name: Replace THIRD_PARTY_LIBRARY_DIR in CMakeFiles.txt.
+      run: |
+        cd openppp2
+        sed -i '' 's/SET(THIRD_PARTY_LIBRARY_DIR \/root\/dev)/SET(THIRD_PARTY_LIBRARY_DIR $ENV{THIRD_PARTY_LIBRARY_DIR})/' CMakeLists.txt
+
+    - name: Build openppp2
+      run: |
+        PLATFORM=${{ matrix.platform }}
+        PLATFORM=${PLATFORM//\//-}
+
+        cd openppp2
+        mkdir -p build
+        cd build
+
+        case ${{ matrix.platform }} in
+          darwin/arm64)
+            cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
+            ;;
+          darwin/amd64)
+            cmake .. -DCMAKE_BUILD_TYPE=Release
+            ;;
+          *)
+            echo "Unsupported platform: ${{ matrix.platform }}"
+            exit 1
+            ;;
+        esac
+
+        make -j $ncpu
+        cd ../bin
+
+        ARTIFACT_NAME=openppp2-$PLATFORM.zip
+        zip -r $ARTIFACT_NAME ppp
+        echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
+      
+    - name: Archive openppp2
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        path: openppp2/bin/${{ env.ARTIFACT_NAME }}

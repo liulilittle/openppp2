@@ -1,0 +1,7 @@
+# drop ip   54.156.158.5 
+# drop ip   185.207.153.0/24 
+
+# drop dns  baidu.com 
+# drop port 3389 
+# drop port 80/tcp 
+# drop port 53/udp 
