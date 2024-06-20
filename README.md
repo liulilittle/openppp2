@@ -1,2 +1,2 @@
-# PPP-2
-PPP PRIVATE NETWORK (VPN) next-generation home virtual network access solutions.
+﻿# openppp2
+PPP PRIVATE NETWORK™ 2 VPN Next Generation Reliable and Secure Virtual Ethernet Access Solution!

@@ -1,0 +1,184 @@
+# Copyright  : Copyright (C) 2017 ~ 2035 SupersocksR ORG. All rights reserved.
+# Description: PPP PRIVATE NETWORK™ 2 LINUX BUILD SCRIPT CROSS.(X) 1.0.0 VERSION.
+# Author     : Kyou.
+# Date-Time  : 2024/02/14
+
+name: PPP PRIVATE NETWORK™ 2 LINUX BUILD SCRIPT CROSS.(X) 1.0.0 VERSION.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest] # ubuntu-22.04, ubuntu-20.04, ubuntu-18.04
+        arch: [amd64] # ${{ runner.arch }}
+        platform: 
+          - linux/amd64
+          - linux/aarch64
+          - linux/armv7l
+          - linux/ppc64el
+          - linux/s390x
+          - linux/riscv64
+          - linux/mipsel
+
+    runs-on: ${{ matrix.os }}
+    env:
+      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+
+    steps:
+    - name: Checkout openppp2
+      run: git clone https://github.com/liulilittle/openppp2.git openppp2 # uses: actions/checkout@v2
+
+    - name: Checkout 3rd
+      run: |
+        git clone https://github.com/liulilittle/openppp2-ubuntu-3rd-environment.git 3rd
+
+    - name: Get number of cpus
+      run: |
+        echo ::set-env name=ncpu::$(nproc)
+
+    - name: Set THIRD_PARTY_LIBRARY_DIR environment variables
+      run: |
+        case ${{ matrix.platform }} in
+          linux/amd64)
+            echo ::set-env name=THIRD_PARTY_LIBRARY_DIR::${GITHUB_WORKSPACE}/3rd/amd64
+            ;;
+          linux/aarch64)
+            echo ::set-env name=THIRD_PARTY_LIBRARY_DIR::${GITHUB_WORKSPACE}/3rd/aarch64
+            ;;
+          linux/armv7l)
+            echo ::set-env name=THIRD_PARTY_LIBRARY_DIR::${GITHUB_WORKSPACE}/3rd/armv7l
+            ;;
+          linux/ppc64el)
+            echo ::set-env name=THIRD_PARTY_LIBRARY_DIR::${GITHUB_WORKSPACE}/3rd/ppc64el
+            ;;
+          linux/s390x)
+            echo ::set-env name=THIRD_PARTY_LIBRARY_DIR::${GITHUB_WORKSPACE}/3rd/s390x
+            ;;
+          linux/riscv64)
+            echo ::set-env name=THIRD_PARTY_LIBRARY_DIR::${GITHUB_WORKSPACE}/3rd/riscv64
+            ;;
+          linux/mipsel)
+            echo ::set-env name=THIRD_PARTY_LIBRARY_DIR::${GITHUB_WORKSPACE}/3rd/mipsel
+            ;;
+          *)
+            echo "Unsupported platform: ${{ matrix.platform }}"
+            exit 1
+            ;;
+        esac
+
+    - name: Select compiler
+      run: |
+        case ${{ matrix.platform }} in
+          linux/amd64)
+            echo ::set-env name=PLATFORM_LD::ld
+            echo ::set-env name=PLATFORM_CC::gcc
+            echo ::set-env name=PLATFORM_CXX::g++
+            ;;
+          linux/aarch64)
+            echo ::set-env name=PLATFORM_LD::aarch64-linux-gnu-ld
+            echo ::set-env name=PLATFORM_CC::aarch64-linux-gnu-gcc
+            echo ::set-env name=PLATFORM_CXX::aarch64-linux-gnu-g++
+            ;;
+          linux/armv7l)
+            echo ::set-env name=PLATFORM_LD::arm-linux-gnueabihf-ld
+            echo ::set-env name=PLATFORM_CC::arm-linux-gnueabihf-gcc
+            echo ::set-env name=PLATFORM_CXX::arm-linux-gnueabihf-g++
+            ;;
+          linux/ppc64el)
+            echo ::set-env name=PLATFORM_LD::powerpc64le-linux-gnu-ld
+            echo ::set-env name=PLATFORM_CC::powerpc64le-linux-gnu-gcc
+            echo ::set-env name=PLATFORM_CXX::powerpc64le-linux-gnu-g++
+            ;;
+          linux/s390x)
+            echo ::set-env name=PLATFORM_LD::s390x-linux-gnu-ld
+            echo ::set-env name=PLATFORM_CC::s390x-linux-gnu-gcc
+            echo ::set-env name=PLATFORM_CXX::s390x-linux-gnu-g++
+            ;;
+          linux/riscv64)
+            echo ::set-env name=PLATFORM_LD::riscv64-linux-gnu-ld
+            echo ::set-env name=PLATFORM_CC::riscv64-linux-gnu-gcc
+            echo ::set-env name=PLATFORM_CXX::riscv64-linux-gnu-g++
+            ;;
+        linux/mipsel)
+            echo ::set-env name=PLATFORM_LD::mipsel-linux-gnu-ld
+            echo ::set-env name=PLATFORM_CC::mipsel-linux-gnu-gcc
+            echo ::set-env name=PLATFORM_CXX::mipsel-linux-gnu-g++
+            ;;
+          *)
+            echo "Unsupported platform: ${{ matrix.platform }}"
+            exit 1
+            ;;
+        esac
+
+    - name: Print environment variables
+      run: echo "ncpu:$ncpu, PLATFORM_LD:$PLATFORM_LD, PLATFORM_CC:$PLATFORM_CC, PLATFORM_CXX:$PLATFORM_CXX, THIRD_PARTY_LIBRARY_DIR:$THIRD_PARTY_LIBRARY_DIR"
+
+    - name: Replace THIRD_PARTY_LIBRARY_DIR in CMakeFiles.txt.
+      run: |
+        cd openppp2
+        sed -i 's/SET(THIRD_PARTY_LIBRARY_DIR \/root\/dev)/SET(THIRD_PARTY_LIBRARY_DIR $ENV{THIRD_PARTY_LIBRARY_DIR})/' CMakeLists.txt
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install git build-essential lrzsz zip unzip libkrb5-dev libicu-dev screen iftop openssl libssl-dev libunwind8 iftop net-tools gcc-multilib gdb clang cmake curl wget autoconf -y
+
+    - name: Install cross compiler
+      run: |
+        case ${{ matrix.platform }} in
+          linux/amd64)
+            sudo apt-get install gcc g++ -y
+            ;;
+          linux/aarch64)
+            sudo apt-get install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu -y
+            ;;
+          linux/armv7l)
+            sudo apt-get install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf -y
+            ;;
+          linux/ppc64el)
+            sudo apt-get install gcc-powerpc64le-linux-gnu g++-powerpc64le-linux-gnu -y
+            ;;
+          linux/s390x)
+            sudo apt-get install gcc-s390x-linux-gnu g++-s390x-linux-gnu -y
+            ;;
+          linux/riscv64)
+            sudo apt-get install gcc-riscv64-linux-gnu g++-riscv64-linux-gnu -y
+            ;;
+          linux/mipsel)
+            sudo apt-get install gcc-mipsel-linux-gnu g++-mipsel-linux-gnu -y
+            ;;
+          *)
+            echo "Unsupported platform: ${{ matrix.platform }}"
+            exit 1
+            ;;
+        esac
+
+    - name: Build openppp2
+      run: |
+        PLATFORM=${{ matrix.platform }}
+        PLATFORM=${PLATFORM//\//-}
+
+        cd openppp2
+        mkdir -p build
+        cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=$PLATFORM_CC -DCMAKE_CXX_COMPILER=$PLATFORM_CXX -DCMAKE_LINKER=$PLATFORM_LD
+        make -j $ncpu
+        cd ../bin
+
+        ARTIFACT_NAME=openppp2-$PLATFORM.zip
+        zip -r $ARTIFACT_NAME ppp
+        echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
+      
+    - name: Archive openppp2
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        path: openppp2/bin/${{ env.ARTIFACT_NAME }}
