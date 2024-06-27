@@ -1,3 +1,4 @@
+#define _LARGEFILE64_SOURCE
 #include <ppp/app/protocol/VirtualEthernetLogger.h>
 #include <ppp/DateTime.h>
 #include <ppp/io/File.h>

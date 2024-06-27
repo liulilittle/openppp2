@@ -6,7 +6,7 @@
 #include <cxxabi.h>
 #include <sys/resource.h>
 
-#if !defined(_ANDROID)
+#if (BACKWARD_HAS_BACKTRACE == 1) || (BACKWARD_HAS_BACKTRACE_SYMBOL == 1) 
 #include <execinfo.h>
 #endif
 
@@ -36,7 +36,7 @@ namespace ppp
             return status == 0; /* sudo apt-get remove binutils */
         }
 
-#if !defined(_ANDROID)
+#if (BACKWARD_HAS_BACKTRACE == 1) || (BACKWARD_HAS_BACKTRACE_SYMBOL == 1)
         static ppp::string ExtractSymbol(const char* symbol)
         {
             if (NULL == symbol || *symbol == '\x0')

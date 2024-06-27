@@ -26,8 +26,8 @@
 #include <netinet/in.h>
 #include <sys/time.h>
 #include <netinet/tcp.h>
-#include <error.h>
-#include <sys/poll.h>
+#include <err.h>
+#include <poll.h>
 #endif
 
 #include <fcntl.h>

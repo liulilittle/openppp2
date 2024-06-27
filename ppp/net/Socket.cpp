@@ -23,7 +23,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -40,7 +40,7 @@
 #if defined(_MACOS)
 #include <errno.h>
 #elif defined(_LINUX)
-#include <error.h>
+#include <err.h>
 #endif
 
 // https://elixir.bootlin.com/linux/latest/source/include/uapi/linux/ip.h#L26
