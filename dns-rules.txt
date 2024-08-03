@@ -1,0 +1,21 @@
+# CNNIC SDNS
+qq.com             /1.2.4.8/nic
+163.com            /1.2.4.8/nic
+baidu.com          /1.2.4.8/nic
+speedtest.cn       /1.2.4.8/nic
+chinaz.com         /1.2.4.8/nic
+sina.com.cn        /1.2.4.8/nic
+tencent.com        /1.2.4.8/nic
+aliyun.com         /1.2.4.8/nic
+huaweicloud.com    /1.2.4.8/nic
+bilibili.com       /1.2.4.8/nic
+tudou.com          /1.2.4.8/nic
+youku.com          /1.2.4.8/nic
+iq.com             /1.2.4.8/nic
+iqiyi.com          /1.2.4.8/nic
+le.com             /1.2.4.8/nic
+360.com            /1.2.4.8/nic
+
+# Cloudflare 
+google.com         /1.1.1.1/tun
+youtube.com        /1.1.1.1/tun

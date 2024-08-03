@@ -1,0 +1,103 @@
+# Copyright  : Copyright (C) 2017 ~ 2035 SupersocksR ORG. All rights reserved.
+# Description: PPP PRIVATE NETWORK™ 2 LINUX BUILD SCRIPT.(X) 1.0.0 VERSION.
+# Author     : Kyou.
+# Date-Time  : 2024/02/13
+
+name: PPP PRIVATE NETWORK™ 2 LINUX BUILD SCRIPT.(X) 1.0.0 VERSION.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest] # ubuntu-22.04, ubuntu-20.04, ubuntu-18.04
+        arch: [amd64] # ${{ runner.arch }}
+        platform: 
+          - linux/amd64
+
+    runs-on: ${{ matrix.os }}
+    env:
+      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+
+    steps:
+    - name: Checkout openppp2
+      run: git clone https://github.com/liulilittle/openppp2.git openppp2 # uses: actions/checkout@v2
+
+    - name: Get number of cpus
+      run: echo ::set-env name=ncpu::$(nproc)
+
+    - name: Set THIRD_PARTY_LIBRARY_DIR environment variables
+      run: |
+        echo ::set-env name=THIRD_PARTY_LIBRARY_DIR::$GITHUB_WORKSPACE
+
+    - name: Print environment variables
+      run: echo "ncpu:$ncpu, THIRD_PARTY_LIBRARY_DIR:$THIRD_PARTY_LIBRARY_DIR"
+
+    - name: Replace THIRD_PARTY_LIBRARY_DIR in CMakeFiles.txt.
+      run: |
+        cd openppp2
+        sed -i 's/SET(THIRD_PARTY_LIBRARY_DIR \/root\/dev)/SET(THIRD_PARTY_LIBRARY_DIR $ENV{THIRD_PARTY_LIBRARY_DIR})/' CMakeLists.txt
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install git build-essential lrzsz zip unzip libkrb5-dev libicu-dev screen iftop openssl libssl-dev libunwind8 iftop net-tools gcc gdb cmake curl wget g++ clang autoconf -y
+
+    - name: Build boost
+      run: |
+        wget https://boostorg.jfrog.io/artifactory/main/release/1.84.0/source/boost_1_84_0.tar.bz2
+        tar jxvf boost*.tar.bz2
+        rm -rf boost*.tar.bz2
+        mv boost* boost
+        cd boost
+        ./bootstrap.sh
+        ./b2 cxxflags=-fPIC
+
+    - name: Build jemalloc
+      run: |
+        wget https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2
+        tar jxvf jemalloc*.tar.bz2
+        rm -rf jemalloc*.tar.bz2
+        mv jemalloc* jemalloc
+        cd jemalloc
+        ./autogen.sh --with-jemalloc-prefix=je_
+        make -j $ncpu
+
+    - name: Build openssl
+      run: |
+        wget https://www.openssl.org/source/openssl-3.0.13.tar.gz
+        tar zxvf openssl*.tar.gz
+        rm -rf openssl*.tar.gz
+        mv openssl* openssl
+        cd openssl
+        ./Configure
+        make -j $ncpu
+
+    - name: Build openppp2
+      run: |
+        PLATFORM=${{ matrix.platform }}
+        PLATFORM=${PLATFORM//\//-}
+
+        cd openppp2
+        mkdir -p build
+        cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release
+        make -j $ncpu
+        cd ../bin
+
+        ARTIFACT_NAME=openppp2-$PLATFORM.zip
+        zip -r $ARTIFACT_NAME ppp
+        echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
+      
+    - name: Archive openppp2
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        path: openppp2/bin/${{ env.ARTIFACT_NAME }}
