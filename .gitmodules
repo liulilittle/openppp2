@@ -4,6 +4,6 @@
 [submodule "depends/jemalloc"]
 	path = depends/jemalloc
 	url = https://github.com/jemalloc/jemalloc
-[submodule "depends/boost/build"]
-	path = depends/boost/build
-	url = https://github.com/boostorg/build
+[submodule "depends/boost"]
+	path = depends/boost
+	url = https://github.com/boostorg/boost.git

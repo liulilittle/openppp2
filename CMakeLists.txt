@@ -14,7 +14,6 @@ SET(CMAKE_CXX_FLAGS "-fPIC -fvisibility=hidden -Wno-format -Wno-inconsistent-mis
 # ADD_DEFINITIONS(-DTRANSMISSION_O1)
 ADD_DEFINITIONS(-DJEMALLOC)
 ADD_DEFINITIONS(-DBUDDY_ALLOC_IMPLEMENTATION)
-
 # When compiling with the musl-libc standard library, 
 # You need to define the _MUSL__ preprocessor macro to ensure correct compilation.
 # https://wiki.musl-libc.org/faq
@@ -94,7 +93,7 @@ ELSE()
 ENDIF()
 
 # Set the tripartite library directorys.
-SET(THIRD_PARTY_LIBRARY_DIR /root/dev)
+SET(THIRD_PARTY_LIBRARY_DIR ${PROJECT_SOURCE_DIR}/libs)
 
 # Set the compiled header file search directorys.
 INCLUDE_DIRECTORIES(

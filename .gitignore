@@ -54,6 +54,7 @@
 bin/
 build/
 android/build/
+libs/
 
 .vscode/*
 !.vscode/settings.json
