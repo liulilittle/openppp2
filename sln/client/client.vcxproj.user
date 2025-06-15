@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <LocalDebuggerWorkingDirectory>$(ProjectDir)..\..\Debug</LocalDebuggerWorkingDirectory>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+    <LocalDebuggerCommand>$(ProjectDir)..\..\Debug\ppp.exe</LocalDebuggerCommand>
+    <LocalDebuggerCommandArguments>--mode=client --lwip=yes --tun-ip=10.0.0.2 --tun-gw=10.0.0.0 --tun-mask=30 --tun-host=yes --tun-vnet=yes --tun-static=yes --block-quic=yes --bypass-iplist=ip.txt</LocalDebuggerCommandArguments>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <LocalDebuggerCommand>$(ProjectDir)..\..\x64\Debug\ppp.exe</LocalDebuggerCommand>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+    <LocalDebuggerCommandArguments>--mode=client --lwip=yes --tun-ip=10.0.0.2 --tun-gw=10.0.0.0 --tun-mask=30 --tun-host=yes --tun-vnet=yes --tun-static=yes --block-quic=yes --bypass-iplist=ip.txt</LocalDebuggerCommandArguments>
+    <LocalDebuggerWorkingDirectory>$(ProjectDir)..\..\x64\Debug\</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
+</Project>
