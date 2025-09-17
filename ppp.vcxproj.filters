@@ -1,0 +1,1526 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="源文件">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="头文件">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="资源文件">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\stdafx.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\io\File.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\IPEndPoint.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\Ipep.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\Socket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\tap\ITap.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\threading\Thread.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\threading\Executors.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\tap\TapWindows.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\text\Encoding.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\win32\Win32Native.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\win32\network\NetworkInterface.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\win32\Win32Variant.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\win32\network\Win32NetworkRouter.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\ethernet\VEthernet.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\net\Win32SocketAcceptor.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\SocketAcceptor.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\my\sys_arch.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv4\acd.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv4\autoip.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv4\dhcp.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv4\etharp.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv4\icmp.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv4\igmp.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv4\ip4.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv4\ip4_addr.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv4\ip4_frag.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv6\dhcp6.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv6\ethip6.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv6\icmp6.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv6\inet6.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv6\ip6.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv6\ip6_addr.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv6\ip6_frag.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv6\mld6.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ipv6\nd6.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\altcp.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\altcp_alloc.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\altcp_tcp.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\def.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\dns.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\inet_chksum.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\init.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\ip.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\mem.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\memp.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\netif.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\pbuf.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\raw.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\stats.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\sys.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\tcp.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\tcp_in.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\tcp_out.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\timeouts.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\lwip\core\udp.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\libtcpip\netstack.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\packet\IcmpFrame.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\packet\IPFrame.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\packet\UdpFrame.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\native\checksum.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\coroutines\YieldContext.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\packet\IPFragment.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\threading\Timer.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\proxies\sniproxy.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\configurations\AppConfiguration.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\base64\base64.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\cryptography\ssea.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\ethernet\VNetstack.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\net\proxies\HttpProxy.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\win32\Win32RegistryKey.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\win32\network\Win32Firewall.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\cryptography\md5.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\cryptography\digest.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\cryptography\rc4.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\cryptography\EVP.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\ssl\SSL.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\transmissions\ITransmission.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\IAsynchronousWriteIoQueue.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\transmissions\ITcpipTransmission.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\transmissions\IWebsocketTransmission.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\InternetControlMessageProtocol.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\protocol\VirtualEthernetLinklayer.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\transmissions\ITransmissionQoS.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\json\src\json_reader.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\json\src\json_value.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\json\src\json_writer.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\protocol\VirtualEthernetInformation.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\auxiliary\JsonAuxiliary.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\auxiliary\UriAuxiliary.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\auxiliary\StringAuxiliary.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\cryptography\Ciphertext.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\threading\BufferblockAllocator.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\threading\BufferswapAllocator.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\win32\Win32Event.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\server\VirtualEthernetSwitcher.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\server\VirtualEthernetExchanger.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\server\VirtualInternetControlMessageProtocol.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\server\VirtualEthernetDatagramPort.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\VEthernetNetworkTcpipStack.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\VEthernetExchanger.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\VEthernetDatagramPort.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\VEthernetNetworkSwitcher.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\protocol\VirtualEthernetTcpipConnection.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\VEthernetNetworkTcpipConnection.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\server\VirtualEthernetNetworkTcpipConnection.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\win32\Win32Mci.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\threading\SpinLock.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\diagnostics\Stopwatch.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\DateTime.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\chnroutes2\chnroutes2.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\app\client\lsp\PaperAirplaneController.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\app\client\lsp\PaperAirplaneRoot.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\app\client\lsp\PaperAirplaneConnection.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\app\client\lsp\PaperAirplaneLspX.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\app\client\lsp\PaperAirplaneLspY.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\win32\Win32PerformanceCounter.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\Firewall.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\server\VirtualEthernetManagedServer.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\rinetd\RinetdConnection.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\protocol\VirtualEthernetLogger.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\configurations\Ini.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\protocol\VirtualEthernetMappingPort.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\diagnostics\PreventReturn.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\dns\Rule.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket\websocket_accept_sslv_websocket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket\websocket_accept_websocket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket\websocket_async_sslv_websocket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket\websocket_async_sslv_websocket_perform_ssl_handshake.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket\websocket_async_sslv_websocket_perform_websocket_handshake.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket\websocket_read_websocket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket\websocket_ssl_websocket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket\websocket_write_websocket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket\websocket_close_websocket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket\websocket_ssl_close_websocket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket\websocket_ssl_read_websocket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\websocket\websocket_ssl_write_websocket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\Random.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\protocol\VirtualEthernetPacket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\server\VirtualInternetControlMessageProtocolStatic.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\server\VirtualEthernetDatagramPortStatic.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\net\QoSS.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\aggligator\aggligator.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\server\VirtualEthernetNamespaceCache.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\transmissions\proxys\IForwarding.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\proxys\VEthernetHttpProxyConnection.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\proxys\VEthernetHttpProxySwitcher.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\proxys\VEthernetLocalProxyConnection.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\proxys\VEthernetLocalProxySwitcher.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\proxys\VEthernetSocksProxyConnection.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\proxys\VEthernetSocksProxySwitcher.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\mux\vmux_net.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\mux\vmux_skt.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\http\HttpClient.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\dnslib\buffer.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\dnslib\message.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\dnslib\qs.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\dnslib\rr.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\aesni\aes.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\aesni\impl\simd_aes_128_cfb.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\aesni\impl\simd_aes_256_cfb.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\aesni\impl\simd_aes_128_gcm.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\aesni\impl\simd_aes_256_gcm.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\net\asio\vdns.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ppp\stdafx.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\io\BinaryReader.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\io\MemoryStream.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\io\SeekOrigin.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\io\Stream.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\Random.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\io\File.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\text\Encoding.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\IPEndPoint.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\Ipep.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\Socket.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\threading\Thread.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\threading\Executors.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\tap\ITap.h">
+      <Filter>源文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\tap\TapWindows.h">
+      <Filter>源文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\win32\Win32Native.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\win32\network\NetworkInterface.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\win32\Win32Variant.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\win32\network\Router.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\ethernet\VEthernet.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\SocketAcceptor.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\net\Win32SocketAcceptor.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\win32\network\Router.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\win32\network\NetworkInterface.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\win32\Win32Native.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\win32\Win32Variant.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\expressions\YCombinator.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\compat\posix\arpa\inet.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\compat\posix\net\if.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\compat\posix\sys\socket.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\compat\posix\netdb.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\compat\stdc\errno.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\altcp_proxyconnect.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\altcp_tls_mbedtls_opts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\fs.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\http_client.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\httpd.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\httpd_opts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\lwiperf.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\mdns.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\mdns_domain.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\mdns_opts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\mdns_out.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\mdns_priv.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\mqtt.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\mqtt_opts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\mqtt_priv.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\netbiosns.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\netbiosns_opts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\smtp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\smtp_opts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_core.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_mib2.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_opts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_scalar.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_snmpv2_framework.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_snmpv2_usm.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_table.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_threadsync.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\snmpv3.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\sntp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\sntp_opts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\tftp_client.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\tftp_common.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\tftp_opts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\apps\tftp_server.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\priv\altcp_priv.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\priv\api_msg.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\priv\mem_priv.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\priv\memp_priv.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\priv\memp_std.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\priv\nd6_priv.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\priv\raw_priv.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\priv\sockets_priv.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\priv\tcp_priv.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\priv\tcpip_priv.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\acd.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\autoip.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\dhcp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\dhcp6.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\dns.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\etharp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\ethernet.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\iana.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\icmp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\icmp6.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\ieee.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\igmp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\ip.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\ip4.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\ip6.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\mld6.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\nd6.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\tcp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\prot\udp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\acd.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\altcp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\altcp_tcp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\altcp_tls.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\api.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\arch.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\autoip.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\debug.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\def.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\dhcp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\dhcp6.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\dns.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\err.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\errno.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\etharp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\ethip6.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\icmp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\icmp6.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\if_api.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\igmp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\inet.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\inet_chksum.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\init.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\ip.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\ip_addr.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\ip4.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\ip4_addr.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\ip4_frag.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\ip6.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\ip6_addr.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\ip6_frag.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\ip6_zone.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\mem.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\memp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\mld6.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\nd6.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\netbuf.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\netdb.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\netif.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\netifapi.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\opt.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\pbuf.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\raw.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\sio.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\snmp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\sockets.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\stats.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\sys.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\tcp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\tcpbase.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\tcpip.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\timeouts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\lwip\udp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\polarssl\arc4.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\polarssl\des.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\polarssl\md4.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\polarssl\md5.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\polarssl\sha1.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\ccp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\chap_ms.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\chap-md5.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\chap-new.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\eap.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\ecp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\eui64.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\fsm.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\ipcp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\ipv6cp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\lcp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\magic.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\mppe.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\ppp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\ppp_impl.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\ppp_opts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\pppapi.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\pppcrypt.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\pppdebug.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\pppoe.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\pppol2tp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\pppos.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\upap.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ppp\vj.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\bridgeif.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\bridgeif_opts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\etharp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ethernet.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\ieee802154.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\lowpan6.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\lowpan6_ble.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\lowpan6_common.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\lowpan6_opts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\slipif.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\include\netif\zepif.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\my\arch\bpstruct.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\my\arch\cc.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\my\arch\cc_others.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\my\arch\cc_windows.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\my\arch\epstruct.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\lwip\my\lwipopts.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\libtcpip\netstack.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\packet\IcmpFrame.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\packet\IPFrame.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\packet\UdpFrame.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\native\checksum.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\native\eth.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\native\icmp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\native\ip.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\native\tcp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\native\udp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\asio\asio.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\coroutines\YieldContext.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\packet\IPFragment.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\threading\Timer.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\proxies\sniproxy.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\configurations\AppConfiguration.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\Int128.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\base64\base64.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\cryptography\ssea.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\ethernet\VNetstack.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\net\proxies\HttpProxy.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\win32\Win32RegistryKey.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\coroutines\asio\asio.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\win32\network\Firewall.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\cryptography\digest.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\cryptography\md5.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\cryptography\rc4.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\cryptography\EVP.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\asio\websocket.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\asio\templates\WebSocket.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\Reference.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\IDisposable.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\asio\templates\SslSocket.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\ssl\SSL.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\ssl\root_certificates.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\transmissions\ITransmission.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\asio\IAsynchronousWriteIoQueue.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\transmissions\ITcpipTransmission.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\transmissions\IWebsocketTransmission.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\asio\InternetControlMessageProtocol.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\transmissions\templates\WebSocket.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\protocol\VirtualEthernetLinklayer.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\collections\Dictionary.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\protocol\VirtualEthernetInformation.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\transmissions\ITransmissionStatistics.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\transmissions\ITransmissionQoS.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\json\src\json_tool.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\json\include\json\allocator.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\json\include\json\assertions.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\json\include\json\config.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\json\include\json\forwards.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\json\include\json\json.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\json\include\json\json_features.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\json\include\json\reader.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\json\include\json\value.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\json\include\json\version.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\json\include\json\writer.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\auxiliary\JsonAuxiliary.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\auxiliary\UriAuxiliary.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\auxiliary\StringAuxiliary.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\native\rib.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\cryptography\Ciphertext.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\memory\buddy_allocator.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\threading\BufferblockAllocator.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\threading\BufferswapAllocator.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\win32\Win32Event.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\server\VirtualEthernetSwitcher.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\server\VirtualEthernetExchanger.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\server\VirtualInternetControlMessageProtocol.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\server\VirtualEthernetDatagramPort.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\VEthernetNetworkTcpipStack.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\VEthernetExchanger.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\VEthernetDatagramPort.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\VEthernetNetworkSwitcher.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\protocol\VirtualEthernetTcpipConnection.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\VEthernetNetworkTcpipConnection.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\server\VirtualEthernetNetworkTcpipConnection.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\win32\Win32Mci.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\threading\SpinLock.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\diagnostics\Stopwatch.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\DateTime.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\chnroutes2\chnroutes2.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="resource.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\app\client\lsp\PaperAirplaneController.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\app\client\lsp\PaperAirplaneRoot.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\app\client\lsp\PaperAirplaneConnection.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\app\client\lsp\PaperAirplaneLspX.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\app\client\lsp\PaperAirplaneLspY.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\win32\Win32PerformanceCounter.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\Firewall.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\server\VirtualEthernetManagedServer.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\fmt.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\rinetd\RinetdConnection.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\protocol\VirtualEthernetLogger.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\configurations\Ini.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\protocol\VirtualEthernetMappingPort.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\tap\tap-windows.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\diagnostics\PreventReturn.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\dns\Rule.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\asio\websocket\websocket_accept_sslv_websocket.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\asio\websocket\websocket_accept_websocket.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\asio\websocket\websocket_async_sslv_websocket.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\protocol\VirtualEthernetPacket.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\server\VirtualInternetControlMessageProtocolStatic.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\server\VirtualEthernetDatagramPortStatic.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\net\QoSS.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\aggligator\aggligator.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\server\VirtualEthernetNamespaceCache.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\collections\LinkedList.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\transmissions\proxys\IForwarding.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\proxys\VEthernetHttpProxyConnection.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\proxys\VEthernetHttpProxySwitcher.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\proxys\VEthernetLocalProxyConnection.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\proxys\VEthernetLocalProxySwitcher.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\proxys\VEthernetSocksProxyConnection.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\proxys\VEthernetSocksProxySwitcher.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\mux\vmux.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\mux\vmux_net.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\mux\vmux_skt.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\protocol\templates\TVEthernetTcpipConnection.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\http\httplib.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\http\HttpClient.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\dnslib\buffer.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\dnslib\dns.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\dnslib\message.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\dnslib\qs.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\dnslib\rr.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\aesni\aes.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\asio\vdns.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="common\json\src\json_valueiterator.inl">
+      <Filter>头文件</Filter>
+    </None>
+    <None Include="Driver\OemVista.inf" />
+    <None Include="Driver\tap0901.cat" />
+    <None Include="Driver\tap0901.sys" />
+    <None Include="Driver\x64\PaperAirplane.dll" />
+    <None Include="Driver\x64\sysproxy64.exe" />
+    <None Include="Driver\x86\PaperAirplane.dll" />
+    <None Include="Driver\x86\sysproxy32.exe" />
+  </ItemGroup>
+  <ItemGroup>
+    <CopyFileToFolders Include="cacert.pem" />
+    <CopyFileToFolders Include="firewall-rules.txt" />
+    <CopyFileToFolders Include="ip.txt" />
+    <CopyFileToFolders Include="appsettings.json" />
+    <CopyFileToFolders Include="dns-rules.txt" />
+    <CopyFileToFolders Include="starrylink.net.key" />
+    <CopyFileToFolders Include="starrylink.net.pem" />
+    <CopyFileToFolders Include="cmcc.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="resource.rc">
+      <Filter>资源文件</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="icon.ico">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="sln\sysproxy32\icon.ico">
+      <Filter>资源文件</Filter>
+    </Image>
+  </ItemGroup>
+</Project>
