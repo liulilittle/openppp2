@@ -1,0 +1,782 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>16.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{45833f17-3e43-4cf1-9a7c-233e3c6b422e}</ProjectGuid>
+    <RootNamespace>ppp</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0.19041.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <SpectreMitigation>false</SpectreMitigation>
+    <UseOfMfc>Static</UseOfMfc>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+    <SpectreMitigation>false</SpectreMitigation>
+    <UseOfMfc>Static</UseOfMfc>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <IncludePath>$(ProjectDir);$(ProjectDir)\common;$(ProjectDir)\common\lwip\include;$(ProjectDir)\common\lwip\my;$(ProjectDir)\common\json\include;$(IncludePath)</IncludePath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <IncludePath>$(ProjectDir);$(ProjectDir)\common;$(ProjectDir)\common\lwip\include;$(ProjectDir)\common\lwip\my;$(ProjectDir)\common\json\include;$(VC_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <IncludePath>$(ProjectDir);$(ProjectDir)\common;$(ProjectDir)\common\lwip\include;$(ProjectDir)\common\lwip\my;$(ProjectDir)\common\json\include;$(VC_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <IncludePath>$(ProjectDir);$(ProjectDir)\common;$(ProjectDir)\common\lwip\include;$(ProjectDir)\common\lwip\my;$(ProjectDir)\common\json\include;$(VC_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
+  </PropertyGroup>
+  <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <VcpkgEnableManifest>false</VcpkgEnableManifest>
+    <VcpkgManifestInstall>true</VcpkgManifestInstall>
+    <VcpkgConfiguration>$(Configuration)</VcpkgConfiguration>
+    <VcpkgEnabled>true</VcpkgEnabled>
+    <VcpkgUseStatic>true</VcpkgUseStatic>
+  </PropertyGroup>
+  <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <VcpkgEnableManifest>false</VcpkgEnableManifest>
+    <VcpkgManifestInstall>true</VcpkgManifestInstall>
+    <VcpkgConfiguration>$(Configuration)</VcpkgConfiguration>
+    <VcpkgEnabled>true</VcpkgEnabled>
+    <VcpkgUseStatic>true</VcpkgUseStatic>
+  </PropertyGroup>
+  <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <VcpkgEnableManifest>false</VcpkgEnableManifest>
+    <VcpkgManifestInstall>true</VcpkgManifestInstall>
+    <VcpkgConfiguration>$(Configuration)</VcpkgConfiguration>
+    <VcpkgEnabled>true</VcpkgEnabled>
+    <VcpkgUseStatic>true</VcpkgUseStatic>
+  </PropertyGroup>
+  <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <VcpkgEnableManifest>false</VcpkgEnableManifest>
+    <VcpkgManifestInstall>true</VcpkgManifestInstall>
+    <VcpkgConfiguration>$(Configuration)</VcpkgConfiguration>
+    <VcpkgEnabled>true</VcpkgEnabled>
+    <VcpkgUseStatic>true</VcpkgUseStatic>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;_WIN32_WINNT=0x0601;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_WINSOCK_DEPRECATED_NO_WARNINGS;JEMALLOC;BUDDY_ALLOC_IMPLEMENTATION;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;__SIMD__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <DisableSpecificWarnings>4244;4819;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <StringPooling>true</StringPooling>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <IntelJCCErratum>true</IntelJCCErratum>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <Profile>false</Profile>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;_WIN32_WINNT=0x0601;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_WINSOCK_DEPRECATED_NO_WARNINGS;JEMALLOC;BUDDY_ALLOC_IMPLEMENTATION;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;__SIMD__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <Optimization>Full</Optimization>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+      <OmitFramePointers>true</OmitFramePointers>
+      <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <StringPooling>true</StringPooling>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <IntelJCCErratum>true</IntelJCCErratum>
+      <DisableSpecificWarnings>4244;4819;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;_WIN32_WINNT=0x0601;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_WINSOCK_DEPRECATED_NO_WARNINGS;JEMALLOC;BUDDY_ALLOC_IMPLEMENTATION;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;__SIMD__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <DisableSpecificWarnings>4244;4819;4309;4334;4267;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+      <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
+      <StringPooling>true</StringPooling>
+      <IntelJCCErratum>true</IntelJCCErratum>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <Profile>true</Profile>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;_WIN32_WINNT=0x0601;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_WINSOCK_DEPRECATED_NO_WARNINGS;JEMALLOC;BUDDY_ALLOC_IMPLEMENTATION;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;__SIMD__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <Optimization>Full</Optimization>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <OmitFramePointers>true</OmitFramePointers>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <IntelJCCErratum>true</IntelJCCErratum>
+      <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
+      <StringPooling>true</StringPooling>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <DisableSpecificWarnings>4244;4819;4309;4334;4267;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="common\aesni\aes.cpp" />
+    <ClCompile Include="common\aesni\impl\simd_aes_128_cfb.cpp" />
+    <ClCompile Include="common\aesni\impl\simd_aes_256_cfb.cpp" />
+    <ClCompile Include="common\aesni\impl\simd_aes_128_gcm.cpp" />
+    <ClCompile Include="common\aesni\impl\simd_aes_256_gcm.cpp" />
+    <ClCompile Include="common\aggligator\aggligator.cpp" />
+    <ClCompile Include="common\base64\base64.cpp" />
+    <ClCompile Include="common\chnroutes2\chnroutes2.cpp" />
+    <ClCompile Include="common\dnslib\buffer.cpp" />
+    <ClCompile Include="common\dnslib\message.cpp" />
+    <ClCompile Include="common\dnslib\qs.cpp" />
+    <ClCompile Include="common\dnslib\rr.cpp" />
+    <ClCompile Include="common\json\src\json_reader.cpp" />
+    <ClCompile Include="common\json\src\json_value.cpp" />
+    <ClCompile Include="common\json\src\json_writer.cpp" />
+    <ClCompile Include="common\libtcpip\netstack.cpp" />
+    <ClCompile Include="common\lwip\core\altcp.c" />
+    <ClCompile Include="common\lwip\core\altcp_alloc.c" />
+    <ClCompile Include="common\lwip\core\altcp_tcp.c" />
+    <ClCompile Include="common\lwip\core\def.c" />
+    <ClCompile Include="common\lwip\core\dns.c" />
+    <ClCompile Include="common\lwip\core\inet_chksum.c" />
+    <ClCompile Include="common\lwip\core\init.c" />
+    <ClCompile Include="common\lwip\core\ip.c" />
+    <ClCompile Include="common\lwip\core\ipv4\acd.c" />
+    <ClCompile Include="common\lwip\core\ipv4\autoip.c" />
+    <ClCompile Include="common\lwip\core\ipv4\dhcp.c" />
+    <ClCompile Include="common\lwip\core\ipv4\etharp.c" />
+    <ClCompile Include="common\lwip\core\ipv4\icmp.c" />
+    <ClCompile Include="common\lwip\core\ipv4\igmp.c" />
+    <ClCompile Include="common\lwip\core\ipv4\ip4.c" />
+    <ClCompile Include="common\lwip\core\ipv4\ip4_addr.c" />
+    <ClCompile Include="common\lwip\core\ipv4\ip4_frag.c" />
+    <ClCompile Include="common\lwip\core\ipv6\dhcp6.c" />
+    <ClCompile Include="common\lwip\core\ipv6\ethip6.c" />
+    <ClCompile Include="common\lwip\core\ipv6\icmp6.c" />
+    <ClCompile Include="common\lwip\core\ipv6\inet6.c" />
+    <ClCompile Include="common\lwip\core\ipv6\ip6.c" />
+    <ClCompile Include="common\lwip\core\ipv6\ip6_addr.c" />
+    <ClCompile Include="common\lwip\core\ipv6\ip6_frag.c" />
+    <ClCompile Include="common\lwip\core\ipv6\mld6.c" />
+    <ClCompile Include="common\lwip\core\ipv6\nd6.c" />
+    <ClCompile Include="common\lwip\core\mem.c" />
+    <ClCompile Include="common\lwip\core\memp.c" />
+    <ClCompile Include="common\lwip\core\netif.c" />
+    <ClCompile Include="common\lwip\core\pbuf.c" />
+    <ClCompile Include="common\lwip\core\raw.c" />
+    <ClCompile Include="common\lwip\core\stats.c" />
+    <ClCompile Include="common\lwip\core\sys.c" />
+    <ClCompile Include="common\lwip\core\tcp.c" />
+    <ClCompile Include="common\lwip\core\tcp_in.c" />
+    <ClCompile Include="common\lwip\core\tcp_out.c" />
+    <ClCompile Include="common\lwip\core\timeouts.c" />
+    <ClCompile Include="common\lwip\core\udp.c" />
+    <ClCompile Include="common\lwip\my\sys_arch.c" />
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="ppp\app\client\dns\Rule.cpp" />
+    <ClCompile Include="ppp\app\client\proxys\VEthernetHttpProxyConnection.cpp" />
+    <ClCompile Include="ppp\app\client\proxys\VEthernetHttpProxySwitcher.cpp" />
+    <ClCompile Include="ppp\app\client\proxys\VEthernetLocalProxyConnection.cpp" />
+    <ClCompile Include="ppp\app\client\proxys\VEthernetLocalProxySwitcher.cpp" />
+    <ClCompile Include="ppp\app\client\proxys\VEthernetSocksProxyConnection.cpp" />
+    <ClCompile Include="ppp\app\client\proxys\VEthernetSocksProxySwitcher.cpp" />
+    <ClCompile Include="ppp\app\mux\vmux_net.cpp" />
+    <ClCompile Include="ppp\app\mux\vmux_skt.cpp" />
+    <ClCompile Include="ppp\app\protocol\VirtualEthernetLogger.cpp" />
+    <ClCompile Include="ppp\app\protocol\VirtualEthernetMappingPort.cpp" />
+    <ClCompile Include="ppp\app\protocol\VirtualEthernetPacket.cpp" />
+    <ClCompile Include="ppp\app\server\VirtualEthernetDatagramPortStatic.cpp" />
+    <ClCompile Include="ppp\app\server\VirtualEthernetNamespaceCache.cpp" />
+    <ClCompile Include="ppp\app\server\VirtualInternetControlMessageProtocolStatic.cpp" />
+    <ClCompile Include="ppp\configurations\Ini.cpp" />
+    <ClCompile Include="ppp\diagnostics\PreventReturn.cpp" />
+    <ClCompile Include="ppp\net\asio\vdns.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket\websocket_accept_sslv_websocket.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket\websocket_accept_websocket.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket\websocket_async_sslv_websocket.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket\websocket_async_sslv_websocket_perform_ssl_handshake.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket\websocket_async_sslv_websocket_perform_websocket_handshake.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket\websocket_close_websocket.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket\websocket_read_websocket.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket\websocket_ssl_close_websocket.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket\websocket_ssl_read_websocket.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket\websocket_ssl_websocket.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket\websocket_ssl_write_websocket.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket\websocket_write_websocket.cpp" />
+    <ClCompile Include="ppp\net\http\HttpClient.cpp" />
+    <ClCompile Include="ppp\net\rinetd\RinetdConnection.cpp" />
+    <ClCompile Include="ppp\app\client\VEthernetDatagramPort.cpp" />
+    <ClCompile Include="ppp\app\client\VEthernetExchanger.cpp" />
+    <ClCompile Include="ppp\app\client\VEthernetNetworkSwitcher.cpp" />
+    <ClCompile Include="ppp\app\client\VEthernetNetworkTcpipConnection.cpp" />
+    <ClCompile Include="ppp\app\client\VEthernetNetworkTcpipStack.cpp" />
+    <ClCompile Include="ppp\app\protocol\VirtualEthernetInformation.cpp" />
+    <ClCompile Include="ppp\app\protocol\VirtualEthernetLinklayer.cpp" />
+    <ClCompile Include="ppp\app\protocol\VirtualEthernetTcpipConnection.cpp" />
+    <ClCompile Include="ppp\app\server\VirtualEthernetDatagramPort.cpp" />
+    <ClCompile Include="ppp\app\server\VirtualEthernetExchanger.cpp" />
+    <ClCompile Include="ppp\app\server\VirtualEthernetManagedServer.cpp" />
+    <ClCompile Include="ppp\app\server\VirtualEthernetNetworkTcpipConnection.cpp" />
+    <ClCompile Include="ppp\app\server\VirtualEthernetSwitcher.cpp" />
+    <ClCompile Include="ppp\app\server\VirtualInternetControlMessageProtocol.cpp" />
+    <ClCompile Include="ppp\auxiliary\JsonAuxiliary.cpp" />
+    <ClCompile Include="ppp\auxiliary\StringAuxiliary.cpp" />
+    <ClCompile Include="ppp\auxiliary\UriAuxiliary.cpp" />
+    <ClCompile Include="ppp\configurations\AppConfiguration.cpp" />
+    <ClCompile Include="ppp\coroutines\YieldContext.cpp" />
+    <ClCompile Include="ppp\cryptography\Ciphertext.cpp" />
+    <ClCompile Include="ppp\cryptography\EVP.cpp" />
+    <ClCompile Include="ppp\cryptography\md5.cpp" />
+    <ClCompile Include="ppp\cryptography\rc4.cpp" />
+    <ClCompile Include="ppp\cryptography\digest.cpp" />
+    <ClCompile Include="ppp\cryptography\ssea.cpp" />
+    <ClCompile Include="ppp\DateTime.cpp" />
+    <ClCompile Include="ppp\diagnostics\Stopwatch.cpp" />
+    <ClCompile Include="ppp\ethernet\VEthernet.cpp" />
+    <ClCompile Include="ppp\ethernet\VNetstack.cpp" />
+    <ClCompile Include="ppp\io\File.cpp" />
+    <ClCompile Include="ppp\net\asio\websocket.cpp" />
+    <ClCompile Include="ppp\net\Firewall.cpp" />
+    <ClCompile Include="ppp\net\native\checksum.cpp" />
+    <ClCompile Include="ppp\net\packet\IcmpFrame.cpp" />
+    <ClCompile Include="ppp\net\packet\IPFragment.cpp" />
+    <ClCompile Include="ppp\net\packet\IPFrame.cpp" />
+    <ClCompile Include="ppp\net\packet\UdpFrame.cpp" />
+    <ClCompile Include="ppp\net\proxies\sniproxy.cpp" />
+    <ClCompile Include="ppp\net\SocketAcceptor.cpp" />
+    <ClCompile Include="ppp\net\asio\InternetControlMessageProtocol.cpp" />
+    <ClCompile Include="ppp\Random.cpp" />
+    <ClCompile Include="ppp\ssl\SSL.cpp" />
+    <ClCompile Include="ppp\threading\BufferblockAllocator.cpp" />
+    <ClCompile Include="ppp\threading\BufferswapAllocator.cpp" />
+    <ClCompile Include="ppp\threading\SpinLock.cpp" />
+    <ClCompile Include="ppp\threading\Timer.cpp" />
+    <ClCompile Include="ppp\net\asio\IAsynchronousWriteIoQueue.cpp" />
+    <ClCompile Include="ppp\transmissions\ITcpipTransmission.cpp" />
+    <ClCompile Include="ppp\transmissions\ITransmission.cpp" />
+    <ClCompile Include="ppp\transmissions\ITransmissionQoS.cpp" />
+    <ClCompile Include="ppp\transmissions\IWebsocketTransmission.cpp" />
+    <ClCompile Include="ppp\transmissions\proxys\IForwarding.cpp" />
+    <ClCompile Include="windows\ppp\app\client\lsp\PaperAirplaneConnection.cpp" />
+    <ClCompile Include="windows\ppp\app\client\lsp\PaperAirplaneController.cpp" />
+    <ClCompile Include="windows\ppp\app\client\lsp\PaperAirplaneLspX.cpp" />
+    <ClCompile Include="windows\ppp\app\client\lsp\PaperAirplaneLspY.cpp" />
+    <ClCompile Include="windows\ppp\app\client\lsp\PaperAirplaneRoot.cpp" />
+    <ClCompile Include="windows\ppp\net\proxies\HttpProxy.cpp" />
+    <ClCompile Include="windows\ppp\net\QoSS.cpp" />
+    <ClCompile Include="windows\ppp\net\Win32SocketAcceptor.cpp" />
+    <ClCompile Include="ppp\net\IPEndPoint.cpp" />
+    <ClCompile Include="ppp\net\Ipep.cpp" />
+    <ClCompile Include="ppp\net\Socket.cpp" />
+    <ClCompile Include="ppp\stdafx.cpp" />
+    <ClCompile Include="ppp\tap\ITap.cpp" />
+    <ClCompile Include="windows\ppp\win32\network\NetworkInterface.cpp" />
+    <ClCompile Include="windows\ppp\win32\network\Win32Firewall.cpp" />
+    <ClCompile Include="windows\ppp\win32\network\Win32NetworkRouter.cpp" />
+    <ClCompile Include="windows\ppp\win32\Win32Event.cpp" />
+    <ClCompile Include="windows\ppp\win32\Win32Mci.cpp" />
+    <ClCompile Include="windows\ppp\win32\Win32Native.cpp" />
+    <ClCompile Include="windows\ppp\win32\Win32PerformanceCounter.cpp" />
+    <ClCompile Include="windows\ppp\win32\Win32RegistryKey.cpp" />
+    <ClCompile Include="windows\ppp\win32\Win32Variant.cpp" />
+    <ClInclude Include="common\aesni\aes.h" />
+    <ClInclude Include="common\aggligator\aggligator.h" />
+    <ClInclude Include="common\chnroutes2\chnroutes2.h" />
+    <ClInclude Include="common\dnslib\buffer.h" />
+    <ClInclude Include="common\dnslib\dns.h" />
+    <ClInclude Include="common\dnslib\message.h" />
+    <ClInclude Include="common\dnslib\qs.h" />
+    <ClInclude Include="common\dnslib\rr.h" />
+    <ClInclude Include="common\memory\buddy_allocator.h" />
+    <ClInclude Include="common\base64\base64.h" />
+    <ClInclude Include="common\json\include\json\allocator.h" />
+    <ClInclude Include="common\json\include\json\assertions.h" />
+    <ClInclude Include="common\json\include\json\config.h" />
+    <ClInclude Include="common\json\include\json\forwards.h" />
+    <ClInclude Include="common\json\include\json\json.h" />
+    <ClInclude Include="common\json\include\json\json_features.h" />
+    <ClInclude Include="common\json\include\json\reader.h" />
+    <ClInclude Include="common\json\include\json\value.h" />
+    <ClInclude Include="common\json\include\json\version.h" />
+    <ClInclude Include="common\json\include\json\writer.h" />
+    <ClInclude Include="common\json\src\json_tool.h" />
+    <ClInclude Include="common\libtcpip\netstack.h" />
+    <ClInclude Include="common\lwip\include\compat\posix\arpa\inet.h" />
+    <ClInclude Include="common\lwip\include\compat\posix\netdb.h" />
+    <ClInclude Include="common\lwip\include\compat\posix\net\if.h" />
+    <ClInclude Include="common\lwip\include\compat\posix\sys\socket.h" />
+    <ClInclude Include="common\lwip\include\compat\stdc\errno.h" />
+    <ClInclude Include="common\lwip\include\lwip\acd.h" />
+    <ClInclude Include="common\lwip\include\lwip\altcp.h" />
+    <ClInclude Include="common\lwip\include\lwip\altcp_tcp.h" />
+    <ClInclude Include="common\lwip\include\lwip\altcp_tls.h" />
+    <ClInclude Include="common\lwip\include\lwip\api.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\altcp_proxyconnect.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\altcp_tls_mbedtls_opts.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\fs.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\httpd.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\httpd_opts.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\http_client.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\lwiperf.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\mdns.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\mdns_domain.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\mdns_opts.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\mdns_out.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\mdns_priv.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\mqtt.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\mqtt_opts.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\mqtt_priv.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\netbiosns.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\netbiosns_opts.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\smtp.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\smtp_opts.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\snmpv3.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_core.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_mib2.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_opts.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_scalar.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_snmpv2_framework.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_snmpv2_usm.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_table.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\snmp_threadsync.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\sntp.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\sntp_opts.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\tftp_client.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\tftp_common.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\tftp_opts.h" />
+    <ClInclude Include="common\lwip\include\lwip\apps\tftp_server.h" />
+    <ClInclude Include="common\lwip\include\lwip\arch.h" />
+    <ClInclude Include="common\lwip\include\lwip\autoip.h" />
+    <ClInclude Include="common\lwip\include\lwip\debug.h" />
+    <ClInclude Include="common\lwip\include\lwip\def.h" />
+    <ClInclude Include="common\lwip\include\lwip\dhcp.h" />
+    <ClInclude Include="common\lwip\include\lwip\dhcp6.h" />
+    <ClInclude Include="common\lwip\include\lwip\dns.h" />
+    <ClInclude Include="common\lwip\include\lwip\err.h" />
+    <ClInclude Include="common\lwip\include\lwip\errno.h" />
+    <ClInclude Include="common\lwip\include\lwip\etharp.h" />
+    <ClInclude Include="common\lwip\include\lwip\ethip6.h" />
+    <ClInclude Include="common\lwip\include\lwip\icmp.h" />
+    <ClInclude Include="common\lwip\include\lwip\icmp6.h" />
+    <ClInclude Include="common\lwip\include\lwip\if_api.h" />
+    <ClInclude Include="common\lwip\include\lwip\igmp.h" />
+    <ClInclude Include="common\lwip\include\lwip\inet.h" />
+    <ClInclude Include="common\lwip\include\lwip\inet_chksum.h" />
+    <ClInclude Include="common\lwip\include\lwip\init.h" />
+    <ClInclude Include="common\lwip\include\lwip\ip.h" />
+    <ClInclude Include="common\lwip\include\lwip\ip4.h" />
+    <ClInclude Include="common\lwip\include\lwip\ip4_addr.h" />
+    <ClInclude Include="common\lwip\include\lwip\ip4_frag.h" />
+    <ClInclude Include="common\lwip\include\lwip\ip6.h" />
+    <ClInclude Include="common\lwip\include\lwip\ip6_addr.h" />
+    <ClInclude Include="common\lwip\include\lwip\ip6_frag.h" />
+    <ClInclude Include="common\lwip\include\lwip\ip6_zone.h" />
+    <ClInclude Include="common\lwip\include\lwip\ip_addr.h" />
+    <ClInclude Include="common\lwip\include\lwip\mem.h" />
+    <ClInclude Include="common\lwip\include\lwip\memp.h" />
+    <ClInclude Include="common\lwip\include\lwip\mld6.h" />
+    <ClInclude Include="common\lwip\include\lwip\nd6.h" />
+    <ClInclude Include="common\lwip\include\lwip\netbuf.h" />
+    <ClInclude Include="common\lwip\include\lwip\netdb.h" />
+    <ClInclude Include="common\lwip\include\lwip\netif.h" />
+    <ClInclude Include="common\lwip\include\lwip\netifapi.h" />
+    <ClInclude Include="common\lwip\include\lwip\opt.h" />
+    <ClInclude Include="common\lwip\include\lwip\pbuf.h" />
+    <ClInclude Include="common\lwip\include\lwip\priv\altcp_priv.h" />
+    <ClInclude Include="common\lwip\include\lwip\priv\api_msg.h" />
+    <ClInclude Include="common\lwip\include\lwip\priv\memp_priv.h" />
+    <ClInclude Include="common\lwip\include\lwip\priv\memp_std.h" />
+    <ClInclude Include="common\lwip\include\lwip\priv\mem_priv.h" />
+    <ClInclude Include="common\lwip\include\lwip\priv\nd6_priv.h" />
+    <ClInclude Include="common\lwip\include\lwip\priv\raw_priv.h" />
+    <ClInclude Include="common\lwip\include\lwip\priv\sockets_priv.h" />
+    <ClInclude Include="common\lwip\include\lwip\priv\tcpip_priv.h" />
+    <ClInclude Include="common\lwip\include\lwip\priv\tcp_priv.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\acd.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\autoip.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\dhcp.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\dhcp6.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\dns.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\etharp.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\ethernet.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\iana.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\icmp.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\icmp6.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\ieee.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\igmp.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\ip.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\ip4.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\ip6.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\mld6.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\nd6.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\tcp.h" />
+    <ClInclude Include="common\lwip\include\lwip\prot\udp.h" />
+    <ClInclude Include="common\lwip\include\lwip\raw.h" />
+    <ClInclude Include="common\lwip\include\lwip\sio.h" />
+    <ClInclude Include="common\lwip\include\lwip\snmp.h" />
+    <ClInclude Include="common\lwip\include\lwip\sockets.h" />
+    <ClInclude Include="common\lwip\include\lwip\stats.h" />
+    <ClInclude Include="common\lwip\include\lwip\sys.h" />
+    <ClInclude Include="common\lwip\include\lwip\tcp.h" />
+    <ClInclude Include="common\lwip\include\lwip\tcpbase.h" />
+    <ClInclude Include="common\lwip\include\lwip\tcpip.h" />
+    <ClInclude Include="common\lwip\include\lwip\timeouts.h" />
+    <ClInclude Include="common\lwip\include\lwip\udp.h" />
+    <ClInclude Include="common\lwip\include\netif\bridgeif.h" />
+    <ClInclude Include="common\lwip\include\netif\bridgeif_opts.h" />
+    <ClInclude Include="common\lwip\include\netif\etharp.h" />
+    <ClInclude Include="common\lwip\include\netif\ethernet.h" />
+    <ClInclude Include="common\lwip\include\netif\ieee802154.h" />
+    <ClInclude Include="common\lwip\include\netif\lowpan6.h" />
+    <ClInclude Include="common\lwip\include\netif\lowpan6_ble.h" />
+    <ClInclude Include="common\lwip\include\netif\lowpan6_common.h" />
+    <ClInclude Include="common\lwip\include\netif\lowpan6_opts.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\ccp.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\chap-md5.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\chap-new.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\chap_ms.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\eap.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\ecp.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\eui64.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\fsm.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\ipcp.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\ipv6cp.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\lcp.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\magic.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\mppe.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\polarssl\arc4.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\polarssl\des.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\polarssl\md4.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\polarssl\md5.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\polarssl\sha1.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\ppp.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\pppapi.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\pppcrypt.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\pppdebug.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\pppoe.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\pppol2tp.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\pppos.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\ppp_impl.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\ppp_opts.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\upap.h" />
+    <ClInclude Include="common\lwip\include\netif\ppp\vj.h" />
+    <ClInclude Include="common\lwip\include\netif\slipif.h" />
+    <ClInclude Include="common\lwip\include\netif\zepif.h" />
+    <ClInclude Include="common\lwip\my\arch\bpstruct.h" />
+    <ClInclude Include="common\lwip\my\arch\cc.h" />
+    <ClInclude Include="common\lwip\my\arch\cc_others.h" />
+    <ClInclude Include="common\lwip\my\arch\cc_windows.h" />
+    <ClInclude Include="common\lwip\my\arch\epstruct.h" />
+    <ClInclude Include="common\lwip\my\lwipopts.h" />
+    <ClInclude Include="ppp\app\client\dns\Rule.h" />
+    <ClInclude Include="ppp\app\client\proxys\VEthernetHttpProxyConnection.h" />
+    <ClInclude Include="ppp\app\client\proxys\VEthernetHttpProxySwitcher.h" />
+    <ClInclude Include="ppp\app\client\proxys\VEthernetLocalProxyConnection.h" />
+    <ClInclude Include="ppp\app\client\proxys\VEthernetLocalProxySwitcher.h" />
+    <ClInclude Include="ppp\app\client\proxys\VEthernetSocksProxyConnection.h" />
+    <ClInclude Include="ppp\app\client\proxys\VEthernetSocksProxySwitcher.h" />
+    <ClInclude Include="ppp\app\mux\vmux.h" />
+    <ClInclude Include="ppp\app\mux\vmux_net.h" />
+    <ClInclude Include="ppp\app\mux\vmux_skt.h" />
+    <ClInclude Include="ppp\app\protocol\templates\TVEthernetTcpipConnection.h" />
+    <ClInclude Include="ppp\app\protocol\VirtualEthernetLogger.h" />
+    <ClInclude Include="ppp\app\protocol\VirtualEthernetMappingPort.h" />
+    <ClInclude Include="ppp\app\protocol\VirtualEthernetPacket.h" />
+    <ClInclude Include="ppp\app\server\VirtualEthernetDatagramPortStatic.h" />
+    <ClInclude Include="ppp\app\server\VirtualEthernetNamespaceCache.h" />
+    <ClInclude Include="ppp\app\server\VirtualInternetControlMessageProtocolStatic.h" />
+    <ClInclude Include="ppp\collections\LinkedList.h" />
+    <ClInclude Include="ppp\configurations\Ini.h" />
+    <ClInclude Include="ppp\diagnostics\PreventReturn.h" />
+    <ClInclude Include="ppp\net\asio\vdns.h" />
+    <ClInclude Include="ppp\net\asio\websocket\websocket_accept_sslv_websocket.h" />
+    <ClInclude Include="ppp\net\asio\websocket\websocket_accept_websocket.h" />
+    <ClInclude Include="ppp\net\asio\websocket\websocket_async_sslv_websocket.h" />
+    <ClInclude Include="ppp\net\http\HttpClient.h" />
+    <ClInclude Include="ppp\net\http\httplib.h" />
+    <ClInclude Include="ppp\net\rinetd\RinetdConnection.h" />
+    <ClInclude Include="ppp\app\client\VEthernetDatagramPort.h" />
+    <ClInclude Include="ppp\app\client\VEthernetExchanger.h" />
+    <ClInclude Include="ppp\app\client\VEthernetNetworkSwitcher.h" />
+    <ClInclude Include="ppp\app\client\VEthernetNetworkTcpipStack.h" />
+    <ClInclude Include="ppp\app\client\VEthernetNetworkTcpipConnection.h" />
+    <ClInclude Include="ppp\app\protocol\VirtualEthernetTcpipConnection.h" />
+    <ClInclude Include="ppp\app\server\VirtualEthernetDatagramPort.h" />
+    <ClInclude Include="ppp\app\server\VirtualEthernetExchanger.h" />
+    <ClInclude Include="ppp\app\server\VirtualEthernetManagedServer.h" />
+    <ClInclude Include="ppp\app\server\VirtualEthernetNetworkTcpipConnection.h" />
+    <ClInclude Include="ppp\app\server\VirtualEthernetSwitcher.h" />
+    <ClInclude Include="ppp\app\server\VirtualInternetControlMessageProtocol.h" />
+    <ClInclude Include="ppp\auxiliary\JsonAuxiliary.h" />
+    <ClInclude Include="ppp\app\protocol\VirtualEthernetInformation.h" />
+    <ClInclude Include="ppp\auxiliary\StringAuxiliary.h" />
+    <ClInclude Include="ppp\auxiliary\UriAuxiliary.h" />
+    <ClInclude Include="ppp\cryptography\Ciphertext.h" />
+    <ClInclude Include="ppp\DateTime.h" />
+    <ClInclude Include="ppp\diagnostics\Stopwatch.h" />
+    <ClInclude Include="ppp\fmt.h" />
+    <ClInclude Include="ppp\net\Firewall.h" />
+    <ClInclude Include="ppp\net\native\rib.h" />
+    <ClInclude Include="ppp\threading\BufferblockAllocator.h" />
+    <ClInclude Include="ppp\threading\BufferswapAllocator.h" />
+    <ClInclude Include="ppp\threading\SpinLock.h" />
+    <ClInclude Include="ppp\transmissions\ITransmissionQoS.h" />
+    <ClInclude Include="ppp\transmissions\ITransmissionStatistics.h" />
+    <ClInclude Include="ppp\collections\Dictionary.h" />
+    <ClInclude Include="ppp\app\protocol\VirtualEthernetLinklayer.h" />
+    <ClInclude Include="ppp\configurations\AppConfiguration.h" />
+    <ClInclude Include="ppp\coroutines\asio\asio.h" />
+    <ClInclude Include="ppp\coroutines\YieldContext.h" />
+    <ClInclude Include="ppp\cryptography\EVP.h" />
+    <ClInclude Include="ppp\cryptography\md5.h" />
+    <ClInclude Include="ppp\cryptography\rc4.h" />
+    <ClInclude Include="ppp\cryptography\digest.h" />
+    <ClInclude Include="ppp\cryptography\ssea.h" />
+    <ClInclude Include="ppp\ethernet\VNetstack.h" />
+    <ClInclude Include="ppp\IDisposable.h" />
+    <ClInclude Include="ppp\Int128.h" />
+    <ClInclude Include="ppp\net\asio\templates\SslSocket.h" />
+    <ClInclude Include="ppp\net\asio\templates\WebSocket.h" />
+    <ClInclude Include="ppp\net\asio\websocket.h" />
+    <ClInclude Include="ppp\net\packet\IPFragment.h" />
+    <ClInclude Include="ppp\ethernet\VEthernet.h" />
+    <ClInclude Include="ppp\expressions\YCombinator.h" />
+    <ClInclude Include="ppp\net\asio\asio.h" />
+    <ClInclude Include="ppp\net\native\checksum.h" />
+    <ClInclude Include="ppp\net\native\eth.h" />
+    <ClInclude Include="ppp\net\native\icmp.h" />
+    <ClInclude Include="ppp\net\native\ip.h" />
+    <ClInclude Include="ppp\net\native\tcp.h" />
+    <ClInclude Include="ppp\net\native\udp.h" />
+    <ClInclude Include="ppp\net\packet\IcmpFrame.h" />
+    <ClInclude Include="ppp\net\packet\IPFrame.h" />
+    <ClInclude Include="ppp\net\packet\UdpFrame.h" />
+    <ClInclude Include="ppp\net\proxies\sniproxy.h" />
+    <ClInclude Include="ppp\net\SocketAcceptor.h" />
+    <ClInclude Include="ppp\Reference.h" />
+    <ClInclude Include="ppp\net\asio\InternetControlMessageProtocol.h" />
+    <ClInclude Include="ppp\ssl\root_certificates.hpp" />
+    <ClInclude Include="ppp\ssl\SSL.h" />
+    <ClInclude Include="ppp\tap\ITap.h" />
+    <ClCompile Include="windows\ppp\tap\TapWindows.cpp" />
+    <ClInclude Include="ppp\threading\Timer.h" />
+    <ClInclude Include="ppp\net\asio\IAsynchronousWriteIoQueue.h" />
+    <ClInclude Include="ppp\transmissions\ITcpipTransmission.h" />
+    <ClInclude Include="ppp\transmissions\ITransmission.h" />
+    <ClInclude Include="ppp\transmissions\IWebsocketTransmission.h" />
+    <ClInclude Include="ppp\transmissions\proxys\IForwarding.h" />
+    <ClInclude Include="ppp\transmissions\templates\WebSocket.h" />
+    <ClInclude Include="resource.h" />
+    <ClInclude Include="windows\ppp\app\client\lsp\PaperAirplaneConnection.h" />
+    <ClInclude Include="windows\ppp\app\client\lsp\PaperAirplaneController.h" />
+    <ClInclude Include="windows\ppp\app\client\lsp\PaperAirplaneLspX.h" />
+    <ClInclude Include="windows\ppp\app\client\lsp\PaperAirplaneLspY.h" />
+    <ClInclude Include="windows\ppp\app\client\lsp\PaperAirplaneRoot.h" />
+    <ClInclude Include="windows\ppp\net\proxies\HttpProxy.h" />
+    <ClInclude Include="windows\ppp\net\QoSS.h" />
+    <ClInclude Include="windows\ppp\tap\tap-windows.h" />
+    <ClInclude Include="windows\ppp\tap\TapWindows.h" />
+    <ClCompile Include="ppp\text\Encoding.cpp" />
+    <ClCompile Include="ppp\threading\Executors.cpp" />
+    <ClCompile Include="ppp\threading\Thread.cpp" />
+    <ClInclude Include="ppp\win32\network\NetworkInterface.h" />
+    <ClInclude Include="ppp\win32\network\Router.h" />
+    <ClInclude Include="ppp\win32\Win32Native.h" />
+    <ClInclude Include="ppp\win32\Win32Variant.h" />
+    <ClInclude Include="windows\ppp\net\Win32SocketAcceptor.h" />
+    <ClInclude Include="windows\ppp\win32\network\Firewall.h" />
+    <ClInclude Include="windows\ppp\win32\network\NetworkInterface.h" />
+    <ClInclude Include="windows\ppp\win32\network\Router.h" />
+    <ClInclude Include="windows\ppp\win32\Win32Event.h" />
+    <ClInclude Include="windows\ppp\win32\Win32Mci.h" />
+    <ClInclude Include="windows\ppp\win32\Win32PerformanceCounter.h" />
+    <ClInclude Include="windows\ppp\win32\Win32RegistryKey.h" />
+    <ClInclude Include="windows\ppp\win32\Win32Native.h" />
+    <ClInclude Include="windows\ppp\win32\Win32Variant.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ppp\io\BinaryReader.h" />
+    <ClInclude Include="ppp\io\File.h" />
+    <ClInclude Include="ppp\io\MemoryStream.h" />
+    <ClInclude Include="ppp\io\SeekOrigin.h" />
+    <ClInclude Include="ppp\io\Stream.h" />
+    <ClInclude Include="ppp\net\IPEndPoint.h" />
+    <ClInclude Include="ppp\net\Ipep.h" />
+    <ClInclude Include="ppp\net\Socket.h" />
+    <ClInclude Include="ppp\Random.h" />
+    <ClInclude Include="ppp\stdafx.h" />
+    <ClInclude Include="ppp\text\Encoding.h" />
+    <ClInclude Include="ppp\threading\Executors.h" />
+    <ClInclude Include="ppp\threading\Thread.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <CopyFileToFolders Include="cacert.pem">
+      <FileType>Document</FileType>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</ExcludedFromBuild>
+      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</DeploymentContent>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="appsettings.json">
+      <FileType>Document</FileType>
+    </CopyFileToFolders>
+    <None Include="common\json\src\json_valueiterator.inl" />
+    <None Include="Driver\OemVista.inf">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Driver\tap0901.cat">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Driver\tap0901.sys">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Driver\x64\PaperAirplane.dll">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Driver\x64\sysproxy64.exe">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Driver\x86\PaperAirplane.dll">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Driver\x86\sysproxy32.exe">
+      <FileType>Document</FileType>
+    </None>
+    <CopyFileToFolders Include="starrylink.net.key">
+      <FileType>Document</FileType>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="starrylink.net.pem">
+      <FileType>Document</FileType>
+    </CopyFileToFolders>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="resource.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="icon.ico" />
+    <Image Include="sln\sysproxy32\icon.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <CopyFileToFolders Include="firewall-rules.txt">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</ExcludedFromBuild>
+      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</DeploymentContent>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="dns-rules.txt" />
+    <CopyFileToFolders Include="ip.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <CopyFileToFolders Include="cmcc.txt" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+  <ProjectExtensions>
+    <VisualStudio>
+      <UserProperties appsettings_1json__JsonSchema="" />
+    </VisualStudio>
+  </ProjectExtensions>
+</Project>
