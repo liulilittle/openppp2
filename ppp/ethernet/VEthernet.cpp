@@ -44,7 +44,7 @@ namespace ppp
             ssmt_mq_to_take_effect_ = false;
 #endif
 #endif
-            assert(NULL != context);
+            assert(NULLPTR != context);
         }
 
         VEthernet::~VEthernet() noexcept
@@ -72,14 +72,14 @@ namespace ppp
             std::shared_ptr<IPFragment> fragment = std::move(fragment_);
             fragment_.reset();
 
-            if (NULL != fragment)
+            if (NULLPTR != fragment)
             {
                 fragment->Release();
             }
 
-            std::shared_ptr<ITap> tap = NULL;
+            std::shared_ptr<ITap> tap = NULLPTR;
             std::shared_ptr<VNetstack> netstack = std::move(netstack_);
-            if (NULL != netstack)
+            if (NULLPTR != netstack)
             {
                 std::shared_ptr<ITap>& netstack_tap = constantof(netstack->Tap);
                 tap = std::move(netstack_tap);
@@ -90,12 +90,12 @@ namespace ppp
                 netstack->Release();
             }
 
-            lwip::netstack::output = NULL;
-            lwip::netstack::accept = NULL;
+            lwip::netstack::output = NULLPTR;
+            lwip::netstack::accept = NULLPTR;
 
-            if (NULL != tap)
+            if (NULLPTR != tap)
             {
-                tap->PacketInput.reset();
+                tap->PacketInput = NULLPTR;
                 tap->Dispose();
             }
 
@@ -110,7 +110,7 @@ namespace ppp
             std::shared_ptr<ppp::threading::Timer> timeout = std::move(timeout_);
             timeout_.reset();
 
-            if (NULL != timeout)
+            if (NULLPTR != timeout)
             {
                 timeout->Dispose();
             }
@@ -139,13 +139,13 @@ namespace ppp
             }
 
             std::shared_ptr<IPFragment> fragment = fragment_;
-            if (NULL != fragment)
+            if (NULLPTR != fragment)
             {
                 fragment->Update(now);
             }
 
             std::shared_ptr<VNetstack> netstack = netstack_;
-            if (NULL != netstack)
+            if (NULLPTR != netstack)
             {
                 netstack->Update(now);
             }
@@ -177,7 +177,7 @@ namespace ppp
                 packet.type_internal = 0;
 
                 packet.payload = iphdr;
-                packet.next = NULL;
+                packet.next = NULLPTR;
                 packet.len = packet_length;
                 packet.tot_len = packet_length;
 
@@ -194,7 +194,7 @@ namespace ppp
                 }
 
                 std::shared_ptr<VNetstack> netstack = my->netstack_;
-                if (NULL != netstack)
+                if (NULLPTR != netstack)
                 {
                     return netstack->Input(iphdr, tcphdr, tcp_len);
                 }
@@ -215,7 +215,7 @@ namespace ppp
                 int tcp_len = packet_length - iphdr_hlen;
                 Byte* ip_payload = (Byte*)iphdr + iphdr_hlen;
                 tcp_hdr* tcphdr = tcp_hdr::Parse(iphdr, ip_payload, tcp_len);
-                if (NULL == tcphdr)
+                if (NULLPTR == tcphdr)
                 {
                     return true;
                 }
@@ -246,7 +246,7 @@ namespace ppp
                 }
 
                 Byte* packet = (Byte*)Malloc(packet_length);
-                if (NULL == packet)
+                if (NULLPTR == packet)
                 {
                     return true;
                 }
@@ -287,7 +287,7 @@ namespace ppp
 
         bool VEthernet::Open(const std::shared_ptr<ITap>& tap) noexcept
         {
-            if (NULL == tap)
+            if (NULLPTR == tap)
             {
                 return false;
             }
@@ -303,7 +303,7 @@ namespace ppp
             }
 
             std::shared_ptr<IPFragment> fragment = NewFragment();
-            if (NULL == fragment)
+            if (NULLPTR == fragment)
             {
                 return false;
             }
@@ -362,7 +362,7 @@ namespace ppp
                     uint16_t                        wnd) noexcept 
                 {
                     std::shared_ptr<VNetstack> netstack = netstack_;
-                    return NULL != netstack ? netstack->LwIpBeginAccept(dest, src, seq, ack, wnd) : 0;
+                    return NULLPTR != netstack ? netstack->LwIpBeginAccept(dest, src, seq, ack, wnd) : 0;
                 };
 
             // An attempt has been made to open the local loop of the virtual network card.  
@@ -385,7 +385,7 @@ namespace ppp
 
             // Instantiate and construct a new Netstack processing object.
             std::shared_ptr<VNetstack> netstack = NewNetstack();
-            if (NULL == netstack)
+            if (NULLPTR == netstack)
             {
                 return false;
             }
@@ -407,7 +407,7 @@ namespace ppp
                 {
                     int packet_length = e.PacketLength;
                     struct ip_hdr* iphdr = ip_hdr::Parse(e.Packet, packet_length);
-                    if (NULL == iphdr) // INVALID IS (Destination & Mask) != Destination;
+                    if (NULLPTR == iphdr) // INVALID IS (Destination & Mask) != Destination;
                     {
                         return false;
                     }
@@ -421,7 +421,7 @@ namespace ppp
                         }
 
                         std::shared_ptr<boost::asio::io_context> executor = lwip::netstack::Executor;
-                        if (NULL == executor)
+                        if (NULLPTR == executor)
                         {
                             return false;
                         }
@@ -430,7 +430,7 @@ namespace ppp
                         // Then the IP packet is delivered to the NIO worker thread, otherwise it is single-core, 
                         // In which case multi-threading will bring unnecessary thread switching and reduce efficiency.
                         pbuf* packet = lwip::netstack_pbuf_copy(iphdr, packet_length);
-                        if (NULL == packet)
+                        if (NULLPTR == packet)
                         {
                             return false;
                         }
@@ -496,7 +496,7 @@ namespace ppp
         {
             SynchronizedObjectScope scope(syncobj_);
             int snow = ssmt_;
-            if (NULL != ssmt)
+            if (NULLPTR != ssmt)
             {
                 ssmt_ = std::max<int>(0, *ssmt);
             }
@@ -509,7 +509,7 @@ namespace ppp
         {
             SynchronizedObjectScope scope(syncobj_);
             bool snow = ssmt_mq_;
-            if (NULL != mq)
+            if (NULLPTR != mq)
             {
                 ssmt_mq_ = *mq;
             }
@@ -550,7 +550,7 @@ namespace ppp
             if (proto == ip_hdr::IP_PROTO_TCP)
             {
                 std::shared_ptr<VNetstack> netstack = netstack_;
-                if (NULL != netstack)
+                if (NULLPTR != netstack)
                 {
                     int tcp_len = packet_length - iphdr_hlen;
                     if (lwip_)
@@ -567,7 +567,7 @@ namespace ppp
                     else
                     {
                         struct tcp_hdr* tcphdr = tcp_hdr::Parse(iphdr, (Byte*)iphdr + iphdr_hlen, tcp_len); 
-                        if (NULL != tcphdr)
+                        if (NULLPTR != tcphdr)
                         {
                             netstack->Input(iphdr, tcphdr, tcp_len);
                         }
@@ -580,11 +580,11 @@ namespace ppp
             if (proto == ip_hdr::IP_PROTO_UDP || proto == ip_hdr::IP_PROTO_ICMP)
             {
                 std::shared_ptr<IPFragment> fragment = fragment_;
-                if (NULL != fragment)
+                if (NULLPTR != fragment)
                 {
                     std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = GetBufferAllocator();
                     std::shared_ptr<IPFrame> packet = IPFrame::Parse(allocator, iphdr, packet_length);
-                    if (NULL != packet && !fragment->Input(packet))
+                    if (NULLPTR != packet && !fragment->Input(packet))
                     {
                         OnPacketInput(packet);
                     }
@@ -615,13 +615,13 @@ namespace ppp
             for (int i = 0; i < ssmt_; i++)
             {
                 std::shared_ptr<boost::asio::io_context> context = make_shared_object<boost::asio::io_context>();
-                if (NULL == context)
+                if (NULLPTR == context)
                 {
                     break;
                 }
 
                 std::shared_ptr<Awaitable> awaitable = std::make_shared<Awaitable>();
-                if (NULL == awaitable)
+                if (NULLPTR == awaitable)
                 {
                     break;
                 }
@@ -647,7 +647,7 @@ namespace ppp
                             [awaitable_weak]() noexcept 
                             {
                                 std::shared_ptr<Awaitable> awaitable = awaitable_weak.lock();
-                                if (NULL != awaitable)
+                                if (NULLPTR != awaitable)
                                 {
                                     awaitable->Processed();
                                 }
@@ -667,19 +667,19 @@ namespace ppp
 #if defined(_LINUX)
                 // On Linux platforms, tun/tap multi-queue mode can be turned on to squeeze the hardware cpu power as much as possible.
                 std::shared_ptr<VNetstack> netstack = netstack_; 
-                if (NULL == netstack)
+                if (NULLPTR == netstack)
                 {
                     return false;
                 }
 
                 auto tap = netstack->Tap; 
-                if (NULL == tap)
+                if (NULLPTR == tap)
                 {
                     return false;
                 }
 
                 auto linux_tap = dynamic_cast<ppp::tap::TapLinux*>(tap.get()); 
-                if (NULL == linux_tap)
+                if (NULLPTR == linux_tap)
                 {
                     return false;
                 }
@@ -741,9 +741,9 @@ namespace ppp
         std::shared_ptr<ppp::threading::BufferswapAllocator> VEthernet::GetBufferAllocator() noexcept
         {
             std::shared_ptr<VNetstack> netstack = netstack_;
-            if (NULL == netstack)
+            if (NULLPTR == netstack)
             {
-                return NULL;
+                return NULLPTR;
             }
             else
             {
@@ -763,7 +763,7 @@ namespace ppp
 
         bool VEthernet::Output(IPFrame* packet) noexcept
         {
-            if (NULL == packet)
+            if (NULLPTR == packet)
             {
                 return false;
             }
@@ -775,7 +775,7 @@ namespace ppp
 
             std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = GetBufferAllocator();
             std::shared_ptr<BufferSegment> messages = IPFrame::ToArray(allocator, packet);
-            if (NULL == messages) 
+            if (NULLPTR == messages) 
             {
                 return false;
             }
@@ -785,7 +785,7 @@ namespace ppp
 
         bool VEthernet::Output(const void* packet, int packet_length) noexcept
         {
-            if (NULL == packet || packet_length < 1)
+            if (NULLPTR == packet || packet_length < 1)
             {
                 return false;
             }
@@ -796,7 +796,7 @@ namespace ppp
             }
 
             std::shared_ptr<ITap> tap = GetTap();
-            if (NULL == tap)
+            if (NULLPTR == tap)
             {
                 return false;
             }
@@ -806,7 +806,7 @@ namespace ppp
 
         bool VEthernet::Output(const std::shared_ptr<Byte>& packet, int packet_length) noexcept
         {
-            if (NULL == packet || packet_length < 1)
+            if (NULLPTR == packet || packet_length < 1)
             {
                 return false;
             }
@@ -817,7 +817,7 @@ namespace ppp
             }
 
             std::shared_ptr<ITap> tap = GetTap();
-            if (NULL == tap)
+            if (NULLPTR == tap)
             {
                 return false;   
             }

@@ -37,7 +37,7 @@ namespace ppp
                 static_assert(sizeof(T) > 0, "can't make pointer to incomplete type");
 
                 if (length < 1) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 T* p = (T*)Alloc(length * sizeof(T));
@@ -52,8 +52,8 @@ namespace ppp
                 static_assert(sizeof(T) > 0, "can't make pointer to incomplete type");
 
                 void* memory = Alloc(sizeof(T));
-                if (NULL == memory) {
-                    return NULL;
+                if (NULLPTR == memory) {
+                    return NULLPTR;
                 }
                 
                 memset(memory, 0, sizeof(T));
@@ -68,9 +68,9 @@ namespace ppp
             SynchronizedObject                                      syncobj_;
             ppp::string                                             path_;
             uint32_t                                                page_size_    = 0;
-            void*                                                   buddy_        = NULL;
-            void*                                                   memory_start_ = NULL;
-            void*                                                   memory_maxof_ = NULL;
+            void*                                                   buddy_        = NULLPTR;
+            void*                                                   memory_start_ = NULLPTR;
+            void*                                                   memory_maxof_ = NULLPTR;
 #if !defined(_WIN32)
             std::shared_ptr<boost::interprocess::file_mapping>      bip_mapping_file_;
             std::shared_ptr<boost::interprocess::mapped_region>     bip_mapped_region_;

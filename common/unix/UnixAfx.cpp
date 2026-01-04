@@ -118,7 +118,7 @@ namespace ppp {
                 }
 
                 char* position = strcasestr((char*)line.data(), nameserver_string);
-                if (NULL == position) {
+                if (NULLPTR == position) {
                     continue;
                 }
 
@@ -158,7 +158,7 @@ namespace ppp {
 
             bool ok = false;
 #if (!defined(_ANDROID) || __ANDROID_API__ >= 24)
-            struct ifaddrs* ifList = NULL;
+            struct ifaddrs* ifList = NULLPTR;
             if (getifaddrs(&ifList)) {
                 return ok;
             }
@@ -166,9 +166,9 @@ namespace ppp {
             ppp::string nic_lower = ToLower(ATrim(nic));
             UInt32 invalidIPAddr = inet_addr("169.254.0.0");
             UInt32 invalidIPMask = inet_addr("255.255.0.0");
-            for (struct ifaddrs* ifa = ifList; ifa != NULL; ifa = ifa->ifa_next) {
+            for (struct ifaddrs* ifa = ifList; ifa != NULLPTR; ifa = ifa->ifa_next) {
                 struct sockaddr_in* sin = (struct sockaddr_in*)ifa->ifa_addr; // ifa_dstaddr
-                if (NULL == sin || sin->sin_family != AF_INET) {
+                if (NULLPTR == sin || sin->sin_family != AF_INET) {
                     continue;
                 }
 
@@ -180,7 +180,7 @@ namespace ppp {
                 ipAddr = ntohl(ipAddr);
                 if (ipAddr != INADDR_ANY && ipAddr != INADDR_NONE && ipAddr != INADDR_LOOPBACK) {
                     sin = (struct sockaddr_in*)ifa->ifa_netmask;
-                    if (NULL == sin || sin->sin_family != AF_INET) {
+                    if (NULLPTR == sin || sin->sin_family != AF_INET) {
                         continue;
                     }
 
@@ -236,15 +236,15 @@ namespace ppp {
 
         ppp::string UnixAfx::GetInterfaceName(const IPEndPoint& address) noexcept {
 #if (!defined(_ANDROID) || __ANDROID_API__ >= 24)
-            struct ifaddrs* ifa = NULL;
+            struct ifaddrs* ifa = NULLPTR;
             if (getifaddrs(&ifa)) {
                 return "";
             }
 
             struct ifaddrs* oifa = ifa;
-            while (NULL != ifa) {
+            while (NULLPTR != ifa) {
                 struct sockaddr* addr = ifa->ifa_addr;
-                if (NULL != addr) {
+                if (NULLPTR != addr) {
                     switch (addr->sa_family) {
                         case AF_INET: {
                             if (address.GetAddressFamily() != AddressFamily::InterNetwork) {
@@ -281,7 +281,7 @@ namespace ppp {
                 ifa = ifa->ifa_next;
             }
 
-            if (NULL != oifa) {
+            if (NULLPTR != oifa) {
                 freeifaddrs(oifa);
             }
 #endif
@@ -289,7 +289,7 @@ namespace ppp {
         }
 
         UInt32 UnixAfx::GetDefaultNetworkInterface(const char* address_string) noexcept {
-            if (NULL == address_string || *address_string == '\x0') {
+            if (NULLPTR == address_string || *address_string == '\x0') {
                 return IPEndPoint::NoneAddress;
             }
 
@@ -362,7 +362,7 @@ namespace ppp {
         }
 
         bool UnixAfx::AddShutdownApplicationEventHandler(ShutdownApplicationEventHandler e) noexcept {
-            static ShutdownApplicationEventHandler eeh = NULL;
+            static ShutdownApplicationEventHandler eeh = NULLPTR;
 
             auto SIG_EEH = 
                 [](int signo) noexcept {
@@ -373,8 +373,8 @@ namespace ppp {
                     }
 
                     ShutdownApplicationEventHandler e = std::move(eeh);
-                    if (NULL != e) {
-                        eeh.reset();
+                    if (NULLPTR != e) {
+                        eeh = NULLPTR;
                         e();
                     }
                     else {
@@ -388,11 +388,11 @@ namespace ppp {
             __sa_handler_unix__ SIG_IGN_V = SIG_IGN;
             __sa_handler_unix__ SIG_EEH_V = SIG_EEH;
 
-            if (NULL != e) {
+            if (NULLPTR != e) {
                 eeh = e;
             }
             else {
-                eeh.reset();
+                eeh = NULLPTR;
                 SIG_EEH_V = SIG_DFL;
                 SIG_IGN_V = SIG_DFL;
             }

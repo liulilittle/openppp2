@@ -11,7 +11,7 @@ namespace ppp
     namespace win32
     {
         Win32Event::Win32Event() noexcept
-            : hKrlEvt(NULL)
+            : hKrlEvt(NULLPTR)
         {
 
         }
@@ -37,8 +37,8 @@ namespace ppp
 
         int Win32Event::OpenKernelEventObject(const ppp::string& name, bool initialState, bool openOrCreate) noexcept
         {
-            HANDLE h = hKrlEvt.exchange(NULL);
-            if (NULL != h)
+            HANDLE h = hKrlEvt.exchange(NULLPTR);
+            if (NULLPTR != h)
             {
                 CloseHandle(h);
             }
@@ -49,7 +49,7 @@ namespace ppp
             }
 
             hKrlEvt = OpenEventA(EVENT_ALL_ACCESS, FALSE, name.c_str());
-            if (NULL == hKrlEvt)
+            if (NULLPTR == hKrlEvt)
             {
                 if (openOrCreate)
                 {
@@ -58,15 +58,15 @@ namespace ppp
 
                 if (initialState)
                 {
-                    hKrlEvt = CreateEventA(NULL, FALSE, TRUE, name.c_str());
+                    hKrlEvt = CreateEventA(NULLPTR, FALSE, TRUE, name.c_str());
                 }
                 else
                 {
-                    hKrlEvt = CreateEventA(NULL, TRUE, FALSE, name.c_str());
+                    hKrlEvt = CreateEventA(NULLPTR, TRUE, FALSE, name.c_str());
                 }
             }
 
-            return NULL != hKrlEvt ? 0 : 1;
+            return NULLPTR != hKrlEvt ? 0 : 1;
         }
 
         Win32Event::~Win32Event() noexcept
@@ -76,8 +76,8 @@ namespace ppp
 
         void Win32Event::Dispose() noexcept
         {
-            HANDLE h = hKrlEvt.exchange(NULL);
-            if (NULL != h)
+            HANDLE h = hKrlEvt.exchange(NULLPTR);
+            if (NULLPTR != h)
             {
                 CloseHandle(h);
             }
@@ -86,7 +86,7 @@ namespace ppp
         bool Win32Event::WaitOne(int millisecondsTimeout) noexcept
         {
             HANDLE h = hKrlEvt.load();
-            if (NULL == h)
+            if (NULLPTR == h)
             {
                 return false;
             }
@@ -101,7 +101,7 @@ namespace ppp
         bool Win32Event::Set() noexcept
         {
             HANDLE h = hKrlEvt.load();
-            if (NULL == h)
+            if (NULLPTR == h)
             {
                 return false;
             }
@@ -111,7 +111,7 @@ namespace ppp
         bool Win32Event::Reset() noexcept
         {
             HANDLE h = hKrlEvt.load();
-            if (NULL == h)
+            if (NULLPTR == h)
             {
                 return false;
             }
@@ -121,13 +121,13 @@ namespace ppp
         bool Win32Event::IsValid() noexcept
         {
             HANDLE h = hKrlEvt.load();
-            return NULL != h;
+            return NULLPTR != h;
         }
 
         bool Win32Event::Exists(const ppp::string& name) noexcept
         {
             HANDLE hEvt = OpenEventA(EVENT_ALL_ACCESS, FALSE, name.c_str());
-            if (NULL == hEvt)
+            if (NULLPTR == hEvt)
             {
                 return false;
             }

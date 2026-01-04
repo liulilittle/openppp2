@@ -55,11 +55,11 @@ namespace ppp {
             static bool                                                                                 AcceptLoopbackAsync(
                 const AsioTcpAcceptor&                                                                  acceptor,
                 const AcceptLoopbackCallback&                                                           callback,
-                const GetContextCallback&                                                               context = NULL) noexcept;
+                const GetContextCallback&                                                               context = NULLPTR) noexcept;
             static bool                                                                                 AcceptLoopbackAsync(
                 const boost::asio::ip::tcp::acceptor&                                                   acceptor,
                 const AcceptLoopbackCallback&                                                           callback,
-                const GetContextCallback&                                                               context = NULL) noexcept;
+                const GetContextCallback&                                                               context = NULLPTR) noexcept;
             static bool                                                                                 AcceptLoopbackSchedulerAsync(
                 const boost::asio::ip::tcp::acceptor&                                                   acceptor,
                 const AcceptLoopbackSchedulerCallback&                                                  callback) noexcept;

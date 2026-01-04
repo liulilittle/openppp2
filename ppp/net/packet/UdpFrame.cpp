@@ -13,21 +13,21 @@ namespace ppp {
                 }
 
                 std::shared_ptr<BufferSegment> payload = this->Payload;
-                if (NULL == payload || NULL == payload->Buffer) {
-                    return NULL;
+                if (NULLPTR == payload || NULLPTR == payload->Buffer) {
+                    return NULLPTR;
                 }
 
                 int payload_size = payload->Length;
                 if (payload_size <= 0) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int payload_offset = sizeof(udp_hdr);
                 int message_size_ = payload_offset + payload_size;
 
                 std::shared_ptr<Byte> message_ = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, message_size_);
-                if (NULL == message_) {
-                    return NULL;
+                if (NULLPTR == message_) {
+                    return NULLPTR;
                 }
                 else {
                     memcpy(message_.get() + payload_offset, payload->Buffer.get(), payload_size);
@@ -51,8 +51,8 @@ namespace ppp {
                 udphdr->chksum = pseudo_checksum;
 
                 std::shared_ptr<IPFrame> packet = make_shared_object<IPFrame>();
-                if (NULL == packet) {
-                    return NULL;
+                if (NULLPTR == packet) {
+                    return NULLPTR;
                 }
 
                 packet->ProtocolType = ip_hdr::IP_PROTO_UDP;
@@ -63,8 +63,8 @@ namespace ppp {
                 packet->Tos = ppp::net::Socket::IsDefaultFlashTypeOfService() ? IPFrame::DefaultFlashTypeOfService() : 0x04;
 
                 std::shared_ptr<BufferSegment> packet_payload = make_shared_object<BufferSegment>(message_, message_size_);
-                if (NULL == packet_payload) {
-                    return NULL;
+                if (NULLPTR == packet_payload) {
+                    return NULLPTR;
                 }
                 
                 packet->Payload = packet_payload;
@@ -72,28 +72,28 @@ namespace ppp {
             }
 
             std::shared_ptr<UdpFrame> UdpFrame::Parse(const IPFrame* frame) noexcept {
-                if (NULL == frame) {
-                    return NULL;
+                if (NULLPTR == frame) {
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<BufferSegment> messages = frame->Payload;
-                if (NULL == messages || messages->Length <= 0) {
-                    return NULL;
+                if (NULLPTR == messages || messages->Length <= 0) {
+                    return NULLPTR;
                 }
 
                 struct udp_hdr* udphdr = (struct udp_hdr*)messages->Buffer.get();
-                if (NULL == udphdr) {
-                    return NULL;
+                if (NULLPTR == udphdr) {
+                    return NULLPTR;
                 }
 
                 if (messages->Length != ntohs(udphdr->len)) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int offset = sizeof(struct udp_hdr);
                 int payload_len = messages->Length - offset;
                 if (payload_len <= 0) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
 #if defined(PACKET_CHECKSUM)
@@ -104,14 +104,14 @@ namespace ppp {
                         frame->Source,
                         frame->Destination);
                     if (pseudo_checksum != 0) {
-                        return NULL;
+                        return NULLPTR;
                     }
                 }
 #endif
 
                 std::shared_ptr<UdpFrame> packet = make_shared_object<UdpFrame>();
-                if (NULL == packet) {
-                    return NULL;
+                if (NULLPTR == packet) {
+                    return NULLPTR;
                 }
                 
                 packet->AddressesFamily = AddressFamily::InterNetwork;
@@ -123,8 +123,8 @@ namespace ppp {
                 std::shared_ptr<BufferSegment> packet_payload = make_shared_object<BufferSegment>(
                     wrap_shared_pointer(buffer.get() + offset, buffer), payload_len);
 
-                if (NULL == packet_payload) {
-                    return NULL;
+                if (NULLPTR == packet_payload) {
+                    return NULLPTR;
                 }
 
                 packet->Payload = packet_payload;

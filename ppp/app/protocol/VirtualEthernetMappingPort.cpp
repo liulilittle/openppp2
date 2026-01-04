@@ -77,14 +77,14 @@ namespace ppp {
                     std::shared_ptr<Client> client = std::move(client_); 
                     client_.reset();
 
-                    if (NULL != server) {
+                    if (NULLPTR != server) {
                         ppp::net::Socket::Closesocket(server->socket_udp_);
                         ppp::net::Socket::Closesocket(server->socket_tcp_);
 
                         ppp::collections::Dictionary::ReleaseAllObjects(server->socket_connections_);
                     }
 
-                    if (NULL != client) {
+                    if (NULLPTR != client) {
                         ppp::collections::Dictionary::ReleaseAllObjects(client->socket_connections_);
                         ppp::collections::Dictionary::ReleaseAllObjects(client->socket_datagram_ports_);
                     }
@@ -152,7 +152,7 @@ namespace ppp {
 
             bool VirtualEthernetMappingPort::OpenNetworkSocketDatagram() noexcept {
                 std::shared_ptr<Server> server = server_;
-                if (NULL == server) {
+                if (NULLPTR == server) {
                     return false;
                 }
 
@@ -162,7 +162,7 @@ namespace ppp {
 
             bool VirtualEthernetMappingPort::OpenNetworkSocketStream() noexcept {
                 std::shared_ptr<Server> server = server_;
-                if (NULL == server) {
+                if (NULLPTR == server) {
                     return false;
                 }
 
@@ -195,7 +195,7 @@ namespace ppp {
                 }
                 
                 ITransmissionPtr transmission = transmission_;
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
@@ -247,7 +247,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Server> server = server_;
-                if (NULL == server) {
+                if (NULLPTR == server) {
                     return false;
                 }
 
@@ -278,12 +278,12 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Server> server = server_; 
-                if (NULL != server) {
+                if (NULLPTR != server) {
                     ppp::collections::Dictionary::UpdateAllObjects(server->socket_connections_, now);
                 }
 
                 std::shared_ptr<Client> client = client_; 
-                if (NULL != client) {
+                if (NULLPTR != client) {
                     ppp::collections::Dictionary::UpdateAllObjects(client->socket_connections_, now);
                     ppp::collections::Dictionary::UpdateAllObjects(client->socket_datagram_ports_, now);
                 }
@@ -326,12 +326,12 @@ namespace ppp {
                 }
 
                 ITransmissionPtr transmission = mapping_port_->GetTransmission();
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
                 std::shared_ptr<Server> server = server_;
-                if (NULL == server) {
+                if (NULLPTR == server) {
                     return false;
                 }
 
@@ -351,7 +351,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetMappingPort::Server::Connection::SendToFrpClient(const void* packet, int packet_size) noexcept {
-                if (NULL == packet || packet_size < 1) {
+                if (NULLPTR == packet || packet_size < 1) {
                     return false;
                 }
 
@@ -361,12 +361,12 @@ namespace ppp {
                 }
 
                 ITransmissionPtr transmission = mapping_port_->GetTransmission();
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
                 std::shared_ptr<Server> server = server_;
-                if (NULL == server) {
+                if (NULLPTR == server) {
                     return false;
                 }
 
@@ -395,7 +395,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Byte> messages = Copy(mapping_port_->buffer_allocator_, packet, packet_size);
-                if (NULL == messages) {
+                if (NULLPTR == messages) {
                     return false;
                 }
 
@@ -418,7 +418,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<boost::asio::ip::tcp::socket> socket = socket_;
-                if (NULL == socket) {
+                if (NULLPTR == socket) {
                     return false;
                 }
 
@@ -443,7 +443,7 @@ namespace ppp {
                 if (connection_state != 4) {
                     if (!disconnect && connection_state == 3) {
                         ITransmissionPtr transmission = mapping_port_->GetTransmission();
-                        if (NULL != transmission) {
+                        if (NULLPTR != transmission) {
                             bool ok = linklayer_->DoFrpDisconnect(transmission, 
                                 connection_id_, 
                                 mapping_port_->in_, 
@@ -462,11 +462,11 @@ namespace ppp {
                     std::shared_ptr<Server> server = std::move(server_);
                     server_.reset();
 
-                    if (NULL != socket) {
+                    if (NULLPTR != socket) {
                         ppp::net::Socket::Closesocket(socket);
                     }
 
-                    if (NULL != server) {
+                    if (NULLPTR != server) {
                         ppp::collections::Dictionary::TryRemove(server->socket_connections_, connection_id_);
                     }
                 }
@@ -479,7 +479,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Server> server = server_;
-                if (NULL == server) {
+                if (NULLPTR == server) {
                     return false;
                 }
 
@@ -495,7 +495,7 @@ namespace ppp {
                 Update();
                 buffer_chunked_ = ppp::threading::BufferswapAllocator::MakeByteArray(mapping_port_->buffer_allocator_, PPP_TCP_BUFFER_SIZE);
 
-                if (NULL == buffer_chunked_) {
+                if (NULLPTR == buffer_chunked_) {
                     return false;
                 }
 
@@ -509,7 +509,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<boost::asio::ip::tcp::socket> socket = socket_;
-                if (NULL == socket) {
+                if (NULLPTR == socket) {
                     return false;
                 }
 
@@ -556,7 +556,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetMappingPort::AddMappingPort(ppp::unordered_map<uint32_t, Ptr>& mappings, bool in, bool tcp, int remote_port, const Ptr& mapping_port) noexcept {
-                if (NULL == mapping_port) {
+                if (NULLPTR == mapping_port) {
                     return false;
                 }
 
@@ -568,25 +568,25 @@ namespace ppp {
             static inline TConnectionPtr MAPPINGPORT_GetConnection(TDisposed& disposed_, TConnectionTable& table_, int connection_id) noexcept {
                 int disposed = disposed_.load();
                 if (disposed != FALSE) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 auto table = table_;
-                if (NULL == table) {
-                    return NULL;
+                if (NULLPTR == table) {
+                    return NULLPTR;
                 }
 
                 TConnectionPtr connection;
                 if (!ppp::collections::Dictionary::TryGetValue(table->socket_connections_, connection_id, connection)) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
-                if (NULL != connection) {
+                if (NULLPTR != connection) {
                     return connection;
                 }
 
                 ppp::collections::Dictionary::TryRemove(table->socket_connections_, connection_id);
-                return NULL;
+                return NULLPTR;
             }
 
             VirtualEthernetMappingPort::Server::ConnectionPtr VirtualEthernetMappingPort::Server_GetConnection(int connection_id) noexcept {
@@ -600,25 +600,25 @@ namespace ppp {
             VirtualEthernetMappingPort::Client::DatagramPortPtr VirtualEthernetMappingPort::Client_GetDatagramPort(const boost::asio::ip::udp::endpoint& nat_key) noexcept {
                 int disposed = disposed_.load();
                 if (disposed != FALSE) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<Client> client = client_;
-                if (NULL == client) {
-                    return NULL;
+                if (NULLPTR == client) {
+                    return NULLPTR;
                 }
 
                 Client::DatagramPortPtr datagram_port;
                 if (!ppp::collections::Dictionary::TryGetValue(client->socket_datagram_ports_, nat_key, datagram_port)) {
-                    return NULL;
+                    return NULLPTR;
                 }
                 
-                if (NULL != datagram_port) {
+                if (NULLPTR != datagram_port) {
                     return datagram_port;
                 }
 
                 ppp::collections::Dictionary::TryRemove(client->socket_datagram_ports_, nat_key);
-                return NULL;
+                return NULLPTR;
             }
 
             VirtualEthernetMappingPort::Server::Server(VirtualEthernetMappingPort* owner) noexcept
@@ -629,7 +629,7 @@ namespace ppp {
 
             bool VirtualEthernetMappingPort::Server_OnFrpConnectOK(int connection_id, Byte error_code) noexcept {
                 Server::ConnectionPtr connection = Server_GetConnection(connection_id);
-                if (NULL == connection) {
+                if (NULLPTR == connection) {
                     return false;
                 }
 
@@ -643,7 +643,7 @@ namespace ppp {
 
             bool VirtualEthernetMappingPort::Server_OnFrpDisconnect(int connection_id) noexcept {
                 Server::ConnectionPtr connection = Server_GetConnection(connection_id);
-                if (NULL == connection) {
+                if (NULLPTR == connection) {
                     return false;
                 }
 
@@ -653,7 +653,7 @@ namespace ppp {
 
             bool VirtualEthernetMappingPort::Server_OnFrpPush(int connection_id, const void* packet, int packet_length) noexcept {
                 Server::ConnectionPtr connection = Server_GetConnection(connection_id);
-                if (NULL == connection) {
+                if (NULLPTR == connection) {
                     return false;
                 }
 
@@ -666,7 +666,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetMappingPort::Server_OnFrpSendTo(const void* packet, int packet_length, const boost::asio::ip::udp::endpoint& sourceEP) noexcept {
-                if (NULL == packet || packet_length < 1) {
+                if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
 
@@ -676,7 +676,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Server> server = server_;
-                if (NULL == server) {
+                if (NULLPTR == server) {
                     return false;
                 }
 
@@ -728,7 +728,7 @@ namespace ppp {
                     }
 
                     auto connection = make_shared_object<Server::Connection>(self, server, connection_id, socket);
-                    if (NULL == connection) {
+                    if (NULLPTR == connection) {
                         return false;
                     }
 
@@ -737,7 +737,7 @@ namespace ppp {
                         ok = ppp::collections::Dictionary::TryAdd(connections, connection_id, connection);
                         while (ok) {
                             VirtualEthernetLoggerPtr logger = logger_;
-                            if (NULL == logger) {
+                            if (NULLPTR == logger) {
                                 break;
                             }
 
@@ -770,12 +770,12 @@ namespace ppp {
             }
 
             bool VirtualEthernetMappingPort::Server_SendToFrpClient(const void* packet, int packet_length, const boost::asio::ip::udp::endpoint& sourceEP) noexcept {
-                if (NULL == packet || packet_length < 1) {
+                if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
 
                 std::shared_ptr<VirtualEthernetLinklayer> linklayer = linklayer_;
-                if (NULL == linklayer) {
+                if (NULLPTR == linklayer) {
                     return false;
                 }
 
@@ -886,17 +886,17 @@ namespace ppp {
                 }
 
                 ITransmissionPtr transmission = mapping_port_->GetTransmission();
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
                 std::shared_ptr<Client> client = client_;
-                if (NULL == client) {
+                if (NULLPTR == client) {
                     return false;
                 }
 
                 std::shared_ptr<boost::asio::ip::tcp::socket> socket = make_shared_object<boost::asio::ip::tcp::socket>(*mapping_port_->context_);
-                if (NULL == socket) {
+                if (NULLPTR == socket) {
                     return false;
                 }
 
@@ -949,7 +949,7 @@ namespace ppp {
                 int connection_state = connection_stated_.exchange(4);
                 if (connection_state != 4) {
                     if (!disconnect && connection_state == 3) {
-                        if (NULL != transmission) {
+                        if (NULLPTR != transmission) {
                             bool ok = linklayer_->DoFrpDisconnect(transmission, 
                                 connection_id_, 
                                 mapping_port_->in_, 
@@ -968,11 +968,11 @@ namespace ppp {
                     std::shared_ptr<Client> client = std::move(client_);
                     client_.reset();
 
-                    if (NULL != socket) {
+                    if (NULLPTR != socket) {
                         ppp::net::Socket::Closesocket(socket);
                     }
 
-                    if (NULL != client) {
+                    if (NULLPTR != client) {
                         ppp::collections::Dictionary::TryRemove(client->socket_connections_, connection_id_);
                     }
                 }
@@ -985,12 +985,12 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Client> client = client_;
-                if (NULL == client) {
+                if (NULLPTR == client) {
                     return false;
                 }
                 else {
                     ITransmissionPtr transmission = transmission_;
-                    if (NULL != transmission) {
+                    if (NULLPTR != transmission) {
                         Byte error_code = ok ? 0 : 255;
                         bool ok = linklayer_->DoFrpConnectOK(transmission,
                             connection_id_,
@@ -1018,7 +1018,7 @@ namespace ppp {
                 Update();
                 buffer_chunked_ = ppp::threading::BufferswapAllocator::MakeByteArray(mapping_port_->buffer_allocator_, PPP_TCP_BUFFER_SIZE);
 
-                if (NULL == buffer_chunked_) {
+                if (NULLPTR == buffer_chunked_) {
                     return false;
                 }
 
@@ -1032,7 +1032,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<boost::asio::ip::tcp::socket> socket = socket_;
-                if (NULL == socket) {
+                if (NULLPTR == socket) {
                     return false;
                 }
 
@@ -1047,7 +1047,7 @@ namespace ppp {
                         bool ok = false;
                         if (ec == boost::system::errc::success && sz > 0) {
                             ITransmissionPtr transmission = transmission_;
-                            if (NULL != transmission) {
+                            if (NULLPTR != transmission) {
                                 ok = linklayer_->DoFrpPush(
                                     transmission,
                                     connection_id_,
@@ -1083,7 +1083,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Byte> messages = Copy(mapping_port_->buffer_allocator_, packet, packet_size);
-                if (NULL == messages) {
+                if (NULLPTR == messages) {
                     return false;
                 }
 
@@ -1106,7 +1106,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<boost::asio::ip::tcp::socket> socket = socket_;
-                if (NULL == socket) {
+                if (NULLPTR == socket) {
                     return false;
                 }
 
@@ -1128,18 +1128,18 @@ namespace ppp {
 
             bool VirtualEthernetMappingPort::Client_OnFrpConnect(int connection_id) noexcept {
                 Client::ConnectionPtr connection = Client_GetConnection(connection_id);
-                if (NULL != connection) {
+                if (NULLPTR != connection) {
                     return false;
                 }
 
                 std::shared_ptr<Client> client = client_;
-                if (NULL == client) {
+                if (NULLPTR == client) {
                     return false;
                 }
                 else {
                     auto self = shared_from_this();
                     connection = make_shared_object<Client::Connection>(self, client, connection_id);
-                    if (NULL == connection) {
+                    if (NULLPTR == connection) {
                         return false;
                     }
                 }
@@ -1157,7 +1157,7 @@ namespace ppp {
 
             bool VirtualEthernetMappingPort::Client_OnFrpDisconnect(int connection_id) noexcept {
                 Client::ConnectionPtr connection = Client_GetConnection(connection_id);
-                if (NULL == connection) {
+                if (NULLPTR == connection) {
                     return false;
                 }
 
@@ -1167,7 +1167,7 @@ namespace ppp {
 
             bool VirtualEthernetMappingPort::Client_OnFrpPush(int connection_id, const void* packet, int packet_length) noexcept {
                 Client::ConnectionPtr connection = Client_GetConnection(connection_id);
-                if (NULL == connection) {
+                if (NULLPTR == connection) {
                     return false;
                 }
 
@@ -1180,7 +1180,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetMappingPort::Client_OnFrpSendTo(const void* packet, int packet_length, const boost::asio::ip::udp::endpoint& sourceEP) noexcept {
-                if (NULL == packet || packet_length < 1) {
+                if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
 
@@ -1190,18 +1190,18 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Client> client = client_;
-                if (NULL == client) {
+                if (NULLPTR == client) {
                     return false;
                 }
 
                 Client::DatagramPortPtr datagram_port = Client_GetDatagramPort(sourceEP);
-                if (NULL != datagram_port) {
+                if (NULLPTR != datagram_port) {
                     return datagram_port->SendTo(packet, packet_length, client->local_ep_);
                 }
                 else {
                     auto self = shared_from_this();
                     datagram_port = make_shared_object<Client::DatagramPort>(self, client, sourceEP);
-                    if (NULL == datagram_port) {
+                    if (NULLPTR == datagram_port) {
                         return false;
                     }
                 }
@@ -1253,7 +1253,7 @@ namespace ppp {
                     std::shared_ptr<Client> client = std::move(client_); 
                     client_.reset();
 
-                    if (NULL != client) {
+                    if (NULLPTR != client) {
                         ppp::collections::Dictionary::TryRemove(client->socket_datagram_ports_, nat_ep_);
                     }
 
@@ -1262,7 +1262,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetMappingPort::Client::DatagramPort::SendToDestinationServer(const void* packet, int packet_length) noexcept {
-                if (NULL == packet || packet_length < 1) {
+                if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
 
@@ -1272,7 +1272,7 @@ namespace ppp {
                 }
                 
                 ITransmissionPtr transmission = mapping_port_->GetTransmission();
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
@@ -1336,7 +1336,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Client> client = client_;
-                if (NULL == client) {
+                if (NULLPTR == client) {
                     return false;
                 }
 
@@ -1371,7 +1371,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Client> client = client_;
-                if (NULL == client) {
+                if (NULLPTR == client) {
                     return false;
                 }
 

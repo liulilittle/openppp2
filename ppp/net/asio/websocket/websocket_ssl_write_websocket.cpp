@@ -8,11 +8,11 @@ namespace ppp {
     namespace net {
         namespace asio {
             bool sslwebsocket::Write(const void* buffer, int offset, int length, const AsynchronousWriteCallback& cb) noexcept {
-                if (NULL == buffer || offset < 0 || length < 1) {
+                if (NULLPTR == buffer || offset < 0 || length < 1) {
                     return false;
                 }
 
-                if (NULL == cb) {
+                if (NULLPTR == cb) {
                     return false;
                 }
 
@@ -21,7 +21,7 @@ namespace ppp {
                 }
 
                 const std::shared_ptr<SslvWebSocket> ssl_websocket = ssl_websocket_;
-                if (NULL == ssl_websocket || !ssl_websocket->is_open()) {
+                if (NULLPTR == ssl_websocket || !ssl_websocket->is_open()) {
                     return false;
                 }
 

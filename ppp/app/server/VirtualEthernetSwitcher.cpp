@@ -68,7 +68,7 @@ namespace ppp {
                 bool bany = false;
                 for (int categories = NetworkAcceptorCategories_Min; categories < NetworkAcceptorCategories_Max; categories++) {
                     std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor = acceptors_[categories];
-                    if (NULL == acceptor) {
+                    if (NULLPTR == acceptor) {
                         continue;
                     }
 
@@ -87,7 +87,7 @@ namespace ppp {
                     }
                     else {
                         Socket::Closesocket(acceptor);
-                        acceptors_[categories] = NULL;
+                        acceptors_[categories] = NULLPTR;
                     }
                 }
                 return bany;
@@ -113,13 +113,13 @@ namespace ppp {
                 }
 
                 VirtualEthernetManagedServerPtr managed_server = managed_server_;
-                if (NULL == managed_server) {
-                    return Establish(transmission, session_id, NULL, y) ? STATUS_RUNING : STATUS_ERROR;
+                if (NULLPTR == managed_server) {
+                    return Establish(transmission, session_id, NULLPTR, y) ? STATUS_RUNING : STATUS_ERROR;
                 }
                 
                 VirtualEthernetExchanger* exchanger = GetExchanger(session_id).get(); 
-                if (NULL != exchanger) {
-                    return Establish(transmission, session_id, NULL, y) ? STATUS_RUNING : STATUS_ERROR;
+                if (NULLPTR != exchanger) {
+                    return Establish(transmission, session_id, NULLPTR, y) ? STATUS_RUNING : STATUS_ERROR;
                 }
 
                 auto self = shared_from_this();
@@ -149,7 +149,7 @@ namespace ppp {
                         configuration_,
                         context,
                         socket);
-                    if (NULL == sniproxy) {
+                    if (NULLPTR == sniproxy) {
                         return false;
                     }
 
@@ -162,7 +162,7 @@ namespace ppp {
                 }
                 else {
                     ITransmissionPtr transmission = Accept(categories, context, socket);
-                    if (NULL == transmission) {
+                    if (NULLPTR == transmission) {
                         return false;
                     }
 
@@ -185,7 +185,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetSwitcher::FlowerArrangement(const ITransmissionPtr& transmission, YieldContext& y) noexcept {
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
                 
@@ -195,7 +195,7 @@ namespace ppp {
             VirtualEthernetSwitcher::VirtualEthernetExchangerPtr VirtualEthernetSwitcher::GetExchanger(const Int128& session_id) noexcept {
                 SynchronizedObjectScope scope(syncobj_);
                 if (disposed_) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 return Dictionary::FindObjectByKey(exchangers_, session_id);
@@ -206,15 +206,15 @@ namespace ppp {
                 VirtualEthernetExchangerPtr oldExchanger;
 
                 bool ok = false;
-                if (NULL != transmission) {
+                if (NULLPTR != transmission) {
                     SynchronizedObjectScope scope(syncobj_);
                     if (disposed_) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     newExchanger = NewExchanger(transmission, session_id);
-                    if (NULL == newExchanger) {
-                        return NULL;
+                    if (NULLPTR == newExchanger) {
+                        return NULLPTR;
                     }
 
                     if (newExchanger->Open()) {
@@ -231,12 +231,12 @@ namespace ppp {
                 }
 
                 IDisposable::Dispose(newExchanger);
-                return NULL;
+                return NULLPTR;
             }
 
             VirtualEthernetSwitcher::VirtualEthernetExchangerPtr VirtualEthernetSwitcher::NewExchanger(const ITransmissionPtr& transmission, const Int128& session_id) noexcept {
-                if (NULL == transmission) {
-                    return NULL;
+                if (NULLPTR == transmission) {
+                    return NULLPTR;
                 }
 
                 auto self = shared_from_this();
@@ -244,17 +244,17 @@ namespace ppp {
             }
 
             bool VirtualEthernetSwitcher::Establish(const ITransmissionPtr& transmission, const Int128& session_id, const VirtualEthernetInformationPtr& i, YieldContext& y) noexcept {
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
                 VirtualEthernetExchangerPtr channel = AddNewExchanger(transmission, session_id);
-                if (NULL == channel) {
+                if (NULLPTR == channel) {
                     return false;
                 }
 
                 bool run = true;
-                if (NULL != i) {
+                if (NULLPTR != i) {
                     run = channel->DoInformation(transmission, *i, y);
                     if (run) {
                         run = i->Valid();
@@ -263,7 +263,7 @@ namespace ppp {
 
                 if (run) {
                     VirtualEthernetLoggerPtr logger = GetLogger(); 
-                    if (NULL != logger) {
+                    if (NULLPTR != logger) {
                         logger->Vpn(session_id, transmission);
                     }
 
@@ -282,16 +282,16 @@ namespace ppp {
                 // VPN client A link can be created only after a link is established between the local switch and the remote VPN server.
                 if (y) {
                     VirtualEthernetExchangerPtr exchanger = GetExchanger(session_id);
-                    if (NULL == exchanger) {
+                    if (NULLPTR == exchanger) {
                         return STATUS_ERROR;
                     }
 
                     ITransmissionPtr owner = exchanger->GetTransmission();
-                    if (NULL != owner) {
+                    if (NULLPTR != owner) {
                         std::shared_ptr<ITransmissionStatistics> left = owner->Statistics;
                         std::shared_ptr<ITransmissionStatistics> reft = transmission->Statistics;
                         if (left != reft) {
-                            if (NULL != reft) {
+                            if (NULLPTR != reft) {
                                 left->IncomingTraffic += reft->IncomingTraffic;
                                 left->OutgoingTraffic += reft->OutgoingTraffic;
                             }
@@ -305,7 +305,7 @@ namespace ppp {
                 auto run =
                     [self, this](const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept {
                         VirtualEthernetNetworkTcpipConnectionPtr connection = AddNewConnection(transmission, session_id);
-                        if (NULL == connection) {
+                        if (NULLPTR == connection) {
                             return -1;
                         }
                         elif(connection->Run(y)) {
@@ -356,13 +356,13 @@ namespace ppp {
 
             VirtualEthernetSwitcher::VirtualEthernetNetworkTcpipConnectionPtr VirtualEthernetSwitcher::AddNewConnection(const ITransmissionPtr& transmission, const Int128& session_id) noexcept {
                 std::shared_ptr<VirtualEthernetNetworkTcpipConnection> connection = NewConnection(transmission, session_id);
-                if (NULL == connection) {
-                    return NULL;
+                if (NULLPTR == connection) {
+                    return NULLPTR;
                 }
                 else {
                     SynchronizedObjectScope scope(syncobj_);
                     if (disposed_) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     if (Dictionary::TryAdd(connections_, connection.get(), connection)) {
@@ -371,12 +371,12 @@ namespace ppp {
                 }
 
                 connection->Dispose();
-                return NULL;
+                return NULLPTR;
             }
 
             VirtualEthernetSwitcher::VirtualEthernetExchangerPtr VirtualEthernetSwitcher::DeleteExchanger(VirtualEthernetExchanger* exchanger) noexcept {
                 VirtualEthernetExchangerPtr channel;
-                if (NULL != exchanger) {
+                if (NULLPTR != exchanger) {
                     SynchronizedObjectScope scope(syncobj_);
                     if (auto tail = exchangers_.find(exchanger->GetId()); tail != exchangers_.end()) {
                         const VirtualEthernetExchangerPtr& p = tail->second;
@@ -394,8 +394,8 @@ namespace ppp {
             }
 
             VirtualEthernetSwitcher::VirtualEthernetNetworkTcpipConnectionPtr VirtualEthernetSwitcher::NewConnection(const ITransmissionPtr& transmission, const Int128& session_id) noexcept {
-                if (NULL == transmission) {
-                    return NULL;
+                if (NULLPTR == transmission) {
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<VirtualEthernetSwitcher> self = shared_from_this();
@@ -405,12 +405,12 @@ namespace ppp {
             VirtualEthernetSwitcher::VirtualEthernetLoggerPtr VirtualEthernetSwitcher::NewLogger() noexcept {
                 ppp::string& log = configuration_->server.log;
                 if (log.empty()) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 VirtualEthernetLoggerPtr logger = make_shared_object<VirtualEthernetLogger>(context_, log);
-                if (NULL == logger) {
-                    return NULL;
+                if (NULLPTR == logger) {
+                    return NULLPTR;
                 }
 
                 if (logger->Valid()) {
@@ -418,7 +418,7 @@ namespace ppp {
                 }
 
                 IDisposable::Dispose(logger);
-                return NULL;
+                return NULLPTR;
             }
 
             bool VirtualEthernetSwitcher::CreateAllAcceptors() noexcept {
@@ -429,7 +429,7 @@ namespace ppp {
                 int acceptor_ports[NetworkAcceptorCategories_Max];
                 for (int i = NetworkAcceptorCategories_Min; i < NetworkAcceptorCategories_Max; i++) {
                     std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor = acceptors_[i];
-                    if (NULL != acceptor) {
+                    if (NULLPTR != acceptor) {
                         return false;
                     }
 
@@ -452,7 +452,7 @@ namespace ppp {
                     }
 
                     std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor = make_shared_object<boost::asio::ip::tcp::acceptor>(*context_);
-                    if (NULL == acceptor) {
+                    if (NULLPTR == acceptor) {
                         return false;
                     }
 
@@ -499,7 +499,7 @@ namespace ppp {
                 int ttl = configuration_->udp.dns.ttl;
                 if (ttl > 0) {
                     VirtualEthernetNamespaceCachePtr cache = NewNamespaceCache(ttl);
-                    if (NULL == cache) {
+                    if (NULLPTR == cache) {
                         return false;
                     }
 
@@ -511,7 +511,7 @@ namespace ppp {
 
             bool VirtualEthernetSwitcher::OpenLogger() noexcept {
                 VirtualEthernetLoggerPtr logger = NewLogger();
-                if (NULL == logger) {
+                if (NULLPTR == logger) {
                     return false;
                 }
 
@@ -583,7 +583,7 @@ namespace ppp {
                                     [this, &allocated_context](int session_id) noexcept {
                                         return StaticEchoSelectCiphertext(session_id, false, allocated_context);
                                     }, static_echo_buffers_.get(), sz);
-                            if (NULL != allocated_context && NULL != packet) {
+                            if (NULLPTR != allocated_context && NULLPTR != packet) {
                                 StaticEchoPacketInput(allocated_context, allocator, packet, sz, static_echo_source_ep_);
                             }
                         }
@@ -594,8 +594,8 @@ namespace ppp {
             }
 
             std::shared_ptr<ppp::cryptography::Ciphertext> VirtualEthernetSwitcher::StaticEchoSelectCiphertext(int allocated_id, bool protocol_or_transport, VirtualEthernetStaticEchoAllocatedContextPtr& allocated_context) noexcept {
-                if (NULL == allocated_context && !StaticEchoQuery(allocated_id, allocated_context)) {
-                    return NULL;
+                if (NULLPTR == allocated_context && !StaticEchoQuery(allocated_id, allocated_context)) {
+                    return NULLPTR;
                 }
 
                 return protocol_or_transport ? allocated_context->protocol : allocated_context->transport;
@@ -618,7 +618,7 @@ namespace ppp {
                 }
 
                 auto statistics = exchanger->GetStatistics(); 
-                if (NULL != statistics) {
+                if (NULLPTR != statistics) {
                     statistics->AddIncomingTraffic(packet_length);
                 }
 
@@ -636,7 +636,7 @@ namespace ppp {
 
             VirtualEthernetSwitcher::VirtualEthernetStaticEchoAllocatedContextPtr VirtualEthernetSwitcher::StaticEchoUnallocated(int allocated_id) noexcept {
                 if (allocated_id < 1) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 VirtualEthernetStaticEchoAllocatedContextPtr allocated_context;
@@ -645,7 +645,7 @@ namespace ppp {
                         return allocated_context;
                     }
 
-                    return NULL;
+                    return NULLPTR;
                 }
             }
 
@@ -663,7 +663,7 @@ namespace ppp {
                     return false;
                 }
 
-                if (NULL != allocated_context) {
+                if (NULLPTR != allocated_context) {
                     return true;
                 }
 
@@ -674,16 +674,16 @@ namespace ppp {
             VirtualEthernetSwitcher::VirtualEthernetStaticEchoAllocatedContextPtr VirtualEthernetSwitcher::StaticEchoAllocated(Int128 session_id, int& allocated_id, int& remote_port) noexcept {
                 remote_port = IPEndPoint::MinPort;
                 if (session_id == 0) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (disposed_) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int bind_port = static_echo_bind_port_;
                 if (bind_port <= IPEndPoint::MinPort || bind_port > IPEndPoint::MaxPort) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 VirtualEthernetStaticEchoAllocatedContextPtr allocated_context;
@@ -691,7 +691,7 @@ namespace ppp {
 
                 if (allocated_id != 0) {
                     if (!Dictionary::TryGetValue(static_echo_allocateds_, allocated_id, allocated_context)) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     remote_port = bind_port;
@@ -707,9 +707,9 @@ namespace ppp {
                     if (Dictionary::ContainsKey(static_echo_allocateds_, generate_id)) {
                         continue;
                     }
-                    elif(NULL == allocated_context) {
+                    elif(NULLPTR == allocated_context) {
                         allocated_context = make_shared_object<VirtualEthernetStaticEchoAllocatedContext>();
-                        if (NULL == allocated_context) {
+                        if (NULLPTR == allocated_context) {
                             break;
                         }
                         else {
@@ -729,7 +729,7 @@ namespace ppp {
                     }
                 }
 
-                return NULL;
+                return NULLPTR;
             }
 
             bool VirtualEthernetSwitcher::OpenManagedServerIfNeed() noexcept {
@@ -742,7 +742,7 @@ namespace ppp {
                 }
 
                 VirtualEthernetManagedServerPtr server = NewManagedServer();
-                if (NULL == server) {
+                if (NULLPTR == server) {
                     return false;
                 }
 
@@ -767,8 +767,8 @@ namespace ppp {
             }
 
             VirtualEthernetSwitcher::ITransmissionPtr VirtualEthernetSwitcher::Accept(int categories, const ContextPtr& context, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket) noexcept {
-                if (NULL == context || NULL == socket) {
-                    return NULL;
+                if (NULLPTR == context || NULLPTR == socket) {
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<ppp::transmissions::ITransmission> transmission;
@@ -783,8 +783,8 @@ namespace ppp {
                     transmission = NewWebsocketTransmission<ppp::transmissions::ISslWebsocketTransmission>(context, socket);
                 }
 
-                if (NULL == transmission) {
-                    return NULL;
+                if (NULLPTR == transmission) {
+                    return NULLPTR;
                 }
 
                 transmission->Statistics = NewStatistics();
@@ -806,7 +806,7 @@ namespace ppp {
 
             VirtualEthernetSwitcher::VirtualEthernetNamespaceCachePtr VirtualEthernetSwitcher::NewNamespaceCache(int ttl) noexcept {
                 if (ttl < 1) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 return make_shared_object<VirtualEthernetNamespaceCache>(ttl);
@@ -836,7 +836,7 @@ namespace ppp {
                 };
 
                 VirtualEthernetManagedServerPtr server = managed_server_;
-                if (NULL == server) {
+                if (NULLPTR == server) {
                     return statistics_;
                 }
                 else {
@@ -852,7 +852,7 @@ namespace ppp {
             template <typename TProtocol>
             static bool CancelAllResolver(std::shared_ptr<boost::asio::ip::basic_resolver<TProtocol>>& resolver) noexcept {
                 std::shared_ptr<boost::asio::ip::basic_resolver<TProtocol>> i = std::move(resolver);
-                if (NULL == i) {
+                if (NULLPTR == i) {
                     return false;
                 }
 
@@ -905,11 +905,11 @@ namespace ppp {
                 Dictionary::ReleaseAllObjects(exchangers);
                 Dictionary::ReleaseAllObjects(connections);
 
-                if (NULL != cache) {
+                if (NULLPTR != cache) {
                     cache->Clear();
                 }
                 
-                if (NULL != logger) {
+                if (NULLPTR != logger) {
                     IDisposable::Dispose(logger);
                 }
             }
@@ -917,13 +917,13 @@ namespace ppp {
             void VirtualEthernetSwitcher::CloseAllAcceptors() noexcept {
                 for (int i = NetworkAcceptorCategories_Min; i < NetworkAcceptorCategories_Max; i++) {
                     std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor = std::move(acceptors_[i]);
-                    if (NULL == acceptor) {
+                    if (NULLPTR == acceptor) {
                         continue;
                     }
 
                     Socket::Closesocket(acceptor);
-                    if (NULL != acceptor) {
-                        acceptors_[i] = NULL;
+                    if (NULLPTR != acceptor) {
+                        acceptors_[i] = NULLPTR;
                     }
                 }
             }
@@ -947,7 +947,7 @@ namespace ppp {
                 }
 
                 FirewallPtr firewall = NewFirewall();
-                if (NULL == firewall) {
+                if (NULLPTR == firewall) {
                     return false;
                 }
 
@@ -1002,12 +1002,12 @@ namespace ppp {
                 TickAllConnections(now);
 
                 VirtualEthernetNamespaceCachePtr cache = namespace_cache_;
-                if (NULL != cache) {
+                if (NULLPTR != cache) {
                     cache->Update();
                 }
 
                 VirtualEthernetManagedServerPtr server = managed_server_; 
-                if (NULL != server) {
+                if (NULLPTR != server) {
                     server->Update(now);
                 }
 
@@ -1020,17 +1020,17 @@ namespace ppp {
                 }
 
                 VirtualEthernetExchangerPtr exchanger = GetExchanger(session_id);
-                if (NULL == exchanger) {
+                if (NULLPTR == exchanger) {
                     return false;
                 }
 
                 ITransmissionPtr transmission = exchanger->GetTransmission();
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
                 bool bok = false;
-                if (NULL != info) {
+                if (NULLPTR != info) {
                     bok = exchanger->DoInformation(transmission, *info, y);
                     if (bok) {
                         bok = info->Valid();
@@ -1097,7 +1097,7 @@ namespace ppp {
                 }
                 elif(categories >= NetworkAcceptorCategories_Min && categories < NetworkAcceptorCategories_Max) {
                     std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor = acceptors_[categories];
-                    if (NULL != acceptor) {
+                    if (NULLPTR != acceptor) {
                         if (acceptor->is_open()) {
                             boost::asio::ip::tcp::endpoint localEP = acceptor->local_endpoint(ec);
                             if (ec == boost::system::errc::success) {
@@ -1112,7 +1112,7 @@ namespace ppp {
 
             VirtualEthernetSwitcher::NatInformationPtr VirtualEthernetSwitcher::FindNatInformation(uint32_t ip) noexcept {
                 if (IPEndPoint::IsInvalid(IPEndPoint(ip, IPEndPoint::MinPort))) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 SynchronizedObjectScope scope(syncobj_);
@@ -1121,21 +1121,21 @@ namespace ppp {
 
             VirtualEthernetSwitcher::NatInformationPtr VirtualEthernetSwitcher::AddNatInformation(const std::shared_ptr<VirtualEthernetExchanger>& exchanger, uint32_t ip, uint32_t mask) noexcept {
                 if (IPEndPoint::IsInvalid(IPEndPoint(mask, IPEndPoint::MinPort))) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (IPEndPoint::IsInvalid(IPEndPoint(ip, IPEndPoint::MinPort))) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (exchanger->IsDisposed()) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 // Creating a nat information entry mapping does not mean that the mapping will be added to the nats.
                 NatInformationPtr nat = make_shared_object<NatInformation>();
-                if (NULL == nat) {
-                    return NULL;
+                if (NULLPTR == nat) {
+                    return NULLPTR;
                 }
 
                 nat->Exchanger = exchanger;
@@ -1144,7 +1144,7 @@ namespace ppp {
 
                 SynchronizedObjectScope scope(syncobj_);
                 if (disposed_) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 // If ip addresses conflict, do not directly conflict like traditional routers, 
@@ -1157,7 +1157,7 @@ namespace ppp {
                 NatInformationTable::iterator tail = kv.first;
                 NatInformationTable::iterator endl = nats_.end();
                 if (tail == endl) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 NatInformationPtr& raw = tail->second;
@@ -1167,12 +1167,12 @@ namespace ppp {
                     return nat;
                 }
                 else {
-                    return NULL;
+                    return NULLPTR;
                 }
             }
 
             bool VirtualEthernetSwitcher::DeleteNatInformation(VirtualEthernetExchanger* key, uint32_t ip) noexcept {
-                if (NULL == key) {
+                if (NULLPTR == key) {
                     return false;
                 }
 

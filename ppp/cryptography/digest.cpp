@@ -43,7 +43,7 @@ namespace ppp {
         }
 
         bool hash_hmac(const void* data, int size, ppp::string& digest, DigestAlgorithmic agorithm, bool hex_or_binarys, bool toupper) noexcept {
-            if (NULL == data || size < 1) {
+            if (NULLPTR == data || size < 1) {
                 data = "";
                 size = 0;
             }

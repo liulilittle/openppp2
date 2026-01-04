@@ -28,7 +28,7 @@ namespace ppp
             bool                                                                R() noexcept;
 
         public:
-            operator                                                            bool() const noexcept          { return NULL != GetPtr(); }
+            operator                                                            bool() const noexcept          { return NULLPTR != GetPtr(); }
             operator                                                            YieldContext*() const noexcept { return GetPtr();         }
 
         public:
@@ -38,7 +38,7 @@ namespace ppp
             }
             static bool                                                         Spawn(boost::asio::io_context& context, SpawnHander&& spawn, int stack_size) noexcept
             {
-                ppp::threading::BufferswapAllocator* allocator = NULL;
+                ppp::threading::BufferswapAllocator* allocator = NULLPTR;
                 return YieldContext::Spawn(allocator, context, std::move(spawn), stack_size);
             }
             static bool                                                         Spawn(ppp::threading::BufferswapAllocator* allocator, boost::asio::io_context& context, SpawnHander&& spawn) noexcept
@@ -47,7 +47,7 @@ namespace ppp
             }
             static bool                                                         Spawn(ppp::threading::BufferswapAllocator* allocator, boost::asio::io_context& context, SpawnHander&& spawn, int stack_size) noexcept
             {
-                boost::asio::strand<boost::asio::io_context::executor_type>* strand = NULL;
+                boost::asio::strand<boost::asio::io_context::executor_type>* strand = NULLPTR;
                 return YieldContext::Spawn(allocator, context, strand, std::move(spawn), PPP_COROUTINE_STACK_SIZE);
             }
             static bool                                                         Spawn(ppp::threading::BufferswapAllocator* allocator, boost::asio::io_context& context, boost::asio::strand<boost::asio::io_context::executor_type>* strand, SpawnHander&& spawn)
@@ -66,12 +66,12 @@ namespace ppp
             template <typename T, typename... A>
             static T*                                                           New(ppp::threading::BufferswapAllocator* allocator, A&&... args) noexcept
             {
-                if (NULL == allocator)
+                if (NULLPTR == allocator)
                 {
                     void* memory = Malloc(sizeof(T));
-                    if (NULL == memory)
+                    if (NULLPTR == memory)
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     memset(memory, 0, sizeof(T)); /* -Wdynamic-class-memaccess */
@@ -80,9 +80,9 @@ namespace ppp
                 else
                 {
                     void* memory = allocator->Alloc(sizeof(T));
-                    if (NULL == memory)
+                    if (NULLPTR == memory)
                     {
-                        allocator = NULL;
+                        allocator = NULLPTR;
                         return New<T>(allocator, std::forward<A&&>(args)...);
                     }
 
@@ -94,7 +94,7 @@ namespace ppp
             template <typename T>
             static bool                                                         Release(T* p) noexcept
             {
-                if (NULL == p)
+                if (NULLPTR == p)
                 {
                     return false;
                 }
@@ -102,7 +102,7 @@ namespace ppp
                 ppp::threading::BufferswapAllocator* const allocator = p->allocator_;
                 p->~T();
 
-                if (NULL == allocator)
+                if (NULLPTR == allocator)
                 {
                     Mfree(p);
                 }
@@ -125,14 +125,14 @@ namespace ppp
 
         private:
             std::atomic<int>                                                    s_          = 0;
-            std::atomic<boost::context::detail::fcontext_t>                     callee_     = NULL;
-            std::atomic<boost::context::detail::fcontext_t>                     caller_     = NULL;
+            std::atomic<boost::context::detail::fcontext_t>                     callee_     = NULLPTR;
+            std::atomic<boost::context::detail::fcontext_t>                     caller_     = NULLPTR;
             SpawnHander                                                         h_;
             boost::asio::io_context&                                            context_;
             boost::asio::strand<boost::asio::io_context::executor_type>*        strand_;
             int                                                                 stack_size_ = 0;
             std::shared_ptr<Byte>                                               stack_;
-            ppp::threading::BufferswapAllocator*                                allocator_  = NULL;
+            ppp::threading::BufferswapAllocator*                                allocator_  = NULLPTR;
         };
     }
 }

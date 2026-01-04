@@ -41,7 +41,7 @@ namespace ppp {
                     return false;
                 }
 
-                if (NULL == response) {
+                if (NULLPTR == response) {
                     return false;
                 }
 
@@ -57,7 +57,7 @@ namespace ppp {
                 }
                 else {
                     node = make_shared_object<NamespaceRecordNode>();
-                    if (NULL == node) {
+                    if (NULLPTR == node) {
                         return false;
                     }
                 }
@@ -85,7 +85,7 @@ namespace ppp {
                 SynchronizedObjectScope scope(LockObj_);
 
                 node = NamespaceLinkedList_.First();
-                if (NULL != node) {
+                if (NULLPTR != node) {
                     uint64_t now = Executors::GetTickCount();
                     do {
                         NamespaceRecord& record = node->Value;
@@ -100,7 +100,7 @@ namespace ppp {
                         NamespaceRecordNodePtr next = node->Next;
                         NamespaceLinkedList_.Remove(node);
                         node = next;
-                    } while (NULL != node);
+                    } while (NULLPTR != node);
                 }
             }
 
@@ -118,7 +118,7 @@ namespace ppp {
                         return false;
                     }
 
-                    if (NULL == node) {
+                    if (NULLPTR == node) {
                         Dictionary::TryRemove(NamespaceHashTable_, key);
                         return false;
                     }

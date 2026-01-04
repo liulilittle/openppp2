@@ -24,7 +24,7 @@ namespace ppp
 
         private:
             std::shared_ptr<boost::asio::ip::tcp::acceptor>                         server_;
-            std::shared_ptr<boost::asio::io_context>                                context_ = NULL;
+            std::shared_ptr<boost::asio::io_context>                                context_ = NULLPTR;
             bool                                                                    in_      = false;
         };
     }

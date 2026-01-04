@@ -15,12 +15,12 @@
 namespace ppp {
     namespace io {
         int File::GetLength(const char* path) noexcept {
-            if (NULL == path) {
+            if (NULLPTR == path) {
                 return ~0;
             }
 
             FILE* stream = fopen(path, "rb");
-            if (NULL == stream) {
+            if (NULLPTR == stream) {
                 return ~0;
             }
 
@@ -32,7 +32,7 @@ namespace ppp {
         }
 
         bool File::Exists(const char* path) noexcept {
-            if (NULL == path) {
+            if (NULLPTR == path) {
                 return false;
             }
 
@@ -45,16 +45,16 @@ namespace ppp {
         }
 
         bool File::WriteAllBytes(const char* path, const void* data, int length) noexcept {
-            if (NULL == path || length < 0) {
+            if (NULLPTR == path || length < 0) {
                 return false;
             }
 
-            if (NULL == data && length != 0) {
+            if (NULLPTR == data && length != 0) {
                 return false;
             }
 
             FILE* f = fopen(path, "wb+");
-            if (NULL == f) {
+            if (NULLPTR == f) {
                 return false;
             }
 
@@ -69,7 +69,7 @@ namespace ppp {
 
         bool File::CanAccess(const char* path, FileAccess access_) noexcept {
 #if defined(_WIN32)
-            if (NULL == path) {
+            if (NULLPTR == path) {
                 return false;
             }
 
@@ -113,7 +113,7 @@ namespace ppp {
 
         int File::GetEncoding(const void* p, int length, int& offset) noexcept {
             offset = 0;
-            if (NULL == p || length < 3) {
+            if (NULLPTR == p || length < 3) {
                 return ppp::text::Encoding::ASCII;
             }
             
@@ -162,13 +162,13 @@ namespace ppp {
 
         std::shared_ptr<Byte> File::ReadAllBytes(const char* path, int& length) noexcept {
             length = ~0;
-            if (NULL == path) {
-                return NULL;
+            if (NULLPTR == path) {
+                return NULLPTR;
             }
 
             FILE* file_ = fopen(path, "rb"); // Oracle Cloud Shells Compatibility...
             if (!file_) {
-                return NULL;
+                return NULLPTR;
             }
 
             MemoryStream stream_;
@@ -199,7 +199,7 @@ namespace ppp {
 
         ppp::string File::RewritePath(const char* path) noexcept {
             ppp::string rewrite_path;
-            if (NULL != path && *path != '\x0') {
+            if (NULLPTR != path && *path != '\x0') {
                 rewrite_path = path;
             }
 
@@ -229,7 +229,7 @@ namespace ppp {
         }
 
         ppp::string File::GetFullPath(const char* path) noexcept {
-            if (NULL == path || *path == '\x0') {
+            if (NULLPTR == path || *path == '\x0') {
                 path = "./";
             }
 
@@ -242,8 +242,8 @@ namespace ppp {
             return ppp::win32::Win32Native::GetFullPath(path_new.data());
 #else
             /* https://man7.org/linux/man-pages/man3/realpath.3.html */
-            char* resolved_path = (char*)::realpath(path, NULL);
-            if (NULL != resolved_path) {
+            char* resolved_path = (char*)::realpath(path, NULLPTR);
+            if (NULLPTR != resolved_path) {
                 ppp::string fullpath_string = resolved_path;
                 ::free(resolved_path);
                 
@@ -271,8 +271,8 @@ namespace ppp {
                     break;
                 }
 
-                resolved_path = (char*)::realpath(dir.data(), NULL);
-                if (NULL == resolved_path) {
+                resolved_path = (char*)::realpath(dir.data(), NULLPTR);
+                if (NULLPTR == resolved_path) {
                     continue;
                 }
 
@@ -299,7 +299,7 @@ namespace ppp {
         }
 
         bool File::Delete(const char* path) noexcept {
-            if (NULL == path || *path == '\x0') {
+            if (NULLPTR == path || *path == '\x0') {
                 return false;
             }
 
@@ -316,7 +316,7 @@ namespace ppp {
         }
 
         bool File::Create(const char* path, size_t size) noexcept {
-            if (NULL == path || *path == '\x0') {
+            if (NULLPTR == path || *path == '\x0') {
                 return false;
             }
             else {
@@ -337,7 +337,7 @@ namespace ppp {
 
         template <class TDirectoryIterator>
         static bool FILE_GetAllFileNames(const char* path, ppp::vector<ppp::string>& out) noexcept {
-            if (NULL == path || *path == '\x0') {
+            if (NULLPTR == path || *path == '\x0') {
                 return false;
             }
 
@@ -369,7 +369,7 @@ namespace ppp {
         }
 
         bool File::CreateDirectories(const char* path) noexcept {
-            if (NULL == path || *path == '\x0') {
+            if (NULLPTR == path || *path == '\x0') {
                 return false;
             }
 

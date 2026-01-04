@@ -46,7 +46,7 @@ public:
   virtual ~StreamWriter();
   /** Write Value into document as configured in sub-class.
    *   Do not take ownership of sout, but maintain a reference during function.
-   *   \pre sout != NULL
+   *   \pre sout != NULLPTR
    *   \return zero on success (For now, we always return zero, so check the
    *   stream instead.) \throw std::exception possibly, depending on
    * configuration
@@ -137,7 +137,7 @@ public:
   Value& operator[](const String& key);
 
   /** Called by ctor, but you can use this to reset settings_.
-   * \pre 'settings' != NULL (but Json::null is fine)
+   * \pre 'settings' != NULLPTR (but Json::null is fine)
    * \remark Defaults:
    * \snippet src/lib_json/json_writer.cpp StreamWriterBuilderDefaults
    */

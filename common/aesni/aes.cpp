@@ -103,7 +103,7 @@ namespace aesni {
 #endif
 
     bool AES::TryAttach(const void* key, const void* iv, bool __i128m, bool __bgctr) noexcept {
-        if (NULL == key || NULL == iv) {
+        if (NULLPTR == key || NULLPTR == iv) {
             return false;
         }
 
@@ -114,7 +114,7 @@ namespace aesni {
 
 #if defined(__AES_NI_IMPL__)
         __round_key_ = ppp::make_shared_alloc<RoundKey>(15);
-        if (NULL == __round_key_) {
+        if (NULLPTR == __round_key_) {
             return false;
         }
 
@@ -142,20 +142,20 @@ namespace aesni {
             return false;
         }
 
-        if (NULL != __bgctr) {
+        if (NULLPTR != __bgctr) {
             *__bgctr = false;
         }
 
-        if (NULL != __i128m) {
+        if (NULLPTR != __i128m) {
             *__i128m = false;
         }
 
         if (method == "simd-aes-128-cfb") {
-            if (NULL != __i128m) {
+            if (NULLPTR != __i128m) {
                 *__i128m = true;
             }
 
-            if (NULL != __rname) {
+            if (NULLPTR != __rname) {
                 *__rname = PPP_DEFAULT_KEY_PROTOCOL;
             }
 
@@ -163,7 +163,7 @@ namespace aesni {
         }
 
         if (method == "simd-aes-256-cfb") {
-            if (NULL != __rname) {
+            if (NULLPTR != __rname) {
                 *__rname = PPP_DEFAULT_KEY_TRANSPORT;
             }
 
@@ -171,15 +171,15 @@ namespace aesni {
         }
 
         if (method == "simd-aes-128-gcm") {
-            if (NULL != __i128m) {
+            if (NULLPTR != __i128m) {
                 *__i128m = true;
             }
 
-            if (NULL != __rname) {
+            if (NULLPTR != __rname) {
                 *__rname = "aes-128-gcm";
             }
 
-            if (NULL != __bgctr) {
+            if (NULLPTR != __bgctr) {
                 *__bgctr = true;
             }
 
@@ -187,11 +187,11 @@ namespace aesni {
         }
 
         if (method == "simd-aes-256-gcm") {
-            if (NULL != __rname) {
+            if (NULLPTR != __rname) {
                 *__rname = "aes-256-gcm";
             }
 
-            if (NULL != __bgctr) {
+            if (NULLPTR != __bgctr) {
                 *__bgctr = true;
             }
 
@@ -210,21 +210,21 @@ namespace aesni {
     std::shared_ptr<ppp::Byte> AES::Process(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, ppp::Byte* data, int datalen, int& outlen, bool enc) noexcept {
 #if !defined(__AES_NI_IMPL__)
         outlen = ~0;
-        return NULL;
+        return NULLPTR;
 #else
         outlen = 0;
-        if (datalen < 0 || (NULL == data && datalen != 0)) {
+        if (datalen < 0 || (NULLPTR == data && datalen != 0)) {
             outlen = ~0;
-            return NULL;
+            return NULLPTR;
         }
 
         if (datalen == 0) {
-            return NULL;
+            return NULLPTR;
         }
 
         std::shared_ptr<ppp::Byte> ciphertext = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, datalen + 1);
-        if (NULL == ciphertext) {
-            return NULL;
+        if (NULLPTR == ciphertext) {
+            return NULLPTR;
         }
 
         if (__bgctr_) {

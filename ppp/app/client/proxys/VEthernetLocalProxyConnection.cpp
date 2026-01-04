@@ -46,7 +46,7 @@ namespace ppp {
                         };
 
                     std::shared_ptr<boost::asio::ip::tcp::socket> socket = socket_; 
-                    if (NULL != socket) {
+                    if (NULLPTR != socket) {
                         boost::asio::post(socket->get_executor(), finalize);
                     }
                     else {
@@ -65,15 +65,15 @@ namespace ppp {
                         std::shared_ptr<vmux::vmux_skt> connection_mux = std::move(connection_mux_);
                         connection_mux_.reset();
 
-                        if (NULL != connection) {
+                        if (NULLPTR != connection) {
                             connection->Dispose();
                         }
 
-                        if (NULL != connection_rinetd) {
+                        if (NULLPTR != connection_rinetd) {
                             connection_rinetd->Dispose();
                         }
 
-                        if (NULL != connection_mux) {
+                        if (NULLPTR != connection_mux) {
                             connection_mux->close();
                         }
 
@@ -93,15 +93,15 @@ namespace ppp {
                     elif(disposed_) {
                         return false;
                     }
-                    elif(VirtualEthernetTcpipConnectionPtr connection = this->connection_; NULL != connection) {
+                    elif(VirtualEthernetTcpipConnectionPtr connection = this->connection_; NULLPTR != connection) {
                         this->Update();
                         return connection->Run(y);
                     }
-                    elif(std::shared_ptr<RinetdConnection> connection = this->connection_rinetd_; NULL != connection) {
+                    elif(std::shared_ptr<RinetdConnection> connection = this->connection_rinetd_; NULLPTR != connection) {
                         this->Update();
                         return connection->Run();
                     }
-                    elif(std::shared_ptr<vmux::vmux_skt> connection = this->connection_mux_; NULL != connection) {
+                    elif(std::shared_ptr<vmux::vmux_skt> connection = this->connection_mux_; NULLPTR != connection) {
                         this->Update();
                         return connection->run();
                     }
@@ -111,7 +111,7 @@ namespace ppp {
                 }
 
                 bool VEthernetLocalProxyConnection::SendBufferToPeer(YieldContext& y, const void* messages, int messages_size) noexcept {
-                    if (NULL == messages || messages_size < 1) {
+                    if (NULLPTR == messages || messages_size < 1) {
                         return false;
                     }
 
@@ -120,14 +120,14 @@ namespace ppp {
                     }
 
                     VirtualEthernetTcpipConnectionPtr V = this->connection_; 
-                    if (NULL != V) {
+                    if (NULLPTR != V) {
                         return V->SendBufferToPeer(y, messages, messages_size);
                     }
 
                     std::shared_ptr<RinetdConnection> R = this->connection_rinetd_;
-                    if (NULL != R) {
+                    if (NULLPTR != R) {
                         std::shared_ptr<boost::asio::ip::tcp::socket> socket = R->GetRemoteSocket(); 
-                        if (NULL == socket) {
+                        if (NULLPTR == socket) {
                             return false;
                         }
 
@@ -135,7 +135,7 @@ namespace ppp {
                     }
                     
                     std::shared_ptr<vmux::vmux_skt> K = this->connection_mux_;
-                    if (NULL != K) {
+                    if (NULLPTR != K) {
                         return K->send_to_peer_yield(messages, messages_size, y);
                     }
 
@@ -145,23 +145,23 @@ namespace ppp {
                 bool VEthernetLocalProxyConnection::ConnectBridgeToPeer(const std::shared_ptr<ppp::app::protocol::AddressEndPoint>& destinationEP, YieldContext& y) noexcept {
                     using VEthernetTcpipConnection = ppp::app::protocol::templates::TVEthernetTcpipConnection<VEthernetLocalProxyConnection>;
                     
-                    if (NULL == destinationEP) {
+                    if (NULLPTR == destinationEP) {
                         return false;
                     }
 
                     auto configuration = exchanger_->GetConfiguration();
-                    if (NULL == configuration) {
+                    if (NULLPTR == configuration) {
                         return false;
                     }
 
                     std::shared_ptr<boost::asio::ip::tcp::socket> socket = GetSocket();
-                    if (NULL == socket || !socket->is_open()) {
+                    if (NULLPTR == socket || !socket->is_open()) {
                         return false;
                     }
 
                     auto self = shared_from_this();
-                    if (auto switcher = exchanger_->GetSwitcher(); NULL != switcher) {
-                        if (auto tap = switcher->GetTap(); NULL != tap && tap->IsHostedNetwork()) {
+                    if (auto switcher = exchanger_->GetSwitcher(); NULLPTR != switcher) {
+                        if (auto tap = switcher->GetTap(); NULLPTR != tap && tap->IsHostedNetwork()) {
                             boost::system::error_code ec;
                             boost::asio::ip::address address = StringToAddress(destinationEP->Host.data(), ec);
                             if (ec) {
@@ -196,20 +196,20 @@ namespace ppp {
                     }
 
                     std::shared_ptr<ppp::transmissions::ITransmission> transmission = exchanger_->ConnectTransmission(context_, strand_, y);
-                    if (NULL == transmission) {
+                    if (NULLPTR == transmission) {
                         return false;
                     }
 
                     std::shared_ptr<VEthernetTcpipConnection> connection =
                         make_shared_object<VEthernetTcpipConnection>(self, configuration, context_, strand_, exchanger_->GetId(), socket);
-                    if (NULL == connection) {
+                    if (NULLPTR == connection) {
                         IDisposable::DisposeReferences(transmission);
                         return false;
                     }
 
 #if defined(_LINUX)
                     auto switcher = exchanger_->GetSwitcher(); 
-                    if (NULL != switcher) {
+                    if (NULLPTR != switcher) {
                         connection->ProtectorNetwork = switcher->GetProtectorNetwork();
                     }
 #endif
@@ -226,16 +226,16 @@ namespace ppp {
 
                 std::shared_ptr<ppp::app::protocol::AddressEndPoint> VEthernetLocalProxyConnection::GetAddressEndPointByProtocol(const ppp::string& host, int port) noexcept {
                     if (port <= ppp::net::IPEndPoint::MinPort || port > ppp::net::IPEndPoint::MaxPort) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     if (host.empty()) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     std::shared_ptr<ppp::app::protocol::AddressEndPoint> destinationEP = make_shared_object<ppp::app::protocol::AddressEndPoint>();
-                    if (NULL == destinationEP) {
-                        return NULL;
+                    if (NULLPTR == destinationEP) {
+                        return NULLPTR;
                     }
 
                     boost::system::error_code ec;
@@ -251,7 +251,7 @@ namespace ppp {
                         destinationEP->Type = ppp::app::protocol::AddressType::IPv6;
                     }
                     else {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     destinationEP->Host = host;
@@ -261,13 +261,13 @@ namespace ppp {
 
                 void VEthernetLocalProxyConnection::Update() noexcept {
                     bool linked = false;
-                    if (VirtualEthernetTcpipConnectionPtr connection = connection_; NULL != connection) {
+                    if (VirtualEthernetTcpipConnectionPtr connection = connection_; NULLPTR != connection) {
                         linked = connection->IsLinked();
                     }
-                    elif(std::shared_ptr<RinetdConnection> connection = connection_rinetd_; NULL != connection) {
+                    elif(std::shared_ptr<RinetdConnection> connection = connection_rinetd_; NULLPTR != connection) {
                         linked = connection->IsLinked();
                     }
-                    elif(std::shared_ptr<vmux::vmux_skt> connection = connection_mux_; NULL != connection) {
+                    elif(std::shared_ptr<vmux::vmux_skt> connection = connection_mux_; NULLPTR != connection) {
                         linked = connection->is_connected();
                     }
 

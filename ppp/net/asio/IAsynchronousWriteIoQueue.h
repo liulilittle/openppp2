@@ -52,7 +52,7 @@ namespace ppp {
                 public:
                     void                                                Clear() noexcept {
                         SynchronizedObjectScope scope(lockobj);
-                        cb.reset();
+                        cb = NULLPTR;
                         packet.reset();
                         packet_length = 0;
                     }
@@ -60,11 +60,11 @@ namespace ppp {
                         AsynchronousWriteBytesCallback fx;
                         for (SynchronizedObjectScope scope(lockobj);;) {
                             fx = std::move(cb);
-                            cb.reset();
+                            cb = NULLPTR;
                             break;
                         }
 
-                        if (NULL != fx) {
+                        if (NULLPTR != fx) {
                             fx(ok);
                         }
                     }
@@ -83,7 +83,7 @@ namespace ppp {
                     using atomic_int = std::atomic<int>;
 
                     std::shared_ptr<atomic_int> status = ppp::make_shared_object<atomic_int>(-1);
-                    if (NULL == status) {
+                    if (NULLPTR == status) {
                         return false;
                     }
 

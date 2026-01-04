@@ -14,14 +14,14 @@ namespace ppp
             friend class                                                    WritePacketToKernelNio;
             struct                                                          PacketContent
             {
-                std::shared_ptr<Byte>                                       Packet       = NULL;
+                std::shared_ptr<Byte>                                       Packet       = NULLPTR;
                 int                                                         PacketLength = 0;
             };
 
         public:
             struct                                                          PacketInputEventArgs
             {
-                void*                                                       Packet       = NULL;
+                void*                                                       Packet       = NULLPTR;
                 int                                                         PacketLength = 0;
             };
             typedef ppp::function<bool(ITap*, PacketInputEventArgs&)>       PacketInputEventHandler;
@@ -88,7 +88,7 @@ namespace ppp
                 bool                                                        _hosted_network  : 7;
             };
 
-            void*                                                           _handle          = NULL;
+            void*                                                           _handle          = NULLPTR;
             int                                                             _interface_index = -1;
             std::shared_ptr<boost::asio::posix::stream_descriptor>          _stream;
             std::shared_ptr<boost::asio::io_context>                        _context;

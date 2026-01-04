@@ -6,10 +6,10 @@ namespace ppp
     {
         bool Win32Variant_Callvirt(IWbemServices* services, IWbemClassObject* obj, const _bstr_t& clazz, const _bstr_t& method, ppp::function<bool(IWbemClassObject*)>&& internal_call) noexcept
         {
-            IWbemClassObject* pClass = NULL;
-            IWbemClassObject* pInParamsDefinition = NULL;
-            IWbemClassObject* pClassInstance = NULL;
-            IWbemClassObject* pOutParams = NULL;
+            IWbemClassObject* pClass = NULLPTR;
+            IWbemClassObject* pInParamsDefinition = NULLPTR;
+            IWbemClassObject* pClassInstance = NULLPTR;
+            IWbemClassObject* pOutParams = NULLPTR;
 
             VARIANT vtPATH;
             VariantInit(&vtPATH);
@@ -20,13 +20,13 @@ namespace ppp
             bool ok = false;
             for (;;)
             {
-                HRESULT hr = services->GetObject(clazz, 0, NULL, &pClass, NULL);
+                HRESULT hr = services->GetObject(clazz, 0, NULLPTR, &pClass, NULLPTR);
                 if (FAILED(hr))
                 {
                     break;
                 }
 
-                hr = pClass->GetMethod(method, 0, &pInParamsDefinition, NULL);
+                hr = pClass->GetMethod(method, 0, &pInParamsDefinition, NULLPTR);
                 if (FAILED(hr))
                 {
                     break;
@@ -44,7 +44,7 @@ namespace ppp
                     break;
                 }
 
-                hr = obj->Get(L"__PATH", 0, &vtPATH, NULL, NULL);
+                hr = obj->Get(L"__PATH", 0, &vtPATH, NULLPTR, NULLPTR);
                 if (FAILED(hr))
                 {
                     break;
@@ -54,16 +54,16 @@ namespace ppp
                     vtPATH.bstrVal,
                     method, /* BSTR(L"SetDNSServerSearchOrder") */
                     0,
-                    NULL,
+                    NULLPTR,
                     pClassInstance,
                     &pOutParams,
-                    NULL);
+                    NULLPTR);
                 if (FAILED(hr))
                 {
                     break; /* SUCCEEDED */
                 }
 
-                hr = pOutParams->Get(_bstr_t(L"ReturnValue"), 0, &vtRET, NULL, 0);
+                hr = pOutParams->Get(_bstr_t(L"ReturnValue"), 0, &vtRET, NULLPTR, 0);
                 if (FAILED(hr))
                 {
                     break;

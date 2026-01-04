@@ -183,8 +183,8 @@ namespace ppp {
 
                     ppp::threading::Executors::StrandPtr strand;
                     auto transmission = make_shared_object<TTransmission>(context, strand, socket, configuration_);
-                    if (NULL == transmission) {
-                        return NULL;
+                    if (NULLPTR == transmission) {
+                        return NULLPTR;
                     }
                     
                     if (!host.empty() && !path.empty()) {

@@ -133,7 +133,7 @@ namespace ppp {
                     this->_buffer = array;
                 }
                 else {
-                    this->_buffer = NULL;
+                    this->_buffer = NULLPTR;
                 }
 
                 this->_capacity = value;
@@ -145,7 +145,7 @@ namespace ppp {
                     this->_position = 0;
                     this->_length = 0;
                     this->_capacity = 0;
-                    this->_buffer = NULL;
+                    this->_buffer = NULLPTR;
                     this->_disposed = true;
                 }
             }     
@@ -173,7 +173,7 @@ namespace ppp {
                     return false;
                 }
 
-                if (NULL == buffer) {
+                if (NULLPTR == buffer) {
                     if (offset == 0 && count == 0) {
                         return true;
                     }
@@ -225,7 +225,7 @@ namespace ppp {
                     return -1;
                 }
 
-                if (NULL == buffer) {
+                if (NULLPTR == buffer) {
                     if (offset == 0 && count == 0) {
                         return 0;
                     }
@@ -263,19 +263,19 @@ namespace ppp {
             std::shared_ptr<Byte>               ToArray(int& length) noexcept {
                 length = this->_length;
                 if (length < 1) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<Byte> dest = this->NewBuffer(length);
-                if (NULL == dest) {
+                if (NULLPTR == dest) {
                     length = 0;
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<Byte> src = this->_buffer;
-                if (NULL == src) {
+                if (NULLPTR == src) {
                     length = 0;
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 memcpy(dest.get(), src.get(), length);
@@ -285,7 +285,7 @@ namespace ppp {
         private:        
             std::shared_ptr<Byte>               NewBuffer(int length) noexcept {
                 if (length < 1) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = this->BufferAllocator;

@@ -76,7 +76,7 @@ namespace ppp {
                     }
 
                     std::shared_ptr<ppp::app::protocol::AddressEndPoint> address_endpoint = make_shared_object<ppp::app::protocol::AddressEndPoint>();
-                    if (NULL == address_endpoint) {
+                    if (NULLPTR == address_endpoint) {
                         return false;
                     }
 
@@ -89,7 +89,7 @@ namespace ppp {
 
                 int VEthernetSocksProxyConnection::Authentication(YieldContext& y) noexcept {
                     std::shared_ptr<boost::asio::ip::tcp::socket>& socket = GetSocket();
-                    if (NULL == socket || !socket->is_open()) {
+                    if (NULLPTR == socket || !socket->is_open()) {
                         return SOCKS_ERR_ER;
                     }
 
@@ -135,7 +135,7 @@ namespace ppp {
 
                 bool VEthernetSocksProxyConnection::Replay(YieldContext& y, int k, int v) noexcept {
                     std::shared_ptr<boost::asio::ip::tcp::socket>& socket = GetSocket();
-                    if (NULL == socket || !socket->is_open()) {
+                    if (NULLPTR == socket || !socket->is_open()) {
                         return false;
                     }
 
@@ -151,7 +151,7 @@ namespace ppp {
                     std::shared_ptr<boost::asio::ip::tcp::socket>& socket = GetSocket();
                     method = SOCKS_METHOD_NONE;
 
-                    if (NULL == socket || !socket->is_open()) {
+                    if (NULLPTR == socket || !socket->is_open()) {
                         return SOCKS_ERR_ER;
                     }
 
@@ -214,7 +214,7 @@ namespace ppp {
                     port = ppp::net::IPEndPoint::MinPort;
                     address_type = ppp::app::protocol::AddressType::Domain;
 
-                    if (NULL == socket || !socket->is_open()) {
+                    if (NULLPTR == socket || !socket->is_open()) {
                         return false;
                     }
 

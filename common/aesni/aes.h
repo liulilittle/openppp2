@@ -20,8 +20,8 @@ namespace aesni {
 
     public:     
         bool                                TryAttach(const void* key, const void* iv, bool __i128m, bool __bgctr) noexcept;
-        bool                                IsAttached() noexcept { return NULL != iv_; }
-        static bool                         Support(const ppp::string& method, bool* __i128m = NULL, bool* __bgctr = NULL, ppp::string* __rname = NULL) noexcept;
+        bool                                IsAttached() noexcept { return NULLPTR != iv_; }
+        static bool                         Support(const ppp::string& method, bool* __i128m = NULLPTR, bool* __bgctr = NULLPTR, ppp::string* __rname = NULLPTR) noexcept;
 
     public:     
         std::shared_ptr<ppp::Byte>          Encrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, ppp::Byte* data, int datalen, int& outlen) noexcept { return Process(allocator, data, datalen, outlen, true); } 
@@ -33,7 +33,7 @@ namespace aesni {
     private:        
         using                               RoundKey             = std::array<uint8_t, 16>;
 
-        const void*                         iv_         = NULL;
+        const void*                         iv_         = NULLPTR;
 
         struct {
             bool                            __i128m_    : 1;

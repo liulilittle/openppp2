@@ -46,7 +46,7 @@ namespace ppp {
         }
 
         std::wstring Encoding::ascii_to_wstring2(const std::string& s) noexcept {
-            std::size_t len = mbstowcs(NULL, s.data(), 0);
+            std::size_t len = mbstowcs(NULLPTR, s.data(), 0);
             if (len == 0 || len == std::string::npos) {
                 return std::wstring();
             }
@@ -56,7 +56,7 @@ namespace ppp {
         }
 
         std::string Encoding::wstring_to_ascii(const std::wstring& s) noexcept {
-            std::size_t len = wcstombs(NULL, s.data(), 0);
+            std::size_t len = wcstombs(NULLPTR, s.data(), 0);
             if (len == 0 || len == std::string::npos) {
                 return std::string();
             }

@@ -62,13 +62,13 @@ namespace ppp
             std::shared_ptr<ExecutorsInternal> i = ppp::make_shared_object<ExecutorsInternal>();
             Internal = i;
 
-            if (NULL != i) 
+            if (NULLPTR != i) 
             {
                 std::thread(
                     []() noexcept 
                     {
                         SetThreadName("tick");
-                        for (std::shared_ptr<ExecutorsInternal> i = Internal; NULL != i; Sleep(10))
+                        for (std::shared_ptr<ExecutorsInternal> i = Internal; NULLPTR != i; Sleep(10))
                         {
                             UInt64 now = ppp::GetTickCount();
                             bool past = (now / 1000) != (i->TickCount / 1000);
@@ -121,15 +121,15 @@ namespace ppp
         static std::shared_ptr<boost::asio::io_context> Executors_AttachDefaultContext(const std::shared_ptr<BufferswapAllocator>& allocator) noexcept
         {
             SynchronizedObjectScope scope(Internal->Lock);
-            if (NULL != Internal->Default)
+            if (NULLPTR != Internal->Default)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<boost::asio::io_context> context = make_shared_object<boost::asio::io_context>();
-            if (NULL == context)
+            if (NULLPTR == context)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             Internal->Default = context;
@@ -142,9 +142,9 @@ namespace ppp
         static std::shared_ptr<boost::asio::io_context> Executors_AddNewThreadContext(const std::shared_ptr<BufferswapAllocator>& allocator, int64_t threadId) noexcept
         {
             std::shared_ptr<boost::asio::io_context> context = make_shared_object<boost::asio::io_context>();
-            if (NULL == context)
+            if (NULLPTR == context)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             boost::asio::io_context* key = context.get();
@@ -216,16 +216,16 @@ namespace ppp
                 lwip::netstack::close(
                     [awaitable]() noexcept  
                     {
-                        if (NULL != awaitable) 
+                        if (NULLPTR != awaitable) 
                         {
                             awaitable->Processed();
                         }
                     });
 
-                if (NULL != awaitable)
+                if (NULLPTR != awaitable)
                 {
                     std::shared_ptr<boost::asio::io_context> executor = lwip::netstack::Executor;
-                    if (NULL != executor)
+                    if (NULLPTR != executor)
                     {
                         bool stopped = executor->stopped();
                         if (!stopped)
@@ -260,7 +260,7 @@ namespace ppp
             if (!any)
             {
                 ExecutorContextPtr context = Internal->Default;
-                if (NULL != context)
+                if (NULLPTR != context)
                 {
                     contexts.emplace_back(context);
                 }
@@ -269,9 +269,9 @@ namespace ppp
 
         std::shared_ptr<Byte> Executors::GetCachedBuffer(const std::shared_ptr<boost::asio::io_context>& context) noexcept
         {
-            if (NULL == context)
+            if (NULLPTR == context)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             ExecutorBufferArrayTable& buffers = Internal->Buffers;
@@ -279,7 +279,7 @@ namespace ppp
 
             ExecutorBufferArrayTable::iterator tail = buffers.find(context.get());
             ExecutorBufferArrayTable::iterator endl = buffers.end();
-            return tail != endl ? tail->second : NULL;
+            return tail != endl ? tail->second : NULLPTR;
         }
 
         std::shared_ptr<boost::asio::io_context> Executors::GetCurrent(bool defaultContext) noexcept
@@ -301,7 +301,7 @@ namespace ppp
                     return tail->second;
                 }
 
-                return defaultContext ? Internal->Default : NULL;
+                return defaultContext ? Internal->Default : NULLPTR;
             }
         }
 
@@ -353,7 +353,7 @@ namespace ppp
 
         int Executors::Run(const std::shared_ptr<BufferswapAllocator>& allocator, const ExecutorStart& start, int argc, const char* argv[])
         {
-            if (NULL == start)
+            if (NULLPTR == start)
             {
                 throw std::invalid_argument(nameof(start));
             }
@@ -364,13 +364,13 @@ namespace ppp
             }
 
             int return_code = -1;
-            if (argc > 0 && NULL == argv)
+            if (argc > 0 && NULLPTR == argv)
             {
                 throw std::invalid_argument(nameof(argv));
             }
 
             std::shared_ptr<boost::asio::io_context> context = Executors_AttachDefaultContext(allocator);
-            if (NULL == context)
+            if (NULLPTR == context)
             {
                 throw std::runtime_error("This operation cannot be repeated.");
             }
@@ -400,10 +400,10 @@ namespace ppp
         {
             // I'm letting go, I am finally willing to let go of your hands, because love you love to my heart.
             ApplicationExitEventHandler h = std::move(Executors::ApplicationExit);
-            if (NULL != h)
+            if (NULLPTR != h)
             {
                 h(return_code);
-                Executors::ApplicationExit.reset();
+                Executors::ApplicationExit = NULLPTR;
             }
         }
 
@@ -440,7 +440,7 @@ namespace ppp
         static bool Executors_CreateNewThread(const std::shared_ptr<BufferswapAllocator>& allocator) noexcept
         {
             std::shared_ptr<Executors::Awaitable> awaitable = make_shared_object<Executors::Awaitable>();
-            if (NULL == awaitable)
+            if (NULLPTR == awaitable)
             {
                 return false;
             }
@@ -450,20 +450,20 @@ namespace ppp
                 [allocator, awaitable_weak](Thread* my) noexcept
                 {
                     int64_t threadId = GetCurrentThreadId();
-                    if (std::shared_ptr<Executors::Awaitable> awaitable = awaitable_weak.lock(); NULL != awaitable)
+                    if (std::shared_ptr<Executors::Awaitable> awaitable = awaitable_weak.lock(); NULLPTR != awaitable)
                     {
                         awaitable->Processed();
                     }
 
                     std::shared_ptr<boost::asio::io_context> context = Executors_AddNewThreadContext(allocator, threadId);
-                    if (NULL != context)
+                    if (NULLPTR != context)
                     {
                         Executors_Run(*context);
                     }
 
                     Executors_EndNewThreadContext(threadId, context);
                 });
-            if (NULL == t)
+            if (NULLPTR == t)
             {
                 return false;
             }
@@ -518,7 +518,7 @@ namespace ppp
                     if (CONTEXT_THREAD_TAIL != CONTEXT_THREAD_ENDL)
                     {
                         auto& thread = CONTEXT_THREAD_TAIL->second; 
-                        if (NULL != thread)
+                        if (NULLPTR != thread)
                         {
                             auto CONTEXT_TABLE_TAIL = contexts.find(thread->Id); 
                             auto CONTEXT_TABLE_ENDL = contexts.end();
@@ -543,7 +543,7 @@ namespace ppp
 
         bool Executors::Exit(const std::shared_ptr<boost::asio::io_context>& context) noexcept
         {
-            if (NULL == context)
+            if (NULLPTR == context)
             {
                 return false;
             }
@@ -562,7 +562,7 @@ namespace ppp
         bool Executors::Exit() noexcept
         {
             std::shared_ptr<ExecutorsInternal> i = Internal;
-            if (NULL == i)
+            if (NULLPTR == i)
             {
                 return false;
             }
@@ -594,7 +594,7 @@ namespace ppp
 
             for (auto&& [_, thread] : Threads)
             {
-                if (NULL != thread)
+                if (NULLPTR != thread)
                 {
                     thread->Join();
                 }
@@ -617,16 +617,16 @@ namespace ppp
         DateTime Executors::Now() noexcept
         {
             std::shared_ptr<ExecutorsInternal> i = Internal;
-            return NULL != i ? i->Now : DateTime::Now();
+            return NULLPTR != i ? i->Now : DateTime::Now();
         }
 
         uint64_t Executors::GetTickCount() noexcept
         {
             std::shared_ptr<ExecutorsInternal> i = Internal;
-            if (NULL != i)
+            if (NULLPTR != i)
             {
                 std::shared_ptr<boost::asio::io_context> context = i->Default;
-                if (NULL != context)
+                if (NULLPTR != context)
                 {
                     return i->TickCount;
                 }
@@ -643,13 +643,13 @@ namespace ppp
             }
 
             SynchronizedObjectScope scope(Internal->Lock);
-            if (NULL != Internal->Scheduler)
+            if (NULLPTR != Internal->Scheduler)
             {
                 return true;
             }
 
             ExecutorContextPtr scheduler = make_shared_object<boost::asio::io_context>();
-            if (NULL == scheduler)
+            if (NULLPTR == scheduler)
             {
                 return false;
             }
@@ -668,7 +668,7 @@ namespace ppp
                     [](Thread* my) noexcept
                     {
                         ExecutorContextPtr scheduler = Internal->Scheduler;
-                        if (NULL != scheduler)
+                        if (NULLPTR != scheduler)
                         {
                             if (ppp::RT) 
                             {
@@ -699,7 +699,7 @@ namespace ppp
                     std::shared_ptr<Executors::Awaitable> awaitable = std::move(NetstackExitAwaitable);
                     NetstackExitAwaitable.reset();
 
-                    if (NULL != awaitable)
+                    if (NULLPTR != awaitable)
                     {
                         awaitable->Processed();
                     }
@@ -715,14 +715,14 @@ namespace ppp
         std::shared_ptr<boost::asio::io_context> Executors::SelectScheduler(ppp::threading::Executors::StrandPtr& strand) noexcept
         {
             std::shared_ptr<boost::asio::io_context> context = GetScheduler();
-            if (NULL == context)
+            if (NULLPTR == context)
             {
                 context = ppp::threading::Executors::GetExecutor();
             }
             else
             {
                 strand = make_shared_object<Strand>(boost::asio::make_strand(*context));
-                if (NULL == strand)
+                if (NULLPTR == strand)
                 {
                     context = ppp::threading::Executors::GetExecutor();
                 }

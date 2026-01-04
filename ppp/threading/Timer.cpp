@@ -15,7 +15,7 @@ namespace ppp {
             , _interval(0)
             , _context(context) {
 
-            if (NULL == context) {
+            if (NULLPTR == context) {
                 throw std::runtime_error("An NullReferences form of the context is not allowed.");
             }
         }
@@ -27,7 +27,7 @@ namespace ppp {
         void Timer::Finalize() noexcept {
             _disposed_ = true;
             Stop();
-            TickEvent.reset();
+            TickEvent = NULLPTR;
         }
 
         void Timer::OnTick(TickEventArgs& e) noexcept {
@@ -60,7 +60,7 @@ namespace ppp {
             }
 
             std::shared_ptr<boost::asio::deadline_timer> t = _deadline_timer;
-            if (NULL == t) {
+            if (NULLPTR == t) {
                 return false;
             }
             else {
@@ -91,8 +91,8 @@ namespace ppp {
             }
 
             _last = 0;
-            _deadline_timer = NULL;
-            return NULL != t;
+            _deadline_timer = NULLPTR;
+            return NULLPTR != t;
         }
 
         void Timer::Dispose() noexcept {
@@ -121,7 +121,7 @@ namespace ppp {
         }
 
         bool Timer::IsEnabled() noexcept {
-            return NULL != _deadline_timer;
+            return NULLPTR != _deadline_timer;
         }
 
         bool Timer::SetEnabled(bool value) noexcept {
@@ -164,12 +164,12 @@ namespace ppp {
         }
 
         std::shared_ptr<Timer> Timer::Timeout(const std::shared_ptr<boost::asio::io_context>& context, int milliseconds, const TimeoutEventHandler& handler) noexcept {
-            if (NULL == handler) {
-                return NULL;
+            if (NULLPTR == handler) {
+                return NULLPTR;
             }
 
-            if (NULL == context) {
-                return NULL;
+            if (NULLPTR == context) {
+                return NULLPTR;
             }
 
             if (milliseconds < 1) {
@@ -177,8 +177,8 @@ namespace ppp {
             }
 
             std::shared_ptr<Timer> t = make_shared_object<Timer>(context);
-            if (NULL == t) {
-                return NULL;
+            if (NULLPTR == t) {
+                return NULLPTR;
             }
 
             t->TickEvent = 
@@ -194,7 +194,7 @@ namespace ppp {
             }
             else {
                 t->Dispose();
-                return NULL;
+                return NULLPTR;
             }
         }
 
@@ -208,7 +208,7 @@ namespace ppp {
                 make_shared_object<boost::asio::deadline_timer>(*strand) : 
                 make_shared_object<boost::asio::deadline_timer>(y.GetContext());
 
-            if (NULL == deadlineTimer) {
+            if (NULLPTR == deadlineTimer) {
                 return false;
             }
             

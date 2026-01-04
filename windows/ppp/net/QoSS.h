@@ -21,7 +21,7 @@ namespace ppp
 
         private:
             int                                     fd_ = -1;
-            void*                                   h_  = NULL;
+            void*                                   h_  = NULLPTR;
             DWORD                                   f_  = 0;
         };
     }

@@ -188,12 +188,12 @@ namespace ppp {
                         while (bytes_transferred > 0) {
                             const std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = owner_->BufferAllocator;
                             const std::shared_ptr<IPFrame> response_packet = IPFrame::Parse(allocator, owner_->buffer_.get(), static_cast<int>(bytes_transferred));
-                            if (NULL == response_packet) {
+                            if (NULLPTR == response_packet) {
                                 break;
                             }
 
                             const std::shared_ptr<IcmpFrame> response_frame = IcmpFrame::Parse(response_packet.get());
-                            if (NULL == response_frame) {
+                            if (NULLPTR == response_frame) {
                                 break;
                             }
 
@@ -203,19 +203,19 @@ namespace ppp {
                             }
                             elif(response_frame->Type == IcmpType::ICMP_TE) { /* ICMP_TIME_EXCEEDED */
                                 std::shared_ptr<BufferSegment> payload = response_frame->Payload;
-                                if (NULL == payload) {
+                                if (NULLPTR == payload) {
                                     break;
                                 }
 
                                 const std::shared_ptr<IPFrame> request_packet = IPFrame::Parse(allocator, payload->Buffer.get(), payload->Length);
-                                if (NULL == request_packet) {
+                                if (NULLPTR == request_packet) {
                                     break;
                                 }
 
                                 key_frame = IcmpFrame::Parse(request_packet.get());
                             }
 
-                            if (NULL != key_frame) {
+                            if (NULLPTR != key_frame) {
                                 UInt32 request_identification = MAKE_DWORD(key_frame->Sequence, key_frame->Identification);
                                 if (request_identification == this->identification_) {
                                     Replay(response_frame->Source, response_frame->Ttl, response_frame->Type);
@@ -244,7 +244,7 @@ namespace ppp {
                         response = InternetControlMessageProtocol::TE(request_.packet, request_.frame, source_ip, allocator);
                     }
 
-                    if (NULL != response) {
+                    if (NULLPTR != response) {
                         owner_->Output(response.get(), destinationEP_);
                     }
 
@@ -254,12 +254,12 @@ namespace ppp {
                     std::shared_ptr<Timer> timeout = std::move(timeout_);
                     timeout_.reset();
 
-                    if (NULL != timeout) {
+                    if (NULLPTR != timeout) {
                         timeout->Dispose();
                     }
 
                     Socket::Closesocket(socket_);
-                    if (std::shared_ptr<InternetControlMessageProtocol> owner = owner_;  NULL != owner_) {
+                    if (std::shared_ptr<InternetControlMessageProtocol> owner = owner_;  NULLPTR != owner_) {
                         Dictionary::TryRemove(owner->timeouts_, this);
                     }
 
@@ -403,8 +403,8 @@ namespace ppp {
 
             std::shared_ptr<IPFrame> InternetControlMessageProtocol::ER(const std::shared_ptr<IPFrame>& packet, const std::shared_ptr<IcmpFrame>& frame, int ttl, const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator) noexcept {
                 std::shared_ptr<IcmpFrame> e = make_shared_object<IcmpFrame>();
-                if (NULL == e) {
-                    return NULL;
+                if (NULLPTR == e) {
+                    return NULLPTR;
                 }
 
                 e->AddressesFamily = frame->AddressesFamily;
@@ -422,8 +422,8 @@ namespace ppp {
 
             std::shared_ptr<IPFrame> InternetControlMessageProtocol::TE(const std::shared_ptr<IPFrame>& packet, const std::shared_ptr<IcmpFrame>& frame, UInt32 source, const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator) noexcept {
                 std::shared_ptr<IcmpFrame> e = make_shared_object<IcmpFrame>();
-                if (NULL == e) {
-                    return NULL;
+                if (NULLPTR == e) {
+                    return NULLPTR;
                 }
 
                 e->AddressesFamily = frame->AddressesFamily;

@@ -21,8 +21,8 @@ namespace ppp
             void                        Release() noexcept;
 
         private:
-            std::atomic<void*>          m_phQuery   = NULL;
-            std::atomic<void*>          m_phCounter = NULL;
+            std::atomic<void*>          m_phQuery   = NULLPTR;
+            std::atomic<void*>          m_phCounter = NULLPTR;
         };
     }
 }

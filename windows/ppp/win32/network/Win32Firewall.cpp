@@ -29,7 +29,7 @@ namespace ppp
                 }
 
                 CComPtr<INetFwMgr> pNetFwMgr;
-                HRESULT hr = CoCreateInstance(__uuidof(NetFwMgr), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwMgr), (void**)&pNetFwMgr);
+                HRESULT hr = CoCreateInstance(__uuidof(NetFwMgr), NULLPTR, CLSCTX_INPROC_SERVER, __uuidof(INetFwMgr), (void**)&pNetFwMgr);
                 if (FAILED(hr))
                 {
                     return false;
@@ -43,26 +43,26 @@ namespace ppp
                 }
 
                 CComPtr<INetFwAuthorizedApplication> pApp;
-                hr = CoCreateInstance(__uuidof(NetFwAuthorizedApplication), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwAuthorizedApplication), (void**)&pApp);
+                hr = CoCreateInstance(__uuidof(NetFwAuthorizedApplication), NULLPTR, CLSCTX_INPROC_SERVER, __uuidof(INetFwAuthorizedApplication), (void**)&pApp);
                 if (FAILED(hr))
                 {
                     return false;
                 }
 
-                // ÔÚÀýÍâÁÐ±íÀï£¬³ÌÐòÏÔÊ¾µÄÃû³Æ
+                // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð±ï¿½ï¿½ï£¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                 BSTR bstrName = SysAllocString(name);
                 pApp->put_Name(bstrName);
                 SysFreeString(bstrName);
 
-                // ³ÌÐòµÄÂ·¾¶¼°ÎÄ¼þÃû
+                // ï¿½ï¿½ï¿½ï¿½ï¿½Â·ï¿½ï¿½ï¿½ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½
                 BSTR bstrExecutablePath = SysAllocString(executablePath);
                 pApp->put_ProcessImageFileName(bstrExecutablePath);
                 SysFreeString(bstrExecutablePath);
 
-                // ÊÇ·ñÆôÓÃ¸Ã¹æÔò
+                // ï¿½Ç·ï¿½ï¿½ï¿½ï¿½Ã¸Ã¹ï¿½ï¿½ï¿½
                 pApp->put_Enabled(VARIANT_TRUE);
 
-                // ¼ÓÈëµ½·À»ðÇ½µÄ¹ÜÀí²ßÂÔ
+                // ï¿½ï¿½ï¿½ëµ½ï¿½ï¿½ï¿½ï¿½Ç½ï¿½Ä¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                 CComPtr<INetFwProfile> pNetFwProfile;
                 hr = pNetFwPolicy->GetProfileByType(netFwType, &pNetFwProfile);
                 if (FAILED(hr))
@@ -89,16 +89,16 @@ namespace ppp
             {
                 HRESULT hr = S_OK;
 
-                // ´´½¨NetFwPolicy2¶ÔÏó
-                INetFwPolicy2* pPolicy = NULL;
-                hr = CoCreateInstance(__uuidof(NetFwPolicy2), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwPolicy2), (void**)&pPolicy);
+                // ï¿½ï¿½ï¿½ï¿½NetFwPolicy2ï¿½ï¿½ï¿½ï¿½
+                INetFwPolicy2* pPolicy = NULLPTR;
+                hr = CoCreateInstance(__uuidof(NetFwPolicy2), NULLPTR, CLSCTX_INPROC_SERVER, __uuidof(INetFwPolicy2), (void**)&pPolicy);
                 if (FAILED(hr))
                 {
                     return false;
                 }
 
-                // »ñÈ¡INetFwRules¶ÔÏó
-                INetFwRules* pRules = NULL;
+                // ï¿½ï¿½È¡INetFwRulesï¿½ï¿½ï¿½ï¿½
+                INetFwRules* pRules = NULLPTR;
                 hr = pPolicy->get_Rules(&pRules);
                 if (FAILED(hr))
                 {
@@ -106,9 +106,9 @@ namespace ppp
                     return false;
                 }
 
-                // ´´½¨¹æÔò¶ÔÏó
-                INetFwRule* pRule = NULL;
-                hr = CoCreateInstance(__uuidof(NetFwRule), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwRule), (void**)&pRule);
+                // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+                INetFwRule* pRule = NULLPTR;
+                hr = CoCreateInstance(__uuidof(NetFwRule), NULLPTR, CLSCTX_INPROC_SERVER, __uuidof(INetFwRule), (void**)&pRule);
                 if (FAILED(hr))
                 {
                     pRules->Release();
@@ -116,7 +116,7 @@ namespace ppp
                     return false;
                 }
 
-                // ÉèÖÃ¹æÔòÊôÐÔ
+                // ï¿½ï¿½ï¿½Ã¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                 _bstr_t bstrName(name);
                 _bstr_t bstrExecutablePath(executablePath);
 
@@ -174,9 +174,9 @@ namespace ppp
                     return false;
                 }
 
-                // ¼ì²éÊÇ·ñÒÑ´æÔÚÍ¬Ãû¹æÔò
+                // ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½Ñ´ï¿½ï¿½ï¿½Í¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                 VARIANT_BOOL bFound = VARIANT_FALSE;
-                IUnknown* pEnumeratorUnk = NULL;
+                IUnknown* pEnumeratorUnk = NULLPTR;
                 hr = pRules->get__NewEnum(&pEnumeratorUnk);
                 if (FAILED(hr))
                 {
@@ -186,7 +186,7 @@ namespace ppp
                     return false;
                 }
 
-                IEnumVARIANT* pEnumerator = NULL;
+                IEnumVARIANT* pEnumerator = NULLPTR;
                 hr = pEnumeratorUnk->QueryInterface(__uuidof(IEnumVARIANT), (void**)&pEnumerator);
                 pEnumeratorUnk->Release();
                 if (FAILED(hr))
@@ -202,7 +202,7 @@ namespace ppp
                 while (pEnumerator->Next(1, &var, &cElems) == S_OK)
                 {
                     IUnknown* pUnknown = var.punkVal;
-                    INetFwRule* pExistingRule = NULL;
+                    INetFwRule* pExistingRule = NULLPTR;
                     hr = pUnknown->QueryInterface(__uuidof(INetFwRule), (void**)&pExistingRule);
                     if (hr == S_OK)
                     {
@@ -232,7 +232,7 @@ namespace ppp
                     VariantClear(&var);
                 }
 
-                // Èç¹ûÒÑ´æÔÚÍ¬Ãû¹æÔò£¬ÔòÊÍ·Å×ÊÔ´²¢·µ»Ø
+                // ï¿½ï¿½ï¿½ï¿½Ñ´ï¿½ï¿½ï¿½Í¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í·ï¿½ï¿½ï¿½Ô´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                 pEnumerator->Release();
                 if (bFound)
                 {
@@ -242,7 +242,7 @@ namespace ppp
                     return true;
                 }
 
-                // Ìí¼Ó¹æÔò
+                // ï¿½ï¿½ï¿½Ó¹ï¿½ï¿½ï¿½
                 hr = pRules->Add(pRule);
                 if (FAILED(hr))
                 {
@@ -252,7 +252,7 @@ namespace ppp
                     return false;
                 }
 
-                // ÊÍ·Å×ÊÔ´
+                // ï¿½Í·ï¿½ï¿½ï¿½Ô´
                 pRule->Release();
                 pRules->Release();
                 pPolicy->Release();
@@ -275,12 +275,12 @@ namespace ppp
 
             static bool FW_require(const char* name, const char* executablePath, NET_FW_PROFILE_TYPE netFwType, bool(*f)(_bstr_t&, _bstr_t&, NET_FW_PROFILE_TYPE)) noexcept
             {
-                if (NULL == name)
+                if (NULLPTR == name)
                 {
                     name = "";
                 }
 
-                if (NULL == executablePath)
+                if (NULLPTR == executablePath)
                 {
                     executablePath = "";
                 }
@@ -293,12 +293,12 @@ namespace ppp
 
             bool Fw::NetFirewallAddApplication(const char* name, const char* executablePath, NetFirewallType netFwType) noexcept
             {
-                NET_FW_PROFILE_TYPE netFwProfileType = NET_FW_PROFILE_DOMAIN; // ³ÇÓòÍøÂç
-                if (netFwType == NetFirewallType_PrivateNetwork)   // ×¨ÓÃÍøÂç
+                NET_FW_PROFILE_TYPE netFwProfileType = NET_FW_PROFILE_DOMAIN; // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+                if (netFwType == NetFirewallType_PrivateNetwork)   // ×¨ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                 {
                     netFwProfileType = NET_FW_PROFILE_STANDARD;
                 }
-                elif(netFwType == NetFirewallType_PublicNetwork) // ¹«¹²ÍøÂç
+                elif(netFwType == NetFirewallType_PublicNetwork) // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                 {
                     netFwProfileType = NET_FW_PROFILE_CURRENT;
                 }

@@ -89,12 +89,12 @@ FILE* stderr = &__sF[2];
 #endif
 #endif
 
-static inline jstring                                                       JNIENV_NewStringUTF(JNIEnv* env, const char* v) noexcept { return NULL != v ? env->NewStringUTF(v) : NULL; }
+static inline jstring                                                       JNIENV_NewStringUTF(JNIEnv* env, const char* v) noexcept { return NULLPTR != v ? env->NewStringUTF(v) : NULLPTR; }
 static std::shared_ptr<ppp::string>                                         JNIENV_GetStringUTFChars(JNIEnv* env, const jstring& v) noexcept {
     std::shared_ptr<ppp::string> result;
-    if (NULL != v) {
-        char* s = (char*)env->GetStringUTFChars(v, NULL);
-        if (NULL != s) {
+    if (NULLPTR != v) {
+        char* s = (char*)env->GetStringUTFChars(v, NULLPTR);
+        if (NULLPTR != s) {
             result =
                 ppp::make_shared_object<ppp::string>(s);
             env->ReleaseStringUTFChars(v, s);
@@ -231,7 +231,7 @@ std::shared_ptr<libopenppp2_application>                                    libo
         libopenppp2_application_domain() noexcept {
             // Run vpn/pppd main loop thread, which is the main thread of the VPN application driver, not the JVM managed thread.
             std::shared_ptr<Executors::Awaitable> awaitable = ppp::make_shared_object<Executors::Awaitable>();
-            if (NULL != awaitable) {
+            if (NULLPTR != awaitable) {
                 std::weak_ptr<Executors::Awaitable> awaitable_weak = awaitable;
                 std::thread(
                     [this, awaitable_weak]() noexcept {
@@ -241,18 +241,18 @@ std::shared_ptr<libopenppp2_application>                                    libo
                         std::shared_ptr<libopenppp2_application> app = ppp::make_shared_object<libopenppp2_application>();
                         app_ = app; 
 
-                        if (NULL != app) {
+                        if (NULLPTR != app) {
                             auto start = 
                                 [app, awaitable_weak](int argc, const char* argv[]) noexcept -> int {
                                     std::shared_ptr<Executors::Awaitable> awaitable = awaitable_weak.lock();
-                                    if (NULL != awaitable) {
+                                    if (NULLPTR != awaitable) {
                                         awaitable->Processed();
                                     }
 
                                     app->DllMain();
                                     return 0;
                                 };
-                            Executors::Run(NULL, start);
+                            Executors::Run(NULLPTR, start);
                         }
                     }).detach();
                 awaitable->Await();
@@ -278,29 +278,29 @@ void                                                                        libo
 
 bool                                                                        libopenppp2_application::Timeout() noexcept {
     std::shared_ptr<boost::asio::io_context> context = Executors::GetDefault();
-    if (NULL == context) {
+    if (NULLPTR == context) {
         return false;
     }
 
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return false;
     }
 
     std::shared_ptr<VEthernetNetworkSwitcher> client = app->client_;
-    if (NULL == client) {
+    if (NULLPTR == client) {
         return false;
     }
 
     std::shared_ptr<Timer> timeout = Timer::Timeout(context, 1000, 
         [](Timer*) noexcept {
             std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-            if (NULL != app) {
+            if (NULLPTR != app) {
                 app->timeout_.reset();
                 libopenppp2_application::Timeout();
             }
         });
-    if (NULL == timeout) {
+    if (NULLPTR == timeout) {
         return false;
     }
 
@@ -325,7 +325,7 @@ bool                                                                        libo
     if (!GetTransmissionStatistics(TransmissionStatistics.incoming_traffic, TransmissionStatistics.outgoing_traffic, TransmissionStatistics.statistics_snapshot)) {
         TransmissionStatistics.incoming_traffic = 0;
         TransmissionStatistics.outgoing_traffic = 0;
-        TransmissionStatistics.statistics_snapshot = NULL;
+        TransmissionStatistics.statistics_snapshot = NULLPTR;
     }
 
     Json::Value json;
@@ -338,7 +338,7 @@ bool                                                                        libo
     }
 
     std::shared_ptr<ppp::string> json_string = ppp::make_shared_object<ppp::string>(JsonAuxiliary::ToStyledString(json));
-    if (NULL == json_string) {
+    if (NULLPTR == json_string) {
         return false;
     }
 
@@ -349,22 +349,22 @@ bool                                                                        libo
 }
 
 bool                                                                        libopenppp2_application::PostJNI(const ppp::function<void(JNIEnv*)>& task) noexcept {
-    if (NULL == task) {
+    if (NULLPTR == task) {
         return false;
     }
 
     std::shared_ptr<VEthernetNetworkSwitcher> client = client_;
-    if (NULL == client) {
+    if (NULLPTR == client) {
         return false;
     }
 
     std::shared_ptr<ppp::net::ProtectorNetwork> protector = client->GetProtectorNetwork();
-    if (NULL == protector) {
+    if (NULLPTR == protector) {
         return false;
     }
 
     std::shared_ptr<boost::asio::io_context> context = protector->GetContext();
-    if (NULL == context) {
+    if (NULLPTR == context) {
         return false;
     }
 
@@ -372,9 +372,9 @@ bool                                                                        libo
     boost::asio::post(*context, 
         [context, protector_weak, task]() noexcept {
             std::shared_ptr<ppp::net::ProtectorNetwork> protector = protector_weak.lock();
-            if (NULL != protector) {
+            if (NULLPTR != protector) {
                 JNIEnv* env = protector->GetEnvironment();
-                if (NULL != env) {
+                if (NULLPTR != env) {
                     task(env);
                 }
             }
@@ -394,21 +394,21 @@ bool                                                                        libo
 //  }
 bool                                                                        libopenppp2_application::StatisticsJNI(JNIEnv* env, const char* json) noexcept {
     jclass clazz = env->FindClass(LIBOPENPPP2_CLASSNAME);
-    if (NULL != env->ExceptionOccurred()) {
+    if (NULLPTR != env->ExceptionOccurred()) {
         env->ExceptionClear();
     }
 
-    if (NULL == clazz) {
+    if (NULLPTR == clazz) {
         return false;
     }
 
     jmethodID method = env->GetStaticMethodID(clazz, "statistics", "(Ljava/lang/String;)V");
-    if (NULL != env->ExceptionOccurred()) {
+    if (NULLPTR != env->ExceptionOccurred()) {
         env->ExceptionClear();
     }
 
     bool result = false;
-    if (NULL != method) {
+    if (NULLPTR != method) {
         jstring json_string = JNIENV_NewStringUTF(env, json);
         env->CallStaticVoidMethod(clazz, method, json_string);
 
@@ -420,7 +420,7 @@ bool                                                                        libo
             result = true;
         }
 
-        if (NULL != json_string) {
+        if (NULLPTR != json_string) {
             env->DeleteLocalRef(json_string);
         }
     }
@@ -431,16 +431,16 @@ bool                                                                        libo
 
 bool                                                                        libopenppp2_application::GetTransmissionStatistics(uint64_t& incoming_traffic, uint64_t& outgoing_traffic, std::shared_ptr<ppp::transmissions::ITransmissionStatistics>& statistics_snapshot) noexcept {
     // Initialization requires the initial value of the FAR outgoing parameter.
-    statistics_snapshot = NULL;
+    statistics_snapshot = NULLPTR;
     incoming_traffic = 0;
     outgoing_traffic = 0;
 
     // The transport layer network statistics are obtained only when the current client switch or server switch is not released.
     std::shared_ptr<VEthernetNetworkSwitcher> client = client_;
-    if (NULL != client && !client->IsDisposed()) {
+    if (NULLPTR != client && !client->IsDisposed()) {
         // Obtain transport layer traffic statistics from the client switch or server switch management object.
         std::shared_ptr<ppp::transmissions::ITransmissionStatistics>transmission_statistics = client->GetStatistics();
-        if (NULL != transmission_statistics) {
+        if (NULLPTR != transmission_statistics) {
             return ppp::transmissions::ITransmissionStatistics::GetTransmissionStatistics(transmission_statistics, transmission_statistics_, incoming_traffic, outgoing_traffic, statistics_snapshot);
         }
     }
@@ -450,7 +450,7 @@ bool                                                                        libo
 
 bool                                                                        libopenppp2_application::Post(int sequence) noexcept {
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return false;
     }
 
@@ -463,17 +463,17 @@ bool                                                                        libo
 
 int                                                                         libopenppp2_application::Invoke(const ppp::function<int()>& task) noexcept {
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return LIBOPENPPP2_ERROR_APPLICATIION_UNINITIALIZED;
     }
 
     std::shared_ptr<boost::asio::io_context> context = Executors::GetDefault();
-    if (NULL == context) {
+    if (NULLPTR == context) {
         return LIBOPENPPP2_ERROR_VETHERNET_PPPD_THREAD_NOT_RUNING;
     }
 
     std::shared_ptr<Executors::Awaitable> awaitable = ppp::make_shared_object<Executors::Awaitable>();
-    if (NULL == awaitable) {
+    if (NULLPTR == awaitable) {
         return LIBOPENPPP2_ERROR_ALLOCATED_MEMORY;
     }
 
@@ -495,12 +495,12 @@ int                                                                         libo
 bool                                                                        libopenppp2_application::Release() noexcept {
     bool any = false;
     std::shared_ptr<Timer> timeout = std::move(timeout_); 
-    if (NULL != timeout) {
+    if (NULLPTR != timeout) {
         timeout->Dispose();
     }
     
     std::shared_ptr<VEthernetNetworkSwitcher> client = std::move(client_); 
-    if (NULL != client) {
+    if (NULLPTR != client) {
         any = true;
         client->Dispose();
     }
@@ -518,20 +518,20 @@ bool                                                                        libo
 
 bool                                                                        libopenppp2_application::ExecJNI(JNIEnv* env, const char* method_name, int param) noexcept {
     jclass clazz = env->FindClass(LIBOPENPPP2_CLASSNAME);
-    if (NULL != env->ExceptionOccurred()) {
+    if (NULLPTR != env->ExceptionOccurred()) {
         env->ExceptionClear();
     }
 
-    if (NULL == clazz) {
+    if (NULLPTR == clazz) {
         return false;
     }
 
     jboolean result = false;
     jmethodID method = env->GetStaticMethodID(clazz, method_name, "(I)Z");
-    if (NULL != env->ExceptionOccurred()) {
+    if (NULLPTR != env->ExceptionOccurred()) {
         env->ExceptionClear();
     }
-    else if (NULL != method) {
+    else if (NULLPTR != method) {
         result = env->CallStaticBooleanMethod(clazz, method, (jint)param);
         if (env->ExceptionCheck()) {
             env->ExceptionDescribe();
@@ -572,17 +572,17 @@ static int                                                                  libo
     using NetworkState = VEthernetExchanger::NetworkState;
 
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return LIBOPENPPP2_LINK_STATE_APPLICATIION_UNINITIALIZED;
     }
 
     std::shared_ptr<VEthernetNetworkSwitcher> client = app->client_;
-    if (NULL == client) {
+    if (NULLPTR == client) {
         return LIBOPENPPP2_LINK_STATE_CLIENT_UNINITIALIZED;
     }
 
     std::shared_ptr<VEthernetExchanger> exchanger = client->GetExchanger();
-    if (NULL == exchanger) {
+    if (NULLPTR == exchanger) {
         return LIBOPENPPP2_LINK_STATE_EXCHANGE_UNINITIALIZED;
     }
 
@@ -602,17 +602,17 @@ static int                                                                  libo
 
 static int                                                                  libopenppp2_get_aggligator_state() noexcept {
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return LIBOPENPPP2_AGGLIGATOR_STATE_UNKNOWN;
     }
 
     std::shared_ptr<VEthernetNetworkSwitcher> client = app->client_;
-    if (NULL == client) {
+    if (NULLPTR == client) {
         return LIBOPENPPP2_AGGLIGATOR_STATE_UNKNOWN;
     }
 
     std::shared_ptr<aggligator::aggligator> aggligator = client->GetAggligator();
-    if (NULL == aggligator) {
+    if (NULLPTR == aggligator) {
         return LIBOPENPPP2_AGGLIGATOR_STATE_NONE;
     }
 
@@ -621,7 +621,7 @@ static int                                                                  libo
 
 static int64_t                                                              libopenppp2_duration_time() noexcept {
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return -1;
     }
 
@@ -631,13 +631,13 @@ static int64_t                                                              libo
 
 static std::shared_ptr<ppp::string>                                         libopenppp2_get_app_configuration() noexcept {
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
-        return NULL;
+    if (NULLPTR == app) {
+        return NULLPTR;
     }
 
     std::shared_ptr<AppConfiguration> configuration = app->configuration_;
-    if (NULL == configuration) {
-        return NULL;
+    if (NULLPTR == configuration) {
+        return NULLPTR;
     }
 
     return ppp::make_shared_object<ppp::string>(configuration->ToString());
@@ -645,23 +645,23 @@ static std::shared_ptr<ppp::string>                                         libo
 
 static std::shared_ptr<ppp::string>                                         libopenppp2_get_bypass_ip_list() noexcept {
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
-        return NULL;
+    if (NULLPTR == app) {
+        return NULLPTR;
     }
 
     std::shared_ptr<VEthernetNetworkSwitcher> client = app->client_;
-    if (NULL == client) {
+    if (NULLPTR == client) {
         return app->bypass_ip_list_;
     }
 
     auto fib = client->GetRib();
-    if (NULL == fib) {
-        return NULL;
+    if (NULLPTR == fib) {
+        return NULLPTR;
     }
 
     std::shared_ptr<ppp::string> bypass_ip_list = ppp::make_shared_object<ppp::string>();
-    if (NULL == bypass_ip_list) {
-        return NULL;
+    if (NULLPTR == bypass_ip_list) {
+        return NULLPTR;
     }
 
     auto& entriess = fib->GetAllRoutes();
@@ -761,8 +761,8 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1app_1co
             return LIBOPENPPP2_ERROR_SUCCESS;
         });
 
-    if (NULL == json) {
-        return JNIENV_NewStringUTF(env, NULL);
+    if (NULLPTR == json) {
+        return JNIENV_NewStringUTF(env, NULLPTR);
     }
 
     return JNIENV_NewStringUTF(env, json->data());
@@ -775,12 +775,12 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_set_1app_1confi
     __LIBOPENPPP2_MAIN__;
 
     std::shared_ptr<ppp::string> json_string = JNIENV_GetStringUTFChars(env, configurations);
-    if (NULL == json_string || json_string->empty()) {
+    if (NULLPTR == json_string || json_string->empty()) {
         return LIBOPENPPP2_ERROR_ARG_CONFIGURATION_STRING_IS_NULL_OR_EMPTY;
     }
 
     std::shared_ptr<AppConfiguration> config = ppp::make_shared_object<AppConfiguration>();
-    if (NULL == config) {
+    if (NULLPTR == config) {
         return LIBOPENPPP2_ERROR_NEW_CONFIGURATION_FAIL;
     }
 
@@ -795,7 +795,7 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_set_1app_1confi
     }
 
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return LIBOPENPPP2_ERROR_APPLICATIION_UNINITIALIZED;
     }
 
@@ -814,7 +814,7 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_set_1app_1confi
 // public native bool set_default_flash_type_of_service(bool flash_mode)
 __LIBOPENPPP2__(jboolean) Java_supersocksr_ppp_android_c_libopenppp2_set_1default_1flash_1type_1of_1service(JNIEnv* env, jobject* this_, jboolean flash_mode) noexcept {
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return false;
     }
 
@@ -827,7 +827,7 @@ __LIBOPENPPP2__(jboolean) Java_supersocksr_ppp_android_c_libopenppp2_set_1defaul
 // public native int is_default_flash_type_of_service()
 __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_is_1default_1flash_1type_1of_1service(JNIEnv* env, jobject* this_) noexcept {
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return -1;
     }
 
@@ -854,13 +854,13 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_set_1network_1i
 
     // 10.0.0.2
     std::shared_ptr<ppp::string> ip_string = JNIENV_GetStringUTFChars(env, ip);
-    if (NULL == ip_string || ip_string->empty()) {
+    if (NULLPTR == ip_string || ip_string->empty()) {
         return LIBOPENPPP2_ERROR_ARG_IP_IS_NULL_OR_EMPTY;
     }
 
     // 255.255.255.0
     std::shared_ptr<ppp::string> mask_string = JNIENV_GetStringUTFChars(env, mask);
-    if (NULL == mask_string || mask_string->empty()) {
+    if (NULLPTR == mask_string || mask_string->empty()) {
         return LIBOPENPPP2_ERROR_ARG_MASK_IS_NULL_OR_EMPTY;
     }
 
@@ -884,7 +884,7 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_set_1network_1i
     }
 
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return LIBOPENPPP2_ERROR_APPLICATIION_UNINITIALIZED;
     }
     else {
@@ -906,7 +906,7 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_set_1network_1i
     ip_address = Ipep::FixedIPAddress(ip_address, gw_address, mask_address);
 
     std::shared_ptr<libopenppp2_network_interface> network_interface = ppp::make_shared_object<libopenppp2_network_interface>();
-    if (NULL == network_interface) {
+    if (NULLPTR == network_interface) {
         return LIBOPENPPP2_ERROR_NEW_NETWORKINTERFACE_FAIL;
     }
 
@@ -933,7 +933,7 @@ __LIBOPENPPP2__(jboolean) Java_supersocksr_ppp_android_c_libopenppp2_set_1bypass
     __LIBOPENPPP2_MAIN__;
     
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return false;
     }
 
@@ -953,7 +953,7 @@ __LIBOPENPPP2__(jboolean) Java_supersocksr_ppp_android_c_libopenppp2_set_1dns_1r
     __LIBOPENPPP2_MAIN__;
 
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return false;
     }
 
@@ -973,7 +973,7 @@ __LIBOPENPPP2__(jboolean) Java_supersocksr_ppp_android_c_libopenppp2_set_1dns_1b
     __LIBOPENPPP2_MAIN__;
 
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
+    if (NULLPTR == app) {
         return false;
     }
 
@@ -982,7 +982,7 @@ __LIBOPENPPP2__(jboolean) Java_supersocksr_ppp_android_c_libopenppp2_set_1dns_1b
     }
 
     std::shared_ptr<ppp::string> dns_string = JNIENV_GetStringUTFChars(env, dns);
-    if (NULL == dns_string) {
+    if (NULLPTR == dns_string) {
         return false;
     }
 
@@ -998,7 +998,7 @@ __LIBOPENPPP2__(jboolean) Java_supersocksr_ppp_android_c_libopenppp2_set_1dns_1b
     }
 
     auto addresses = ppp::make_shared_object<ppp::net::asio::vdns::IPEndPointVector>();
-    if (NULL == addresses) {
+    if (NULLPTR == addresses) {
         return false;
     }
 
@@ -1025,8 +1025,8 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1bypass_
             return LIBOPENPPP2_ERROR_SUCCESS;
         });
 
-    if (NULL == bypass_ip_list) {
-        return JNIENV_NewStringUTF(env, NULL);
+    if (NULLPTR == bypass_ip_list) {
+        return JNIENV_NewStringUTF(env, NULLPTR);
     }
 
     return JNIENV_NewStringUTF(env, bypass_ip_list->data());
@@ -1049,15 +1049,15 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1network
     __LIBOPENPPP2_MAIN__;
 
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-    if (NULL == app) {
-        return JNIENV_NewStringUTF(env, NULL);
+    if (NULLPTR == app) {
+        return JNIENV_NewStringUTF(env, NULLPTR);
     }
 
     std::shared_ptr<ppp::string> json_string;
     libopenppp2_application::Invoke(
         [&app, &json_string]() noexcept {
             std::shared_ptr<libopenppp2_network_interface> network_interface = app->network_interface_;
-            if (NULL != network_interface) {
+            if (NULLPTR != network_interface) {
                 Json::Value json;
                 json["block-quic"] = network_interface->BlockQUIC;
                 json["tun"] = network_interface->VTun;
@@ -1074,8 +1074,8 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1network
             return LIBOPENPPP2_ERROR_SUCCESS;
         });
 
-    if (NULL == json_string) {
-        return JNIENV_NewStringUTF(env, NULL);
+    if (NULLPTR == json_string) {
+        return JNIENV_NewStringUTF(env, NULLPTR);
     }
 
     return JNIENV_NewStringUTF(env, json_string->data());
@@ -1094,7 +1094,7 @@ static std::shared_ptr<ITap>                                                    
 
     auto tun_fd = network_interface->VTun;
     if (tun_fd == -1) {
-        return NULL;
+        return NULLPTR;
     }
 
     uint32_t ip = IPEndPoint::ToEndPoint(boost::asio::ip::tcp::endpoint(network_interface->IPAddress, IPEndPoint::MinPort)).GetAddress();
@@ -1121,7 +1121,7 @@ static int                                                                      
     int max_concurrent = ppp::GetProcesserCount();
     
     client = ppp::make_shared_object<VEthernetNetworkSwitcher>(context, lwip, network_interface->VNet, max_concurrent > 1, configuration);
-    if (NULL == client) {
+    if (NULLPTR == client) {
         return LIBOPENPPP2_ERROR_ALLOCATED_MEMORY;
     }
     else {
@@ -1130,13 +1130,13 @@ static int                                                                      
     }
 
     std::shared_ptr<ppp::string> bypass_ip_list = std::move(app->bypass_ip_list_); 
-    if (NULL != bypass_ip_list) {
+    if (NULLPTR != bypass_ip_list) {
         app->bypass_ip_list_.reset();
         client->SetBypassIpList(std::move(*bypass_ip_list));
     }
     
     std::shared_ptr<ppp::string> dns_rules_list = std::move(app->dns_rules_list_); 
-    if (NULL != dns_rules_list) {
+    if (NULLPTR != dns_rules_list) {
         app->dns_rules_list_.reset();
         client->LoadAllDnsRules(std::move(*dns_rules_list), false);
     }
@@ -1147,7 +1147,7 @@ static int                                                                      
     }
 
     VEthernetNetworkSwitcher::ProtectorNetworkPtr protector = client->GetProtectorNetwork();
-    if (NULL == protector) {
+    if (NULLPTR == protector) {
         return LIBOPENPPP2_ERROR_UNKNOWN;
     }
 
@@ -1159,23 +1159,23 @@ static int                                                                      
 static int                                                                          libopenppp2_try_open_ethernet_switcher(std::shared_ptr<VEthernetNetworkSwitcher>& ethernet) noexcept {
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
     std::shared_ptr<VEthernetNetworkSwitcher> client = app->client_;
-    if (NULL != client) {
+    if (NULLPTR != client) {
         return LIBOPENPPP2_ERROR_IT_IS_RUNING;
     }
 
     std::shared_ptr<libopenppp2_network_interface> network_interface = app->network_interface_;
-    if (NULL == network_interface) {
+    if (NULLPTR == network_interface) {
         return LIBOPENPPP2_ERROR_NETWORK_INTERFACE_NOT_CONFIGURED;
     }
 
     std::shared_ptr<AppConfiguration> configuration = app->configuration_;
-    if (NULL == configuration) {
+    if (NULLPTR == configuration) {
         return LIBOPENPPP2_ERROR_APP_CONFIGURATION_NOT_CONFIGURED;
     }
 
     std::shared_ptr<boost::asio::io_context> context = Executors::GetDefault();
     std::shared_ptr<ITap> tap = libopenppp2_from_tuntap_driver_new(context, network_interface);
-    if (NULL == tap) {
+    if (NULLPTR == tap) {
         return LIBOPENPPP2_ERROR_OPEN_TUNTAP_FAIL;
     }
 
@@ -1200,7 +1200,7 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_run(JNIEnv* env
     __LIBOPENPPP2_MAIN__;
     
     std::shared_ptr<boost::asio::io_context> context = ppp::make_shared_object<boost::asio::io_context>();
-    if (NULL == context) {
+    if (NULLPTR == context) {
         return LIBOPENPPP2_ERROR_ALLOCATED_MEMORY;
     }
 
@@ -1209,7 +1209,7 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_run(JNIEnv* env
         [&err, env, context, key_]() noexcept {
             auto start = [env, context](const std::shared_ptr<libopenppp2_application>& app) noexcept -> int {
                     std::shared_ptr<VEthernetNetworkSwitcher> ethernet = app->client_;
-                    if (NULL != ethernet) {
+                    if (NULLPTR != ethernet) {
                         return LIBOPENPPP2_ERROR_IT_IS_RUNING;
                     }
 
@@ -1219,7 +1219,7 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_run(JNIEnv* env
                     }
 
                     auto protector = ethernet->GetProtectorNetwork();
-                    if (NULL == protector) {
+                    if (NULLPTR == protector) {
                         return LIBOPENPPP2_ERROR_UNKNOWN;
                     }
 
@@ -1233,7 +1233,7 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_run(JNIEnv* env
             err = libopenppp2_application::Invoke(
                 [start, context, key_]() noexcept -> int {
                     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-                    if (NULL == app) {
+                    if (NULLPTR == app) {
                         return LIBOPENPPP2_ERROR_APPLICATIION_UNINITIALIZED;
                     }
 
@@ -1270,7 +1270,7 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_stop(JNIEnv* en
     return libopenppp2_application::Invoke(
         []() noexcept -> int {
             std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-            if (NULL == app) {
+            if (NULLPTR == app) {
                 return LIBOPENPPP2_ERROR_APPLICATIION_UNINITIALIZED;
             }
 
@@ -1292,7 +1292,7 @@ __LIBOPENPPP2__(void) Java_supersocksr_ppp_android_c_libopenppp2_clear_1configur
     libopenppp2_application::Invoke(
         []() noexcept -> int {
             std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-            if (NULL != app) {
+            if (NULLPTR != app) {
                 app->bypass_ip_list_.reset();
                 app->dns_rules_list_.reset();
                 app->configuration_.reset();
@@ -1312,7 +1312,7 @@ __LIBOPENPPP2__(jboolean) Java_supersocksr_ppp_android_c_libopenppp2_if_1subnet(
     std::shared_ptr<ppp::string> ip1_string = JNIENV_GetStringUTFChars(env, ip1_);
     std::shared_ptr<ppp::string> ip2_string = JNIENV_GetStringUTFChars(env, ip2_);
     std::shared_ptr<ppp::string> mask_string = JNIENV_GetStringUTFChars(env, mask_);
-    if (NULL == ip1_string || NULL == ip2_string || NULL == mask_string) {
+    if (NULLPTR == ip1_string || NULLPTR == ip2_string || NULLPTR == mask_string) {
         return false;
     }
 
@@ -1366,8 +1366,8 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_netmask_1to_1pr
         return -1;
     }
 
-    const char* address_bytes = (char*)env->GetByteArrayElements(address_, NULL);
-    if (NULL == address_bytes) {
+    const char* address_bytes = (char*)env->GetByteArrayElements(address_, NULLPTR);
+    if (NULLPTR == address_bytes) {
         return -1;
     }
 
@@ -1416,11 +1416,11 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1http_1p
     libopenppp2_application::Invoke(
         [&address_string]() noexcept -> int {
             std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-            if (NULL != app) {
+            if (NULLPTR != app) {
                 std::shared_ptr<VEthernetNetworkSwitcher> client = app->client_;
-                if (NULL != client) {
+                if (NULLPTR != client) {
                     std::shared_ptr<VEthernetHttpProxySwitcher> http_proxy = client->GetHttpProxy();
-                    if (NULL != http_proxy) {
+                    if (NULLPTR != http_proxy) {
                         address_string = ppp::make_shared_object<ppp::string>(IPEndPoint::ToEndPoint(http_proxy->GetLocalEndPoint()).ToString());
                     }
                 }
@@ -1429,8 +1429,8 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1http_1p
             return LIBOPENPPP2_ERROR_SUCCESS;
         });
 
-    if (NULL == address_string) {
-        return JNIENV_NewStringUTF(env, NULL);
+    if (NULLPTR == address_string) {
+        return JNIENV_NewStringUTF(env, NULLPTR);
     }
 
     return JNIENV_NewStringUTF(env, address_string->data());
@@ -1446,11 +1446,11 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1socks_1
     libopenppp2_application::Invoke(
         [&address_string]() noexcept -> int {
             std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-            if (NULL != app) {
+            if (NULLPTR != app) {
                 std::shared_ptr<VEthernetNetworkSwitcher> client = app->client_;
-                if (NULL != client) {
+                if (NULLPTR != client) {
                     std::shared_ptr<VEthernetSocksProxySwitcher> socks_proxy = client->GetSocksProxy();
-                    if (NULL != socks_proxy) {
+                    if (NULLPTR != socks_proxy) {
                         address_string = ppp::make_shared_object<ppp::string>(IPEndPoint::ToEndPoint(socks_proxy->GetLocalEndPoint()).ToString());
                     }
                 }
@@ -1459,8 +1459,8 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1socks_1
             return LIBOPENPPP2_ERROR_SUCCESS;
         });
 
-    if (NULL == address_string) {
-        return JNIENV_NewStringUTF(env, NULL);
+    if (NULLPTR == address_string) {
+        return JNIENV_NewStringUTF(env, NULLPTR);
     }
 
     return JNIENV_NewStringUTF(env, address_string->data());
@@ -1479,23 +1479,23 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1etherne
         [&json, default_]() noexcept -> int {
             std::shared_ptr<VirtualEthernetInformation> information;
             std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
-            if (NULL != app) {
+            if (NULLPTR != app) {
                 std::shared_ptr<VEthernetNetworkSwitcher> client = app->client_;
-                if (NULL != client) {
+                if (NULLPTR != client) {
                     std::shared_ptr<VEthernetExchanger> exchanger = client->GetExchanger();
-                    if (NULL != exchanger) {
+                    if (NULLPTR != exchanger) {
                         information = exchanger->GetInformation();
                     }
                 }
             }
 
-            if (NULL == information) {
+            if (NULLPTR == information) {
                 if (!default_) {
                     return LIBOPENPPP2_ERROR_UNKNOWN;
                 }
 
                 information = ppp::make_shared_object<VirtualEthernetInformation>();
-                if (NULL == information) {
+                if (NULLPTR == information) {
                     return LIBOPENPPP2_ERROR_UNKNOWN;
                 }
             }
@@ -1504,8 +1504,8 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1etherne
             return LIBOPENPPP2_ERROR_SUCCESS;
         });
 
-    if (NULL == json) {
-        return JNIENV_NewStringUTF(env, NULL);
+    if (NULLPTR == json) {
+        return JNIENV_NewStringUTF(env, NULLPTR);
     }
 
     return JNIENV_NewStringUTF(env, json->data());
@@ -1520,8 +1520,8 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_link_1of(JNI
     __LIBOPENPPP2_MAIN__;
 
     std::shared_ptr<ppp::string> url_string = JNIENV_GetStringUTFChars(env, url);
-    if (NULL == url_string || url_string->empty()) {
-        return NULL;
+    if (NULLPTR == url_string || url_string->empty()) {
+        return NULLPTR;
     }
 
     ppp::string hostname;
@@ -1533,7 +1533,7 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_link_1of(JNI
 
     ppp::string server = UriAuxiliary::Parse(*url_string, hostname, address, path, port, protocol, &raw, ppp::nullof<YieldContext>());
     if (server.empty()) {
-        return NULL;
+        return NULLPTR;
     }
 
     Json::Value json;
@@ -1568,7 +1568,7 @@ __LIBOPENPPP2__(jboolean) Java_supersocksr_ppp_android_c_libopenppp2_ip_1address
     __LIBOPENPPP2_MAIN__;
 
     std::shared_ptr<ppp::string> address_managed = JNIENV_GetStringUTFChars(env, address_);
-    if (NULL == address_managed || address_managed->empty()) {
+    if (NULLPTR == address_managed || address_managed->empty()) {
         return true;
     }
 
@@ -1592,7 +1592,7 @@ __LIBOPENPPP2__(jboolean) Java_supersocksr_ppp_android_c_libopenppp2_ip_1address
 __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_bytes_1to_1address_1string(JNIEnv* env, jobject this_, jbyteArray address_) {
     __LIBOPENPPP2_MAIN__;
 
-    if (NULL == address_) {
+    if (NULLPTR == address_) {
         return env->NewStringUTF("0.0.0.0");
     }
 
@@ -1601,8 +1601,8 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_bytes_1to_1a
         return env->NewStringUTF("0.0.0.0");
     }
 
-    const char* address_bytes = (char*)env->GetByteArrayElements(address_, NULL);
-    if (NULL == address_bytes) {
+    const char* address_bytes = (char*)env->GetByteArrayElements(address_, NULLPTR);
+    if (NULLPTR == address_bytes) {
         return env->NewStringUTF("0.0.0.0");
     }
 
@@ -1648,20 +1648,20 @@ __LIBOPENPPP2__(jbyteArray) Java_supersocksr_ppp_android_c_libopenppp2_string_1t
     uint8_t bytes[16];
     int af = 0;
 
-    if (NULL == address_managed || address_managed->empty()) {
+    if (NULLPTR == address_managed || address_managed->empty()) {
         *(uint32_t*)bytes = 0;
         af = AF_INET;
     }
     else {
-        const char* address = NULL;
-        if (NULL != address_managed) {
+        const char* address = NULLPTR;
+        if (NULLPTR != address_managed) {
             address = address_managed->data();
         }
 
         boost::system::error_code ec;
         boost::asio::ip::address ip = ppp::StringToAddress(address, ec);
         if (ec) {
-            return NULL;
+            return NULLPTR;
         }
 
         if (ip.is_v4()) {
@@ -1681,12 +1681,12 @@ __LIBOPENPPP2__(jbyteArray) Java_supersocksr_ppp_android_c_libopenppp2_string_1t
         16;
 
     jbyteArray result = env->NewByteArray(result_count);
-    if (NULL == result) {
-        return NULL;
+    if (NULLPTR == result) {
+        return NULLPTR;
     }
 
-    jbyte* p = env->GetByteArrayElements(result, NULL);
-    if (NULL != p) {
+    jbyte* p = env->GetByteArrayElements(result, NULLPTR);
+    if (NULLPTR != p) {
         memcpy(p, bytes, result_count);
 
         env->ReleaseByteArrayElements(result, p, 0);

@@ -101,7 +101,7 @@ namespace ppp {
         }
 
         int TapLinux::OpenDriver(const char* ifrName) noexcept {
-            if (NULL == ifrName || *ifrName == '\x0') {
+            if (NULLPTR == ifrName || *ifrName == '\x0') {
                 ifrName = "tun%d";
             }
 
@@ -317,7 +317,7 @@ namespace ppp {
 
             rt.rt_dst.sa_family = AF_INET;
             if (ifrName.empty()) {
-                rt.rt_dev = NULL;
+                rt.rt_dev = NULLPTR;
             }
             else {
                 rt.rt_dev = (char*)ifrName.data();
@@ -638,7 +638,7 @@ namespace ppp {
         }
 
         bool TapLinux::GetDefaultGateway(char* ifrName, UInt32* address) noexcept {
-            if (NULL == ifrName) {
+            if (NULLPTR == ifrName) {
                 return false;
             }
 
@@ -785,7 +785,7 @@ namespace ppp {
             // Windows virtual nics need to use Event to write to the kernel asynchronously, 
             // Linux virtual nics can directly write to the kernel ::write function,
             // Can reduce a memory allocation and replication, improve throughput efficiency.
-            if (NULL == packet || packet_size < 1) {
+            if (NULLPTR == packet || packet_size < 1) {
                 return false;
             }
 
@@ -808,7 +808,7 @@ namespace ppp {
         }
 
         bool TapLinux::Ssmt(const std::shared_ptr<boost::asio::io_context>& context) noexcept {
-            if (NULL == context) {
+            if (NULLPTR == context) {
                 return false;
             }
 
@@ -823,7 +823,7 @@ namespace ppp {
             }
 
             std::shared_ptr<Byte> buffer = make_shared_alloc<Byte>(ITap::Mtu);
-            if (NULL == buffer) {
+            if (NULLPTR == buffer) {
                 return false;
             }
 
@@ -834,7 +834,7 @@ namespace ppp {
             }
 
             std::shared_ptr<boost::asio::posix::stream_descriptor> sd = make_shared_object<boost::asio::posix::stream_descriptor>(*context, tun);
-            if (NULL == sd) {
+            if (NULLPTR == sd) {
                 ::close(tun);
                 return false;
             }
@@ -892,7 +892,7 @@ namespace ppp {
         }
 
         static bool TUNGETIFFF(const std::shared_ptr<boost::asio::posix::stream_descriptor>& sd, const ppp::function<bool(ifreq&, int)>& predicate) noexcept {
-            if (NULL == sd) {
+            if (NULLPTR == sd) {
                 return false;
             }
 
@@ -967,7 +967,7 @@ namespace ppp {
 
                 if (fails) {
                     ::close(tun);
-                    return NULL;
+                    return NULLPTR;
                 }
             }
 
@@ -976,20 +976,20 @@ namespace ppp {
                 IPEndPoint(mask, IPEndPoint::MinPort).ToAddressString());
             if (!ok) {
                 ::close(tun);
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<TapLinux> tap = make_shared_object<TapLinux>(context, interface_name, reinterpret_cast<void*>(tun), ip, gw, mask, hosted_network);
-            if (NULL == tap) {
+            if (NULLPTR == tap) {
                 ::close(tun);
-                return NULL;
+                return NULLPTR;
             }
 
             tap->promisc_            = promisc;
             tap->dns_addresses_      = dns_addresses;
 
             ITap* my = tap.get(); 
-            if (NULL != my) {
+            if (NULLPTR != my) {
                 my->GetInterfaceIndex() = interface_index;
             }
 
@@ -1003,32 +1003,32 @@ namespace ppp {
         }
 
         std::shared_ptr<TapLinux> TapLinux::Create(const std::shared_ptr<boost::asio::io_context>& context, const ppp::string& dev, uint32_t ip, uint32_t gw, uint32_t mask, bool promisc, bool hosted_network, const ppp::vector<uint32_t>& dns_addresses) noexcept {
-            if (NULL == context) {
-                return NULL;
+            if (NULLPTR == context) {
+                return NULLPTR;
             }
 
             if (dev.empty()) {
-                return NULL;
+                return NULLPTR;
             }
 
             IPEndPoint ipEP(ip, 0);
             if (IPEndPoint::IsInvalid(ipEP)) {
-                return NULL;
+                return NULLPTR;
             }
 
             IPEndPoint gwEP(ip, 0);
             if (IPEndPoint::IsInvalid(gwEP)) {
-                return NULL;
+                return NULLPTR;
             }
 
             IPEndPoint maskEP(ip, 0);
             if (IPEndPoint::IsInvalid(maskEP)) {
-                return NULL;
+                return NULLPTR;
             }
 
             int tun = OpenDriver(dev.data());
             if (tun == -1) {
-                return NULL;
+                return NULLPTR;
             }
 
             // GCC 7.5 compiler BUG, generated code, not split this part of the code into other functions, 
@@ -1042,7 +1042,7 @@ namespace ppp {
         }
 
         static bool DeleteAddAllRoutes(const ppp::function<ppp::string(ppp::net::native::RouteEntry&)>& interface_name, std::shared_ptr<ppp::net::native::RouteInformationTable> rib, bool delete_or_add_operate) noexcept {
-            if (NULL == rib || NULL == interface_name) {
+            if (NULLPTR == rib || NULLPTR == interface_name) {
                 return false;
             }
 
@@ -1061,7 +1061,7 @@ namespace ppp {
         }
 
         static bool DeleteAddAllRoutes2(std::shared_ptr<ppp::net::native::RouteInformationTable> rib, bool delete_or_add_operate) noexcept {
-            if (NULL == rib) {
+            if (NULLPTR == rib) {
                 return false;
             }
 
@@ -1097,8 +1097,8 @@ namespace ppp {
 
         std::shared_ptr<ppp::net::native::RouteInformationTable> TapLinux::FindAllDefaultGatewayRoutes(const ppp::unordered_set<uint32_t>& bypass_gws) noexcept {
             std::shared_ptr<ppp::net::native::RouteInformationTable> rib = make_shared_object<ppp::net::native::RouteInformationTable>();
-            if (NULL == rib) {
-                return NULL;
+            if (NULLPTR == rib) {
+                return NULLPTR;
             }
 
             uint32_t mid = inet_addr("128.0.0.0");
@@ -1136,7 +1136,7 @@ namespace ppp {
                     any |= rib->AddRoute(ip, prefix_mask, gw);
                     return false;
                 });
-            return any ? rib : NULL;
+            return any ? rib : NULLPTR;
         }
     
 #if defined(_ANDROID)
@@ -1183,13 +1183,13 @@ namespace ppp {
         {
             if (!ITAP_FROM_REQUIRED(context, id, tun, address, gw, mask))
             {
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<ppp::tap::TapLinux> linux_tap = make_shared_object<ppp::tap::TapLinux>(context, id, tun, address, gw, mask, hosted_network);
-            if (NULL == linux_tap)
+            if (NULLPTR == linux_tap)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             ppp::string interface_name;

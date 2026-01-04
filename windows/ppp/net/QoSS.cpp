@@ -14,7 +14,7 @@ namespace ppp
     {
         QoSS::QoSS(int fd) noexcept
             : fd_(fd)
-            , h_(NULL)
+            , h_(NULLPTR)
             , f_(NULL)
         {
 
@@ -22,7 +22,7 @@ namespace ppp
 
         QoSS::~QoSS() noexcept
         {
-            if (NULL != h_)
+            if (NULLPTR != h_)
             {
                 if (f_ != 0)
                 {
@@ -37,43 +37,43 @@ namespace ppp
         {
             if (fd == INVALID_SOCKET)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<QoSS> qos = make_shared_object<QoSS>(fd);
-            if (NULL == qos)
+            if (NULLPTR == qos)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             QOS_VERSION ver = { 1, 0 };
             if (!QOSCreateHandle(&ver, &qos->h_))
             {
-                return NULL;
+                return NULLPTR;
             }
 
             if (noaddress)
             {
-                if (!QOSAddSocketToFlow(qos->h_, fd, NULL, QOSTrafficTypeControl, QOS_NON_ADAPTIVE_FLOW, &qos->f_))
+                if (!QOSAddSocketToFlow(qos->h_, fd, NULLPTR, QOSTrafficTypeControl, QOS_NON_ADAPTIVE_FLOW, &qos->f_))
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
             }
             else
             {
                 if (port <= IPEndPoint::MinPort || port > IPEndPoint::MaxPort)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (!host.is_v4() && !host.is_v6())
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (IPEndPoint::IsInvalid(host))
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (host.is_v4())
@@ -85,7 +85,7 @@ namespace ppp
 
                     if (!QOSAddSocketToFlow(qos->h_, fd, reinterpret_cast<sockaddr*>(&in), QOSTrafficTypeControl, QOS_NON_ADAPTIVE_FLOW, &qos->f_))
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
                 }
                 else
@@ -97,7 +97,7 @@ namespace ppp
 
                     if (!QOSAddSocketToFlow(qos->h_, fd, reinterpret_cast<sockaddr*>(&in6), QOSTrafficTypeControl, QOS_NON_ADAPTIVE_FLOW, &qos->f_))
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
                 }
             }
@@ -107,9 +107,9 @@ namespace ppp
 
             // Sets DSCP to the same as Linux
             // This will fail if we're not admin, but we ignore it
-            if (!QOSSetFlow(qos->h_, qos->f_, QOSSetOutgoingDSCPValue, sizeof(DWORD), &dscp, 0, NULL))
+            if (!QOSSetFlow(qos->h_, qos->f_, QOSSetOutgoingDSCPValue, sizeof(DWORD), &dscp, 0, NULLPTR))
             {
-                return NULL;
+                return NULLPTR;
             }
 
             return qos;

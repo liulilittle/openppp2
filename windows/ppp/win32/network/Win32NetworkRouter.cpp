@@ -12,7 +12,7 @@ namespace ppp
             template <typename Loop>
             static int Router_DeleteRoute(const std::shared_ptr<MIB_IPFORWARDTABLE>& table, Loop&& loop) noexcept
             {
-                if (NULL == table)
+                if (NULLPTR == table)
                 {
                     return -1;
                 }
@@ -109,15 +109,15 @@ namespace ppp
 
             std::shared_ptr<MIB_IPFORWARDTABLE> Router::GetIpForwardTable() noexcept
             {
-                PMIB_IPFORWARDTABLE pRouteTable = NULL;
+                PMIB_IPFORWARDTABLE pRouteTable = NULLPTR;
                 DWORD dwSize = 0;
                 DWORD dwErr = ::GetIpForwardTable(pRouteTable, &dwSize, true);
                 if (dwErr == ERROR_INSUFFICIENT_BUFFER)
                 {
                     pRouteTable = (PMIB_IPFORWARDTABLE)Malloc(dwSize);
-                    if (NULL == pRouteTable)
+                    if (NULLPTR == pRouteTable)
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     dwErr = ::GetIpForwardTable(pRouteTable, &dwSize, true);

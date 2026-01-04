@@ -4,17 +4,18 @@
 #include <Ws2spi.h> 
 #include <tchar.h> 
 #include <Iphlpapi.h>
-#include <Sporder.h>      // 定义了WSCWriteProviderOrder函数 
+#include <Sporder.h>      // For WSCWriteProviderOrder function
 #include <wscapi.h>
 
 #include <iostream>
 #include <memory>
 
+#include "PaperAirplaneRoot.h"
 #include "PaperAirplaneLspX.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "Iphlpapi.lib")
-#pragma comment(lib, "Rpcrt4.lib")  // 实现了UuidCreate
+#pragma comment(lib, "Rpcrt4.lib")  // For UuidCreate
 
 namespace ppp
 {
@@ -26,7 +27,7 @@ namespace ppp
             {
                 namespace paper_airplane
                 {
-                    // 要安装的LSP的硬编码，在移除的时候还要使用它 
+                    // Hard-coded GUIDs for LSP to be installed, used when uninstalling
                     static GUID ProviderGuid[] =
                     {
                         GUID({ 0x70b2b755, 0xa09d, 0x4b5d,{ 0xba, 0xda, 0xdb, 0x70, 0xbb, 0x1a, 0xbb, 0x21 } }),
@@ -35,7 +36,7 @@ namespace ppp
 
                     static void FreeProvider(LPWSAPROTOCOL_INFOW pProtoInfo) noexcept
                     {
-                        if (NULL != pProtoInfo)
+                        if (NULLPTR != pProtoInfo)
                         {
                             ::GlobalFree(pProtoInfo);
                         }
@@ -45,19 +46,19 @@ namespace ppp
                     {
                         DWORD dwSize = 0;
                         int nError;
-                        LPWSAPROTOCOL_INFOW pProtoInfo = NULL;
+                        LPWSAPROTOCOL_INFOW pProtoInfo = NULLPTR;
 
-                        // 取得需要的长度 
-                        if (::WSCEnumProtocols(NULL, pProtoInfo, &dwSize, &nError) == SOCKET_ERROR)
+                        // Get required buffer size
+                        if (::WSCEnumProtocols(NULLPTR, pProtoInfo, &dwSize, &nError) == SOCKET_ERROR)
                         {
                             if (nError != WSAENOBUFS)
                             {
-                                return NULL;
+                                return NULLPTR;
                             }
                         }
 
                         pProtoInfo = (LPWSAPROTOCOL_INFOW)::GlobalAlloc(GPTR, dwSize);
-                        *lpnTotalProtocols = ::WSCEnumProtocols(NULL, pProtoInfo, &dwSize, &nError);
+                        *lpnTotalProtocols = ::WSCEnumProtocols(NULLPTR, pProtoInfo, &dwSize, &nError);
 
                         return std::shared_ptr<WSAPROTOCOL_INFOW>(pProtoInfo,
                             [](WSAPROTOCOL_INFOW* p) noexcept
@@ -72,7 +73,7 @@ namespace ppp
                         int nProtocols;
                         DWORD dwLayeredCatalogId;
 
-                        // 根据Guid取得分层协议的目录ID号 
+                        // Get layered protocol's catalog ID by GUID
                         pProtoInfo = GetProvider(&nProtocols);
                         int nError, i;
                         for (i = 0; i < nProtocols; i++)
@@ -86,7 +87,7 @@ namespace ppp
 
                         if (i < nProtocols)
                         {
-                            // 移除协议链 
+                            // Remove protocol chains
                             for (int i = 0; i < nProtocols; i++)
                             {
                                 if ((pProtoInfo.get()[i].ProtocolChain.ChainLen > 1) &&
@@ -95,7 +96,7 @@ namespace ppp
                                     ::WSCDeinstallProvider(&pProtoInfo.get()[i].ProviderId, &nError);
                                 }
                             }
-                            // 移除分层协议 
+                            // Remove layered protocol
                             ::WSCDeinstallProvider(&providerGuid, &nError);
                         }
 
@@ -111,12 +112,12 @@ namespace ppp
                         DWORD            dwOrigCatalogId[3];
                         int nArrayCount = 0;
 
-                        DWORD dwLayeredCatalogId;       // 我们分层协议的目录ID号 
+                        DWORD dwLayeredCatalogId;       // Catalog ID of layered protocol
 
                         int nError;
 
-                        // 找到我们的下层协议，将信息放入数组中 
-                        // 枚举所有服务程序提供者 
+                        // Find base protocols and store their information in array
+                        // Enumerate all installed protocol providers
                         pProtoInfo = GetProvider(&nProtocols);
                         BOOL bFindUdp = FALSE;
                         BOOL bFindTcp = FALSE;
@@ -148,24 +149,24 @@ namespace ppp
                             }
                         }
 
-                        // 安装我们的分层协议，获取一个dwLayeredCatalogId 
-                        // 随便找一个下层协议的结构复制过来即可 
+                        // Install our layered protocol and get dwLayeredCatalogId
+                        // Copy a base protocol structure as template
                         WSAPROTOCOL_INFOW LayeredProtocolInfo;
                         memcpy(&LayeredProtocolInfo, &OriginalProtocolInfo[0], sizeof(WSAPROTOCOL_INFOW));
 
-                        // 修改协议名称，类型，设置PFL_HIDDEN标志 
+                        // Modify protocol name, type, add PFL_HIDDEN flag
                         wcscpy(LayeredProtocolInfo.szProtocol, wszLSPName);
-                        LayeredProtocolInfo.ProtocolChain.ChainLen = LAYERED_PROTOCOL; // 0; 
+                        LayeredProtocolInfo.ProtocolChain.ChainLen = LAYERED_PROTOCOL; // 0;
                         LayeredProtocolInfo.dwProviderFlags |= PFL_HIDDEN;
 
-                        // 安装 
+                        // Install
                         if (::WSCInstallProvider(&providerGuid,
                             pwszPathName, &LayeredProtocolInfo, 1, &nError) == SOCKET_ERROR)
                         {
                             return FALSE;
                         }
 
-                        // 重新枚举协议，获取分层协议的目录ID号 
+                        // Enumerate protocols again to get layered protocol's catalog ID
                         pProtoInfo = GetProvider(&nProtocols);
                         for (int i = 0; i < nProtocols; i++)
                         {
@@ -176,8 +177,8 @@ namespace ppp
                             }
                         }
 
-                        // 安装协议链 
-                        // 修改协议名称，类型 
+                        // Install protocol chain
+                        // Modify protocol name, chain
                         WCHAR wszChainName[WSAPROTOCOL_LEN + 1];
                         for (int i = 0; i < nArrayCount; i++)
                         {
@@ -208,7 +209,7 @@ namespace ppp
                             OriginalProtocolInfo[i].ProtocolChain.ChainEntries[0] = dwLayeredCatalogId;
                         }
 
-                        // 获取一个Guid，安装之 
+                        // Generate a GUID and install protocol chain
                         GUID ProviderChainGuid;
                         if (::UuidCreate(&ProviderChainGuid) == RPC_S_OK)
                         {
@@ -223,14 +224,14 @@ namespace ppp
                             return FALSE;
                         }
 
-                        // 重新排序Winsock目录，将我们的协议链提前 
-                        // 重新枚举安装的协议 
+                        // Reorder Winsock catalog to put our protocol chain first
+                        // Enumerate installed protocols again
                         pProtoInfo = GetProvider(&nProtocols);
 
                         DWORD dwIds[1000];
                         int nIndex = 0;
 
-                        // 添加我们的协议链 
+                        // Put our protocol chains first
                         for (int i = 0; i < nProtocols; i++)
                         {
                             if ((pProtoInfo.get()[i].ProtocolChain.ChainLen > 1) &&
@@ -240,7 +241,7 @@ namespace ppp
                             }
                         }
 
-                        // 添加其它协议 
+                        // Put other protocols after
                         for (int i = 0; i < nProtocols; i++)
                         {
                             if ((pProtoInfo.get()[i].ProtocolChain.ChainLen <= 1) ||
@@ -250,12 +251,13 @@ namespace ppp
                             }
                         }
 
-                        // 重新排序Winsock目录 
+                        // Reorder Winsock catalog
                         if ((nError = ::WSCWriteProviderOrder(dwIds, nIndex)) != ERROR_SUCCESS)
                         {
                             return FALSE;
                         }
 
+                        // Set LSP categories
                         INT nCategories = 0;
                         size_t nCategoriesSize = 4;
                         if (WSCGetProviderInfo(&providerGuid, ProviderInfoLspCategories, (PBYTE)&nCategories, &nCategoriesSize, 0, &nError) == ERROR_SUCCESS)
@@ -283,7 +285,7 @@ namespace ppp
                             return TRUE;
                         }
 
-                        if (NULL == pwszPathName)
+                        if (NULLPTR == pwszPathName)
                         {
                             pwszPathName = (WCHAR*)L"%SystemRoot%\\System32\\PaperAirplane.dll";
                         }
@@ -347,7 +349,7 @@ namespace ppp
 
                     bool NoLsp(const wchar_t* wszExePath) noexcept
                     {
-                        if (NULL == wszExePath)
+                        if (NULLPTR == wszExePath)
                         {
                             return false;
                         }
@@ -355,9 +357,9 @@ namespace ppp
                         DWORD dwExePathLength = (DWORD)wcslen(wszExePath);
                         DWORD dwPrevCat = 0;
                         DWORD dwPermittedLspCategories = 0x80000000;
-                        LPINT lpErrno = NULL;
+                        INT nErrno = ERROR_SUCCESS;
 
-                        int nErr = WSCSetApplicationCategory(wszExePath, dwExePathLength, NULL, 0, dwPermittedLspCategories, &dwPrevCat, lpErrno);
+                        int nErr = WSCSetApplicationCategory(wszExePath, dwExePathLength, NULLPTR, 0, dwPermittedLspCategories, &dwPrevCat, &nErrno);
                         return nErr == ERROR_SUCCESS;
                     }
                 }

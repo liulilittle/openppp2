@@ -19,31 +19,31 @@ namespace ppp {
                 using NetworkState = VEthernetExchanger::NetworkState;
 
                 std::shared_ptr<VEthernetNetworkSwitcher> ethernet = this->Ethernet;
-                if (NULL == ethernet) {
-                    return NULL;
+                if (NULLPTR == ethernet) {
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<VEthernetExchanger> exchanger = ethernet->GetExchanger();
-                if (NULL == exchanger) {
-                    return NULL;
+                if (NULLPTR == exchanger) {
+                    return NULLPTR;
                 }
 
                 NetworkState network_state = exchanger->GetNetworkState();
                 if (network_state != NetworkState::NetworkState_Established) {
-                    return NULL;
+                    return NULLPTR;
                 }
                 
                 ppp::threading::Executors::ContextPtr context;
                 ppp::threading::Executors::StrandPtr strand;
                 context = ppp::threading::Executors::SelectScheduler(strand);
 
-                if (NULL == context) {
-                    return NULL;
+                if (NULLPTR == context) {
+                    return NULLPTR;
                 }
 
                 auto connection = make_shared_object<VEthernetNetworkTcpipConnection>(exchanger, context, strand);
-                if (NULL == connection) {
-                    return NULL;
+                if (NULLPTR == connection) {
+                    return NULLPTR;
                 }
 
                 connection->Open(localEP, remoteEP);

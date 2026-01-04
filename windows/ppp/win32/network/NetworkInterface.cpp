@@ -37,7 +37,7 @@ namespace ppp
         {
             static ppp::string NETWORK_INTERFACE_STRING_TEXT(const TCHAR* s, int sz) noexcept
             {
-                if (NULL != s)
+                if (NULLPTR != s)
                 {
                     std::string result;
                     if (sz > 0)
@@ -63,9 +63,9 @@ namespace ppp
 
             static TCHAR* tcschr(const TCHAR* s, TCHAR ch) noexcept
             {
-                if (NULL == s)
+                if (NULLPTR == s)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
 #ifdef UNICODE
@@ -78,7 +78,7 @@ namespace ppp
 
             static int64_t ttoll(const TCHAR* s) noexcept
             {
-                if (NULL == s)
+                if (NULLPTR == s)
                 {
                     return 0;
                 }
@@ -95,7 +95,7 @@ namespace ppp
             {
                 TCHAR szBuffer[MAX_PATH];
                 DWORD dwSize = sizeof(szBuffer);
-                if (RegQueryValueEx(hSubKey, key, NULL, NULL, reinterpret_cast<LPBYTE>(szBuffer), &dwSize) == ERROR_SUCCESS)
+                if (RegQueryValueEx(hSubKey, key, NULLPTR, NULLPTR, reinterpret_cast<LPBYTE>(szBuffer), &dwSize) == ERROR_SUCCESS)
                 {
                     if (dwSize > 0)
                     {
@@ -113,22 +113,22 @@ namespace ppp
             template <typename InternalCall>
             static bool SetNetifAddressesInternal(int interface_index, InternalCall&& internal_call) noexcept
             {
-                IWbemLocator* pLoc = NULL;
+                IWbemLocator* pLoc = NULLPTR;
                 HRESULT hr = CoCreateInstance(CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER, IID_IWbemLocator, (LPVOID*)&pLoc);
                 if (FAILED(hr))
                 {
                     return false;
                 }
 
-                IWbemServices* pSvc = NULL;
-                hr = pLoc->ConnectServer(_bstr_t(L"ROOT\\CIMV2"), NULL, NULL, 0, NULL, 0, 0, &pSvc);
+                IWbemServices* pSvc = NULLPTR;
+                hr = pLoc->ConnectServer(_bstr_t(L"ROOT\\CIMV2"), NULLPTR, NULLPTR, 0, NULL, 0, 0, &pSvc);
                 if (FAILED(hr))
                 {
                     pLoc->Release();
                     return false;
                 }
 
-                hr = CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE);
+                hr = CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULLPTR, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULLPTR, EOAC_NONE);
                 if (FAILED(hr))
                 {
                     pSvc->Release();
@@ -144,12 +144,12 @@ namespace ppp
                     return false;
                 }
 
-                IEnumWbemClassObject* pEnumerator = NULL;
+                IEnumWbemClassObject* pEnumerator = NULLPTR;
                 hr = pSvc->ExecQuery(
                     _bstr_t(L"WQL"),
                     _bstr_t(wsql),
                     WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
-                    NULL,
+                    NULLPTR,
                     &pEnumerator);
                 if (FAILED(hr))
                 {
@@ -161,7 +161,7 @@ namespace ppp
                 bool ok = false;
                 while (pEnumerator)
                 {
-                    IWbemClassObject* pclsObj = NULL;
+                    IWbemClassObject* pclsObj = NULLPTR;
                     ULONG uReturn = 0;
                     BOOL bBreak = FALSE;
                     hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
@@ -205,22 +205,22 @@ namespace ppp
 
             static ppp::string GetAdapterNameByIndexWMI(int iIndex, ppp::map<int, MOF_Win32_NetworkAdapter>& adapters) noexcept
             {
-                IWbemLocator* pLocator = NULL;
-                HRESULT hRes = CoCreateInstance(CLSID_WbemLocator, NULL, CLSCTX_INPROC_SERVER, IID_IWbemLocator, (LPVOID*)&pLocator);
+                IWbemLocator* pLocator = NULLPTR;
+                HRESULT hRes = CoCreateInstance(CLSID_WbemLocator, NULLPTR, CLSCTX_INPROC_SERVER, IID_IWbemLocator, (LPVOID*)&pLocator);
                 if (FAILED(hRes) || !pLocator)
                 {
                     return ppp::string();
                 }
 
-                IWbemServices* pServices = NULL;
-                hRes = pLocator->ConnectServer(_bstr_t(L"ROOT\\CIMV2"), NULL, NULL, NULL, 0, NULL, NULL, &pServices);
+                IWbemServices* pServices = NULLPTR;
+                hRes = pLocator->ConnectServer(_bstr_t(L"ROOT\\CIMV2"), NULLPTR, NULLPTR, NULLPTR, 0, NULLPTR, NULLPTR, &pServices);
                 if (FAILED(hRes) || !pServices)
                 {
                     pLocator->Release();
                     return ppp::string();
                 }
 
-                hRes = CoSetProxyBlanket(pServices, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE);
+                hRes = CoSetProxyBlanket(pServices, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULLPTR, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULLPTR, EOAC_NONE);
                 if (FAILED(hRes))
                 {
                     pServices->Release();
@@ -238,8 +238,8 @@ namespace ppp
                     swprintf_s(wszQuery, _countof(wszQuery), L"SELECT * FROM Win32_NetworkAdapter WHERE InterfaceIndex='%u'", iIndex);
                 }
 
-                IEnumWbemClassObject* pEnumerator = NULL;
-                hRes = pServices->ExecQuery(_bstr_t("WQL"), _bstr_t(wszQuery), WBEM_FLAG_FORWARD_ONLY, NULL, &pEnumerator);
+                IEnumWbemClassObject* pEnumerator = NULLPTR;
+                hRes = pServices->ExecQuery(_bstr_t("WQL"), _bstr_t(wszQuery), WBEM_FLAG_FORWARD_ONLY, NULLPTR, &pEnumerator);
                 if (FAILED(hRes) || !pEnumerator)
                 {
                     pServices->Release();
@@ -247,12 +247,12 @@ namespace ppp
                     return ppp::string();
                 }
 
-                IWbemClassObject* pObject = NULL;
+                IWbemClassObject* pObject = NULLPTR;
                 ULONG uReturn = 0;
                 ppp::string szNetConnectionID = {};
                 while (pEnumerator)
                 {
-                    IWbemClassObject* pclsObj = NULL;
+                    IWbemClassObject* pclsObj = NULLPTR;
                     ULONG uReturn = 0;
                     BOOL bBreak = FALSE;
                     hRes = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
@@ -300,7 +300,7 @@ namespace ppp
 
             static bool GetAllNetworkInterfacesInternal(bool is_network_index, int index, ppp::vector<NetworkInterfacePtr>& interfaces) noexcept
             {
-                IWbemLocator* pLoc = NULL;
+                IWbemLocator* pLoc = NULLPTR;
                 HRESULT hr = CoCreateInstance(
                     CLSID_WbemLocator,
                     0,
@@ -312,11 +312,11 @@ namespace ppp
                     return false;
                 }
 
-                IWbemServices* pSvc = NULL;
+                IWbemServices* pSvc = NULLPTR;
                 hr = pLoc->ConnectServer(
                     _bstr_t(L"ROOT\\CIMV2"),
-                    NULL,
-                    NULL,
+                    NULLPTR,
+                    NULLPTR,
                     0,
                     NULL,
                     0,
@@ -332,10 +332,10 @@ namespace ppp
                     pSvc,
                     RPC_C_AUTHN_WINNT,
                     RPC_C_AUTHZ_NONE,
-                    NULL,
+                    NULLPTR,
                     RPC_C_AUTHN_LEVEL_CALL,
                     RPC_C_IMP_LEVEL_IMPERSONATE,
-                    NULL,
+                    NULLPTR,
                     EOAC_NONE);
                 if (FAILED(hr))
                 {
@@ -361,12 +361,12 @@ namespace ppp
                     }
                 }
 
-                IEnumWbemClassObject* pEnumerator = NULL;
+                IEnumWbemClassObject* pEnumerator = NULLPTR;
                 hr = pSvc->ExecQuery(
                     _bstr_t(L"WQL"),
                     _bstr_t(wsql), /*  WHERE IPEnabled = TRUE */
                     WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
-                    NULL,
+                    NULLPTR,
                     &pEnumerator);
                 if (FAILED(hr))
                 {
@@ -378,7 +378,7 @@ namespace ppp
                 bool ok = false;
                 while (pEnumerator)
                 {
-                    IWbemClassObject* pclsObj = NULL;
+                    IWbemClassObject* pclsObj = NULLPTR;
                     ULONG uReturn = 0;
                     BOOL bBreak = FALSE;
                     hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
@@ -391,7 +391,7 @@ namespace ppp
                     if (pclsObj)
                     {
                         NetworkInterfacePtr networkInterface = make_shared_object<NetworkInterface>();
-                        if (NULL != networkInterface)
+                        if (NULLPTR != networkInterface)
                         {
                             networkInterface->Description = VARIANT_string(pclsObj, L"Description");
                             networkInterface->Driver = VARIANT_string(pclsObj, L"ServiceName");
@@ -439,23 +439,23 @@ namespace ppp
             {
                 if (index < 0)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 ppp::vector<NetworkInterfacePtr> network_interfaces;
                 if (!GetAllNetworkInterfacesInternal(is_network_index, index, network_interfaces))
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (network_interfaces.empty())
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
                 else
                 {
                     NetworkInterfacePtr network_interface = network_interfaces[0];
-                    if (NULL != network_interface)
+                    if (NULLPTR != network_interface)
                     {
                         int network_index = network_interface->InterfaceIndex;
                         if (network_index > -1)
@@ -555,10 +555,10 @@ namespace ppp
                 HRESULT hr = obj->Put(L"DHCPEnabled", 0, &vtDHCPEnabled, 0);
                 if (SUCCEEDED(hr))
                 {
-                    hr = obj->Get(L"__PATH", 0, &vtPATH, NULL, NULL);
+                    hr = obj->Get(L"__PATH", 0, &vtPATH, NULLPTR, NULLPTR);
                     if (SUCCEEDED(hr))
                     {
-                        hr = services->ExecMethod(vtPATH.bstrVal, EnableDHCP, 0, NULL, obj, NULL, NULL);
+                        hr = services->ExecMethod(vtPATH.bstrVal, EnableDHCP, 0, NULLPTR, obj, NULLPTR, NULLPTR);
                     }
                 }
 
@@ -581,7 +581,7 @@ namespace ppp
                 if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, _T(ADAPTER_KEY), 0, KEY_READ, &hKey) == ERROR_SUCCESS)
                 {
                     DWORD dwIndex = 0;
-                    while (RegEnumKeyEx(hKey, dwIndex++, szSubKeyName, &dwSubKeyNameLength, NULL, NULL, NULL, NULL) != ERROR_NO_MORE_ITEMS)
+                    while (RegEnumKeyEx(hKey, dwIndex++, szSubKeyName, &dwSubKeyNameLength, NULLPTR, NULLPTR, NULLPTR, NULLPTR) != ERROR_NO_MORE_ITEMS)
                     {
                         HKEY hSubKey;
                         if (RegOpenKeyEx(hKey, szSubKeyName, 0, KEY_READ, &hSubKey) == ERROR_SUCCESS)
@@ -613,7 +613,7 @@ namespace ppp
 
             static bool GetAllComponentIdsByDeviceInterfaces(ppp::unordered_set<ppp::string>& componentIds) noexcept
             {
-                HDEVINFO devInfoSet = SetupDiGetClassDevs(NULL, /*_T("Net")*/NULL, NULL, DIGCF_ALLCLASSES | DIGCF_PRESENT);
+                HDEVINFO devInfoSet = SetupDiGetClassDevs(NULLPTR, /*_T("Net")*/NULLPTR, NULLPTR, DIGCF_ALLCLASSES | DIGCF_PRESENT);
                 if (devInfoSet == INVALID_HANDLE_VALUE)
                 {
                     return false;
@@ -637,7 +637,7 @@ namespace ppp
                     }
 
                     TCHAR classGuid[LINE_LEN];
-                    b = SetupDiGetDeviceRegistryProperty(devInfoSet, &devInfoData, SPDRP_CLASSGUID, NULL, (PBYTE)classGuid, LINE_LEN, &requiredSize);
+                    b = SetupDiGetDeviceRegistryProperty(devInfoSet, &devInfoData, SPDRP_CLASSGUID, NULLPTR, (PBYTE)classGuid, LINE_LEN, &requiredSize);
                     if (!b)
                     {
                         continue;
@@ -649,10 +649,10 @@ namespace ppp
                     }
 
                     TCHAR hardwareId[LINE_LEN];
-                    b = SetupDiGetDeviceRegistryProperty(devInfoSet, &devInfoData, SPDRP_HARDWAREID, NULL, (PBYTE)hardwareId, LINE_LEN, &requiredSize);
+                    b = SetupDiGetDeviceRegistryProperty(devInfoSet, &devInfoData, SPDRP_HARDWAREID, NULLPTR, (PBYTE)hardwareId, LINE_LEN, &requiredSize);
                     if (!b)
                     {
-                        b = SetupDiGetDeviceRegistryProperty(devInfoSet, &devInfoData, SPDRP_SERVICE, NULL, (PBYTE)hardwareId, LINE_LEN, &requiredSize);
+                        b = SetupDiGetDeviceRegistryProperty(devInfoSet, &devInfoData, SPDRP_SERVICE, NULLPTR, (PBYTE)hardwareId, LINE_LEN, &requiredSize);
                         if (!b)
                         {
                             continue;
@@ -665,7 +665,7 @@ namespace ppp
                     }
 
                     TCHAR driver[LINE_LEN];
-                    b = SetupDiGetDeviceRegistryProperty(devInfoSet, &devInfoData, SPDRP_DRIVER, NULL, (PBYTE)driver, LINE_LEN, &requiredSize);
+                    b = SetupDiGetDeviceRegistryProperty(devInfoSet, &devInfoData, SPDRP_DRIVER, NULLPTR, (PBYTE)driver, LINE_LEN, &requiredSize);
                     if (!b)
                     {
                         continue;
@@ -673,13 +673,13 @@ namespace ppp
                     else
                     {
                         TCHAR* networkIndex = tcschr(driver, '\\');
-                        if (NULL == networkIndex)
+                        if (NULLPTR == networkIndex)
                         {
                             continue;
                         }
 
                         NetworkInterfacePtr network_interface = GetNetworkInterfaceByIndex(ttoll(++networkIndex));
-                        if (NULL == network_interface)
+                        if (NULLPTR == network_interface)
                         {
                             continue;
                         }
@@ -697,22 +697,22 @@ namespace ppp
             /* https://devops-collective-inc.gitbook.io/windows-powershell-networking-guide/renaming-the-network-adapter */
             static bool RenameAdapterByIndexWMI(DWORD dwIndex, LPCWSTR lpNewName) noexcept
             {
-                IWbemLocator* pLoc = NULL;
+                IWbemLocator* pLoc = NULLPTR;
                 HRESULT hr = CoCreateInstance(CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER, IID_IWbemLocator, (LPVOID*)&pLoc);
                 if (FAILED(hr))
                 {
                     return false;
                 }
 
-                IWbemServices* pSvc = NULL;
-                hr = pLoc->ConnectServer(_bstr_t(L"ROOT\\CIMV2"), NULL, NULL, 0, NULL, 0, 0, &pSvc);
+                IWbemServices* pSvc = NULLPTR;
+                hr = pLoc->ConnectServer(_bstr_t(L"ROOT\\CIMV2"), NULLPTR, NULLPTR, 0, NULL, 0, 0, &pSvc);
                 if (FAILED(hr))
                 {
                     pLoc->Release();
                     return false;
                 }
 
-                hr = CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE);
+                hr = CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULLPTR, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULLPTR, EOAC_NONE);
                 if (FAILED(hr))
                 {
                     pSvc->Release();
@@ -723,19 +723,19 @@ namespace ppp
                 WCHAR wszQuery[512];
                 swprintf_s(wszQuery, _countof(wszQuery), L"SELECT * FROM Win32_NetworkAdapter WHERE InterfaceIndex='%u'", dwIndex);
 
-                IEnumWbemClassObject* pEnumerator = NULL;
-                hr = pSvc->ExecQuery(_bstr_t(L"WQL"), _bstr_t(wszQuery), WBEM_FLAG_FORWARD_ONLY, NULL, &pEnumerator);
-                if (FAILED(hr) || NULL == pEnumerator)
+                IEnumWbemClassObject* pEnumerator = NULLPTR;
+                hr = pSvc->ExecQuery(_bstr_t(L"WQL"), _bstr_t(wszQuery), WBEM_FLAG_FORWARD_ONLY, NULLPTR, &pEnumerator);
+                if (FAILED(hr) || NULLPTR == pEnumerator)
                 {
                     pSvc->Release();
                     pLoc->Release();
                     return false;
                 }
 
-                IWbemClassObject* pNetAdapter = NULL;
+                IWbemClassObject* pNetAdapter = NULLPTR;
                 ULONG uReturned = 0;
                 hr = pEnumerator->Next(WBEM_INFINITE, 1, &pNetAdapter, &uReturned);
-                if (FAILED(hr) || NULL == pNetAdapter || uReturned == 0)
+                if (FAILED(hr) || NULLPTR == pNetAdapter || uReturned == 0)
                 {
                     pEnumerator->Release();
                     pSvc->Release();
@@ -749,7 +749,7 @@ namespace ppp
                 WCHAR* pName = _wcsdup(lpNewName);
                 vtName.vt = VT_BSTR;
                 vtName.bstrVal = SysAllocString(pName);
-                if (NULL != pName)
+                if (NULLPTR != pName)
                 {
                     free(pName);
                 }
@@ -765,7 +765,7 @@ namespace ppp
                     return false;
                 }
 
-                hr = pSvc->PutInstance(pNetAdapter, WBEM_FLAG_UPDATE_ONLY, NULL, NULL);
+                hr = pSvc->PutInstance(pNetAdapter, WBEM_FLAG_UPDATE_ONLY, NULLPTR, NULLPTR);
                 if (FAILED(hr))
                 {
                     VariantClear(&vtName);
@@ -951,7 +951,7 @@ namespace ppp
                         // Retrieve the adapter info from the memory address
                         IP_ADAPTER_INFO& entry = *pEntry;
                         AdapterInterfacePtr interfacex = make_shared_object<AdapterInterface>();
-                        if (NULL != interfacex)
+                        if (NULLPTR != interfacex)
                         {
                             interfacex->Id = entry.AdapterName;
                             interfacex->IfIndex = entry.Index;
@@ -985,7 +985,7 @@ namespace ppp
 
                         // Get next adapter (if any)
                         pEntry = entry.Next;
-                    } while (NULL != pEntry);
+                    } while (NULLPTR != pEntry);
                 }
                 return err == ERROR_SUCCESS;
             }
@@ -1053,7 +1053,7 @@ namespace ppp
                 ppp::vector<AdapterInterfacePtr> ais;
                 if (!GetAllAdapterInterfaces(ais))
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 for (AdapterInterfacePtr ai : ais)
@@ -1063,15 +1063,15 @@ namespace ppp
                         return ai;
                     }
                 }
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<MIB_IFTABLE> GetIfTable() noexcept
             {
                 DWORD dwSize = 0;
-                if (::GetIfTable(NULL, &dwSize, FALSE) != ERROR_INSUFFICIENT_BUFFER)
+                if (::GetIfTable(NULLPTR, &dwSize, FALSE) != ERROR_INSUFFICIENT_BUFFER)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<MIB_IFTABLE> pIfTable = std::shared_ptr<MIB_IFTABLE>((MIB_IFTABLE*)Malloc(dwSize),
@@ -1079,14 +1079,14 @@ namespace ppp
                     {
                         Mfree(p);
                     });
-                if (pIfTable == NULL)
+                if (pIfTable == NULLPTR)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (::GetIfTable(pIfTable.get(), &dwSize, FALSE) != NO_ERROR)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 return pIfTable;
@@ -1096,7 +1096,7 @@ namespace ppp
             {
                 if (interface_index < 0)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<MIB_IFROW> pIfRow = std::shared_ptr<MIB_IFROW>((MIB_IFROW*)Malloc(sizeof(MIB_IFROW)),
@@ -1104,15 +1104,15 @@ namespace ppp
                     {
                         Mfree(p);
                     });
-                if (NULL == pIfRow)
+                if (NULLPTR == pIfRow)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 pIfRow->dwIndex = interface_index;
                 if (::GetIfEntry(pIfRow.get()) != NO_ERROR)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 return pIfRow;
@@ -1176,8 +1176,8 @@ namespace ppp
                 char command[1000];
                 snprintf(command, sizeof(command), "netsh interface ipv4 set address name=\"%s\" static %s %s", interface_name.data(), ip.data(), mask.data());
 
-                if (!CreateProcessA(NULL, command,
-                    NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
+                if (!CreateProcessA(NULLPTR, command,
+                    NULLPTR, NULLPTR, FALSE, CREATE_NO_WINDOW, NULLPTR, NULLPTR, &si, &pi))
                 {
                     return false;
                 }
@@ -1264,7 +1264,7 @@ namespace ppp
                         return ai;
                     }
                 }
-                return NULL;
+                return NULLPTR;
             }
 
             int GetNetworkInterfaceIndexByDefaultRoute() noexcept
@@ -1323,7 +1323,7 @@ namespace ppp
 
                 // Gets the default outgoing network routing information used by the current device operating system.
                 std::shared_ptr<MIB_IPFORWARDTABLE> mib = ppp::win32::network::Router::GetIpForwardTable();
-                if (NULL == mib)
+                if (NULLPTR == mib)
                 {
                     return -1;
                 }
@@ -1414,7 +1414,7 @@ namespace ppp
                         if (connection_id_lower == nic)
                         {
                             AdapterInterfacePtr ai = GetNetworkInterfaceByIndex2(ni->InterfaceIndex);
-                            if (NULL != ai)
+                            if (NULLPTR != ai)
                             {
                                 FixGatewayServerAddress(ai);
                             }
@@ -1425,7 +1425,7 @@ namespace ppp
                         if (index != std::string::npos)
                         {
                             AdapterInterfacePtr ai = GetNetworkInterfaceByIndex2(ni->InterfaceIndex);
-                            if (NULL != ai)
+                            if (NULLPTR != ai)
                             {
                                 FixGatewayServerAddress(ai);
                             }
@@ -1435,9 +1435,9 @@ namespace ppp
                 }
 
                 AdapterInterfacePtr ai = GetUnderlyingNetowrkInterface(id);
-                if (NULL == ai)
+                if (NULLPTR == ai)
                 {
-                    return { NULL, NULL };
+                    return { NULLPTR, NULLPTR };
                 }
 
                 return { ai, ppp::win32::network::GetNetworkInterfaceByInterfaceIndex(ai->IfIndex) };
@@ -1448,7 +1448,7 @@ namespace ppp
                 ppp::vector<ppp::win32::network::AdapterInterfacePtr> adapters;
                 if (!ppp::win32::network::GetAllAdapterInterfaces2(adapters))
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
                 elif(int preferred_index = GetNetworkInterfaceIndexByDefaultRoute(); preferred_index != -1)
                 {
@@ -1545,18 +1545,18 @@ namespace ppp
                 // This is because V6 in modern society has a lot of limitations, 
                 // Including resources are not good, so we design PPP only tend to IN4 network.
                 ppp::win32::network::AdapterInterfacePtr ni = SelectBaseNetowrkInterface(in4_optionals, false);
-                if (NULL == ni) // Try to choose the best underlying hosting network interface!
+                if (NULLPTR == ni) // Try to choose the best underlying hosting network interface!
                 {
                     ni = SelectBaseNetowrkInterface(in6_optionals, false);
-                    if (NULL == ni)
+                    if (NULLPTR == ni)
                     {
                         ni = SelectBaseNetowrkInterface(in4_optionals, true);
-                        if (NULL == ni)
+                        if (NULLPTR == ni)
                         {
                             ni = SelectBaseNetowrkInterface(in6_optionals, true);
-                            if (NULL == ni)
+                            if (NULLPTR == ni)
                             {
-                                return NULL;
+                                return NULLPTR;
                             }
                         }
                     }
@@ -1567,7 +1567,7 @@ namespace ppp
 
             bool AddAllRoutes(std::shared_ptr<ppp::net::native::RouteInformationTable> rib) noexcept
             {
-                if (NULL == rib)
+                if (NULLPTR == rib)
                 {
                     return false;
                 }
@@ -1596,13 +1596,13 @@ namespace ppp
 
             bool DeleteAllRoutes(std::shared_ptr<ppp::net::native::RouteInformationTable> rib) noexcept
             {
-                if (NULL == rib)
+                if (NULLPTR == rib)
                 {
                     return false;
                 }
 
                 auto mib = ppp::win32::network::Router::GetIpForwardTable();
-                if (NULL == mib)
+                if (NULLPTR == mib)
                 {
                     return false;
                 }
@@ -1647,7 +1647,7 @@ namespace ppp
             bool DeleteAllDefaultGatewayRoutes(ppp::vector<MIB_IPFORWARDROW>& routes, const ppp::unordered_set<uint32_t>& bypass_gws) noexcept
             {
                 auto mib = ppp::win32::network::Router::GetIpForwardTable();
-                if (NULL == mib)
+                if (NULLPTR == mib)
                 {
                     return false;
                 }
@@ -1774,7 +1774,7 @@ namespace ppp
             int GetInterfaceMtu(int interface_index) noexcept
             {
                 std::shared_ptr<MIB_IFROW> ifRow = GetIfEntry(interface_index);
-                if (NULL == ifRow)
+                if (NULLPTR == ifRow)
                 {
                     return -1;
                 }
@@ -1786,9 +1786,9 @@ namespace ppp
 
             static bool SetInterfaceMtuIpInterfaceEntry(int interface_index, int mtu) noexcept
             {
-                PIP_ADAPTER_ADDRESSES pAddresses = NULL;
+                PIP_ADAPTER_ADDRESSES pAddresses = NULLPTR;
                 ULONG ulBufLen = 0;
-                GetAdaptersAddresses(AF_UNSPEC, 0, NULL, pAddresses, &ulBufLen);
+                GetAdaptersAddresses(AF_UNSPEC, 0, NULLPTR, pAddresses, &ulBufLen);
 
                 if (ulBufLen == 0)
                 {
@@ -1797,15 +1797,15 @@ namespace ppp
 
                 char* szBuf = (char*)Malloc(ulBufLen);
                 pAddresses = (IP_ADAPTER_ADDRESSES*)szBuf;
-                if (NULL == pAddresses)
+                if (NULLPTR == pAddresses)
                 {
                     return false;
                 }
 
-                DWORD dwErr = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST, NULL, pAddresses, &ulBufLen); /* NETIOAPI_API */
+                DWORD dwErr = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST, NULLPTR, pAddresses, &ulBufLen); /* NETIOAPI_API */
                 if (dwErr == NO_ERROR)
                 {
-                    while (NULL != pAddresses)
+                    while (NULLPTR != pAddresses)
                     {
                         if (pAddresses->IfIndex == interface_index) 
                         {
@@ -1835,7 +1835,7 @@ namespace ppp
                 // https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getifentry
 
                 std::shared_ptr<MIB_IFROW> ifRow = GetIfEntry(interface_index);
-                if (NULL == ifRow)
+                if (NULLPTR == ifRow)
                 {
                     return false;
                 }
@@ -1865,7 +1865,7 @@ namespace ppp
             bool SetInterfaceMtuIpSubInterface(int interface_index, int mtu) noexcept
             {
                 std::shared_ptr<MIB_IFROW> ifRow = GetIfEntry(interface_index);
-                if (NULL == ifRow)
+                if (NULLPTR == ifRow)
                 {
                     return false;
                 }

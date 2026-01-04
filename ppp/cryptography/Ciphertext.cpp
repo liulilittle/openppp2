@@ -16,29 +16,29 @@ namespace ppp {
         std::shared_ptr<Byte> Ciphertext::Encrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, Byte* data, int datalen, int& outlen) noexcept {
             outlen = -1;
 
-            if (NULL != evp_) {
+            if (NULLPTR != evp_) {
                 return evp_->Encrypt(allocator, data, datalen, outlen);
             }
 
-            if (NULL != rc4_) {
+            if (NULLPTR != rc4_) {
                 return rc4_->Encrypt(allocator, data, datalen, outlen);
             }
 
-            return NULL;
+            return NULLPTR;
         }
 
         std::shared_ptr<Byte> Ciphertext::Decrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, Byte* data, int datalen, int& outlen) noexcept {
             outlen = -1;
 
-            if (NULL != evp_) {
+            if (NULLPTR != evp_) {
                 return evp_->Decrypt(allocator, data, datalen, outlen);
             }
 
-            if (NULL != rc4_) {
+            if (NULLPTR != rc4_) {
                 return rc4_->Decrypt(allocator, data, datalen, outlen);
             }
 
-            return NULL;
+            return NULLPTR;
         }
 
         bool Ciphertext::Support(const ppp::string& method) noexcept {

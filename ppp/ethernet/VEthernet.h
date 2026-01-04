@@ -39,7 +39,7 @@ namespace ppp
             std::shared_ptr<ITap>                                           GetTap()                noexcept
             {
                 std::shared_ptr<VNetstack> netstack = netstack_;
-                return NULL != netstack ? netstack->Tap : NULL;
+                return NULLPTR != netstack ? netstack->Tap : NULLPTR;
             }
             std::shared_ptr<boost::asio::io_context>                        GetContext()            noexcept { return context_; }
             std::shared_ptr<VNetstack>                                      GetNetstack()           noexcept { return netstack_; }

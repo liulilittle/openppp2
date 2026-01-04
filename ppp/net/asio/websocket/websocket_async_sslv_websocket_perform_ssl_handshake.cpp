@@ -12,7 +12,7 @@ namespace ppp {
                 // Perform the SSL handshake.
                 const std::shared_ptr<Reference> reference = GetReference();
                 const SslvWebSocketPtr& ssl_websocket = GetSslSocket();
-                if (NULL == ssl_websocket) {
+                if (NULLPTR == ssl_websocket) {
                     return false;
                 }
 

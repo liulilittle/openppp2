@@ -37,11 +37,11 @@ namespace ppp
                 static_assert(sizeof(T) > 0, "can't make pointer to incomplete type");
 
                 if (length < 1) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 T* memory = (T*)Alloc(length * sizeof(T));
-                if (NULL == memory) {
+                if (NULLPTR == memory) {
                     return make_shared_alloc<T>(length);
                 }
 
@@ -57,7 +57,7 @@ namespace ppp
                 static_assert(sizeof(T) > 0, "can't make pointer to incomplete type");
 
                 void* memory = Alloc(sizeof(T));
-                if (NULL == memory) {
+                if (NULLPTR == memory) {
                     return make_shared_object<T>(std::forward<A&&>(args)...);
                 }
                 
@@ -72,7 +72,7 @@ namespace ppp
             }
 
             static std::shared_ptr<Byte>                                MakeByteArray(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, int datalen) noexcept {
-                if (NULL != allocator) {
+                if (NULLPTR != allocator) {
                     return allocator->MakeArray<Byte>(datalen);
                 }
                 else {

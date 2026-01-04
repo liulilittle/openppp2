@@ -16,7 +16,7 @@ namespace ppp
         {
             ppp::string result;
             LPSTR str = _com_util::ConvertBSTRToString(bstrVal);
-            if (NULL != str)
+            if (NULLPTR != str)
             {
                 result = str;
                 delete[] str;

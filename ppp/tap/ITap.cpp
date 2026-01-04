@@ -30,9 +30,9 @@ namespace ppp
         template <typename T>
         static std::shared_ptr<T> WrapStreamFromNativePtr(T* native) noexcept
         {
-            if (NULL == native)
+            if (NULLPTR == native)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             return std::shared_ptr<T>(native, 
@@ -49,16 +49,16 @@ namespace ppp
         {
             if (handle == INVALID_HANDLE_VALUE)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             void* memory = Malloc(sizeof(boost::asio::posix::stream_descriptor));
-            if (NULL == memory)
+            if (NULLPTR == memory)
             {
-                return NULL;
+                return NULLPTR;
             }
 
-            boost::asio::posix::stream_descriptor* stream = NULL;
+            boost::asio::posix::stream_descriptor* stream = NULLPTR;
             memset(memory, 0, sizeof(boost::asio::posix::stream_descriptor));
 
             try
@@ -72,7 +72,7 @@ namespace ppp
             catch (const std::exception&)
             {
                 Mfree(memory);
-                memory = NULL;
+                memory = NULLPTR;
             }
 
             return WrapStreamFromNativePtr(stream);
@@ -89,12 +89,12 @@ namespace ppp
             , _handle(tun)
             , _interface_index(-1)
         {
-            if (NULL == _context)
+            if (NULLPTR == _context)
             {
                 _context = ppp::threading::Executors::GetDefault();
             }
 
-            if (NULL == _context)
+            if (NULLPTR == _context)
             {
                 throw std::runtime_error("Default thread not working.");
             }
@@ -115,11 +115,11 @@ namespace ppp
 
         bool ITap::IsReady() noexcept
         {
-            bool b = NULL != _context && NULL != _stream;
+            bool b = NULLPTR != _context && NULLPTR != _stream;
             if (b)
             {
                 void* h = _handle;
-                if (NULL == h)
+                if (NULLPTR == h)
                 {
                     return false;
                 }
@@ -144,7 +144,7 @@ namespace ppp
             uint32_t                                        gw, 
             uint32_t                                        mask) noexcept
         {
-            if (NULL == context)
+            if (NULLPTR == context)
             {
                 return false;
             }
@@ -181,7 +181,7 @@ namespace ppp
         {
             if (!ITAP_CREATE_REQUIRED(context, dev, ip, gw, mask)) 
             {
-                return NULL;
+                return NULLPTR;
             }
 
             return ppp::tap::TapWindows::Create(context, dev, ip, gw, mask, lease_time_in_seconds, hosted_network, dns_addresses);
@@ -207,7 +207,7 @@ namespace ppp
         {
             if (!ITAP_CREATE_REQUIRED(context, dev, ip, gw, mask)) 
             {
-                return NULL;
+                return NULLPTR;
             }
 
 #if defined(_MACOS)
@@ -245,13 +245,13 @@ namespace ppp
         void ITap::Finalize() noexcept
         {
             std::shared_ptr<boost::asio::posix::stream_descriptor> stream = std::move(_stream); 
-            if (NULL != stream) 
+            if (NULLPTR != stream) 
             {
                 ppp::net::Socket::Closestream(stream);
             }
 
             _stream.reset();
-            PacketInput.reset();
+            PacketInput = NULLPTR;
         }
 
         void ITap::Dispose() noexcept
@@ -290,7 +290,7 @@ namespace ppp
         bool ITap::AsynchronousReadPacketLoops() noexcept
         {
             std::shared_ptr<boost::asio::posix::stream_descriptor> stream = _stream;
-            if (NULL == stream)
+            if (NULLPTR == stream)
             {
                 return false;
             }
@@ -339,13 +339,13 @@ namespace ppp
                 const std::shared_ptr<Byte>&                            packet, 
                 int                                                     packet_size) noexcept 
             {
-                if (NULL == packet || packet_size < 1)
+                if (NULLPTR == packet || packet_size < 1)
                 {
                     return true;
                 }
 
                 std::shared_ptr<boost::asio::posix::stream_descriptor> stream = my->_stream;
-                if (NULL == stream)
+                if (NULLPTR == stream)
                 {
                     return false;
                 }
@@ -382,14 +382,14 @@ namespace ppp
 
         bool ITap::Output(const void* packet, int packet_size) noexcept
         {
-            if (NULL == packet || packet_size < 1)
+            if (NULLPTR == packet || packet_size < 1)
             {
                 return true;
             }
 
             std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = this->BufferAllocator;
             std::shared_ptr<Byte> buffer = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, packet_size);
-            if (NULL == buffer)
+            if (NULLPTR == buffer)
             {
                 return false;
             }

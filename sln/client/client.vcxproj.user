@@ -4,7 +4,7 @@
     <LocalDebuggerWorkingDirectory>$(ProjectDir)..\..\Debug</LocalDebuggerWorkingDirectory>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
     <LocalDebuggerCommand>$(ProjectDir)..\..\Debug\ppp.exe</LocalDebuggerCommand>
-    <LocalDebuggerCommandArguments>--mode=client --lwip=yes --tun-ip=10.0.0.2 --tun-gw=10.0.0.0 --tun-mask=30 --tun-host=yes --tun-vnet=yes --tun-static=yes --block-quic=yes --bypass=ip.txt</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>--mode=client --lwip=yes --tun-ip=10.0.0.2 --tun-gw=10.0.0.0 --tun-mask=30 --tun-host=yes --tun-vnet=yes --tun-static=yes --block-quic=no --bypass=ip.txt</LocalDebuggerCommandArguments>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LocalDebuggerCommand>$(ProjectDir)..\..\x64\Debug\ppp.exe</LocalDebuggerCommand>

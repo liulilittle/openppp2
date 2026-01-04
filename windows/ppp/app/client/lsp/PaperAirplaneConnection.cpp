@@ -45,12 +45,12 @@ namespace ppp
                         std::shared_ptr<vmux::vmux_skt> connection_mux = std::move(connection_mux_);
                         connection_mux_.reset();
 
-                        if (NULL != connection)
+                        if (NULLPTR != connection)
                         {
                             connection->Dispose();
                         }
 
-                        if (NULL != connection_mux) 
+                        if (NULLPTR != connection_mux) 
                         {
                             connection_mux->close();
                         }
@@ -65,11 +65,11 @@ namespace ppp
                 void PaperAirplaneConnection::Update() noexcept
                 {
                     bool linked = false;
-                    if (VirtualEthernetTcpipConnectionPtr connection = connection_; NULL != connection)
+                    if (VirtualEthernetTcpipConnectionPtr connection = connection_; NULLPTR != connection)
                     {
                         linked = connection->IsLinked();
                     }
-                    elif(std::shared_ptr<vmux::vmux_skt> connection_mux = connection_mux_; NULL != connection_mux)
+                    elif(std::shared_ptr<vmux::vmux_skt> connection_mux = connection_mux_; NULLPTR != connection_mux)
                     {
                         linked = connection_mux->is_connected();
                     }
@@ -101,9 +101,9 @@ namespace ppp
                 PaperAirplaneConnection::VEthernetExchangerPtr PaperAirplaneConnection::GetExchanger() noexcept
                 {
                     PaperAirplaneControllerPtr controller = GetController();
-                    if (NULL == controller)
+                    if (NULLPTR == controller)
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
                     else
                     {
@@ -114,9 +114,9 @@ namespace ppp
                 std::shared_ptr<ppp::threading::BufferswapAllocator> PaperAirplaneConnection::GetBufferAllocator() noexcept
                 {
                     AppConfigurationPtr configuration = GetConfiguration();
-                    if (NULL == configuration)
+                    if (NULLPTR == configuration)
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
                     else
                     {
@@ -138,14 +138,14 @@ namespace ppp
                     }
 
                     VirtualEthernetTcpipConnectionPtr connection = this->connection_;
-                    if (NULL != connection) 
+                    if (NULLPTR != connection) 
                     {
                         this->Update();
                         return connection->Run(y);
                     }
 
                     std::shared_ptr<vmux::vmux_skt> connection_mux = this->connection_mux_;
-                    if (NULL != connection_mux)
+                    if (NULLPTR != connection_mux)
                     {
                         this->Update();
                         return connection_mux->run();
@@ -169,25 +169,25 @@ namespace ppp
                     }
 
                     std::shared_ptr<boost::asio::io_context> context = GetContext();
-                    if (NULL == context)
+                    if (NULLPTR == context)
                     {
                         return false;
                     }
 
                     AppConfigurationPtr configuration = GetConfiguration();
-                    if (NULL == configuration)
+                    if (NULLPTR == configuration)
                     {
                         return false;
                     }
 
                     std::shared_ptr<boost::asio::ip::tcp::socket> socket = GetSocket();
-                    if (NULL == socket)
+                    if (NULLPTR == socket)
                     {
                         return false;
                     }
 
                     VEthernetExchangerPtr exchanger = GetExchanger();
-                    if (NULL == exchanger)
+                    if (NULLPTR == exchanger)
                     {
                         return false;
                     }
@@ -200,14 +200,14 @@ namespace ppp
                     }
 
                     std::shared_ptr<ppp::transmissions::ITransmission> transmission = exchanger->ConnectTransmission(context, strand_, y);
-                    if (NULL == transmission)
+                    if (NULLPTR == transmission)
                     {
                         return false;
                     }
 
                     std::shared_ptr<VEthernetTcpipConnection> connection = 
                         make_shared_object<VEthernetTcpipConnection>(self, configuration, context, strand_, exchanger->GetId(), socket);
-                    if (NULL == connection)
+                    if (NULLPTR == connection)
                     {
                         IDisposable::DisposeReferences(transmission);
                         return false;

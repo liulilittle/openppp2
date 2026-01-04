@@ -98,7 +98,7 @@ namespace ppp {
             protected:
                 virtual std::shared_ptr<Byte>                               DoReadBytes(YieldContext& y, int length) noexcept {
                     if (disposed_) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     auto self = shared_from_this();
@@ -197,27 +197,27 @@ namespace ppp {
             public:
                 std::shared_ptr<Byte>                                       ReadBytes(YieldContext& y, int length) noexcept {
                     if (length < 1) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     if (disposed_) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     std::shared_ptr<IWebsocket> socket = socket_;
                     if (!socket) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     std::shared_ptr<BufferswapAllocator> allocator = this->BufferAllocator;
                     std::shared_ptr<Byte> packet = BufferswapAllocator::MakeByteArray(allocator, length);
-                    if (NULL == packet) {
-                        return NULL;
+                    if (NULLPTR == packet) {
+                        return NULLPTR;
                     }
 
                     bool ok = socket->Read(packet.get(), 0, length, y);
                     if (!ok) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     std::shared_ptr<ITransmissionStatistics> statistics = this->Statistics;

@@ -41,11 +41,11 @@ namespace ppp {
                     std::shared_ptr<ppp::net::SocketAcceptor> acceptor = std::move(acceptor_); 
                     acceptor_.reset();
 
-                    if (NULL != timeout) {
+                    if (NULLPTR != timeout) {
                         timeout->Dispose();
                     }
 
-                    if (NULL != acceptor) {
+                    if (NULLPTR != acceptor) {
                         acceptor->Dispose();
                     }
 
@@ -69,7 +69,7 @@ namespace ppp {
                 bool VEthernetLocalProxySwitcher::Open() noexcept {
                     using NetworkState = VEthernetExchanger::NetworkState;
 
-                    if (NULL != acceptor_) {
+                    if (NULLPTR != acceptor_) {
                         return false;
                     }
 
@@ -103,7 +103,7 @@ namespace ppp {
                             }
 
                             std::shared_ptr<ppp::net::SocketAcceptor> t = ppp::net::SocketAcceptor::New();
-                            if (NULL == t) {
+                            if (NULLPTR == t) {
                                 return false;
                             }
 
@@ -116,7 +116,7 @@ namespace ppp {
                             break;
                         }
 
-                        if (NULL == acceptor) {
+                        if (NULLPTR == acceptor) {
                             return false;
                         }
                     }
@@ -133,7 +133,7 @@ namespace ppp {
                             int sockfd = e.Socket;
                             while (!disposed_) {
                                 std::shared_ptr<VEthernetExchanger> exchanger = exchanger_;
-                                if (NULL == exchanger) {
+                                if (NULLPTR == exchanger) {
                                     break;
                                 }
 
@@ -146,7 +146,7 @@ namespace ppp {
                                 ppp::threading::Executors::StrandPtr strand;
                                 context = ppp::threading::Executors::SelectScheduler(strand);
                                 
-                                if (NULL == context) {
+                                if (NULLPTR == context) {
                                     break;
                                 }
 
@@ -169,7 +169,7 @@ namespace ppp {
                 }
 
                 void VEthernetLocalProxySwitcher::ReleaseConnection(VEthernetLocalProxyConnection* connection) noexcept {
-                    if (NULL != connection) {
+                    if (NULLPTR != connection) {
                         auto self = shared_from_this();
                         std::shared_ptr<boost::asio::io_context> context = GetContext();
                         boost::asio::post(*context, 
@@ -181,17 +181,17 @@ namespace ppp {
 
                 bool VEthernetLocalProxySwitcher::RemoveConnection(VEthernetLocalProxyConnection* connection) noexcept {
                     VEthernetLocalProxyConnectionPtr r; 
-                    if (NULL != connection) {
+                    if (NULLPTR != connection) {
                         SynchronizedObjectScope scope(syncobj_);
                         r = ppp::collections::Dictionary::ReleaseObjectByKey(connections_, connection); 
                     }
 
-                    return NULL != r;
+                    return NULLPTR != r;
                 }
 
                 std::shared_ptr<boost::asio::ip::tcp::socket> VEthernetLocalProxySwitcher::NewSocket(const std::shared_ptr<boost::asio::io_context>& context, const ppp::threading::Executors::StrandPtr& strand, int sockfd) noexcept {
-                    if (NULL == context) {
-                        return NULL;
+                    if (NULLPTR == context) {
+                        return NULLPTR;
                     }
 
                     boost::asio::ip::tcp::endpoint remoteEP = ppp::net::Socket::GetRemoteEndPoint(sockfd);
@@ -200,8 +200,8 @@ namespace ppp {
                     std::shared_ptr<boost::asio::ip::tcp::socket> socket = strand ?
                         make_shared_object<boost::asio::ip::tcp::socket>(*strand) : make_shared_object<boost::asio::ip::tcp::socket>(*context);
                     try {
-                        if (NULL == socket) {
-                            return NULL;
+                        if (NULLPTR == socket) {
+                            return NULLPTR;
                         }
                         else {
                             socket->assign(remoteEP.protocol(), sockfd, ec);
@@ -211,7 +211,7 @@ namespace ppp {
 
                     if (ec) {
                         ppp::net::Socket::Closesocket(sockfd);
-                        return NULL;
+                        return NULLPTR;
                     }
                     
                     ppp::net::Socket::AdjustDefaultSocketOptional(*socket, configuration_->tcp.turbo);
@@ -220,7 +220,7 @@ namespace ppp {
                 }
 
                 bool VEthernetLocalProxySwitcher::AddConnection(const std::shared_ptr<VEthernetLocalProxyConnection>& connection) noexcept {
-                    if (NULL == connection) {
+                    if (NULLPTR == connection) {
                         return false;
                     }
                     
@@ -229,18 +229,18 @@ namespace ppp {
                 }
 
                 bool VEthernetLocalProxySwitcher::ProcessAcceptSocket(const std::shared_ptr<boost::asio::io_context>& context, const ppp::threading::Executors::StrandPtr& strand, int sockfd) noexcept {
-                    if (NULL == context) {
+                    if (NULLPTR == context) {
                         ppp::net::Socket::Closesocket(sockfd);
                         return false;
                     }
 
                     std::shared_ptr<boost::asio::ip::tcp::socket> socket = NewSocket(context, strand, sockfd);
-                    if (NULL == socket) {
+                    if (NULLPTR == socket) {
                         return false;
                     }
 
                     std::shared_ptr<VEthernetLocalProxyConnection> connection = NewConnection(context, strand, socket);
-                    if (NULL == connection) {
+                    if (NULLPTR == connection) {
                         return false;
                     }
 
@@ -276,7 +276,7 @@ namespace ppp {
 
                 std::shared_ptr<ppp::threading::BufferswapAllocator> VEthernetLocalProxySwitcher::GetBufferAllocator() noexcept {
                     std::shared_ptr<ppp::configurations::AppConfiguration> configuration = configuration_;
-                    return NULL != configuration ? configuration->GetBufferAllocator() : NULL;
+                    return NULLPTR != configuration ? configuration->GetBufferAllocator() : NULLPTR;
                 }
 
                 bool VEthernetLocalProxySwitcher::CreateAlwaysTimeout() noexcept {
@@ -301,7 +301,7 @@ namespace ppp {
 
                 boost::asio::ip::tcp::endpoint VEthernetLocalProxySwitcher::GetLocalEndPoint() noexcept {
                     std::shared_ptr<ppp::net::SocketAcceptor> acceptor = acceptor_;
-                    if (NULL != acceptor) {
+                    if (NULLPTR != acceptor) {
                         return ppp::net::Socket::GetLocalEndPoint(acceptor->GetHandle());
                     }
 

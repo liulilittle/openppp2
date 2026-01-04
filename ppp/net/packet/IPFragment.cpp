@@ -21,7 +21,7 @@ namespace ppp {
             bool IPFragment::Input(const std::shared_ptr<IPFrame>& packet) noexcept {
                 if ((packet->Flags & IPFlags::IP_MF) != 0 || ((packet->Flags & IPFlags::IP_OFFMASK) != 0 && packet->GetFragmentOffset() > 0)) {
                     std::shared_ptr<BufferSegment> payload = packet->Payload;
-                    if (NULL == payload || payload->Length <= 0) {
+                    if (NULLPTR == payload || payload->Length <= 0) {
                         return false;
                     }
 
@@ -38,7 +38,7 @@ namespace ppp {
                             }
                             else {
                                 subpackage = make_shared_object<Subpackage>();
-                                if (NULL == subpackage) {
+                                if (NULLPTR == subpackage) {
                                     return false;
                                 }
 
@@ -94,7 +94,7 @@ namespace ppp {
 
                                     std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = this->BufferAllocator;
                                     std::shared_ptr<Byte> buffer = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, nextFragementOffset);
-                                    if (NULL == buffer) {
+                                    if (NULLPTR == buffer) {
                                         return false;
                                     }
 
@@ -105,12 +105,12 @@ namespace ppp {
                                     }
 
                                     originNew = make_shared_object<IPFrame>();
-                                    if (NULL == originNew) {
+                                    if (NULLPTR == originNew) {
                                         return false;
                                     }
 
                                     std::shared_ptr<BufferSegment> packet_payload = make_shared_object<BufferSegment>(buffer, nextFragementOffset);
-                                    if (NULL == packet_payload) {
+                                    if (NULLPTR == packet_payload) {
                                         return false;
                                     }
                                     
@@ -130,7 +130,7 @@ namespace ppp {
                         }
                     } while (false);
 
-                    if (NULL != originNew) {
+                    if (NULLPTR != originNew) {
                         PacketInputEventArgs e{ originNew };
                         OnInput(e);
                     }
@@ -145,7 +145,7 @@ namespace ppp {
                 typedef std::shared_ptr<BufferSegment>   Buffer;
 
                 IPFrame* const frame = constantof(packet);
-                if (NULL == frame) {
+                if (NULLPTR == frame) {
                     return false;
                 }
 
@@ -162,12 +162,12 @@ namespace ppp {
                 std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = this->BufferAllocator;
                 for (int i = 0; i < subpacketl; i++) {
                     IPFramePtr frame_ = subpackages[i];
-                    if (NULL == frame_) {
+                    if (NULLPTR == frame_) {
                         return false;
                     }
 
                     Buffer message_ = frame_->ToArray(allocator);
-                    if (NULL == message_ || message_->Length <= 0) {
+                    if (NULLPTR == message_ || message_->Length <= 0) {
                         return false;
                     }
 
@@ -179,8 +179,8 @@ namespace ppp {
             }
 
             void IPFragment::Release() noexcept {
-                PacketInput.reset();
-                PacketOutput.reset();
+                PacketInput = NULLPTR;
+                PacketOutput = NULLPTR;
 
                 SynchronizedObjectScope scope(syncobj_);
                 IPV4_SUBPACKAGES_.clear();

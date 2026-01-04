@@ -46,8 +46,8 @@ namespace ppp {
                 transmission_.reset();
                 
                 if (sendto_ && !finalize_) {
-                    if (NULL != transmission) {
-                        if (!exchanger_->DoSendTo(transmission, sourceEP_, sourceEP_, NULL, 0, nullof<YieldContext>())) {
+                    if (NULLPTR != transmission) {
+                        if (!exchanger_->DoSendTo(transmission, sourceEP_, sourceEP_, NULLPTR, 0, nullof<YieldContext>())) {
                             transmission->Dispose();
                         }
                     }
@@ -134,7 +134,7 @@ namespace ppp {
                             }
 
                             std::shared_ptr<ITransmission> transmission = transmission_;
-                            if (NULL == transmission) {
+                            if (NULLPTR == transmission) {
                                 break;
                             }
 
@@ -167,7 +167,7 @@ namespace ppp {
                 int                                                 packet_length) noexcept {
 
                 auto cache = switcher->GetNamespaceCache();
-                if (NULL == cache) {
+                if (NULLPTR == cache) {
                     return false;
                 }
 
@@ -185,7 +185,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Byte> response = make_shared_alloc<Byte>(packet_length);
-                if (NULL == response) {
+                if (NULLPTR == response) {
                     return false;
                 }
 
@@ -209,17 +209,17 @@ namespace ppp {
                 
                 using dns_hdr = ppp::net::native::dns::dns_hdr;
 
-                if (NULL != packet && packet_length >= sizeof(dns_hdr)) {
+                if (NULLPTR != packet && packet_length >= sizeof(dns_hdr)) {
                     if (domain.size() > 0) {
                         auto cache = switcher->GetNamespaceCache();
-                        if (NULL != cache) {
+                        if (NULLPTR != cache) {
                             std::shared_ptr<Byte> response;
                             int response_length;
 
                             ppp::string queries_key = VirtualEthernetNamespaceCache::QueriesKey(queries_type, queries_clazz, domain);
                             if (cache->Get(queries_key, response, response_length, ((dns_hdr*)packet)->usTransID)) {
                                 std::shared_ptr<ITransmission> transmission = exchanger->GetTransmission();
-                                if (NULL != transmission) {
+                                if (NULLPTR != transmission) {
                                     boost::asio::ip::udp::endpoint remoteEP = Ipep::V6ToV4(destinationEP);
                                     if (static_transit) {
                                         bool outputed = VirtualEthernetDatagramPortStatic::Output(switcher.get(), 
@@ -248,7 +248,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetDatagramPort::SendTo(const void* packet, int packet_length, const boost::asio::ip::udp::endpoint& destinationEP) noexcept {
-                if (NULL == packet || packet_length < 1) {
+                if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
 

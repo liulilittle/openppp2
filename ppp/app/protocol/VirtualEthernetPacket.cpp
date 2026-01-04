@@ -76,10 +76,10 @@ namespace ppp
 
                 std::shared_ptr<ppp::Byte> payload;
                 int payload_length = packet_length - sizeof(PACKET_HEADER);
-                if (NULL != transport)
+                if (NULLPTR != transport)
                 {
                     payload = transport->Decrypt(allocator, (ppp::Byte*)(h + 1), payload_length, payload_length);
-                    if (NULL == payload)
+                    if (NULLPTR == payload)
                     {
                         return false;
                     }
@@ -87,7 +87,7 @@ namespace ppp
                 else
                 {
                     payload = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, payload_length);
-                    if (NULL == payload)
+                    if (NULLPTR == payload)
                     {
                         return false;
                     }
@@ -141,7 +141,7 @@ namespace ppp
                 int                                                             packet_length,
                 VirtualEthernetPacket&                                          out) noexcept
             {
-                if (NULL == packet || packet_length <= sizeof(PACKET_HEADER))
+                if (NULLPTR == packet || packet_length <= sizeof(PACKET_HEADER))
                 {
                     return false;
                 }
@@ -149,7 +149,7 @@ namespace ppp
                 std::shared_ptr<ppp::Byte> output;
                 packet_length = ppp::cryptography::ssea::delta_decode(allocator, packet, packet_length, configuration->key.kf, output);
                 
-                if (NULL == output || packet_length <= sizeof(PACKET_HEADER))
+                if (NULLPTR == output || packet_length <= sizeof(PACKET_HEADER))
                 {
                     return false;
                 }
@@ -189,16 +189,16 @@ namespace ppp
                     proto = ppp::net::native::ip_hdr::IP_PROTO_IP;
                 }
 
-                std::shared_ptr<ppp::cryptography::Ciphertext> transport_ciphertext = transport ? transport(session_id) : NULL;
-                std::shared_ptr<ppp::cryptography::Ciphertext> protocol_ciphertext = protocol ? protocol(session_id) : NULL;
+                std::shared_ptr<ppp::cryptography::Ciphertext> transport_ciphertext = transport ? transport(session_id) : NULLPTR;
+                std::shared_ptr<ppp::cryptography::Ciphertext> protocol_ciphertext = protocol ? protocol(session_id) : NULLPTR;
 
-                if (NULL != protocol_ciphertext && NULL != transport_ciphertext)
+                if (NULLPTR != protocol_ciphertext && NULLPTR != transport_ciphertext)
                 {
                     int header_length_raw = sizeof(PACKET_HEADER) - offset_of(PACKET_HEADER, checksum);
                     int header_length_new;
 
                     std::shared_ptr<Byte> header_body = protocol_ciphertext->Decrypt(allocator, reinterpret_cast<ppp::Byte*>(&h->checksum), header_length_raw, header_length_new);
-                    if (NULL == header_body) 
+                    if (NULLPTR == header_body) 
                     {
                         return false;
                     }
@@ -225,8 +225,8 @@ namespace ppp
                 }
                 else 
                 {
-                    protocol_ciphertext  = NULL;
-                    transport_ciphertext = NULL;
+                    protocol_ciphertext  = NULLPTR;
+                    transport_ciphertext = NULLPTR;
                 }
 
                 return STATIC_Unpack(allocator, transport_ciphertext, h, proto, session_id, packet_length, out);
@@ -256,16 +256,16 @@ namespace ppp
 
                 std::shared_ptr<ppp::Byte> buf;
                 std::shared_ptr<ppp::Byte> output;
-                if (NULL != protocol)
+                if (NULLPTR != protocol)
                 {
                     int header_length_raw = sizeof(PACKET_HEADER) - offset_of(PACKET_HEADER, checksum);
                     int header_length_new = 0;
 
                     std::shared_ptr<Byte> header_body = protocol->Encrypt(allocator,
                         reinterpret_cast<ppp::Byte*>(&h->checksum), header_length_raw, header_length_new);
-                    if (NULL == header_body)
+                    if (NULLPTR == header_body)
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     if (header_length_raw == header_length_new)
@@ -317,26 +317,26 @@ namespace ppp
                 int&                                                            out) noexcept
             {
                 out = 0;
-                if (NULL == payload || payload_length < 1 || origin_id == 0)
+                if (NULLPTR == payload || payload_length < 1 || origin_id == 0)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
         
-                std::shared_ptr<ppp::cryptography::Ciphertext> protocol_ciphertext = protocol ? protocol(origin_id) : NULL;
-                std::shared_ptr<ppp::cryptography::Ciphertext> transport_ciphertext = transport ? transport(origin_id) : NULL;
-                if (NULL == protocol_ciphertext || NULL == transport_ciphertext)
+                std::shared_ptr<ppp::cryptography::Ciphertext> protocol_ciphertext = protocol ? protocol(origin_id) : NULLPTR;
+                std::shared_ptr<ppp::cryptography::Ciphertext> transport_ciphertext = transport ? transport(origin_id) : NULLPTR;
+                if (NULLPTR == protocol_ciphertext || NULLPTR == transport_ciphertext)
                 {
-                    protocol_ciphertext  = NULL;
-                    transport_ciphertext = NULL;
+                    protocol_ciphertext  = NULLPTR;
+                    transport_ciphertext = NULLPTR;
                 }
 
                 std::shared_ptr<ppp::Byte> payload_managed;
-                if (NULL != transport_ciphertext)
+                if (NULLPTR != transport_ciphertext)
                 {
                     payload_managed = transport_ciphertext->Encrypt(allocator, (ppp::Byte*)payload, payload_length, payload_length);
-                    if (NULL == payload_managed)
+                    if (NULLPTR == payload_managed)
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
                     else
                     {
@@ -346,9 +346,9 @@ namespace ppp
             
                 int message_length = sizeof(PACKET_HEADER) + payload_length;
                 std::shared_ptr<ppp::Byte> messages = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, message_length);
-                if (NULL == messages)
+                if (NULLPTR == messages)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
             
                 PACKET_HEADER* h           = reinterpret_cast<PACKET_HEADER*>(messages.get());
@@ -380,19 +380,19 @@ namespace ppp
                 int                                                             packet_length) noexcept
             {
                 std::shared_ptr<VirtualEthernetPacket> result = ppp::make_shared_object<VirtualEthernetPacket>();
-                if (NULL == result)
+                if (NULLPTR == result)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
-                return UnpackBy(configuration, allocator, protocol, transport, packet, packet_length, *result) ? result : NULL;
+                return UnpackBy(configuration, allocator, protocol, transport, packet, packet_length, *result) ? result : NULLPTR;
             }
 
             std::shared_ptr<ppp::net::packet::IPFrame> VirtualEthernetPacket::GetIPPacket(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator) noexcept
             {
                 if (Protocol != ppp::net::native::ip_hdr::IP_PROTO_IP)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 PACKET_IP_PACKET_POSEDO posedo;
@@ -415,18 +415,18 @@ namespace ppp
             {
                 if (Protocol != ppp::net::native::ip_hdr::IP_PROTO_IP)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 packet = GetIPPacket(allocator);
-                if (NULL == packet)
+                if (NULLPTR == packet)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (packet->ProtocolType != ppp::net::native::ip_hdr::IP_PROTO_ICMP)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 return ppp::net::packet::IcmpFrame::Parse(packet.get());
@@ -436,19 +436,19 @@ namespace ppp
             {
                 if (Protocol != ppp::net::native::ip_hdr::IP_PROTO_UDP)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<ppp::net::packet::UdpFrame> packet = ppp::make_shared_object<ppp::net::packet::UdpFrame>();
-                if (NULL == packet)
+                if (NULLPTR == packet)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<ppp::net::packet::BufferSegment> payload = ppp::make_shared_object<ppp::net::packet::BufferSegment>(Payload, Length);
-                if (NULL == payload)
+                if (NULLPTR == payload)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 packet->AddressesFamily = ppp::net::AddressFamily::InterNetwork;
@@ -474,22 +474,22 @@ namespace ppp
             {
                 if (session_id < 1)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (destination_ip == IPEndPoint::NoneAddress || destination_ip == IPEndPoint::AnyAddress)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
             
                 if (destination_port <= IPEndPoint::MinPort || destination_port > IPEndPoint::MaxPort)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (source_port <= IPEndPoint::MinPort || source_port > IPEndPoint::MaxPort)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 return PackBy(configuration, allocator, protocol, transport, session_id, session_id, source_ip,
@@ -505,22 +505,22 @@ namespace ppp
                 const ppp::net::packet::IPFrame*                                packet,
                 int&                                                            out) noexcept
             {
-                if (NULL == packet || session_id < 1)
+                if (NULLPTR == packet || session_id < 1)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (packet->ProtocolType != ppp::net::native::ip_hdr::IP_PROTO_ICMP &&
                     packet->ProtocolType != ppp::net::native::ip_hdr::IP_PROTO_UDP &&
                     packet->ProtocolType != ppp::net::native::ip_hdr::IP_PROTO_TCP)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<ppp::net::packet::BufferSegment> packet_buffers = constantof(packet)->ToArray(allocator);
-                if (NULL == packet_buffers)
+                if (NULLPTR == packet_buffers)
                 { 
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 PACKET_IP_PACKET_POSEDO* posedo = (PACKET_IP_PACKET_POSEDO*)packet_buffers->Buffer.get();
@@ -563,7 +563,7 @@ namespace ppp
 
             bool VirtualEthernetPacket::FillBytesToPayload(ppp::net::packet::IPFrame* frame, int min, int max) noexcept
             {
-                if (NULL == frame)
+                if (NULLPTR == frame)
                 {
                     return false;
                 }
@@ -585,13 +585,13 @@ namespace ppp
                 }
 
                 auto payload = make_shared_object<ppp::net::packet::BufferSegment>();
-                if (NULL == payload) 
+                if (NULLPTR == payload) 
                 {
                     return false;
                 }
 
                 std::shared_ptr<Byte> buffer = make_shared_alloc<Byte>(payload_length);
-                if (NULL == buffer) 
+                if (NULLPTR == buffer) 
                 {
                     return false;
                 }
@@ -617,8 +617,8 @@ namespace ppp
                 std::shared_ptr<ppp::cryptography::Ciphertext>&                 protocol,
                 std::shared_ptr<ppp::cryptography::Ciphertext>&                 transport) noexcept 
             {
-                protocol  = NULL;
-                transport = NULL;
+                protocol  = NULLPTR;
+                transport = NULLPTR;
 
                 if (ppp::configurations::extensions::IsHaveCiphertext(configuration.get())) 
                 {
@@ -630,10 +630,10 @@ namespace ppp
                     protocol  = make_shared_object<ppp::cryptography::Ciphertext>(configuration->key.protocol, configuration->key.protocol_key + ivv_string);
                     transport = make_shared_object<ppp::cryptography::Ciphertext>(configuration->key.transport, configuration->key.transport_key + ivv_string);
 
-                    if (NULL == protocol || NULL == transport) 
+                    if (NULLPTR == protocol || NULLPTR == transport) 
                     {
-                        protocol  = NULL;
-                        transport = NULL;
+                        protocol  = NULLPTR;
+                        transport = NULLPTR;
                     }
                 }
             }

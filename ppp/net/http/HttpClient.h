@@ -11,7 +11,7 @@ namespace ppp {
 
             public:
                 std::string                             Get(const ppp::string& api, int& status) noexcept { 
-                    return this->HttpGetOrPostImpl(false, api, NULL, 0, status); 
+                    return this->HttpGetOrPostImpl(false, api, NULLPTR, 0, status); 
                 }
                 std::string                             Post(const ppp::string& api, const char* data, size_t size, int& status) noexcept { 
                     return this->HttpGetOrPostImpl(true, api, data, size, status); 

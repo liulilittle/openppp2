@@ -71,7 +71,7 @@ namespace ppp
             SynchronizedObjectScope scope(Internal->Lock);
             auto tail = Internal->Threads.find(GetCurrentThreadId());
             auto endl = Internal->Threads.end();
-            return tail != endl ? tail->second : NULL;
+            return tail != endl ? tail->second : NULLPTR;
         }
 
         int Thread::GetProcessorCount() noexcept
@@ -112,9 +112,9 @@ namespace ppp
             }
 
             ThreadStart start = std::move(_start);
-            _start.reset();
+            _start = NULLPTR;
 
-            if (NULL == start)
+            if (NULLPTR == start)
             {
                 return false;
             }
@@ -161,7 +161,7 @@ namespace ppp
             auto endl = _tls.end();
             if (tail == endl)
             {
-                return NULL;
+                return NULLPTR;
             }
             else
             {
@@ -172,13 +172,13 @@ namespace ppp
         void* Thread::SetData(int index, const void* value) noexcept
         {
             SynchronizedObjectScope scope(_syncobj);
-            if (NULL == value)
+            if (NULLPTR == value)
             {
                 auto tail = _tls.find(index);
                 auto endl = _tls.end();
                 if (tail == endl)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 void* result = tail->second;

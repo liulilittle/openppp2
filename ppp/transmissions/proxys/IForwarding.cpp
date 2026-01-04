@@ -72,7 +72,7 @@ namespace ppp {
                 void                                                        Finalize() noexcept {
                     for (int i = 0; i < arraysizeof(sockets_); i++) {
                         std::shared_ptr<boost::asio::ip::tcp::socket>& reference = sockets_[i];
-                        if (std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::move(reference); NULL != socket) {
+                        if (std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::move(reference); NULLPTR != socket) {
                             reference.reset();
 
                             Socket::Closesocket(socket);
@@ -80,7 +80,7 @@ namespace ppp {
                     }
 
                     disposed_ = false;
-                    if (std::shared_ptr<IForwarding> forwarding = std::move(forwarding_); NULL != forwarding) {
+                    if (std::shared_ptr<IForwarding> forwarding = std::move(forwarding_); NULLPTR != forwarding) {
                         forwarding_.reset();
                         forwarding->TryRemove(this, false);
                     }
@@ -91,7 +91,7 @@ namespace ppp {
                     }
 
                     for (std::shared_ptr<boost::asio::ip::tcp::socket>& socket : sockets_) {
-                        if (NULL != socket) {
+                        if (NULLPTR != socket) {
                             return false;
                         }
                     }
@@ -99,7 +99,7 @@ namespace ppp {
                     std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = configuration_->GetBufferAllocator();
                     for (std::shared_ptr<Byte>& buff : buffers_) {
                         buff = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, PPP_BUFFER_SIZE);
-                        if (NULL == buff) {
+                        if (NULLPTR == buff) {
                             return false;
                         }
                     }
@@ -132,11 +132,11 @@ namespace ppp {
                     const std::shared_ptr<boost::asio::ip::tcp::socket>&    y,
                     const std::shared_ptr<Byte>&                            buff) noexcept {
 
-                    if (disposed_ || NULL == buff) {
+                    if (disposed_ || NULLPTR == buff) {
                         return false;
                     }
                     
-                    if (NULL == x || NULL == y) {
+                    if (NULLPTR == x || NULLPTR == y) {
                         return false;
                     }
 
@@ -195,7 +195,7 @@ namespace ppp {
 
             void IForwarding::Dispose() noexcept {
                 ContextPtr context = context_;
-                if (NULL == context) {
+                if (NULLPTR == context) {
                     Finalize();
                     return;
                 }
@@ -245,7 +245,7 @@ namespace ppp {
                 bool b = false;
 
                 for (;;) {
-                    if (NULL == key) {
+                    if (NULLPTR == key) {
                         return false;
                     }
 
@@ -263,7 +263,7 @@ namespace ppp {
 
             template <class TValue, class TKey, class TMap>
             static bool IFORWARDING_TRY_ADD(bool& disposed, IForwarding::SynchronizedObject& lck, TMap& map, TKey* key, const TValue& value) noexcept {
-                if (NULL == key) {
+                if (NULLPTR == key) {
                     return false;
                 }
 
@@ -307,7 +307,7 @@ namespace ppp {
 
             static bool IFORWARDING_HTTP_VERIFY_HANDSHAKE_RESPONSE_PACKET(MemoryStream& protocol_array) noexcept {
                 ppp::vector<ppp::string> headers;
-                if (!VEthernetHttpProxyConnection::ProtocolReadHeaders(protocol_array, headers, NULL)) {
+                if (!VEthernetHttpProxyConnection::ProtocolReadHeaders(protocol_array, headers, NULLPTR)) {
                     return false;
                 }
 
@@ -356,7 +356,7 @@ namespace ppp {
             }
 
             static bool IFORWARDING_HTTP_VERIFY_HANDSHAKE_RESPONSE_PACKET(IForwarding_HttpOverflowByteArray& ov, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket, YieldContext& y) noexcept {
-                if (NULL == socket || !socket->is_open()) {
+                if (NULLPTR == socket || !socket->is_open()) {
                     return false;
                 }
 
@@ -367,7 +367,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Byte> protocol_array_ptr = protocol_array.GetBuffer();
-                if (NULL == protocol_array_ptr) {
+                if (NULLPTR == protocol_array_ptr) {
                     return false;
                 }
 
@@ -419,7 +419,7 @@ namespace ppp {
                 else {
                     overflow_offset = 0;
                     overflow_length = 0;
-                    overflow_buffer = NULL;
+                    overflow_buffer = NULLPTR;
                     return false;
                 }
             }
@@ -433,7 +433,7 @@ namespace ppp {
                 // The proxy server then proceeds to make the connection on behalf of the client. 
                 // Once the connection is established, the proxy server continues to relay the TCP stream to and from the client.
 
-                if (NULL == socket || !socket->is_open()) {
+                if (NULLPTR == socket || !socket->is_open()) {
                     return false;
                 }
 
@@ -452,7 +452,7 @@ namespace ppp {
                 std::shared_ptr<BufferswapAllocator> allocator = configuration_->GetBufferAllocator();
                 std::shared_ptr<Byte> packet = IAsynchronousWriteIoQueue::Copy(allocator, request.data(), request_size);
 
-                if (NULL == packet) {
+                if (NULLPTR == packet) {
                     return false;
                 }
 
@@ -589,7 +589,7 @@ namespace ppp {
             }
 
             int IForwarding::OpenInternal() noexcept {
-                if (NULL == context_ || NULL == configuration_) {
+                if (NULLPTR == context_ || NULLPTR == configuration_) {
                     return -1;
                 }
 
@@ -645,8 +645,8 @@ namespace ppp {
             }
         
             IForwarding::TimerPtr IForwarding::SetTimeoutHandler(const std::shared_ptr<boost::asio::io_context>& context, int milliseconds, const ppp::function<void()>& handler) noexcept {
-                if (NULL == context || disposed_) {
-                    return NULL;
+                if (NULLPTR == context || disposed_) {
+                    return NULLPTR;
                 }
 
                 if (milliseconds < 1) {
@@ -664,8 +664,8 @@ namespace ppp {
                         }
                     });
 
-                if (NULL == timer) {
-                    return NULL;
+                if (NULLPTR == timer) {
+                    return NULLPTR;
                 }
 
                 bool added = TryAdd(timer);
@@ -675,19 +675,19 @@ namespace ppp {
 
                 timer->Stop();
                 timer->Dispose();
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<boost::asio::ip::tcp::socket> IForwarding::NewAsynchronousSocket(const std::shared_ptr<boost::asio::io_context>& context, const ppp::net::Socket::AsioStrandPtr& strand) noexcept {
-                if (NULL == context) {
-                    return NULL;
+                if (NULLPTR == context) {
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<boost::asio::ip::tcp::socket> remote_socket = strand ? 
                     make_shared_object<boost::asio::ip::tcp::socket>(*strand) : 
                     make_shared_object<boost::asio::ip::tcp::socket>(*context);
-                if (NULL == remote_socket) {
-                    return NULL;
+                if (NULLPTR == remote_socket) {
+                    return NULLPTR;
                 }
 
                 boost::asio::ip::tcp::endpoint& server_endpoint = server_.endpoint;
@@ -697,7 +697,7 @@ namespace ppp {
                 remote_socket->open(server_endpoint.protocol(), ec);
 
                 if (ec) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int handle = remote_socket->native_handle();
@@ -711,7 +711,7 @@ namespace ppp {
             }
 
             bool IForwarding::PROXY_SOCKET_SPECIAL_PROCESS(const std::shared_ptr<boost::asio::ip::tcp::socket>& socket, YieldContext& y, ProxyConnection& proxy_connection) noexcept {
-                if (NULL == socket || !socket->is_open()) {
+                if (NULLPTR == socket || !socket->is_open()) {
                     return false;
                 }
 
@@ -728,7 +728,7 @@ namespace ppp {
                 // And IPV6 does not affect the physical layer network communication of the VPN.
                 if (server_address.is_v4() && !server_address.is_loopback()) {
                     auto protector_network = ProtectorNetwork; 
-                    if (NULL != protector_network) {
+                    if (NULLPTR != protector_network) {
                         if (!protector_network->Protect(socket->native_handle(), y)) {
                             return false;
                         }
@@ -753,7 +753,7 @@ namespace ppp {
 
                 auto self = shared_from_this();
                 std::shared_ptr<ProxyConnection> proxy_connection = make_shared_object<ProxyConnection>(self, configuration_, context, strand);
-                if (NULL == proxy_connection) {
+                if (NULLPTR == proxy_connection) {
                     return false;
                 }
 
@@ -799,7 +799,7 @@ namespace ppp {
             }
 
             bool IForwarding::ConnectToProxyServer(const std::shared_ptr<boost::asio::io_context>& context, const ppp::net::Socket::AsioStrandPtr& strand, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket, Timer* timeout_key) noexcept {
-                if (NULL == context || NULL == socket) {
+                if (NULLPTR == context || NULLPTR == socket) {
                     return false;
                 }
                 
@@ -809,12 +809,12 @@ namespace ppp {
                 }
                 
                 std::shared_ptr<boost::asio::ip::tcp::socket> proxy_socket = NewAsynchronousSocket(context, strand);
-                if (NULL == proxy_socket) {
+                if (NULLPTR == proxy_socket) {
                     return false;
                 }
 
                 Timer* proxy_timeout_key = SetTimeoutAutoClosesocket(context, strand, proxy_socket);
-                if (NULL == proxy_timeout_key) {
+                if (NULLPTR == proxy_timeout_key) {
                     return false;
                 }
                 
@@ -856,7 +856,7 @@ namespace ppp {
                 }
                 
                 Timer* timeout_key = SetTimeoutAutoClosesocket(context, strand, socket);
-                if (NULL == timeout_key) {
+                if (NULLPTR == timeout_key) {
                     return false;
                 }
 
@@ -870,8 +870,8 @@ namespace ppp {
             }
 
             IForwarding::Timer* IForwarding::SetTimeoutAutoClosesocket(const std::shared_ptr<boost::asio::io_context>& context, const ppp::net::Socket::AsioStrandPtr& strand, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket) noexcept {
-                if (NULL == context || disposed_) {
-                    return NULL;
+                if (NULLPTR == context || disposed_) {
+                    return NULLPTR;
                 }
                 
                 uint64_t timeout_milliseconds = ((uint64_t)configuration_->tcp.connect.timeout) * 1000ULL;
@@ -947,7 +947,7 @@ namespace ppp {
 
             bool IForwarding::SOCKS_Handshake(const std::shared_ptr<boost::asio::ip::tcp::socket>& socket, YieldContext& y) noexcept {
 
-                if (NULL == socket || !socket->is_open()) {
+                if (NULLPTR == socket || !socket->is_open()) {
                     return false;
                 }
 
@@ -1027,7 +1027,7 @@ namespace ppp {
                     ms.Write(server_.password.data(), 0, password_size);
 
                     std::shared_ptr<Byte> buf = ms.GetBuffer();
-                    if (NULL == buf) {
+                    if (NULLPTR == buf) {
                         return false;
                     }
 

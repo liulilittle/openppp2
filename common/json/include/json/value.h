@@ -320,7 +320,7 @@ public:
   Value(UInt64 value);
 #endif // if defined(JSON_HAS_INT64)
   Value(double value);
-  Value(const char* value); ///< Copy til first 0. (NULL causes to seg-fault.)
+  Value(const char* value); ///< Copy til first 0. (NULLPTR causes to seg-fault.)
   Value(const char* begin, const char* end); ///< Copy all, incl zeroes.
   /**
    * \brief Constructs a value from a static string.
@@ -380,7 +380,7 @@ public:
 #endif
   String asString() const; ///< Embedded zeroes are possible.
   /** Get raw char* of string-value.
-   *  \return false if !string. (Seg-fault if str or end are NULL.)
+   *  \return false if !string. (Seg-fault if str or end are NULLPTR.)
    */
   bool getString(char const** begin, char const** end) const;
   Int asInt() const;
@@ -777,7 +777,7 @@ public:
   /// embedded nulls.
   JSONCPP_DEPRECATED("Use `key = name();` instead.")
   char const* memberName() const;
-  /// Return the member name of the referenced Value, or NULL if it is not an
+  /// Return the member name of the referenced Value, or NULLPTR if it is not an
   /// objectValue.
   /// \note Better version than memberName(). Allows embedded nulls.
   char const* memberName(char const** end) const;

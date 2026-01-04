@@ -75,13 +75,13 @@ namespace vmux {
             VirtualEthernetTcpipConnectionPtr& connection = linklayer->connection;
             connection->Dispose();
 
-            if (auto server = linklayer->server; NULL != server) {
+            if (auto server = linklayer->server; NULLPTR != server) {
                 server->Dispose();
                 linklayer->server.reset();
             }
         }
 
-        if (NULL != tx_resolver) {
+        if (NULLPTR != tx_resolver) {
             vmux_post_exec(context_, strand_,
                 [tx_resolver]() noexcept {
                     ppp::net::Socket::Cancel(*tx_resolver);
@@ -92,7 +92,7 @@ namespace vmux {
     vmux_net::VirtualEthernetTcpipConnectionPtr vmux_net::get_linklayer() noexcept {
         vmux_linklayer_vector::iterator tail = rx_links_.begin();
         vmux_linklayer_vector::iterator endl = rx_links_.end();
-        return tail != endl ? (*tail)->connection : NULL;
+        return tail != endl ? (*tail)->connection : NULLPTR;
     }
 
     bool vmux_net::ftt(uint32_t seq, uint32_t ack) noexcept {
@@ -162,7 +162,7 @@ namespace vmux {
     }
     
     bool vmux_net::underlyin_sent(const vmux_linklayer_ptr& linklayer, const std::shared_ptr<Byte>& packet, int packet_length, const PostInternalAsynchronousCallback& posted_ac) noexcept {
-        if (NULL == packet || packet_length < sizeof(vmux_hdr)) {
+        if (NULLPTR == packet || packet_length < sizeof(vmux_hdr)) {
             return false;
         }
         
@@ -176,14 +176,14 @@ namespace vmux {
         }
 
         ITransmissionPtr transmission = connection->GetTransmission();
-        if (NULL == transmission) {
+        if (NULLPTR == transmission) {
             return false;
         }
 
         std::shared_ptr<vmux_net> self = shared_from_this();
         return transmission_write(self, transmission, packet, packet_length, 
             [self, this, linklayer, posted_ac](bool ok) noexcept {
-                if (NULL != posted_ac) {
+                if (NULLPTR != posted_ac) {
                     posted_ac(ok);
                 }
 
@@ -247,7 +247,7 @@ namespace vmux {
                     close_exec();
                 }
                 elif(base_.established_ && (now - status_.last_heartbeat_) >= status_.heartbeat_timeout_) {
-                    if (post(cmd_keep_alived, NULL, 0, ftt_random_aid(1, INT32_MAX))) {
+                    if (post(cmd_keep_alived, NULLPTR, 0, ftt_random_aid(1, INT32_MAX))) {
                         status_.last_heartbeat_ = now;
                         switch_to_next_heartbeat_timeout();
                     }
@@ -316,7 +316,7 @@ namespace vmux {
         }
         elif(packet_less<uint32_t>::after(seq, status_.rx_ack_)) {
             std::shared_ptr<Byte> buf = make_byte_array(length);
-            if (NULL == buf) {
+            if (NULLPTR == buf) {
                 return false;
             }
 
@@ -332,7 +332,7 @@ namespace vmux {
 
     void vmux_net::packet_input_read(uint32_t connection_id, Byte* buffer, int buffer_size, uint64_t now) noexcept {
         vmux_skt_ptr skt = get_connection(connection_id);
-        if (NULL != skt) {
+        if (NULLPTR != skt) {
             if (skt->input(buffer, buffer_size)) {
                 skt->active(now);
             }
@@ -356,13 +356,13 @@ namespace vmux {
             packet_input_read(connection_id, buffer, buffer_size, now);
         }
         elif(cmd == cmd_fin) {
-            packet_input_read(connection_id, NULL, 0, now);
+            packet_input_read(connection_id, NULLPTR, 0, now);
         }
         elif(cmd == cmd_syn) {
             std::shared_ptr<vmux_skt> sk;
             bool successed = process_rx_connecting(sk, connection_id, (char*)buffer, buffer_size);
 
-            if (NULL != sk) {
+            if (NULLPTR != sk) {
                 if (successed) {
                     sk->active(now);
                 }
@@ -373,7 +373,7 @@ namespace vmux {
         }
         elif(cmd == cmd_syn_ok) {
             vmux_skt_ptr skt = get_connection(connection_id);
-            if (NULL != skt) {
+            if (NULLPTR != skt) {
                 bool successed = false;
                 if (buffer_size > 0) {
                     const Byte err = static_cast<Byte>(*buffer);
@@ -390,7 +390,7 @@ namespace vmux {
         }
         elif(cmd == cmd_acceleration) {
             vmux_skt_ptr skt = get_connection(connection_id);
-            if (NULL != skt) {
+            if (NULLPTR != skt) {
                 bool acceleration = true;
                 if (buffer_size > 0) {
                     acceleration = static_cast<Byte>(*buffer) != FALSE;
@@ -423,7 +423,7 @@ namespace vmux {
         vmux_skt_map::iterator endl = skts_.end();
         if (tail != endl) {
             skt = tail->second;
-            if (NULL != skt) {
+            if (NULLPTR != skt) {
                 return false;
             }
         }
@@ -431,7 +431,7 @@ namespace vmux {
         std::shared_ptr<vmux_net> self = shared_from_this();
         skt = ppp::make_shared_object<vmux_skt>(self, connection_id);
 
-        if (NULL == skt) {
+        if (NULLPTR == skt) {
             return false;
         }
 
@@ -480,7 +480,7 @@ namespace vmux {
     }
 
     bool vmux_net::post_internal(const std::shared_ptr<Byte>& packet, int packet_length, bool acceleration, const PostInternalAsynchronousCallback& posted_ac) noexcept {
-        if (NULL == packet || packet_length < sizeof(vmux_hdr)) {
+        if (NULLPTR == packet || packet_length < sizeof(vmux_hdr)) {
             return false;
         }
         
@@ -497,7 +497,7 @@ namespace vmux {
 
             if (linklayer_tail != linklayer_endl) {
                 tx_queue_.emplace_back(tx_packet{ packet, packet_length });
-                if (NULL != posted_ac) {
+                if (NULLPTR != posted_ac) {
                     vmux_post_exec(context_, strand_,
                         [posted_ac]() noexcept {
                             posted_ac(true);
@@ -541,7 +541,7 @@ namespace vmux {
     }
 
     bool vmux_net::post_internal(Byte cmd, const void* buffer, int buffer_size, uint32_t connection_id, bool acceleration, const PostInternalAsynchronousCallback& posted_ac) noexcept {
-        if (NULL != buffer && buffer_size < 0) {
+        if (NULLPTR != buffer && buffer_size < 0) {
             return false;
         }
 
@@ -552,12 +552,12 @@ namespace vmux {
         int packet_length = sizeof(vmux_hdr) + buffer_size;
         std::shared_ptr<Byte> packet_managed = make_byte_array(packet_length);
 
-        if (NULL == packet_managed) {
+        if (NULLPTR == packet_managed) {
             return false;
         }
 
         Byte* packet_memory = packet_managed.get();
-        if (NULL != buffer) {
+        if (NULLPTR != buffer) {
             memcpy(packet_memory + sizeof(vmux_hdr), buffer, buffer_size);
         }
 
@@ -569,7 +569,7 @@ namespace vmux {
     }
 
     bool vmux_net::add_linklayer(const VirtualEthernetTcpipConnectionPtr& connection, vmux_linklayer_ptr& linklayer, const vmux_native_add_linklayer_after_success_before_callback& cb) noexcept {
-        if (NULL == connection) {
+        if (NULLPTR == connection) {
             return false;
         }
 
@@ -587,12 +587,12 @@ namespace vmux {
         }
 
         linklayer = ppp::make_shared_object<vmux_linklayer>();
-        if (NULL == linklayer) {
+        if (NULLPTR == linklayer) {
             return false;
         }
 
         std::shared_ptr<Byte> buffer = make_byte_array(max_buffers_size);
-        if (NULL == buffer) {
+        if (NULLPTR == buffer) {
             return false;
         }
 
@@ -602,13 +602,13 @@ namespace vmux {
 
         bool unlimited = rx_links_.size() < status_.max_connections;
         if (unlimited) {
-            if (NULL != cb && !cb()) {
+            if (NULLPTR != cb && !cb()) {
                 return false;
             }
 
             return true;
         }
-        elif(NULL != cb && !cb()) {
+        elif(NULLPTR != cb && !cb()) {
             return false;
         }
 
@@ -657,7 +657,7 @@ namespace vmux {
         }
 
         ITransmissionPtr linklayer_transmission = linklayer_socket->GetTransmission();
-        if (NULL == linklayer_transmission) {
+        if (NULLPTR == linklayer_transmission) {
             return false;
         }
 
@@ -682,7 +682,7 @@ namespace vmux {
         else {
             int buffer_size = 0;
             std::shared_ptr<Byte> packet_memory = linklayer_transmission->Read(y, buffer_size);
-            if (NULL == packet_memory || buffer_size < sizeof(vmux_linlayer_add_ack_packet)) {
+            if (NULLPTR == packet_memory || buffer_size < sizeof(vmux_linlayer_add_ack_packet)) {
                 return false;
             }
 
@@ -726,7 +726,7 @@ namespace vmux {
         }
 
         ITransmissionPtr linklayer_transmission = linklayer_socket->GetTransmission();
-        if (NULL == linklayer_transmission) {
+        if (NULLPTR == linklayer_transmission) {
             return false;
         }
 
@@ -747,7 +747,7 @@ namespace vmux {
             }
 
             std::shared_ptr<Byte> buffer_memory = linklayer_transmission->Read(y, buffer_size);
-            if (NULL == buffer_memory || buffer_size < sizeof(vmux_hdr)) {
+            if (NULLPTR == buffer_memory || buffer_size < sizeof(vmux_hdr)) {
                 break;
             }
 
@@ -793,7 +793,7 @@ namespace vmux {
             return false;
         }
 
-        if (NULL == sk) {
+        if (NULLPTR == sk) {
             return false;
         }
 
@@ -813,7 +813,7 @@ namespace vmux {
             return false;
         }
 
-        if (NULL == context) {
+        if (NULLPTR == context) {
             return false;
         }
 
@@ -822,7 +822,7 @@ namespace vmux {
         }
 
         std::shared_ptr<vmux_net::atomic_int> status = ppp::make_shared_object<vmux_net::atomic_int>(-1);
-        if (NULL == status) {
+        if (NULLPTR == status) {
             return false;
         }
 
@@ -847,7 +847,7 @@ namespace vmux {
     }
 
     bool vmux_net::connect(const ContextPtr& context, const StrandPtr& strand, const std::shared_ptr<boost::asio::ip::tcp::socket>& sk, const template_string& host, int port, const ConnectAsynchronousCallback& ac) noexcept {
-        if (NULL == context || !connect_require(sk, host, port)) {
+        if (NULLPTR == context || !connect_require(sk, host, port)) {
             return false;
         }
 
@@ -867,7 +867,7 @@ namespace vmux {
             }
 
             skt = ppp::make_shared_object<vmux_skt>(self, connection_id);
-            if (NULL == skt) {
+            if (NULLPTR == skt) {
                 return false;
             }
 

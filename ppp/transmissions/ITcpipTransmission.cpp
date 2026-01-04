@@ -66,7 +66,7 @@ namespace ppp {
 
         std::shared_ptr<Byte> ITcpipTransmission::DoReadBytes(YieldContext& y, int length) noexcept {
             if (disposed_) {
-                return NULL;
+                return NULLPTR;
             }
 
             auto self = shared_from_this();
@@ -100,27 +100,27 @@ namespace ppp {
         std::shared_ptr<Byte> ITcpipTransmission::ReadBytes(YieldContext& y, int length) noexcept {
             std::shared_ptr<boost::asio::ip::tcp::socket> socket = socket_;
             if (!socket || !socket->is_open()) {
-                return NULL;
+                return NULLPTR;
             }
 
             if (disposed_) {
-                return NULL;
+                return NULLPTR;
             }
 
             if (length < 1) {
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<BufferswapAllocator> allocator = this->BufferAllocator;
             std::shared_ptr<Byte> packet = BufferswapAllocator::MakeByteArray(allocator, length);
-            if (NULL == packet) {
-                return NULL;
+            if (NULLPTR == packet) {
+                return NULLPTR;
             }
 
             bool ok = ppp::coroutines::asio::async_read(*socket, boost::asio::buffer(packet.get(), length), y);
             if (!ok) {
                 Dispose();
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<ITransmissionStatistics> statistics = this->Statistics;

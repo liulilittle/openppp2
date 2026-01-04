@@ -22,7 +22,7 @@ namespace ppp {
         }
 
         static inline bool DecoratorWebsocketResponseToWebclient(const ITransmission::AppConfigurationPtr& configuration, boost::beast::websocket::response_type& res) noexcept {
-            if (NULL == configuration) {
+            if (NULLPTR == configuration) {
                 return false;
             }
 
@@ -65,7 +65,7 @@ namespace ppp {
 
         bool IWebsocketTransmission::Decorator(boost::beast::websocket::request_type& req) noexcept {
             auto configuration = GetConfiguration();
-            if (NULL == configuration) {
+            if (NULLPTR == configuration) {
                 return false;
             }
 
@@ -124,7 +124,7 @@ namespace ppp {
 
         bool ISslWebsocketTransmission::Decorator(boost::beast::websocket::request_type& req) noexcept {
             auto configuration = GetConfiguration();
-            if (NULL == configuration) {
+            if (NULLPTR == configuration) {
                 return false;
             }
 

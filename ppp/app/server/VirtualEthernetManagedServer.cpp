@@ -74,7 +74,7 @@ namespace ppp {
                     return false;
                 }
 
-                if (NULL == ac) {
+                if (NULLPTR == ac) {
                     return false;
                 }
 
@@ -105,7 +105,7 @@ namespace ppp {
                     if (tail != endl) {
                         auto& aw = tail->second;
                         f = std::move(aw.ac);
-                        aw.ac.reset();
+                        aw.ac = NULLPTR;
                         authentications_.erase(tail);
                     }
                 }
@@ -124,7 +124,7 @@ namespace ppp {
                         auto& aw = kv.second;
                         if (now >= aw.timeout) {
                             releases.emplace_back(ReleaseInfo{ kv.first, std::move(aw.ac) });
-                            aw.ac.reset();
+                            aw.ac = NULLPTR;
                         }
                     }
                 }
@@ -168,7 +168,7 @@ namespace ppp {
                 }
 
                 IWebScoketPtr websocket = server_;
-                if (NULL == websocket) {
+                if (NULLPTR == websocket) {
                     return false;
                 }
 
@@ -220,7 +220,7 @@ namespace ppp {
 
             template <typename TWebSocket, typename TWebSocketPtr, typename TData>
             static bool PACKET_SendToManagedServer(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, TWebSocketPtr websocket, const ppp::Int128& session_id, int cmd, int id, int node, const TData& data) noexcept {
-                if (NULL == websocket) {
+                if (NULLPTR == websocket) {
                     return false;
                 }
 
@@ -244,7 +244,7 @@ namespace ppp {
 
                 int packet_length = json_string.size() + length_dec;
                 std::shared_ptr<Byte> packet = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, packet_length);
-                if (NULL == packet) {
+                if (NULLPTR == packet) {
                     return false;
                 }
                 
@@ -262,21 +262,21 @@ namespace ppp {
             static std::shared_ptr<Byte> PACKET_ReadBinaryPacket(std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, TWebSocketPtr& websocket, int& packet_length, ppp::coroutines::YieldContext& y) noexcept {
                 char length_hex[8];
                 if (!websocket->Read(length_hex, 0, sizeof(length_hex), y)) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int length_num = (int)stl::to_number<Int128, ppp::string>(ppp::string(length_hex, sizeof(length_hex)), 16);
                 if (length_num < 1) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<Byte> packet = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, length_num);
-                if (NULL == packet) {
-                    return NULL;
+                if (NULLPTR == packet) {
+                    return NULLPTR;
                 }
 
                 if (!websocket->Read(packet.get(), 0, length_num, y)) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 packet_length = length_num;
@@ -287,7 +287,7 @@ namespace ppp {
             static bool PACKET_ReadJsonPacket(std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, TWebSocketPtr& websocket, Json::Value& json, ppp::coroutines::YieldContext& y) noexcept {
                 int packet_length = 0;
                 std::shared_ptr<Byte> packet = PACKET_ReadBinaryPacket(allocator, websocket, packet_length, y);
-                if (NULL == packet || packet_length < 1) {
+                if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
 
@@ -320,7 +320,7 @@ namespace ppp {
                     return false;
                 }
 
-                if (NULL == ac) {
+                if (NULLPTR == ac) {
                     return false;
                 }
 
@@ -428,7 +428,7 @@ namespace ppp {
                 IWebScoketPtr websocket = std::move(server_); 
                 disposed_ = true;
 
-                if (NULL != websocket) {
+                if (NULLPTR != websocket) {
                     server_.reset();
                     websocket->Dispose();
                 }
@@ -489,7 +489,7 @@ namespace ppp {
                     }
 
                     std::shared_ptr<VirtualEthernetInformation> info = VirtualEthernetInformation::FromJson(json_object);
-                    if (NULL == info) {
+                    if (NULLPTR == info) {
                         continue;
                     }
 
@@ -580,8 +580,8 @@ namespace ppp {
 
             VirtualEthernetManagedServer::IWebScoketPtr VirtualEthernetManagedServer::NewWebSocketConnectToManagedServer2(const ppp::string& url, YieldContext& y) noexcept {
                 IWebScoketPtr websocket = NewWebSocketConnectToManagedServer(url, y);
-                if (NULL == websocket) {
-                    return NULL;
+                if (NULLPTR == websocket) {
+                    return NULLPTR;
                 }
 
                 int id = NewId();
@@ -599,7 +599,7 @@ namespace ppp {
                     }
                     ~websocket_auto_destroy() noexcept {
                         if (!ok_) {
-                            if (NULL != ws_) {
+                            if (NULLPTR != ws_) {
                                 ws_->Dispose();
                             }
                         }
@@ -611,7 +611,7 @@ namespace ppp {
                 } websocket_auto_destroy_(websocket, ok);
 
                 if (!ok) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 auto self = shared_from_this();
@@ -619,8 +619,8 @@ namespace ppp {
                     [self, this, websocket](Timer*) noexcept {
                         websocket->Dispose();
                     });
-                if (NULL == timeout) {
-                    return NULL;
+                if (NULLPTR == timeout) {
+                    return NULLPTR;
                 }
 
                 Json::Value json;
@@ -628,30 +628,30 @@ namespace ppp {
 
                 timeout->Dispose();
                 if (!ok) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (disposed_) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int cmd = JsonAuxiliary::AsValue<int>(json["Cmd"]);
                 if (cmd != PACKET_CMD_CONNECT) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int node_value = JsonAuxiliary::AsValue<int>(json["Node"]);
                 if (node_value != node) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 ppp::string data = JsonAuxiliary::AsString(json["Data"]);
-                return ToBoolean(data.data()) ? websocket : NULL;
+                return ToBoolean(data.data()) ? websocket : NULLPTR;
             }
 
             VirtualEthernetManagedServer::IWebScoketPtr VirtualEthernetManagedServer::NewWebSocketConnectToManagedServer(const ppp::string& url, YieldContext& y) noexcept {
                 if (disposed_) {
-                    return NULL;
+                    return NULLPTR;
                 }
                 
                 ppp::string host;
@@ -661,18 +661,18 @@ namespace ppp {
 
                 auto url_new = GetManagedServerEndPoint(url, host, path, remoteEP, ssl, y);
                 if (url_new.empty()) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 auto socket = make_shared_object<boost::asio::ip::tcp::socket>(*context_);
-                if (NULL == socket) {
-                    return NULL;
+                if (NULLPTR == socket) {
+                    return NULLPTR;
                 }
 
                 boost::system::error_code ec;
                 socket->open(remoteEP.protocol(), ec);
                 if (ec) {
-                    return NULL;
+                    return NULLPTR;
                 }
                 
                 boost::asio::ip::address remoteIP = remoteEP.address();
@@ -681,28 +681,28 @@ namespace ppp {
 
                 bool connect_ok = ppp::coroutines::asio::async_connect(*socket, remoteEP, y);
                 if (!connect_ok) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 bool binary = false;
                 auto websocket = make_shared_object<IWebSocket>();
-                if (NULL == websocket) {
-                    return NULL;
+                if (NULLPTR == websocket) {
+                    return NULLPTR;
                 }
 
                 ppp::threading::Executors::StrandPtr strand;
                 if (ssl) {
                     auto wss = make_shared_object<WebSocketSsl>(context_, strand, socket, binary);
-                    if (NULL == wss) {
-                        return NULL;
+                    if (NULLPTR == wss) {
+                        return NULLPTR;
                     }
 
                     websocket->wss = std::move(wss);
                 }
                 else {
                     auto ws = make_shared_object<WebSocket>(context_, strand, socket, binary);
-                    if (NULL == ws) {
-                        return NULL;
+                    if (NULLPTR == ws) {
+                        return NULLPTR;
                     }
 
                     websocket->ws = std::move(ws);
@@ -710,12 +710,12 @@ namespace ppp {
 
                 bool running = websocket->Run(WebSocket::HandshakeType_Client, host, path, y);
                 if (!running) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (disposed_) {
                     websocket->Dispose();
-                    return NULL;
+                    return NULLPTR;
                 }
                 else {
                     return websocket;
@@ -723,23 +723,23 @@ namespace ppp {
             }
 
             void VirtualEthernetManagedServer::IWebSocket::Dispose() noexcept {
-                if (std::shared_ptr<WebSocket> p = std::move(ws); NULL != ws) {
+                if (std::shared_ptr<WebSocket> p = std::move(ws); NULLPTR != ws) {
                     ws.reset();
                     p->Dispose();
                 }
 
-                if (std::shared_ptr<WebSocketSsl> p = std::move(wss); NULL != wss) {
+                if (std::shared_ptr<WebSocketSsl> p = std::move(wss); NULLPTR != wss) {
                     wss.reset();
                     p->Dispose();
                 }
             }
 
             bool VirtualEthernetManagedServer::IWebSocket::IsDisposed() noexcept {
-                if (auto p = ws; NULL != ws) {
+                if (auto p = ws; NULLPTR != ws) {
                     return p->IsDisposed();
                 }
 
-                if (auto p = wss; NULL != wss) {
+                if (auto p = wss; NULLPTR != wss) {
                     return p->IsDisposed();
                 }
 
@@ -747,11 +747,11 @@ namespace ppp {
             }
 
             bool VirtualEthernetManagedServer::IWebSocket::Read(const void* buffer, int offset, int length, YieldContext& y) noexcept {
-                if (auto p = ws; NULL != ws) {
+                if (auto p = ws; NULLPTR != ws) {
                     return p->Read(buffer, offset, length, y);
                 }
 
-                if (auto p = wss; NULL != wss) {
+                if (auto p = wss; NULLPTR != wss) {
                     return p->Read(buffer, offset, length, y);
                 }
 
@@ -759,14 +759,14 @@ namespace ppp {
             }
 
             bool VirtualEthernetManagedServer::IWebSocket::Run(HandshakeType type, const ppp::string& host, const ppp::string& path, YieldContext& y) noexcept {
-                if (auto p = ws; NULL != ws) {
+                if (auto p = ws; NULLPTR != ws) {
                     return p->Run(type, host, path, y);
                 }
 
                 // Do not verify SSL server and only perform one-way authentication instead of mutual authentication, 
                 // As the server's certificate may have expired or it could be a private certificate. 
                 // There is no need for SSL/TLS mutual authentication in this cases.
-                if (auto p = wss; NULL != wss) {
+                if (auto p = wss; NULLPTR != wss) {
                     std::string ssl_certificate_file;
                     std::string ssl_certificate_key_file;
                     std::string ssl_certificate_chain_file;
@@ -787,11 +787,11 @@ namespace ppp {
             }
 
             bool VirtualEthernetManagedServer::IWebSocket::Write(const void* buffer, int offset, int length, const AsynchronousWriteCallback& cb) noexcept {
-                if (auto p = ws; NULL != ws) {
+                if (auto p = ws; NULLPTR != ws) {
                     return p->Write(buffer, offset, length, cb);
                 }
 
-                if (auto p = wss; NULL != wss) {
+                if (auto p = wss; NULLPTR != wss) {
                     return p->Write(buffer, offset, length, cb);
                 }
 

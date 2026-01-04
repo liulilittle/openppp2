@@ -40,8 +40,8 @@ namespace ppp {
 
             public:
                 static std::shared_ptr<IPFrame>                 ToIp(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const IcmpFrame* frame) {
-                    if (NULL == frame) {
-                        return NULL;
+                    if (NULLPTR == frame) {
+                        return NULLPTR;
                     }
 
                     IcmpFrame* packet = constantof(frame);

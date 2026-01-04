@@ -4,14 +4,14 @@ namespace ppp
 {
     namespace win32
     {
-        // ¶ÁÈ¡BOOLÖµ
+        // ï¿½ï¿½È¡BOOLÖµ
         bool GetRegistryValueBool(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, bool* bOK) noexcept
         {
             DWORD data = GetRegistryValueDword(hKey, subKey, valueName, bOK);
             return (data != 0);
         }
 
-        // ¶ÁÈ¡×Ö·û´®Öµ
+        // ï¿½ï¿½È¡ï¿½Ö·ï¿½ï¿½ï¿½Öµ
         std::wstring GetRegistryValueString(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, bool* bOK) noexcept
         {
             LONG result;
@@ -20,7 +20,7 @@ namespace ppp
             DWORD size = MAX_PATH;
             DWORD type;
 
-            if (NULL != bOK)
+            if (NULLPTR != bOK)
             {
                 *bOK = false;
             }
@@ -39,7 +39,7 @@ namespace ppp
                 return L"";
             }
 
-            if (NULL != bOK)
+            if (NULLPTR != bOK)
             {
                 *bOK = true;
             }
@@ -47,7 +47,7 @@ namespace ppp
             return std::wstring(buffer, size / sizeof(wchar_t));
         }
 
-        // ¶ÁÈ¡DWORDÖµ
+        // ï¿½ï¿½È¡DWORDÖµ
         DWORD GetRegistryValueDword(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, bool* bOK) noexcept
         {
             LONG result;
@@ -56,7 +56,7 @@ namespace ppp
             DWORD size = sizeof(DWORD);
             DWORD type;
 
-            if (NULL != bOK)
+            if (NULLPTR != bOK)
             {
                 *bOK = false;
             }
@@ -75,7 +75,7 @@ namespace ppp
                 return 0;
             }
 
-            if (NULL != bOK)
+            if (NULLPTR != bOK)
             {
                 *bOK = true;
             }
@@ -83,7 +83,7 @@ namespace ppp
             return data;
         }
 
-        // ¶ÁÈ¡WORDÊý×éÖµ
+        // ï¿½ï¿½È¡WORDï¿½ï¿½ï¿½ï¿½Öµ
         ppp::vector<WORD> GetRegistryValueWordArray(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, bool* bOK) noexcept
         {
             LONG result;
@@ -91,7 +91,7 @@ namespace ppp
             DWORD type;
             DWORD dataSize;
 
-            if (NULL != bOK)
+            if (NULLPTR != bOK)
             {
                 *bOK = false;
             }
@@ -102,7 +102,7 @@ namespace ppp
                 return ppp::vector<WORD>();
             }
 
-            result = RegQueryValueEx(keyHandle, valueName.c_str(), 0, &type, NULL, &dataSize);
+            result = RegQueryValueEx(keyHandle, valueName.c_str(), 0, &type, NULLPTR, &dataSize);
             if (result != ERROR_SUCCESS || type != REG_BINARY)
             {
                 RegCloseKey(keyHandle);
@@ -121,7 +121,7 @@ namespace ppp
             ppp::vector<WORD> dataArray(dataSize / sizeof(WORD));
             memcpy(dataArray.data(), dataBuffer.data(), dataSize);
 
-            if (NULL != bOK)
+            if (NULLPTR != bOK)
             {
                 *bOK = true;
             }
@@ -129,21 +129,21 @@ namespace ppp
             return dataArray;
         }
 
-        // Ð´ÈëBOOLÖµ
+        // Ð´ï¿½ï¿½BOOLÖµ
         bool SetRegistryValueBool(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, bool valueData) noexcept
         {
             DWORD data = valueData ? 1 : 0;
             return SetRegistryValueDword(hKey, subKey, valueName, data);
         }
 
-        // Ð´Èë×Ö·û´®Öµ
+        // Ð´ï¿½ï¿½ï¿½Ö·ï¿½ï¿½ï¿½Öµ
         bool SetRegistryValueString(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, const std::wstring& valueData) noexcept
         {
             LONG result;
             HKEY keyHandle;
             DWORD dwDisposition;
 
-            result = RegCreateKeyEx(hKey, subKey.c_str(), 0, NULL, 0, KEY_ALL_ACCESS, NULL, &keyHandle, &dwDisposition);
+            result = RegCreateKeyEx(hKey, subKey.c_str(), 0, NULLPTR, 0, KEY_ALL_ACCESS, NULLPTR, &keyHandle, &dwDisposition);
             if (result != ERROR_SUCCESS)
             {
                 return false;
@@ -155,14 +155,14 @@ namespace ppp
             return (result == ERROR_SUCCESS);
         }
 
-        // Ð´ÈëDWORDÖµ
+        // Ð´ï¿½ï¿½DWORDÖµ
         bool SetRegistryValueDword(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, DWORD valueData) noexcept
         {
             LONG result;
             HKEY keyHandle;
             DWORD dwDisposition;
 
-            result = RegCreateKeyEx(hKey, subKey.c_str(), 0, NULL, 0, KEY_ALL_ACCESS, NULL, &keyHandle, &dwDisposition);
+            result = RegCreateKeyEx(hKey, subKey.c_str(), 0, NULLPTR, 0, KEY_ALL_ACCESS, NULLPTR, &keyHandle, &dwDisposition);
             if (result != ERROR_SUCCESS)
             {
                 return false;
@@ -174,14 +174,14 @@ namespace ppp
             return (result == ERROR_SUCCESS);
         }
 
-        // Ð´ÈëWORDÊý×éÖµ
+        // Ð´ï¿½ï¿½WORDï¿½ï¿½ï¿½ï¿½Öµ
         bool SetRegistryValueWordArray(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, const WORD* valueData, DWORD dataSize) noexcept
         {
             LONG result;
             HKEY keyHandle;
             DWORD dwDisposition;
 
-            result = RegCreateKeyEx(hKey, subKey.c_str(), 0, NULL, 0, KEY_ALL_ACCESS, NULL, &keyHandle, &dwDisposition);
+            result = RegCreateKeyEx(hKey, subKey.c_str(), 0, NULLPTR, 0, KEY_ALL_ACCESS, NULLPTR, &keyHandle, &dwDisposition);
             if (result != ERROR_SUCCESS)
             {
                 return false;

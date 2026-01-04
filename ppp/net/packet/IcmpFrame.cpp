@@ -14,9 +14,9 @@ namespace ppp {
 
                 int payload_size = 0;
                 std::shared_ptr<BufferSegment> payload = this->Payload;
-                if (NULL != payload) {
-                    if (payload->Length < 0 || (payload->Length > 0 && NULL == payload->Buffer)) {
-                        return NULL;
+                if (NULLPTR != payload) {
+                    if (payload->Length < 0 || (payload->Length > 0 && NULLPTR == payload->Buffer)) {
+                        return NULLPTR;
                     }
 
                     payload_size += payload->Length;
@@ -25,8 +25,8 @@ namespace ppp {
                 int hdr_bytes_len = sizeof(struct icmp_hdr);
                 int packet_size = hdr_bytes_len + payload_size;
                 std::shared_ptr<Byte> packet_data = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, packet_size);
-                if (NULL == packet_data) {
-                    return NULL;
+                if (NULLPTR == packet_data) {
+                    return NULLPTR;
                 }
 
                 struct icmp_hdr* icmphdr = (struct icmp_hdr*)packet_data.get();
@@ -46,13 +46,13 @@ namespace ppp {
                 }
 
                 std::shared_ptr<IPFrame> packet = make_shared_object<IPFrame>();
-                if (NULL == packet) {
-                    return NULL;
+                if (NULLPTR == packet) {
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<BufferSegment> packet_payload = make_shared_object<BufferSegment>(packet_data, packet_size);
-                if (NULL == packet_payload) {
-                    return NULL;
+                if (NULLPTR == packet_payload) {
+                    return NULLPTR;
                 }
                 
                 packet->ProtocolType = ip_hdr::IP_PROTO_ICMP;
@@ -64,25 +64,25 @@ namespace ppp {
             }
 
             std::shared_ptr<IcmpFrame> IcmpFrame::Parse(const IPFrame* frame) noexcept {
-                if (NULL == frame || frame->ProtocolType != ip_hdr::IP_PROTO_ICMP) {
-                    return NULL;
+                if (NULLPTR == frame || frame->ProtocolType != ip_hdr::IP_PROTO_ICMP) {
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<BufferSegment> messages = frame->Payload;
-                if (NULL == messages || messages->Length <= 0) {
-                    return NULL;
+                if (NULLPTR == messages || messages->Length <= 0) {
+                    return NULLPTR;
                 }
 
                 struct icmp_hdr* icmphdr = (struct icmp_hdr*)messages->Buffer.get();
-                if (NULL == icmphdr) {
-                    return NULL;
+                if (NULLPTR == icmphdr) {
+                    return NULLPTR;
                 }
 
 #if defined(PACKET_CHECKSUM)
                 if (icmphdr->icmp_chksum != 0) {
                     UInt16 cksum = inet_chksum(icmphdr, messages->Length);
                     if (cksum != 0) {
-                        return NULL;
+                        return NULLPTR;
                     }
                 }
 #endif
@@ -90,12 +90,12 @@ namespace ppp {
                 int hdr_bytes_len = sizeof(struct icmp_hdr);
                 int payload_size = messages->Length - hdr_bytes_len;
                 if (payload_size < 0) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<IcmpFrame> packet = make_shared_object<IcmpFrame>();
-                if (NULL == packet) {
-                    return NULL;
+                if (NULLPTR == packet) {
+                    return NULLPTR;
                 }
                 
                 packet->Type = (IcmpType)icmphdr->icmp_type;
@@ -110,8 +110,8 @@ namespace ppp {
                 std::shared_ptr<Byte> buffer = messages->Buffer;
                 std::shared_ptr<BufferSegment> packet_payload = 
                     make_shared_object<BufferSegment>(wrap_shared_pointer(buffer.get() + hdr_bytes_len, buffer), payload_size);
-                if (NULL == packet_payload) {
-                    return NULL;
+                if (NULLPTR == packet_payload) {
+                    return NULLPTR;
                 }
 
                 packet->Payload = packet_payload;

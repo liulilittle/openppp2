@@ -71,7 +71,7 @@ namespace ppp {
                 virtual bool                                                    Run(YieldContext& y) noexcept;
                 virtual void                                                    Update() noexcept {};
                 virtual void                                                    Dispose() noexcept;
-                virtual std::shared_ptr<ppp::net::Firewall>                     GetFirewall() noexcept { return NULL; }
+                virtual std::shared_ptr<ppp::net::Firewall>                     GetFirewall() noexcept { return NULLPTR; }
                 virtual bool                                                    SendBufferToPeer(YieldContext& y, const void* packet, int packet_length) noexcept;
 
             private:

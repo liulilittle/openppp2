@@ -21,7 +21,7 @@ namespace ppp {
             std::string HttpClient::HttpGetOrPostImpl(bool post, const ppp::string& api, const char* data, size_t size, int& status) noexcept {
                 status = 0;
 
-                if (this->_host.empty() || (NULL == data && size != 0)) {
+                if (this->_host.empty() || (NULLPTR == data && size != 0)) {
                     return "";
                 }
 
@@ -73,7 +73,7 @@ namespace ppp {
                 int tmp_port;
                 ProtocolType protocol_type;
 
-                ppp::string return_url = ppp::auxiliary::UriAuxiliary::Parse(final_url, tmp_host, tmp_address, tmp_path, tmp_port, protocol_type, NULL, nullof<ppp::coroutines::YieldContext>(), false);
+                ppp::string return_url = ppp::auxiliary::UriAuxiliary::Parse(final_url, tmp_host, tmp_address, tmp_path, tmp_port, protocol_type, NULLPTR, nullof<ppp::coroutines::YieldContext>(), false);
                 if (return_url.empty()) {
                     return false;
                 }
@@ -82,19 +82,19 @@ namespace ppp {
                     return false;
                 }
 
-                if (NULL != host) {
+                if (NULLPTR != host) {
                     *host = tmp_host;
                 }
 
-                if (NULL != path) {
+                if (NULLPTR != path) {
                     *path = tmp_path;
                 }
 
-                if (NULL != port) {
+                if (NULLPTR != port) {
                     *port = tmp_port;
                 }
 
-                if (NULL != https) {
+                if (NULLPTR != https) {
                     *https = protocol_type != ProtocolType::ProtocolType_Http;
                 }
 

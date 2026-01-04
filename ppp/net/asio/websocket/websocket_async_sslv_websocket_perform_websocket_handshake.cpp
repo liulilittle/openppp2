@@ -10,12 +10,12 @@ namespace ppp {
             
             bool AsyncSslvWebSocket::PerformWebSocketHandshake(bool handshaked_client, YieldContext& y) noexcept {
                 SslvWebSocketPtr& ssl_websocket = GetSslSocket();
-                if (NULL == ssl_websocket) {
+                if (NULLPTR == ssl_websocket) {
                     return false;
                 }
 
                 std::shared_ptr<AcceptSslvWebSocket> accept = make_shared_object<AcceptSslvWebSocket>(reference_, *ssl_websocket, binary_, host_, path_);
-                if (NULL == accept) {
+                if (NULLPTR == accept) {
                     return false;
                 }
 

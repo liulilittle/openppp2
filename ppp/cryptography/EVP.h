@@ -28,7 +28,7 @@ namespace ppp {
 
         private:
             SynchronizedObject                                  _syncobj;
-            const EVP_CIPHER*                                   _cipher = NULL;
+            const EVP_CIPHER*                                   _cipher = NULLPTR;
             std::shared_ptr<Byte>                               _key; // _cipher->key_len
             std::shared_ptr<Byte>                               _iv;
             ppp::string                                         _method;

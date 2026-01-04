@@ -25,7 +25,7 @@ namespace ppp {
             }
 
             bool VirtualInternetControlMessageProtocolStatic::Output(const IPFrame* packet, const IPEndPoint& destinationEP) noexcept {
-                if (NULL == packet) {
+                if (NULLPTR == packet) {
                     return false;
                 }
 
@@ -40,7 +40,7 @@ namespace ppp {
                 }
 
                 auto allocated_context = exchanger_->static_allocated_context_;
-                if (NULL == allocated_context) {
+                if (NULLPTR == allocated_context) {
                     return false;
                 }
 
@@ -56,7 +56,7 @@ namespace ppp {
                     packet, 
                     packet_length);
 
-                if (NULL == packet_output) {
+                if (NULLPTR == packet_output) {
                     return false;
                 }
 
@@ -69,7 +69,7 @@ namespace ppp {
                 }
                 
                 auto statistics = exchanger_->GetStatistics(); 
-                if (NULL != statistics) {
+                if (NULLPTR != statistics) {
                     statistics->AddOutgoingTraffic(packet_length);
                 }
                 

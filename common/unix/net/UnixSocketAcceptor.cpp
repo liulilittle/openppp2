@@ -9,7 +9,7 @@ namespace ppp
     namespace net
     {
         UnixSocketAcceptor::UnixSocketAcceptor() noexcept
-            : server_(NULL)
+            : server_(NULLPTR)
             , context_(ppp::threading::Executors::GetDefault())
             , in_(false)
         {
@@ -24,13 +24,13 @@ namespace ppp
         bool UnixSocketAcceptor::IsOpen() noexcept
         {
             std::shared_ptr<boost::asio::io_context> context = context_;
-            if (NULL == context)
+            if (NULLPTR == context)
             {
                 return false;
             }
 
             std::shared_ptr<boost::asio::ip::tcp::acceptor> server = server_;
-            if (NULL == server)
+            if (NULLPTR == server)
             {
                 return false;
             }
@@ -41,7 +41,7 @@ namespace ppp
         int UnixSocketAcceptor::GetHandle() noexcept
         {
             std::shared_ptr<boost::asio::ip::tcp::acceptor> server = server_;
-            if (NULL == server)
+            if (NULLPTR == server)
             {
                 return -1;
             }
@@ -56,18 +56,18 @@ namespace ppp
                 return false;
             }
 
-            if (NULL == localIP || *localIP == '\x0')
+            if (NULLPTR == localIP || *localIP == '\x0')
             {
                 return false;
             }
 
             std::shared_ptr<boost::asio::io_context> context = context_;
-            if (NULL == context)
+            if (NULLPTR == context)
             {
                 return false;
             }
 
-            if (NULL != server_)
+            if (NULLPTR != server_)
             {
                 return false;
             }
@@ -85,7 +85,7 @@ namespace ppp
             }
 
             server_ = make_shared_object<boost::asio::ip::tcp::acceptor>(*context);
-            if (NULL == server_)
+            if (NULLPTR == server_)
             {
                 return false;
             }
@@ -115,7 +115,7 @@ namespace ppp
         void UnixSocketAcceptor::Dispose() noexcept
         {
             std::shared_ptr<boost::asio::io_context> context = context_;
-            if (NULL != context)
+            if (NULLPTR != context)
             {
                 auto self = shared_from_this();
                 boost::asio::post(*context, 
@@ -129,19 +129,19 @@ namespace ppp
         bool UnixSocketAcceptor::Next() noexcept
         {
             std::shared_ptr<boost::asio::ip::tcp::acceptor> server = server_;
-            if (NULL == server)
+            if (NULLPTR == server)
             {
                 return false;
             }
 
             std::shared_ptr<boost::asio::io_context> context = context_;
-            if (NULL == context)
+            if (NULLPTR == context)
             {
                 return false;
             }
 
             std::shared_ptr<boost::asio::ip::tcp::socket> socket = make_shared_object<boost::asio::ip::tcp::socket>(*context);
-            if (NULL == socket)
+            if (NULLPTR == socket)
             {
                 return false;
             }
@@ -192,13 +192,13 @@ namespace ppp
         void UnixSocketAcceptor::Finalize() noexcept
         {
             std::shared_ptr<boost::asio::ip::tcp::acceptor> server = std::move(server_);
-            if (NULL != server)
+            if (NULLPTR != server)
             {
                 Socket::Closesocket(server);
             }
 
-            server_ = NULL;
-            context_ = NULL;
+            server_ = NULLPTR;
+            context_ = NULLPTR;
         }
     }
 }

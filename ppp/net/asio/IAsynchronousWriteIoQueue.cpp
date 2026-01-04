@@ -37,19 +37,19 @@ namespace ppp {
             }
 
             std::shared_ptr<Byte> IAsynchronousWriteIoQueue::Copy(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const void* data, int datalen) noexcept {
-                if (NULL == data || datalen < 1) {
-                    return NULL;
+                if (NULLPTR == data || datalen < 1) {
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<Byte> chunk;
-                if (NULL != allocator) {
+                if (NULLPTR != allocator) {
                     chunk = allocator->MakeArray<Byte>(datalen);
                 }
                 else {
                     chunk = make_shared_alloc<Byte>(datalen);
                 }
 
-                if (NULL != chunk) {
+                if (NULLPTR != chunk) {
                     void* memory = chunk.get();
                     memcpy(memory, data, datalen);
                 }
@@ -74,16 +74,16 @@ namespace ppp {
                     return false;
                 }
 
-                if (NULL == packet || packet_length < 1) {
+                if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
 
-                if (NULL == cb) {
+                if (NULLPTR == cb) {
                     return false;
                 }
 
                 std::shared_ptr<AsynchronousWriteIoContext> context = make_shared_object<AsynchronousWriteIoContext>();
-                if (NULL == context) {
+                if (NULLPTR == context) {
                     return false;
                 }
 
@@ -92,7 +92,7 @@ namespace ppp {
                 context->packet_length = packet_length;
 
                 bool ok = false;
-                while (NULL != q) {
+                while (NULLPTR != q) {
                     SynchronizedObjectScope scope(q->syncobj_);
                     if (q->sending_) {
                         if (q->disposed_) {
@@ -166,7 +166,7 @@ namespace ppp {
 
                         context = std::move(*tail);
                         queues_.erase(tail);
-                    } while (NULL == context);
+                    } while (NULLPTR == context);
 
                     ok = DoTryWriteBytesUnsafe(context);
                     break;

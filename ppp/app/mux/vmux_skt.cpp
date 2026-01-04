@@ -45,17 +45,17 @@ namespace vmux {
 #endif
 
         rx_queue_.clear();
-        active_event.reset();
+        active_event = NULLPTR;
 
         tx_socket = std::move(tx_socket_);
         tx_socket_.reset();
 
         mux_->release_connection(connection_id_, this);
         if (fin) {
-            mux_->post(vmux_net::cmd_fin, NULL, 0, connection_id_);
+            mux_->post(vmux_net::cmd_fin, NULLPTR, 0, connection_id_);
         }
 
-        if (NULL != tx_socket) {
+        if (NULLPTR != tx_socket) {
             auto tx_context = tx_context_;
             auto tx_strand = tx_strand_;
 
@@ -83,13 +83,13 @@ namespace vmux {
             cb = std::move(connect_ac_);
         }
 
-        connect_ac_.reset();
+        connect_ac_ = NULLPTR;
         return cb;
     }
 
     void vmux_skt::on_connected(bool ok) noexcept {
         ConnectAsynchronousCallback connect_ac = clear_event();
-        if (NULL != connect_ac) {
+        if (NULLPTR != connect_ac) {
             connect_ac(this, ok);
         }
     }
@@ -100,7 +100,7 @@ namespace vmux {
         }
 
         std::shared_ptr<boost::asio::ip::tcp::socket> tx_socket = tx_socket_;
-        if (NULL != tx_socket) {
+        if (NULLPTR != tx_socket) {
             return false;
         }
         else {
@@ -119,7 +119,7 @@ namespace vmux {
                 }
             }
             else {
-                if (NULL != tx_strand_) {
+                if (NULLPTR != tx_strand_) {
                     tx_socket = ppp::make_shared_object<boost::asio::ip::tcp::socket>(*tx_strand_);
                 }
                 else {
@@ -129,7 +129,7 @@ namespace vmux {
                 tx_buffer_ = mux_->make_byte_array(vmux_net::max_buffers_size);
                 tx_socket_ = tx_socket;
 
-                if (NULL == tx_socket || NULL == tx_buffer_) {
+                if (NULLPTR == tx_socket || NULLPTR == tx_buffer_) {
                     return false;
                 }
             }
@@ -217,7 +217,7 @@ namespace vmux {
 
         const char* sdata = host_and_port.data();
         const char* colon = strchr(sdata, ':');
-        if (NULL == colon) {
+        if (NULLPTR == colon) {
             return false;
         }
 
@@ -228,7 +228,7 @@ namespace vmux {
     }
 
     bool vmux_skt::connect(const ContextPtr& context, const StrandPtr& strand, const template_string& host, int port, const ConnectAsynchronousCallback& ac) noexcept {
-        if (NULL == ac || NULL == context) {
+        if (NULLPTR == ac || NULLPTR == context) {
             return false;
         }
 
@@ -245,12 +245,12 @@ namespace vmux {
         }
 
         std::shared_ptr<boost::asio::ip::tcp::socket> tx_socket = tx_socket_;
-        if (NULL == tx_socket) {
+        if (NULLPTR == tx_socket) {
             return false;
         }
 
         tx_buffer_ = mux_->make_byte_array(vmux_net::max_buffers_size);
-        if (NULL == tx_buffer_) {
+        if (NULLPTR == tx_buffer_) {
             return false;
         }
 
@@ -278,7 +278,7 @@ namespace vmux {
         }
 
         std::shared_ptr<boost::asio::ip::tcp::socket> tx_socket = tx_socket_;
-        if (NULL == tx_socket) {
+        if (NULLPTR == tx_socket) {
             return false;
         }
         
@@ -305,7 +305,7 @@ namespace vmux {
         std::shared_ptr<Byte> buffer;
         if (payload_size > 0) {
             buffer = mux_->make_byte_array(payload_size);
-            if (NULL != buffer) {
+            if (NULLPTR != buffer) {
                 memcpy(buffer.get(), payload, payload_size);
             }
             else {
@@ -333,7 +333,7 @@ namespace vmux {
     }
 
     bool vmux_skt::send_to_peer(const void* packet, int packet_length, const SendAsynchronousCallback& ac) noexcept {
-        if (NULL == packet || packet_length < 1) {
+        if (NULLPTR == packet || packet_length < 1) {
             return false;
         }
 
@@ -342,7 +342,7 @@ namespace vmux {
         }
 
         std::shared_ptr<boost::asio::ip::tcp::socket> tx_socket = tx_socket_;
-        if (NULL == tx_socket || NULL == tx_buffer_) {
+        if (NULLPTR == tx_socket || NULLPTR == tx_buffer_) {
             return false;
         }
 
@@ -367,12 +367,12 @@ namespace vmux {
     bool vmux_skt::send_to_peer_yield(const void* packet, int packet_length, ppp::coroutines::YieldContext& y) noexcept {
         using atomic_boolean = std::atomic<int>;
 
-        if (NULL == packet || packet_length < 1) {
+        if (NULLPTR == packet || packet_length < 1) {
             return false;
         }
 
         std::shared_ptr<vmux_net::atomic_int> status = ppp::make_shared_object<vmux_net::atomic_int>(-1);
-        if (NULL == status) {
+        if (NULLPTR == status) {
             return false;
         }
 
@@ -403,19 +403,19 @@ namespace vmux {
         std::shared_ptr<boost::asio::ip::tcp::socket> tx_socket = tx_socket_;
         std::shared_ptr<ppp::net::Firewall> firewall = mux_->Firewall;
 
-        while (NULL != tx_socket) {
+        while (NULLPTR != tx_socket) {
 
             boost::system::error_code ec;
             boost::asio::ip::address remote_ip = ppp::StringToAddress(host.data(), ec);
             if (ec) {
-                if (NULL != firewall && firewall->IsDropNetworkDomains(host)) {
+                if (NULLPTR != firewall && firewall->IsDropNetworkDomains(host)) {
                     err = 'F'; // Firewall limits.
                     break;
                 }
 
                 remote_ip = ppp::coroutines::asio::GetAddressByHostName<boost::asio::ip::tcp>(host.data(), remote_port, y).address();
             }
-            elif(NULL != firewall && firewall->IsDropNetworkSegment(remote_ip)) {
+            elif(NULLPTR != firewall && firewall->IsDropNetworkSegment(remote_ip)) {
                 err = 'F'; // Firewall limits.
                 break;
             }
@@ -426,7 +426,7 @@ namespace vmux {
                 break;
             }
 
-            if (NULL != firewall && firewall->IsDropNetworkPort(remote_port, true)) {
+            if (NULLPTR != firewall && firewall->IsDropNetworkPort(remote_port, true)) {
                 err = 'F'; // Firewall limits.
                 break;
             }
@@ -473,7 +473,7 @@ namespace vmux {
             // And IPV6 does not affect the physical layer network communication of the VPN.
             if (remote_ip.is_v4() && !remote_ip.is_loopback()) {
                 auto protector_network = mux_->ProtectorNetwork;
-                if (NULL != protector_network) {
+                if (NULLPTR != protector_network) {
                     if (!protector_network->Protect(tx_socket->native_handle(), y)) {
                         return false;
                     }
@@ -502,11 +502,11 @@ namespace vmux {
             else {
                 // Record log.
                 std::shared_ptr<ppp::app::protocol::VirtualEthernetLogger> logger = mux_->Logger;
-                if (NULL != logger) {
+                if (NULLPTR != logger) {
                     vmux_net::VirtualEthernetTcpipConnectionPtr connection = mux_->get_linklayer();
-                    if (NULL != connection) {
+                    if (NULLPTR != connection) {
                         vmux_net::ITransmissionPtr transmission = connection->GetTransmission();
-                        if (NULL != transmission) {
+                        if (NULLPTR != transmission) {
                             logger->Connect(connection->GetId(), transmission, tx_socket->local_endpoint(ec), remote_endpoint, host);
                         }
                     }
@@ -552,7 +552,7 @@ namespace vmux {
         }
         
         std::shared_ptr<boost::asio::ip::tcp::socket> tx_socket = tx_socket_;
-        if (NULL == tx_socket || NULL == tx_buffer_) {
+        if (NULLPTR == tx_socket || NULLPTR == tx_buffer_) {
             return false;
         }
 
@@ -626,7 +626,7 @@ namespace vmux {
     }
 
     bool vmux_skt::forward_to_tx_socket(const std::shared_ptr<Byte>& payload, int payload_size, packet_queue::iterator* packet_tail) noexcept {
-        if (NULL == payload || payload_size < 1) {
+        if (NULLPTR == payload || payload_size < 1) {
             return false;
         }
 
@@ -635,7 +635,7 @@ namespace vmux {
         }
 
         std::shared_ptr<boost::asio::ip::tcp::socket> tx_socket = tx_socket_;
-        if (NULL == tx_socket) {
+        if (NULLPTR == tx_socket) {
             return false;
         }
 
@@ -643,7 +643,7 @@ namespace vmux {
             return false;
         }
 
-        if (NULL != packet_tail) {
+        if (NULLPTR != packet_tail) {
             int location = FALSE;
             if (status_.sending_.compare_exchange_strong(location, TRUE)) {
                 rx_queue_.erase(*packet_tail);
@@ -682,7 +682,7 @@ namespace vmux {
                             }
                         }
                         elif(ec == boost::system::errc::resource_unavailable_try_again) {
-                            constexpr packet_queue::iterator* const null_expr = NULL;
+                            constexpr packet_queue::iterator* const null_expr = NULLPTR;
                             if (forward_to_tx_socket(payload, payload_size, null_expr)) {
                                 return true;
                             }
@@ -699,7 +699,7 @@ namespace vmux {
 
     void vmux_skt::active(uint64_t now) noexcept {
         ActiveEventHandler h = active_event; 
-        if (NULL != h) {
+        if (NULLPTR != h) {
             h(this, !status_.disposed_);
         }
 

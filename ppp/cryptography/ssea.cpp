@@ -18,7 +18,7 @@ namespace ppp
     {
         void ssea::shuffle_data(char* encoded_data, int data_size, uint32_t key) noexcept
         {
-            if (NULL != encoded_data && data_size > 0)
+            if (NULLPTR != encoded_data && data_size > 0)
             {
                 for (int i = 0; i < data_size; i++)
                 {
@@ -31,7 +31,7 @@ namespace ppp
 
         void ssea::unshuffle_data(char* encoded_data, int data_size, uint32_t key) noexcept
         {
-            if (NULL != encoded_data && data_size > 0)
+            if (NULLPTR != encoded_data && data_size > 0)
             {
                 for (int i = data_size - 1; i > -1; i--)
                 {
@@ -44,13 +44,13 @@ namespace ppp
 
         int ssea::delta_encode(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const void* data, int data_size, int kf, std::shared_ptr<Byte>& output) noexcept
         {
-            if (NULL == data || data_size < 1)
+            if (NULLPTR == data || data_size < 1)
             {
                 return 0;
             }
 
             output = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, data_size);
-            if (NULL == output)
+            if (NULLPTR == output)
             {
                 return 0;
             }
@@ -72,13 +72,13 @@ namespace ppp
 
         int ssea::delta_decode(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const void* data, int data_size, int kf, std::shared_ptr<Byte>& output) noexcept
         {
-            if (NULL == data || data_size < 1)
+            if (NULLPTR == data || data_size < 1)
             {
                 return 0;
             }
 
             output = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, data_size);
-            if (NULL == output)
+            if (NULLPTR == output)
             {
                 return 0;
             }
@@ -106,9 +106,9 @@ namespace ppp
             Byte* bytes = (Byte*)data;
             outlen = 0;
 
-            if (NULL == data || datalen < 1)
+            if (NULLPTR == data || datalen < 1)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             // For performance optimization, 
@@ -129,7 +129,7 @@ namespace ppp
             }
 
             std::shared_ptr<Byte> bucket_managed = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, bucket_length);
-            if (NULL != bucket_managed)
+            if (NULLPTR != bucket_managed)
             {
                 Byte* bucket = bucket_managed.get();
                 for (int i = 0; i < datalen; i++)
@@ -160,9 +160,9 @@ namespace ppp
             Byte* bytes = (Byte*)data;
             outlen = 0;
 
-            if (NULL == data || datalen < 1)
+            if (NULLPTR == data || datalen < 1)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             int bucket_length = datalen;
@@ -171,13 +171,13 @@ namespace ppp
                 Byte b = bytes[i];
                 if (b < '\x20')
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 b -= '\x20';
                 if (b > BASE94_RADIX)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (b >= BASE93_RADIX)
@@ -187,18 +187,18 @@ namespace ppp
                         b = bytes[i];
                         if (b < '\x20')
                         {
-                            return NULL;
+                            return NULLPTR;
                         }
 
                         b -= '\x20';
                         if (b > BASE93_RADIX)
                         {
-                            return NULL;
+                            return NULLPTR;
                         }
                     }
                     else
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     bucket_length--;
@@ -206,7 +206,7 @@ namespace ppp
             }
 
             std::shared_ptr<Byte> bucket_managed = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, bucket_length);
-            if (NULL != bucket_managed)
+            if (NULLPTR != bucket_managed)
             {
                 Byte* bucket = bucket_managed.get();
                 for (int i = 0; i < datalen; i++)
@@ -217,7 +217,7 @@ namespace ppp
                         int v = (((b - BASE93_RADIX) + 1) * BASE93_RADIX) + (bytes[++i] - '\x20');
                         if (v > 0xff)
                         {
-                            return NULL;
+                            return NULLPTR;
                         }
 
                         *bucket++ = static_cast<Byte>(v + kf);
@@ -241,7 +241,7 @@ namespace ppp
         uint64_t ssea::base94_decimal(const void* data, int datalen) noexcept
         {
             uint8_t* p = (uint8_t*)data;
-            if (NULL == p || datalen < 1)
+            if (NULLPTR == p || datalen < 1)
             {
                 return 0;
             }

@@ -92,11 +92,11 @@ namespace ppp
                         BOOL                                                    Load() noexcept
                         {
                             int error;
-                            ProtoInfo = NULL;
+                            ProtoInfo = NULLPTR;
                             ProtoInfoSize = 0;
                             TotalProtos = 0;
 
-                            if (WSCEnumProtocols(NULL, ProtoInfo, &ProtoInfoSize, &error) == SOCKET_ERROR)
+                            if (WSCEnumProtocols(NULLPTR, ProtoInfo, &ProtoInfoSize, &error) == SOCKET_ERROR)
                             {
                                 if (error != WSAENOBUFS)
                                 {
@@ -105,13 +105,13 @@ namespace ppp
                                 }
                             }
 
-                            if ((ProtoInfo = (LPWSAPROTOCOL_INFOW)GlobalAlloc(GPTR, ProtoInfoSize)) == NULL)
+                            if ((ProtoInfo = (LPWSAPROTOCOL_INFOW)GlobalAlloc(GPTR, ProtoInfoSize)) == NULLPTR)
                             {
                                 Debugger::Write(L"GlobalAlloc Error!");
                                 return FALSE;
                             }
 
-                            if ((TotalProtos = WSCEnumProtocols(NULL, ProtoInfo, &ProtoInfoSize, &error)) == SOCKET_ERROR)
+                            if ((TotalProtos = WSCEnumProtocols(NULLPTR, ProtoInfo, &ProtoInfoSize, &error)) == SOCKET_ERROR)
                             {
                                 Debugger::Write(L"Second WSCEnumProtocols Error!");
                                 return FALSE;
@@ -120,10 +120,10 @@ namespace ppp
                         }
                         void                                                    Free() noexcept // �ͷ��ڴ�
                         {
-                            if (ProtoInfo != NULL && GlobalSize(ProtoInfo) > 0)
+                            if (ProtoInfo != NULLPTR && GlobalSize(ProtoInfo) > 0)
                             {
                                 GlobalFree(ProtoInfo);
-                                ProtoInfo = NULL;
+                                ProtoInfo = NULLPTR;
                             }
                         }
 
@@ -137,8 +137,8 @@ namespace ppp
                             filterguid = GetProviderGuid();
                             TotalProtos = 0;
                             ProtoInfoSize = 0;
-                            ProtoInfo = NULL;
-                            StartProviderCompleted = NULL;
+                            ProtoInfo = NULLPTR;
+                            StartProviderCompleted = NULLPTR;
                         }
 
                     public:
@@ -158,7 +158,7 @@ namespace ppp
                                 DWORD nextlayerid = 0;
                                 WCHAR* filterpath;
                                 HINSTANCE hfilter;
-                                LPWSPSTARTUP wspstartupfunc = NULL;
+                                LPWSPSTARTUP wspstartupfunc = NULLPTR;
                                 if (lpProtoInfo->ProtocolChain.ChainLen <= 1)
                                 {
                                     Debugger::Write(L"ChainLen<=1");
@@ -206,14 +206,14 @@ namespace ppp
                                     return WSAEPROVIDERFAILEDINIT;
                                 }
 
-                                if ((hfilter = LoadLibraryW(filterpath)) == NULL)
+                                if ((hfilter = LoadLibraryW(filterpath)) == NULLPTR)
                                 {
                                     Debugger::Write(L"LoadLibrary Error!");
                                     return WSAEPROVIDERFAILEDINIT;
                                 }
 
                                 wspstartupfunc = (LPWSPSTARTUP)GetProcAddress(hfilter, "WSPStartup");
-                                if (NULL == wspstartupfunc)
+                                if (NULLPTR == wspstartupfunc)
                                 {
                                     Debugger::Write(L"GetProcessAddress Error!");
                                     return WSAEPROVIDERFAILEDINIT;
@@ -227,7 +227,7 @@ namespace ppp
                                 }
 
                                 NextProcTable = *lpproctable; // ����ԭ������ں�����
-                                if (StartProviderCompleted != NULL)
+                                if (StartProviderCompleted != NULLPTR)
                                 {
                                     StartProviderCompleted(&NextProcTable, lpproctable);
                                 }
@@ -239,12 +239,12 @@ namespace ppp
 
                     static VOID*                                                GetExtensionFunction(SOCKET s, GUID* clasid) noexcept
                     {
-                        if (NULL == clasid || s == INVALID_SOCKET)
+                        if (NULLPTR == clasid || s == INVALID_SOCKET)
                         {
-                            return NULL;
+                            return NULLPTR;
                         }
 
-                        VOID* pFunc = NULL;
+                        VOID* pFunc = NULLPTR;
                         DWORD dwSize = 0;
                         INT iErr = 0;
 
@@ -253,9 +253,9 @@ namespace ppp
                         stThreadId.ThreadHandle = GetCurrentThread();
 
                         if (LayeredServiceProvider_Current.NextProcTable.lpWSPIoctl(s, SIO_GET_EXTENSION_FUNCTION_POINTER, clasid,
-                            sizeof(GUID), &pFunc, sizeof(VOID*), &dwSize, NULL, NULL, &stThreadId, &iErr) == SOCKET_ERROR)
+                            sizeof(GUID), &pFunc, sizeof(VOID*), &dwSize, NULLPTR, NULLPTR, &stThreadId, &iErr) == SOCKET_ERROR)
                         {
-                            return NULL;
+                            return NULLPTR;
                         }
                         else
                         {
@@ -265,16 +265,16 @@ namespace ppp
 
                     static VOID*                                                GetExtensionFunction(GUID* clasid) noexcept
                     {
-                        if (NULL == clasid)
+                        if (NULLPTR == clasid)
                         {
-                            return NULL;
+                            return NULLPTR;
                         }
 
                         INT error = 0;
-                        SOCKET s = LayeredServiceProvider_Current.NextProcTable.lpWSPSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED, &error);
+                        SOCKET s = LayeredServiceProvider_Current.NextProcTable.lpWSPSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULLPTR, 0, WSA_FLAG_OVERLAPPED, &error);
                         if (s == INVALID_SOCKET)
                         {
-                            return NULL;
+                            return NULLPTR;
                         }
 
                         VOID* func = GetExtensionFunction(s, clasid);
@@ -293,7 +293,7 @@ namespace ppp
                         return GetExtensionFunction(&clasid);
                     }
 
-                    static LPFN_CONNECTEX                                       PFN_ConnectEx = NULL;
+                    static LPFN_CONNECTEX                                       PFN_ConnectEx = NULLPTR;
                     static class ConnectionTable final
                     {
                         typedef std::hash_map<UINT64, struct sockaddr_in>       AddressTable;
@@ -309,12 +309,12 @@ namespace ppp
                                 return FALSE;
                             }
 
-                            if (NULL != namelen)
+                            if (NULLPTR != namelen)
                             {
                                 *namelen = sizeof(struct sockaddr_in);
                             }
 
-                            if (NULL != name)
+                            if (NULLPTR != name)
                             {
                                 *(struct sockaddr_in*)name = tail->second;
                             }
@@ -335,7 +335,7 @@ namespace ppp
                         }
                         BOOL                                                    AddAddress(SOCKET s, const struct sockaddr* name) noexcept
                         {
-                            if (NULL == name || name->sa_family != AF_INET) 
+                            if (NULLPTR == name || name->sa_family != AF_INET) 
                             {
                                 return FALSE;
                             }
@@ -352,11 +352,11 @@ namespace ppp
 
                     static BOOL PASCAL                                          WSPConnectEx(SOCKET s, const sockaddr* name, int namelen, PVOID lpSendBuffer, DWORD dwSendDataLength, LPDWORD lpdwBytesSent, LPOVERLAPPED lpOverlapped) noexcept
                     {
-                        if (NULL == PFN_ConnectEx) 
+                        if (NULLPTR == PFN_ConnectEx) 
                         {
                             GUID metid = WSAID_CONNECTEX;
                             PFN_ConnectEx = (LPFN_CONNECTEX)GetExtensionFunction(s, metid);
-                            if (NULL == PFN_ConnectEx) 
+                            if (NULLPTR == PFN_ConnectEx) 
                             {
                                 return FALSE;
                             }
@@ -382,7 +382,7 @@ namespace ppp
                     {
                         if (ConnectionTable_Current.FindAddress(s, name, namelen)) 
                         {
-                            if (NULL != lpErrno) 
+                            if (NULLPTR != lpErrno) 
                             {
                                 *lpErrno = ERROR_SUCCESS;
                             }
@@ -413,7 +413,7 @@ namespace ppp
                     {
                         if (ConnectionTable_Current.RemoveAddress(s)) 
                         {
-                            if (NULL != lpErrno) 
+                            if (NULLPTR != lpErrno) 
                             {
                                 *lpErrno = ERROR_SUCCESS;
                             }
@@ -444,7 +444,7 @@ namespace ppp
 
                     static void WSPAPI                                          StartProviderCompleted(WSPPROC_TABLE* sender, WSPPROC_TABLE* e) noexcept
                     {
-                        if (NULL != e) 
+                        if (NULLPTR != e) 
                         {
                             e->lpWSPIoctl = &WSPIoctl;
                             e->lpWSPConnect = &WSPConnect;
@@ -456,7 +456,7 @@ namespace ppp
                     static int WSPAPI                                           WSPStartupInit(WORD wversionrequested, LPWSPDATA lpwspdata, LPWSAPROTOCOL_INFOW lpProtoInfo, WSPUPCALLTABLE upcalltable, LPWSPPROC_TABLE lpproctable) noexcept
                     {
                         TCHAR process_name[MAX_PATH];
-                        GetModuleFileName(NULL, process_name, MAX_PATH);
+                        GetModuleFileName(NULLPTR, process_name, MAX_PATH);
                         Debugger::Write(L"[PaperAirplane]%s Loading WSPStartup ...", process_name);
 
                         LayeredServiceProvider_Current.StartProviderCompleted = &StartProviderCompleted;
@@ -475,8 +475,8 @@ namespace ppp
 #pragma pack(pop)
 
                     PaperAirplaneControlBlockPort::PaperAirplaneControlBlockPort() noexcept
-                        : hMap(NULL)
-                        , pBlock(NULL)
+                        : hMap(NULLPTR)
+                        , pBlock(NULLPTR)
                     {
                         int64_t dwCapacity = sizeof(PaperAirplaneControlBlock);
                         int dwMaximumSizeLow = (int)(dwCapacity & ((INT64)(UINT64)-1));
@@ -484,22 +484,22 @@ namespace ppp
 
                         // Open virtual memory mapping and create virtual memory mapping if it fails to open.
                         hMap = OpenFileMapping(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, _T(PAPERAIRPLANE_CONFIGURATION_NM));
-                        if (NULL == hMap)
+                        if (NULLPTR == hMap)
                         {
-                            hMap = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE | 0, dwMaximumSizeHigh, dwMaximumSizeLow, _T(PAPERAIRPLANE_CONFIGURATION_NM));
+                            hMap = CreateFileMapping(INVALID_HANDLE_VALUE, NULLPTR, PAGE_READWRITE | 0, dwMaximumSizeHigh, dwMaximumSizeLow, _T(PAPERAIRPLANE_CONFIGURATION_NM));
                         }
 
                         // When a memory map is successfully opened or created, the view of virtual memory is mapped to the process address space.
-                        if (NULL != hMap)
+                        if (NULLPTR != hMap)
                         {
                             pBlock = MapViewOfFile(hMap, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
-                            if (NULL == pBlock)
+                            if (NULLPTR == pBlock)
                             {
                                 // If the address space mapping fails, the shared memory mapping handle is closed.
                                 CloseHandle(hMap);
 
-                                // Reset the value of the shared memory map handle hosting class member field to NULL.
-                                hMap = NULL;
+                                // Reset the value of the shared memory map handle hosting class member field to NULLPTR.
+                                hMap = NULLPTR;
                             }
                             else
                             {
@@ -515,23 +515,23 @@ namespace ppp
 
                     PaperAirplaneControlBlockPort::~PaperAirplaneControlBlockPort() noexcept
                     {
-                        if (NULL != pBlock)
+                        if (NULLPTR != pBlock)
                         {
                             UnmapViewOfFile(pBlock);
                         }
 
-                        if (NULL != hMap)
+                        if (NULLPTR != hMap)
                         {
                             CloseHandle(hMap);
                         }
 
-                        hMap = NULL;
-                        pBlock = NULL;
+                        hMap = NULLPTR;
+                        pBlock = NULLPTR;
                     }
 
                     bool                                                        PaperAirplaneControlBlockPort::IsAvailable() noexcept
                     {
-                        return NULL != hMap && NULL != pBlock;
+                        return NULLPTR != hMap && NULLPTR != pBlock;
                     }
 
                     PaperAirplaneBlockInformation                               PaperAirplaneControlBlockPort::Get() noexcept
@@ -543,7 +543,7 @@ namespace ppp
                         uint32_t dwMask = 0;
 
                         PaperAirplaneControlBlock* p = (PaperAirplaneControlBlock*)pBlock;
-                        if (NULL == p)
+                        if (NULLPTR == p)
                         {
                             return { nPort, nInterfaceIndex, nProcessId, dwIP, dwMask };
                         }
@@ -563,7 +563,7 @@ namespace ppp
 
                     bool                                                        PaperAirplaneControlBlockPort::Set(int interface_index, int port, uint32_t ip, uint32_t mask) noexcept
                     {
-                        if (NULL == pBlock)
+                        if (NULLPTR == pBlock)
                         {
                             return false;
                         }
@@ -589,7 +589,7 @@ namespace ppp
                     PaperAirplaneBlockInformation                               GetBlock() noexcept
                     {
                         HANDLE hMap = OpenFileMapping(FILE_MAP_READ, FALSE, _T(PAPERAIRPLANE_CONFIGURATION_NM));
-                        if (NULL == hMap)
+                        if (NULLPTR == hMap)
                         {
                             return { 0, -1, 0, 0, 0 };
                         }
@@ -601,7 +601,7 @@ namespace ppp
                         uint32_t dwMask = 0;
 
                         PaperAirplaneControlBlock* pBlock = (PaperAirplaneControlBlock*)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
-                        if (NULL != pBlock)
+                        if (NULLPTR != pBlock)
                         {
                             PaperAirplaneControlBlock stBlock = *pBlock;
                             if (stBlock.kf_1 == PAPERAIRPLANE_CONFIGURATION_KF_1 && stBlock.kf_2 == PAPERAIRPLANE_CONFIGURATION_KF_2)
@@ -619,7 +619,7 @@ namespace ppp
                         HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, nProcessId);
                         CloseHandle(hMap);
 
-                        if (NULL == hProcess)
+                        if (NULLPTR == hProcess)
                         {
                             return { 0, -1, 0, 0, 0 };
                         }
@@ -718,7 +718,7 @@ namespace ppp
 
                     std::pair<int, uint32_t>                                    GetForwardPort(void* s, const struct sockaddr* name, int namelen) noexcept
                     {
-                        if (NULL == name || namelen < (int)sizeof(struct sockaddr))
+                        if (NULLPTR == name || namelen < (int)sizeof(struct sockaddr))
                         {
                             return { 0, 0 };
                         }
@@ -842,7 +842,7 @@ namespace ppp
                             return false;
                         }
 
-                        if (NULL == add_port_forward_handling)
+                        if (NULLPTR == add_port_forward_handling)
                         {
                             return false;
                         }

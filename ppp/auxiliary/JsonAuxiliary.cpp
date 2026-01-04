@@ -18,7 +18,7 @@ namespace ppp {
         }
 
         Json::Value JsonAuxiliary::FromString(const char* json_string, int json_size) noexcept {
-            if (NULL == json_string) {
+            if (NULLPTR == json_string) {
                 return Json::Value();
             }
 

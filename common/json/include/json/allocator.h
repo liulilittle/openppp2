@@ -62,7 +62,7 @@ public:
    */
   void destroy(pointer p) {
     // destroy using "explicit destructor"
-    if (NULL != p) {
+    if (NULLPTR != p) {
       p->~T();
     }
   }

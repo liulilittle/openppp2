@@ -20,7 +20,7 @@ namespace ppp
     {
         static ppp::string NameTransform(const char* name) noexcept
         {
-            if (NULL == name || *name == '\x0')
+            if (NULLPTR == name || *name == '\x0')
             {
                 return ppp::string();
             }
@@ -88,7 +88,7 @@ namespace ppp
 
         static FLOCK                                FLOCK_OPEN(const char* name) noexcept
         {
-            if (NULL == name || *name == '\x0')
+            if (NULLPTR == name || *name == '\x0')
             {
                 return { -1, "", false };
             }
@@ -116,7 +116,7 @@ namespace ppp
 
         static bool                                 FLOCK_CLOSE(const char* path, int pid_file) noexcept
         {
-            if (NULL == path || *path == '\x0')
+            if (NULLPTR == path || *path == '\x0')
             {
                 return false;
             }

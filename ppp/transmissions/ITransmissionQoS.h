@@ -55,11 +55,11 @@ namespace ppp {
                 const std::shared_ptr<ITransmissionQoS>                 qos) noexcept {
 
                 if (length < 1) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<Byte> packet;
-                if (NULL != qos) {
+                if (NULLPTR != qos) {
                     packet = qos->ReadBytes(y, length, 
                         [self, &transmission, qos](YieldContext& y, int* length) noexcept {
                             return transmission.ReadBytes(y, *length);
@@ -69,12 +69,12 @@ namespace ppp {
                     packet = transmission.ReadBytes(y, length);
                 }
 
-                if (NULL != packet) {
+                if (NULLPTR != packet) {
                     return packet;
                 }
 
                 transmission.Dispose();
-                return NULL;
+                return NULLPTR;
             }
 
         private:

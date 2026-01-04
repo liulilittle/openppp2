@@ -35,7 +35,7 @@ namespace ppp {
 #endif
 #endif
             template <typename Handler = std::nullptr_t>
-            static void                                                         R(YieldContext& y, std::atomic<int>& status, bool b, const Handler& handler = NULL) noexcept {
+            static void                                                         R(YieldContext& y, std::atomic<int>& status, bool b, const Handler& handler = NULLPTR) noexcept {
                 int k = -1;
                 int v = b ? 1 : 0;
 
@@ -177,7 +177,7 @@ namespace ppp {
                 typedef ppp::net::Ipep                                          Ipep;
                 typedef std::atomic<bool>                                       atomic_bool;
 
-                if (NULL == hostname || *hostname == '\x0') {
+                if (NULLPTR == hostname || *hostname == '\x0') {
                     return IPEndPoint::AnyAddressV4<TProtocol>(IPEndPoint::MinPort);
                 }
 
@@ -186,7 +186,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<atomic_bool> status = make_shared_object<atomic_bool>(false);
-                if (NULL == status) {
+                if (NULLPTR == status) {
                     return IPEndPoint::AnyAddressV4<TProtocol>(IPEndPoint::MinPort);
                 }
 
@@ -194,7 +194,7 @@ namespace ppp {
                 auto processing =
                     [status, &results, &y](IPEndPoint* ep) noexcept {
                         if (!status->exchange(true)) {
-                            if (NULL != ep) {
+                            if (NULLPTR != ep) {
                                 results = IPEndPoint::ToEndPoint<TProtocol>(*ep);
                             }
 

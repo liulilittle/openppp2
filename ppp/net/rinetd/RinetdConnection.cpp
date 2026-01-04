@@ -96,7 +96,7 @@ namespace ppp {
                     make_shared_object<boost::asio::ip::tcp::socket>(*strand_) : make_shared_object<boost::asio::ip::tcp::socket>(*context_);
                 remote_socket_= socket;
                 
-                if (NULL == socket) {
+                if (NULLPTR == socket) {
                     return false;
                 }
 
@@ -115,7 +115,7 @@ namespace ppp {
                 // And IPV6 does not affect the physical layer network communication of the VPN.
                 if (remoteIP.is_v4() && !remoteIP.is_loopback()) {
                     auto protector_network = ProtectorNetwork; 
-                    if (NULL != protector_network) {
+                    if (NULLPTR != protector_network) {
                         if (!protector_network->Protect(socket->native_handle(), y)) {
                             return false;
                         }
@@ -142,17 +142,17 @@ namespace ppp {
                 }
 
                 std::shared_ptr<ppp::configurations::AppConfiguration> configuration = GetConfiguration();
-                if (NULL == configuration) {
+                if (NULLPTR == configuration) {
                     return false;
                 }
 
                 local_buffer_ = ppp::threading::BufferswapAllocator::MakeByteArray(configuration->GetBufferAllocator(), PPP_BUFFER_SIZE);
-                if (NULL == local_buffer_) {
+                if (NULLPTR == local_buffer_) {
                     return false;
                 }
 
                 remote_buffer_ = ppp::threading::BufferswapAllocator::MakeByteArray(configuration->GetBufferAllocator(), PPP_BUFFER_SIZE);
-                if (NULL == remote_buffer_) {
+                if (NULLPTR == remote_buffer_) {
                     return false;
                 }
 

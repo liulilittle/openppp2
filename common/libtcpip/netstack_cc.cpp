@@ -18,20 +18,20 @@ namespace lwip {
 
         boost::asio::ip::address dest_ip = dest.address();
         if (!dest_ip.is_v4()) {
-            return NULL;
+            return NULLPTR;
         }
 
         boost::asio::ip::address src_ip = src.address();
         if (!src_ip.is_v4()) {
-            return NULL;  
+            return NULLPTR;  
         }
         else {
             outlen = ip_hdr::IP_HLEN + tcp_hdr::TCP_HLEN;
         }
 
         std::shared_ptr<ppp::Byte> packet = ppp::make_shared_alloc<ppp::Byte>(outlen);
-        if (NULL == packet) {
-            return NULL;
+        if (NULLPTR == packet) {
+            return NULLPTR;
         }
 
         ip_hdr* iphdr = (ip_hdr*)packet.get();

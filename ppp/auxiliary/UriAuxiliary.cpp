@@ -81,7 +81,7 @@ namespace ppp {
             ProtocolType&                                                   protocol,
             YieldContext&                                                   y) noexcept {
 
-            ppp::string* abs = NULL;
+            ppp::string* abs = NULLPTR;
             return UriAuxiliary::Parse(url, hostname, address, path, port, protocol, abs, y);
         }
 
@@ -242,7 +242,7 @@ namespace ppp {
             protocol = protocol_type;
 
             url_string = proto_string + "://" + hostname;
-            if (NULL != abs) {
+            if (NULLPTR != abs) {
                 ppp::string abs_string = url_string;
                 if (!address_string.empty()) {
                     abs_string += "[";

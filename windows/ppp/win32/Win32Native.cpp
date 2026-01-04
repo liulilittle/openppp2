@@ -59,7 +59,7 @@ namespace ppp
             }
 
             struct tm tm_;
-            time_t datetime = time(NULL);
+            time_t datetime = time(NULLPTR);
             localtime_s(&tm_, &datetime);
 
             char sz[1000];
@@ -81,7 +81,7 @@ namespace ppp
             // HandleException to call any previous handler or return
             // EXCEPTION_CONTINUE_SEARCH on the exception thread, allowing it to appear
             // as though this handler were not present at all.
-            HANDLE hFile = CreateFileA(Seh_NewDumpFileName().data(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            HANDLE hFile = CreateFileA(Seh_NewDumpFileName().data(), GENERIC_WRITE, 0, NULLPTR, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULLPTR);
             if (hFile != INVALID_HANDLE_VALUE)
             {
                 MINIDUMP_EXCEPTION_INFORMATION exceptionParam;
@@ -89,7 +89,7 @@ namespace ppp
                 exceptionParam.ExceptionPointers = exceptionInfo;
                 exceptionParam.ClientPointers = TRUE;
 
-                MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpWithFullMemory, &exceptionParam, NULL, NULL);
+                MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpWithFullMemory, &exceptionParam, NULLPTR, NULLPTR);
                 CloseHandle(hFile);
             }
 
@@ -112,7 +112,7 @@ namespace ppp
 
             _CrtDumpMemoryLeaks();
             _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_DEBUG);
-            _CrtMemDumpAllObjectsSince(NULL);
+            _CrtMemDumpAllObjectsSince(NULLPTR);
             _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
 
             // Make up an exception record for the current thread and CPU context
@@ -195,7 +195,7 @@ namespace ppp
         SYSTEM_WINDOWS_COM_INITIALIZED::SYSTEM_WINDOWS_COM_INITIALIZED()
         {
             char messages[1000];
-            HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+            HRESULT hr = CoInitializeEx(NULLPTR, COINIT_MULTITHREADED);
             if (FAILED(hr))
             {
                 sprintf(messages, "Failed to initialize COM library. Error code = 0x%08x", hr);
@@ -204,15 +204,15 @@ namespace ppp
             elif(SUCCEEDED(hr))
             {
                 hr = CoInitializeSecurity(
-                    NULL,
+                    NULLPTR,
                     -1,
-                    NULL,
-                    NULL,
+                    NULLPTR,
+                    NULLPTR,
                     RPC_C_AUTHN_LEVEL_DEFAULT,
                     RPC_C_IMP_LEVEL_IMPERSONATE,
-                    NULL,
+                    NULLPTR,
                     EOAC_NONE,
-                    NULL);
+                    NULLPTR);
                 if (FAILED(hr))
                 {
                     sprintf(messages, "Failed to initialize security. Error code = 0x%08x", hr);
@@ -256,24 +256,24 @@ namespace ppp
 
         void* Win32Native::GetProcAddress(const char* moduleName, const char* functionName) noexcept
         {
-            if (NULL != moduleName && *moduleName == '\x0')
+            if (NULLPTR != moduleName && *moduleName == '\x0')
             {
-                moduleName = NULL;
+                moduleName = NULLPTR;
             }
 
             HMODULE hModule = GetModuleHandleA(moduleName);
-            if (NULL == hModule)
+            if (NULLPTR == hModule)
             {
                 hModule = LoadLibraryA(moduleName);
-                if (NULL == hModule)
+                if (NULLPTR == hModule)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
             }
 
-            if (NULL == functionName || *functionName == '\x0')
+            if (NULLPTR == functionName || *functionName == '\x0')
             {
-                return NULL;
+                return NULLPTR;
             }
 
             return ::GetProcAddress(hModule, functionName);
@@ -298,7 +298,7 @@ namespace ppp
             typedef NTSTATUS(WINAPI* RtlGetNtVersionNumbersProc)(PULONG, PULONG, PULONG);
 
             static const RtlGetNtVersionNumbersProc WINAPI_RtlGetNtVersionNumbers = (RtlGetNtVersionNumbersProc)Win32Native::GetProcAddress("ntdll.dll", "RtlGetNtVersionNumbers");
-            if (NULL == WINAPI_RtlGetNtVersionNumbers)
+            if (NULLPTR == WINAPI_RtlGetNtVersionNumbers)
             {
                 return false;
             }
@@ -311,7 +311,7 @@ namespace ppp
             typedef DWORD(WINAPI* DnsFlushResolverCacheProc)();
 
             static DnsFlushResolverCacheProc WINAPI_DnsFlushResolverCache = (DnsFlushResolverCacheProc)GetProcAddress("Dnsapi.dll", "DnsFlushResolverCache");
-            if (NULL == WINAPI_DnsFlushResolverCache)
+            if (NULLPTR == WINAPI_DnsFlushResolverCache)
             {
                 return false;
             }
@@ -327,7 +327,7 @@ namespace ppp
                 return true;
             }
 
-            HANDLE hToken = NULL;
+            HANDLE hToken = NULLPTR;
             if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
             {
                 return false;
@@ -368,7 +368,7 @@ namespace ppp
 
         bool Win32Native::WSACloseEvent(const void* handle) noexcept
         {
-            if (NULL == handle)
+            if (NULLPTR == handle)
             {
                 return false;
             }
@@ -386,17 +386,17 @@ namespace ppp
 
         bool Win32Native::Execute(bool runas, const char* filePath, const char* argumentText, int* returnCode) noexcept
         {
-            if (NULL == filePath || *filePath == '\x0')
+            if (NULLPTR == filePath || *filePath == '\x0')
             {
                 return false;
             }
 
-            if (NULL == argumentText)
+            if (NULLPTR == argumentText)
             {
                 argumentText = "";
             }
 
-            if (NULL != returnCode)
+            if (NULLPTR != returnCode)
             {
                 *returnCode = INFINITE;
             }
@@ -416,7 +416,7 @@ namespace ppp
                 return false;
             }
 
-            if (NULL != returnCode)
+            if (NULLPTR != returnCode)
             {
                 WaitForSingleObject(sei.hProcess, INFINITE);
                 if (!GetExitCodeProcess(sei.hProcess, reinterpret_cast<DWORD*>(returnCode)))
@@ -431,24 +431,24 @@ namespace ppp
 
         bool Win32Native::Execute(bool runas, const char* commandText) noexcept
         {
-            if (NULL == commandText || *commandText == '\x0')
+            if (NULLPTR == commandText || *commandText == '\x0')
             {
                 return false;
             }
 
             if (runas)
             {
-                return ShellExecuteA(NULL, "runas", commandText, NULL, NULL, SW_SHOWNORMAL);
+                return ShellExecuteA(NULLPTR, "runas", commandText, NULLPTR, NULLPTR, SW_SHOWNORMAL);
             }
             else
             {
-                return ShellExecuteA(NULL, "open", commandText, NULL, NULL, SW_SHOWNORMAL);
+                return ShellExecuteA(NULLPTR, "open", commandText, NULLPTR, NULLPTR, SW_SHOWNORMAL);
             }
         }
 
         bool Win32Native::EnableDebugPrivilege() noexcept
         {
-            HANDLE hToken = NULL;
+            HANDLE hToken = NULLPTR;
             if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
             {
                 return false;
@@ -457,7 +457,7 @@ namespace ppp
             TOKEN_PRIVILEGES tkp;
             tkp.PrivilegeCount = 1;
 
-            if (!LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &tkp.Privileges[0].Luid))
+            if (!LookupPrivilegeValue(NULLPTR, SE_DEBUG_NAME, &tkp.Privileges[0].Luid))
             {
                 CloseHandle(hToken);
                 return false;
@@ -467,7 +467,7 @@ namespace ppp
                 tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
             }
 
-            bool ok = AdjustTokenPrivileges(hToken, FALSE, &tkp, sizeof(TOKEN_PRIVILEGES), NULL, NULL);
+            bool ok = AdjustTokenPrivileges(hToken, FALSE, &tkp, sizeof(TOKEN_PRIVILEGES), NULLPTR, NULLPTR);
             if (ok)
             {
                 int lastError = GetLastError();
@@ -494,25 +494,25 @@ namespace ppp
 
         bool Win32Native::DeviceIoControl(const void* tap, uint32_t commands, const void* contents, int content_size) noexcept
         {
-            if (NULL == tap || tap == INVALID_HANDLE_VALUE)
+            if (NULLPTR == tap || tap == INVALID_HANDLE_VALUE)
             {
                 return false;
             }
 
             if (content_size < 1)
             {
-                contents = NULL;
+                contents = NULLPTR;
             }
 
             BOOL bOK = false;
-            HANDLE hEvent = ::CreateEvent(NULL, false, false, NULL);
+            HANDLE hEvent = ::CreateEvent(NULLPTR, false, false, NULLPTR);
             do
             {
                 OVERLAPPED overlapped{};
                 overlapped.hEvent = hEvent;
 
                 DWORD dw = 0;
-                if (NULL == contents)
+                if (NULLPTR == contents)
                 {
                     bOK = ::DeviceIoControl((LPVOID)tap, commands,
                         (LPVOID)contents, 0, (LPVOID)contents, 0, &dw, &overlapped);
@@ -524,7 +524,7 @@ namespace ppp
                 }
             } while (false);
 
-            if (NULL != hEvent)
+            if (NULLPTR != hEvent)
             {
                 ::CloseHandle(hEvent);
             }
@@ -533,25 +533,25 @@ namespace ppp
 
         ppp::string Win32Native::GetFullPath(const char* path) noexcept
         {
-            if (NULL == path || *path == '\x0')
+            if (NULLPTR == path || *path == '\x0')
             {
                 return "";
             }
 
-            DWORD fullpath_size = GetFullPathNameA(path, 0, NULL, NULL);
+            DWORD fullpath_size = GetFullPathNameA(path, 0, NULLPTR, NULLPTR);
             if (fullpath_size == 0 || fullpath_size == MAXDWORD)
             {
                 return "";
             }
 
             LPSTR fullpath_string = (LPSTR)Malloc(fullpath_size + 1);
-            if (NULL == fullpath_string)
+            if (NULLPTR == fullpath_string)
             {
                 return "";
             }
 
             ppp::string fullpath;
-            DWORD dw = GetFullPathNameA(path, fullpath_size, fullpath_string, NULL);
+            DWORD dw = GetFullPathNameA(path, fullpath_size, fullpath_string, NULLPTR);
             if (dw != 0)
             {
                 fullpath = ppp::string(fullpath_string, dw);
@@ -583,15 +583,15 @@ namespace ppp
 
             DWORD dwInheritedFromUniqueProcessId = 0;
             HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process_id);
-            if (NULL != hProcess)
+            if (NULLPTR != hProcess)
             {
                 KERNEL_PROCESS_BASIC_INFORMATION pbi;
                 ZeroMemory(&pbi, sizeof(pbi));
 
                 static NtQueryInformationProcess_Proc NtQueryInformationProcess = (NtQueryInformationProcess_Proc)GetProcAddress("ntdll.dll", "NtQueryInformationProcess");
-                if (NULL != NtQueryInformationProcess)
+                if (NULLPTR != NtQueryInformationProcess)
                 {
-                    NTSTATUS status = NtQueryInformationProcess(hProcess, 0, &pbi, sizeof(pbi), NULL);
+                    NTSTATUS status = NtQueryInformationProcess(hProcess, 0, &pbi, sizeof(pbi), NULLPTR);
                     if (status == 0)
                     {
                         dwInheritedFromUniqueProcessId = (DWORD)pbi.InheritedFromUniqueProcessId;
@@ -606,31 +606,31 @@ namespace ppp
         ppp::string Win32Native::GetProcessFullName(int process_id) noexcept
         {
             HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process_id);
-            if (NULL == hProcess)
+            if (NULLPTR == hProcess)
             {
                 return "";
             }
 
-            char* szFilePath = NULL;
+            char* szFilePath = NULLPTR;
             DWORD dwBufferSize = MAX_PATH;
             DWORD dwPathLength = 0;
 
             ppp::string strProcessFullName;
             do
             {
-                if (NULL != szFilePath)
+                if (NULLPTR != szFilePath)
                 {
                     Mfree(szFilePath);
-                    szFilePath = NULL;
+                    szFilePath = NULLPTR;
                 }
 
                 szFilePath = (char*)Malloc(dwBufferSize);
-                if (NULL == szFilePath)
+                if (NULLPTR == szFilePath)
                 {
                     break;
                 }
 
-                dwPathLength = GetModuleFileNameExA(hProcess, NULL, szFilePath, dwBufferSize);
+                dwPathLength = GetModuleFileNameExA(hProcess, NULLPTR, szFilePath, dwBufferSize);
                 if (dwPathLength == 0)
                 {
                     break;
@@ -646,7 +646,7 @@ namespace ppp
                 }
             } while (dwPathLength >= dwBufferSize);
 
-            if (NULL != szFilePath)
+            if (NULLPTR != szFilePath)
             {
                 Mfree(szFilePath);
             }
@@ -687,47 +687,40 @@ namespace ppp
                     }
                 }
             }
+
             return false;
         }
 
         bool Win32Native::PauseWindowsConsole() noexcept
         {
-            bool b = Win32Native::IsRunningFromWindowsConsole();
-            if (b)
+            HWND hWnd = GetConsoleWindow(); // std::cin.good(), ferror(stdin), feof(stdin).
+            if (NULLPTR == hWnd)
             {
                 return false;
             }
 
-            b = std::cin.good();
-            if (!b)
+            DWORD dwPid = 0;
+            GetWindowThreadProcessId(hWnd, &dwPid);
+
+            DWORD dwMyid = GetCurrentProcessId();
+            if (dwPid == dwMyid)
             {
-                return false;
+                system("pause");
             }
 
-            if (feof(stdin))
-            {
-                return false;
-            }
-
-            if (ferror(stdin))
-            {
-                return false;
-            }
-
-            system("pause");
             return true;
         }
 
         bool Win32Native::EnabledConsoleWindowClosedButton(bool enabled) noexcept
         {
             HWND consoleWnd = GetConsoleWindow();
-            if (NULL == consoleWnd)
+            if (NULLPTR == consoleWnd)
             {
                 return false;
             }
 
             HMENU systemMenu = GetSystemMenu(consoleWnd, FALSE);
-            if (NULL == systemMenu)
+            if (NULLPTR == systemMenu)
             {
                 return false;
             }
@@ -745,16 +738,16 @@ namespace ppp
         bool Win32Native::AddShutdownApplicationEventHandler(ShutdownApplicationEventHandler e) noexcept
         {
             BOOL bOK;
-            if (NULL == e)
+            if (NULLPTR == e)
             {
-                bOK = SetConsoleCtrlHandler(NULL, TRUE);
+                bOK = SetConsoleCtrlHandler(NULLPTR, TRUE);
             }
             else
             {
                 PHANDLER_ROUTINE f = [](_In_ DWORD fdwCtrlType) -> BOOL
                 {
                     const ShutdownApplicationEventHandler e = SHUTDOWN_APPLICATION_EVENT;
-                    if (NULL == e)
+                    if (NULLPTR == e)
                     {
                         return FALSE;
                     }
@@ -882,7 +875,7 @@ namespace ppp
             }
 
             HANDLE hProcess = ::GetCurrentProcess();
-            if (NULL == hProcess) 
+            if (NULLPTR == hProcess) 
             {
                 return false;
             }
@@ -899,7 +892,7 @@ namespace ppp
         ppp::string Win32Native::GetFolderPathWithWindows() noexcept
         {
             CHAR path[MAX_PATH];
-            if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_WINDOWS, NULL, 0, path)))
+            if (SUCCEEDED(SHGetFolderPathA(NULLPTR, CSIDL_WINDOWS, NULLPTR, 0, path)))
             {
                 return path;
             }
@@ -935,7 +928,7 @@ namespace ppp
         {
             SECURITY_ATTRIBUTES sa;
             sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-            sa.lpSecurityDescriptor = NULL;
+            sa.lpSecurityDescriptor = NULLPTR;
             sa.bInheritHandle = TRUE;
 
             HANDLE hStdin, hStdout;
@@ -956,7 +949,7 @@ namespace ppp
             PROCESS_INFORMATION pi;
             ZeroMemory(&pi, sizeof(pi));
 
-            bool ok = CreateProcessA(NULL, (LPSTR)command.data(), NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
+            bool ok = CreateProcessA(NULLPTR, (LPSTR)command.data(), NULLPTR, NULLPTR, TRUE, 0, NULLPTR, NULLPTR, &si, &pi);
             if (!ok)
             {
                 CloseHandle(hStdin);
@@ -975,7 +968,7 @@ namespace ppp
                 char szBuffers[nBufferSize];
 
                 DWORD dwBytesRead = 0;
-                while (ReadFile(hStdin, szBuffers, nBufferSize, &dwBytesRead, NULL))
+                while (ReadFile(hStdin, szBuffers, nBufferSize, &dwBytesRead, NULLPTR))
                 {
                     if (dwBytesRead == 0)
                     {
@@ -1107,14 +1100,14 @@ namespace ppp
 
         ppp::string Win32Native::GetAllLogicalDriveStrings() noexcept
         {
-            int dw = GetLogicalDriveStringsA(0, NULL);
+            int dw = GetLogicalDriveStringsA(0, NULLPTR);
             if (dw < 1)
             {
                 return "";
             }
 
             auto sb = make_shared_alloc<Byte>(dw);
-            if (NULL == sb)
+            if (NULLPTR == sb)
             {
                 return "";
             }
@@ -1127,7 +1120,7 @@ namespace ppp
             
             DWORD serials;
             DWORD maxcomp;
-            if (!GetVolumeInformationA((LPSTR)sb.get(), NULL, 0, &serials, &maxcomp, 0, NULL, 0))
+            if (!GetVolumeInformationA((LPSTR)sb.get(), NULLPTR, 0, &serials, &maxcomp, 0, NULLPTR, 0))
             {
                 return "";
             }
@@ -1200,7 +1193,7 @@ namespace ppp
             typedef LONG(WINAPI* RtlGetVersion_Proc)(PRTL_OSVERSIONINFOW lpVersionInformation);
 
             static RtlGetVersion_Proc __RtlGetVersion__ = (RtlGetVersion_Proc)GetProcAddress("ntdll.dll", "RtlGetVersion");
-            if (NULL == __RtlGetVersion__)
+            if (NULLPTR == __RtlGetVersion__)
             {
                 return false;
             }
@@ -1229,7 +1222,7 @@ namespace ppp
         // Determine whether you can find the address of the function from the EAT table.
         bool Win32Native::IsWindows10OrLaterVersion() noexcept
         {
-            return NULL != __SetThreadDescription__; /* SetThreadDescription */
+            return NULLPTR != __SetThreadDescription__; /* SetThreadDescription */
         }
 
         // Assigns a description to a thread.
@@ -1275,7 +1268,7 @@ namespace ppp
 
         void Win32Native::CloseHandle(boost::asio::windows::object_handle* handle) noexcept
         {
-            if (NULL != handle)
+            if (NULLPTR != handle)
             {
                 boost::system::error_code ec;
                 try
@@ -1294,7 +1287,7 @@ namespace ppp
 
         static std::wstring __A2W__(UINT cp, const std::string& s) noexcept
         {
-            size_t len = MultiByteToWideChar(cp, 0, s.data(), s.size(), NULL, 0);
+            size_t len = MultiByteToWideChar(cp, 0, s.data(), s.size(), NULLPTR, 0);
             if (len == 0)
             {
                 return std::wstring();
@@ -1309,7 +1302,7 @@ namespace ppp
 
         static std::string __W2A__(UINT cp, const std::wstring& s) noexcept
         {
-            size_t len = WideCharToMultiByte(CP_ACP, 0, s.data(), s.size(), NULL, 0, 0, 0);
+            size_t len = WideCharToMultiByte(CP_ACP, 0, s.data(), s.size(), NULLPTR, 0, 0, 0);
             if (len == 0)
             {
                 return std::string();

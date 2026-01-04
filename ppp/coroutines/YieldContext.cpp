@@ -11,8 +11,8 @@ namespace ppp
 
         YieldContext::YieldContext(ppp::threading::BufferswapAllocator* allocator, boost::asio::io_context& context, boost::asio::strand<boost::asio::io_context::executor_type>* strand, SpawnHander&& spawn, int stack_size) noexcept
             : s_(0)
-            , callee_(NULL)
-            , caller_(NULL)
+            , callee_(NULLPTR)
+            , caller_(NULLPTR)
             , h_(std::move(spawn))
             , context_(context)
             , strand_(strand)
@@ -31,11 +31,11 @@ namespace ppp
         YieldContext::~YieldContext() noexcept
         {
             YieldContext* y = this;
-            y->h_          = NULL;
-            y->stack_      = NULL;
+            y->h_          = NULLPTR;
+            y->stack_      = NULLPTR;
             y->stack_size_ = 0;
-            y->strand_     = NULL;
-            y->allocator_  = NULL;
+            y->strand_     = NULLPTR;
+            y->allocator_  = NULLPTR;
         }
 
         bool YieldContext::Suspend() noexcept
@@ -46,7 +46,7 @@ namespace ppp
                 YieldContext* y = this;
                 y->caller_.exchange(
                     boost::context::detail::jump_fcontext(
-                        y->caller_.exchange(NULL), y).fctx);
+                        y->caller_.exchange(NULLPTR), y).fctx);
 
                 L = STATUS_RESUMING;
                 return y->s_.compare_exchange_strong(L, STATUS_RESUMED);
@@ -65,7 +65,7 @@ namespace ppp
                 YieldContext* y = this;
                 return Switch(
                     boost::context::detail::jump_fcontext(
-                        y->callee_.exchange(NULL), y), y);
+                        y->callee_.exchange(NULLPTR), y), y);
             }
             else
             {
@@ -97,7 +97,7 @@ namespace ppp
                 return boost::context::detail::jump_fcontext(context, state);
             }
 
-            return boost::context::detail::transfer_t{ NULL, NULL };
+            return boost::context::detail::transfer_t{ NULLPTR, NULLPTR };
         }
 
         bool YieldContext::Switch() noexcept(false)
@@ -131,17 +131,17 @@ namespace ppp
             if (y)
             {
                 SpawnHander h = std::move(y->h_);
-                y->h_ = NULL;
+                y->h_ = NULLPTR;
                 y->caller_.exchange(t.fctx);
 
                 if (h)
                 {
                     h(*y);
-                    h = NULL;
+                    h = NULLPTR;
                 }
 
-                Jump(y->caller_.exchange(NULL), NULL);
-                if (y->callee_.exchange(NULL))
+                Jump(y->caller_.exchange(NULLPTR), NULLPTR);
+                if (y->callee_.exchange(NULLPTR))
                 {
                     throw std::runtime_error("The yield_context has a serious abnormal handover exit problem.");
                 }

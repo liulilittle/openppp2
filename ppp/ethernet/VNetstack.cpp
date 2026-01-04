@@ -49,7 +49,7 @@ namespace ppp {
             this->lwip = false;
             this->closed = false;
             this->state = TcpState::TCP_STATE_CLOSED;
-            this->socket = NULL;
+            this->socket = NULLPTR;
             this->lastTime = Executors::GetTickCount();
         }
 
@@ -65,7 +65,7 @@ namespace ppp {
             this->closed = true;
             this->socket.reset();
 
-            if (NULL != c) {
+            if (NULLPTR != c) {
                 c->Dispose();
             }
         }
@@ -77,7 +77,7 @@ namespace ppp {
             auto tail = map.find(key);
             auto endl = map.end();
             if (tail == endl) {
-                return NULL;
+                return NULLPTR;
             }
             else {
                 return tail->second;
@@ -91,7 +91,7 @@ namespace ppp {
             auto tail = map.find(key);
             auto endl = map.end();
             if (tail == endl) {
-                return NULL;
+                return NULLPTR;
             }
             else {
                 return tail->second;
@@ -101,7 +101,7 @@ namespace ppp {
         std::shared_ptr<VNetstack::TapTcpLink> VNetstack::AllocTcpLink(UInt32 src_ip, int src_port, UInt32 dst_ip, int dst_port) noexcept {
             auto key = LAN2WAN_KEY(src_ip, src_port, dst_ip, dst_port);
             std::shared_ptr<TapTcpLink> link = this->FindTcpLink(key);
-            if (link != NULL) {
+            if (link != NULLPTR) {
                 return link;
             }
             else {
@@ -133,7 +133,7 @@ namespace ppp {
                     }
 
                     link = make_shared_object<TapTcpLink>();
-                    if (NULL == link) {
+                    if (NULLPTR == link) {
                         break;
                     }
 
@@ -150,7 +150,7 @@ namespace ppp {
                 }
             }
 
-            if (NULL != link) {
+            if (NULLPTR != link) {
                 link->Update();
             }
 
@@ -173,7 +173,7 @@ namespace ppp {
             }
 
             std::shared_ptr<ITap> tap = this->Tap;
-            if (NULL == tap) {
+            if (NULLPTR == tap) {
                 return false;
             }
             else {
@@ -181,7 +181,7 @@ namespace ppp {
             }
 
             std::shared_ptr<SocketAcceptor> acceptor = SocketAcceptor::New();
-            if (NULL == acceptor) {
+            if (NULLPTR == acceptor) {
                 return false;
             }
             else {
@@ -237,7 +237,7 @@ namespace ppp {
                 break;
             }
 
-            if (NULL != acceptor) {
+            if (NULLPTR != acceptor) {
                 acceptor->Dispose();
             }
 
@@ -250,12 +250,12 @@ namespace ppp {
         }
 
         bool VNetstack::Input(ip_hdr* ip, tcp_hdr* tcp, int tcp_len) noexcept {
-            if (NULL == ip || NULL == tcp || tcp_len < 1) {
+            if (NULLPTR == ip || NULLPTR == tcp || tcp_len < 1) {
                 return false;
             }
 
             std::shared_ptr<ITap> tap = this->Tap;
-            if (NULL == tap) {
+            if (NULLPTR == tap) {
                 return false;
             }
 
@@ -293,7 +293,7 @@ namespace ppp {
                     }
                     else {
                         c = link->socket;
-                        if (NULL != c) {
+                        if (NULLPTR != c) {
                             rst = c->IsDisposed();
                             break;
                         }
@@ -303,7 +303,7 @@ namespace ppp {
                     boost::asio::ip::tcp::endpoint remoteEP = IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(ip->dest, ntohs(tcp->dest));
 
                     c = this->BeginAcceptClient(localEP, remoteEP);
-                    if (NULL == c) {
+                    if (NULLPTR == c) {
                         break;
                     }
 
@@ -381,7 +381,7 @@ namespace ppp {
                 auto endl = this->wan2lan_.end();
                 while (tail != endl) {
                     link = tail->second;
-                    if (NULL == link) {
+                    if (NULLPTR == link) {
                         tail = this->wan2lan_.erase(tail);
                         continue;
                     }
@@ -392,7 +392,7 @@ namespace ppp {
                     UInt64 deltaTime = now - link->lastTime;
                     if (link->lwip) {
                         socket = link->socket;
-                        if (NULL == socket) {
+                        if (NULLPTR == socket) {
                             bool syn = link->state == TcpState::TCP_STATE_SYN_SENT || link->state == TcpState::TCP_STATE_SYN_RECEIVED;
                             if (!syn) {
                                 releases.emplace_back(link);
@@ -428,7 +428,7 @@ namespace ppp {
                     else {
                     TCP_STATE_INACTIVE:
                         socket = link->socket;
-                        if (NULL == socket || socket->IsDisposed()) {
+                        if (NULLPTR == socket || socket->IsDisposed()) {
                             goto TCP_STATE_FINALIZE;
                         }
 
@@ -442,7 +442,7 @@ namespace ppp {
             }
 
             for (const std::shared_ptr<TapTcpLink>& i : releases) {
-                if (NULL != i) {
+                if (NULLPTR != i) {
                     this->CloseTcpLink(i);
                 }
             }
@@ -479,12 +479,12 @@ namespace ppp {
             tcp_hdr::TCPH_HDRLEN_BYTES_SET(tcp, tcp_len);
             tcp_hdr::TCPH_FLAGS_SET(tcp, TcpFlags::TCP_RST);
 
-            return this->Output(false, iphdr, tcp, tcp_len, NULL);
+            return this->Output(false, iphdr, tcp, tcp_len, NULLPTR);
         }
 
         bool VNetstack::Output(bool lan2wan, ip_hdr* ip, tcp_hdr* tcp, int tcp_len, TapTcpClient* c) noexcept {
             std::shared_ptr<ITap> tap = this->Tap;
-            if (NULL == tap) {
+            if (NULLPTR == tap) {
                 return false;
             }
 
@@ -510,13 +510,13 @@ namespace ppp {
             }
 
             int ippkg_len = ((char*)tcp + tcp_len) - (char*)ip;
-            if (NULL == c) {
+            if (NULLPTR == c) {
                 return tap->Output(ip, ippkg_len);
             }
 
             std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = GetBufferAllocator();
             std::shared_ptr<Byte> packet = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, ippkg_len);
-            if (NULL == packet) {
+            if (NULLPTR == packet) {
                 return false;
             }
             else {
@@ -530,12 +530,12 @@ namespace ppp {
         }
 
         bool VNetstack::CloseTcpLink(const std::shared_ptr<TapTcpLink>& link) noexcept {
-            if (NULL == link) {
+            if (NULLPTR == link) {
                 return false;
             }
 
             std::shared_ptr<ITap> tap = this->Tap;
-            if (NULL == tap) {
+            if (NULLPTR == tap) {
                 return false;
             }
             else {
@@ -567,7 +567,7 @@ namespace ppp {
 
             do {
                 tap = this->Tap;
-                if (NULL == tap) {
+                if (NULLPTR == tap) {
                     break;
                 }
 
@@ -601,12 +601,12 @@ namespace ppp {
                     link = this->FindTcpLink(htons(remoteEP.Port));
                 }
 
-                if (NULL == link) {
+                if (NULLPTR == link) {
                     break;
                 }
 
                 pcb = link->socket;
-                if (NULL == pcb) {
+                if (NULLPTR == pcb) {
                     if (link->state != TcpState::TCP_STATE_CLOSED) {
                         link->state = TcpState::TCP_STATE_CLOSED;
                     }
@@ -615,7 +615,7 @@ namespace ppp {
                 }
 
                 socket = pcb->NewAsynchronousSocket(sockfd, natEP);
-                if (NULL == socket) {
+                if (NULLPTR == socket) {
                     break;
                 }
 
@@ -630,7 +630,7 @@ namespace ppp {
                 return ok;
             } while (false);
 
-            if (NULL == socket) {
+            if (NULLPTR == socket) {
                 Socket::Closesocket(sockfd);
             }
 
@@ -645,12 +645,12 @@ namespace ppp {
             const int src_port = src.port();
 
             std::shared_ptr<TapTcpLink> link = this->LwIpAcceptLink(src_ip, dest_ip, src_port, dest_port);
-            if (NULL == link) {
+            if (NULLPTR == link) {
                 return -1;
             }
 
             std::shared_ptr<TapTcpClient> pcb = link->socket;
-            if (NULL == pcb) {
+            if (NULLPTR == pcb) {
                 if (link->state != TcpState::TCP_STATE_CLOSED) {
                     link->state = TcpState::TCP_STATE_CLOSED;
                 }
@@ -667,7 +667,7 @@ namespace ppp {
                 pcb->sync_ack_bytes_size_ = 0;
                 pcb->sync_ack_byte_array_ = lwip::netstack_wrap_ipv4_tcp_syn_packet(dest, src, wnd, ack, seq, sync_packet_size);
 
-                if (NULL != pcb->sync_ack_byte_array_) {
+                if (NULLPTR != pcb->sync_ack_byte_array_) {
                     pcb->sync_ack_bytes_size_ = sync_packet_size;
                     return 1;
                 }
@@ -692,8 +692,8 @@ namespace ppp {
                 }
 
                 link = make_shared_object<TapTcpLink>();
-                if (NULL == link) {
-                    return NULL;
+                if (NULLPTR == link) {
+                    return NULLPTR;
                 }
                 
                 link->dstAddr = dstAddr;
@@ -713,9 +713,9 @@ namespace ppp {
             boost::asio::ip::tcp::endpoint remoteEP = IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(dstAddr, dstPort);
 
             std::shared_ptr<TapTcpClient> socket = this->BeginAcceptClient(localEP, remoteEP);
-            if (NULL == socket) {
+            if (NULLPTR == socket) {
                 this->CloseTcpLink(link);
-                return NULL;
+                return NULLPTR;
             }
 
             socket->lwip_ = key;
@@ -724,7 +724,7 @@ namespace ppp {
             bool bok = socket->BeginAccept();
             if (!bok) {
                 this->CloseTcpLink(link);
-                return NULL;
+                return NULLPTR;
             }
 
             link->socket = std::move(socket);
@@ -753,16 +753,16 @@ namespace ppp {
 
         std::shared_ptr<boost::asio::ip::tcp::socket> VNetstack::TapTcpClient::NewAsynchronousSocket(int sockfd, const boost::asio::ip::tcp::endpoint& remoteEP) noexcept {
             if (disposed_) {
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<boost::asio::ip::tcp::socket> socket = socket_;
-            if (NULL == socket) {
-                return NULL;
+            if (NULLPTR == socket) {
+                return NULLPTR;
             }
 
             if (socket->is_open()) {
-                return NULL;
+                return NULLPTR;
             }
 
             boost::system::error_code ec = boost::asio::error::operation_aborted;
@@ -772,7 +772,7 @@ namespace ppp {
             catch (const std::exception&) {}
 
             if (ec) {
-                return NULL;
+                return NULLPTR;
             }
             else {
                 return socket;
@@ -790,7 +790,7 @@ namespace ppp {
                 };
 
             std::shared_ptr<boost::asio::ip::tcp::socket> socket = socket_; 
-            if (NULL != socket) {
+            if (NULLPTR != socket) {
                 boost::asio::post(socket->get_executor(), finalize);
             }
             else {
@@ -805,17 +805,12 @@ namespace ppp {
             std::shared_ptr<TapTcpLink> link = std::move(link_);
             link_.reset();
 
-            if (!disposed_.exchange(TRUE)) {
-                if (lwip_) {
-                    lwip::netstack::close();
-                }
-            }
-
-            if (NULL != socket) {
+            disposed_.exchange(TRUE);
+            if (NULLPTR != socket) {
                 Socket::Closesocket(socket);
             }
 
-            if (NULL != link) {
+            if (NULLPTR != link) {
                 if (lwip_) {
                     link->Release();
                 }
@@ -831,7 +826,7 @@ namespace ppp {
             }
 
             std::shared_ptr<TapTcpLink> link = link_;
-            if (NULL == link) {
+            if (NULLPTR == link) {
                 return false;
             }
 
@@ -840,12 +835,12 @@ namespace ppp {
         }
 
         bool VNetstack::TapTcpClient::EndAccept(const std::shared_ptr<boost::asio::ip::tcp::socket>& socket, const boost::asio::ip::tcp::endpoint& natEP) noexcept {
-            if (NULL == socket) {
+            if (NULLPTR == socket) {
                 return false;
             }
 
             std::shared_ptr<boost::asio::io_context> context = this->context_;
-            if (NULL == context) {
+            if (NULLPTR == context) {
                 return false;
             }
 
@@ -858,7 +853,7 @@ namespace ppp {
 
             if (lwip_) {
                 std::shared_ptr<TapTcpLink> link = this->link_;
-                if (NULL == link) {
+                if (NULLPTR == link) {
                     return false;
                 }
 
@@ -892,7 +887,7 @@ namespace ppp {
             this->sync_ack_bytes_size_ = 0;
             if (lwip_) {
                 std::shared_ptr<TapTcpLink> link = this->link_;
-                if (NULL == link) {
+                if (NULLPTR == link) {
                     return false;
                 }
 
@@ -900,11 +895,11 @@ namespace ppp {
                 return lwip::netstack::input(packet.get(), packet_length);
             }
             else {
-                if (NULL == tap) {
+                if (NULLPTR == tap) {
                     return false;
                 }
 
-                if (NULL == packet) {
+                if (NULLPTR == packet) {
                     return false;
                 }
 

@@ -74,9 +74,9 @@ struct {
 static size_t
 curl_write_data(char* buf, size_t size, size_t nmemb, void* lpVoid) noexcept {
     size_t dw = size * nmemb;
-    if (dw > 0 && NULL != lpVoid) {
+    if (dw > 0 && NULLPTR != lpVoid) {
         WebResponseStream* stream_ = (WebResponseStream*)lpVoid;
-        if (NULL == stream_->stream_) {
+        if (NULLPTR == stream_->stream_) {
             stream_->stream_ = (unsigned char*)ppp::Malloc(dw + 1);
             stream_->length_ += (unsigned long)dw;
             memcpy(stream_->stream_, buf, dw);
@@ -110,32 +110,32 @@ static int curl_easy_request(
     bool            support_keep_alive,
     const char*     request_user_agent,
     const char*     auth_user_and_password) noexcept {
-    if (NULL == open_url || *open_url == '\x0') {
+    if (NULLPTR == open_url || *open_url == '\x0') {
         return CURL_EASY_ERROR_NotAllowOpenUrlIsNullReferences;
     }
 
-    if (NULL == response_body) {
+    if (NULLPTR == response_body) {
         return CURL_EASY_ERROR_NotAllowResponseBodyIsNullReferences;
     }
 
-    if (NULL == response_headers) {
+    if (NULLPTR == response_headers) {
         return CURL_EASY_ERROR_NotAllowResponseHeadersIsNullReferences;
     }
 
-    if (NULL == response_body_size) {
+    if (NULLPTR == response_body_size) {
         return CURL_EASY_ERROR_NotAllowResponseBodySizeIsNullReferences;
     }
 
-    if (NULL == response_headers_size) {
+    if (NULLPTR == response_headers_size) {
         return CURL_EASY_ERROR_NotAllowResponseHeadersSizeIsNullReferences;
     }
 
-    if (NULL == status_code) {
+    if (NULLPTR == status_code) {
         return CURL_EASY_ERROR_NotAllowStatusCodeIsNullReferences;
     }
 
-    *response_body = NULL;
-    *response_headers = NULL;
+    *response_body = NULLPTR;
+    *response_headers = NULLPTR;
     *response_body_size = 0;
     *response_headers_size = 0;
     *status_code = 0;
@@ -149,12 +149,12 @@ static int curl_easy_request(
     }
 
     CURL* pCurl = curl_easy_init();
-    if (NULL == pCurl) {
+    if (NULLPTR == pCurl) {
         return CURL_EASY_ERROR_FailedToCurlEasyInit;
     }
 
-    curl_slist* pslist = curl_slist_append(NULL, request_headers);
-    if (NULL != pslist) {
+    curl_slist* pslist = curl_slist_append(NULLPTR, request_headers);
+    if (NULLPTR != pslist) {
         curl_easy_setopt(pCurl, CURLOPT_HTTPHEADER, pslist);
     }
 
@@ -178,15 +178,15 @@ static int curl_easy_request(
 
     curl_easy_setopt(pCurl, CURLOPT_URL, open_url);
     curl_easy_setopt(pCurl, CURLOPT_NOPROGRESS, 1L);
-    if (NULL != auth_user_and_password && *auth_user_and_password != '\x0') {
+    if (NULLPTR != auth_user_and_password && *auth_user_and_password != '\x0') {
         curl_easy_setopt(pCurl, CURLOPT_USERPWD, auth_user_and_password);
     }
 
-    if (NULL != request_user_agent && *request_user_agent != '\x0') {
+    if (NULLPTR != request_user_agent && *request_user_agent != '\x0') {
         curl_easy_setopt(pCurl, CURLOPT_USERAGENT, request_user_agent);
     }
 
-    if (NULL != request_body && request_body_size >= 0) {
+    if (NULLPTR != request_body && request_body_size >= 0) {
         curl_easy_setopt(pCurl, CURLOPT_POST, 1L);
         curl_easy_setopt(pCurl, CURLOPT_POSTFIELDS, request_body);
         curl_easy_setopt(pCurl, CURLOPT_POSTFIELDSIZE, request_body_size);
@@ -205,7 +205,7 @@ static int curl_easy_request(
 #endif
     
     ppp::string cacert_file_path_;
-    if (NULL == cacert_file_path || *cacert_file_path == '\x0') {
+    if (NULLPTR == cacert_file_path || *cacert_file_path == '\x0') {
         cacert_file_path_ = chnroutes2_cacertpath_default();
         cacert_file_path  = cacert_file_path_.data();
     }
@@ -233,25 +233,25 @@ static int curl_easy_request(
         *response_headers = response_headers_stream.stream_;
         *response_headers_size = response_headers_stream.length_;
 
-        if (NULL != *response_body && *response_body_size > 0) {
+        if (NULLPTR != *response_body && *response_body_size > 0) {
             (*response_body)[*response_body_size] = '\x0';
         }
 
-        if (NULL != *response_headers && *response_headers_size > 0) {
+        if (NULLPTR != *response_headers && *response_headers_size > 0) {
             (*response_headers)[*response_headers_size] = '\x0';
         }
     } while (false);
 
-    if (NULL != pslist) {
+    if (NULLPTR != pslist) {
         curl_slist_free_all(pslist);
     }
 
     if (error != CURL_EASY_ERROR_Success) {
-        if (NULL != response_body_stream.stream_) {
+        if (NULLPTR != response_body_stream.stream_) {
             ppp::Mfree(response_body_stream.stream_);
         }
 
-        if (NULL != response_headers_stream.stream_) {
+        if (NULLPTR != response_headers_stream.stream_) {
             ppp::Mfree(response_headers_stream.stream_);
         }
     }
@@ -270,8 +270,8 @@ static ppp::function<void()> http_easy_timeout(const std::shared_ptr<boost::asio
     }
 
     auto t = ppp::make_shared_object<boost::asio::deadline_timer>(socket->get_executor());
-    if (NULL == t) {
-        return NULL;
+    if (NULLPTR == t) {
+        return NULLPTR;
     }
     
     t->expires_from_now(ppp::threading::Timer::DurationTime(milliseconds));
@@ -294,35 +294,35 @@ static ppp::function<void()> http_easy_timeout(const std::shared_ptr<boost::asio
 
 static std::shared_ptr<boost::asio::ip::tcp::socket> http_easy_connect(const ppp::string& host, int port, ppp::coroutines::YieldContext& y) noexcept {
     if (host.empty() || port <= ppp::net::IPEndPoint::MinPort || port > ppp::net::IPEndPoint::MaxPort) {
-        return NULL;
+        return NULLPTR;
     }
 
     auto remoteEP = ppp::coroutines::asio::GetAddressByHostName<boost::asio::ip::tcp>(host.data(), port, y);
     auto remoteIP = remoteEP.address();
     if (ppp::net::IPEndPoint::IsInvalid(remoteIP)) {
-        return NULL;
+        return NULLPTR;
     }
 
     if (remoteIP.is_unspecified()) {
-        return NULL;
+        return NULLPTR;
     }
 
     if (remoteIP.is_multicast()) {
-        return NULL;
+        return NULLPTR;
     }
 
     auto socket = ppp::make_shared_object<boost::asio::ip::tcp::socket>(y.GetContext());
     if (!socket) {
-        return NULL;
+        return NULLPTR;
     }
 
     auto timeout = http_easy_timeout(socket, HTTP_EASY_OPEN_TIMEOUT);
     if (!timeout) {
-        return NULL;
+        return NULLPTR;
     }
 
     if (!ppp::coroutines::asio::async_connect(*socket, remoteEP, y)) {
-        return NULL;
+        return NULLPTR;
     }
 
     timeout();
@@ -410,7 +410,7 @@ static bool http_easy_query(const ppp::string& url, ppp::string& host, int& port
     }
 
     char* c = (char*)strchr(p + hard, '/');
-    if (NULL != c) {
+    if (NULLPTR != c) {
         char t = *c;
         *c = '\x0';
         host = p + hard;
@@ -481,18 +481,18 @@ ppp::string chnroutes2_getiplist() noexcept {
         "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9\r\n"
         "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8\r\n"
         "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.104 Safari/537.36\r\n",
-        NULL,
+        NULLPTR,
         0L,
         &response_body,
         &response_body_size,
         &response_headers,
         &reponse_headers_size,
         &status_code,
-        NULL,
+        NULLPTR,
         false,
         true,
-        NULL,
-        NULL);
+        NULLPTR,
+        NULLPTR);
 
     ppp::string iplist;
     if (call_err != CURL_EASY_ERROR_Success) {
@@ -514,20 +514,20 @@ ppp::string chnroutes2_getiplist() noexcept {
 ppp::string chnroutes2_getiplist() noexcept { // Must run on the default thread.
     bool dynamic_allocated = false;
     std::shared_ptr<boost::asio::io_context> context = ppp::threading::Executors::GetExecutor();
-    if ((NULL == context || context->stopped()) || (context == ppp::threading::Executors::GetDefault())) {
+    if ((NULLPTR == context || context->stopped()) || (context == ppp::threading::Executors::GetDefault())) {
         context = lwip::netstack::Executor;
-        if (NULL == context || context->stopped()) {
+        if (NULLPTR == context || context->stopped()) {
             dynamic_allocated = true;
             context = ppp::make_shared_object<boost::asio::io_context>();
         }
     }
 
-    if (NULL == context) {
+    if (NULLPTR == context) {
         return ppp::string();
     }
 
     auto awaitable = ppp::make_shared_object<ppp::threading::Executors::Awaitable>();
-    if (NULL == awaitable) {
+    if (NULLPTR == awaitable) {
         return ppp::string();
     }
 
@@ -665,7 +665,7 @@ bool chnroutes2_saveiplist(const ppp::string& path_, const ppp::set<ppp::string>
     }
 
     FILE* file_ = fopen(path_.c_str(), "wb+");
-    if (NULL == file_) {
+    if (NULLPTR == file_) {
         return false;
     }
 
@@ -679,7 +679,7 @@ bool chnroutes2_saveiplist(const ppp::string& path_, const ppp::set<ppp::string>
 }
 
 void chnroutes2_getiplist_async(const ppp::function<void(ppp::string&)>& cb) noexcept(false) {
-    if (NULL == cb) {
+    if (NULLPTR == cb) {
         throw std::runtime_error("cb not allow is null.");
     }
 
@@ -696,7 +696,7 @@ void chnroutes2_getiplist_async(const ppp::function<void(ppp::string&)>& cb) noe
 
 ppp::string chnroutes2_gettime(time_t time_) noexcept {
     if (time_ == 0) {
-        time_ = time(NULL);
+        time_ = time(NULLPTR);
     }
 
     struct tm tm_;
@@ -716,10 +716,10 @@ time_t chnroutes2_gettime() noexcept {
 
 #ifdef _WIN32
     timeBeginPeriod(1);
-    tm_ = time(NULL);
+    tm_ = time(NULLPTR);
     timeEndPeriod(1);
 #else
-    tm_ = time(NULL);
+    tm_ = time(NULLPTR);
 #endif
     return tm_;
 }

@@ -447,7 +447,7 @@ namespace aggligator
             if (server_ip.is_v4() && !server_ip.is_loopback())
             {
                 ProtectorNetworkPtr protector_network = aggligator->ProtectorNetwork; 
-                if (NULL != protector_network) 
+                if (NULLPTR != protector_network) 
                 {
                     if (!protector_network->Protect(socket->native_handle(), y)) 
                     {
@@ -574,13 +574,13 @@ namespace aggligator
         , rx_pps_(0)
         , tx_pps_(0)
     {
-        if (NULL == buffer)
+        if (NULLPTR == buffer)
         {
             buffer_size = 0;
         }
         elif(buffer_size < 1)
         {
-            buffer_ = NULL;
+            buffer_ = NULLPTR;
             buffer_size = 0;
         }
     }
@@ -613,7 +613,7 @@ namespace aggligator
 
         if (exit)
         {
-            Exit = NULL;
+            Exit = NULLPTR;
             exit();
         }
     }
@@ -732,7 +732,7 @@ namespace aggligator
     void aggligator::socket_adjust(int sockfd, bool in4) noexcept
     {
         AppConfigurationPtr configuration = AppConfiguration;
-        if (NULL != configuration)
+        if (NULLPTR != configuration)
         {
             auto& cfg = configuration->udp;
             Socket::SetWindowSizeIfNotZero(sockfd, cfg.cwnd, cfg.rwnd);
@@ -1030,7 +1030,7 @@ namespace aggligator
         }
 
         server_ptr server = make_shared_object<aggligator::server>();
-        if (NULL == server)
+        if (NULLPTR == server)
         {
             return false;
         }
@@ -1063,7 +1063,7 @@ namespace aggligator
             }
 
             auto acceptor = make_shared_object<boost::asio::ip::tcp::acceptor>(context_);
-            if (NULL == acceptor)
+            if (NULLPTR == acceptor)
             {
                 break;
             }
@@ -1227,7 +1227,7 @@ namespace aggligator
         channels = 0;
 
         client_ptr client = client_;
-        if (NULL != client && !client->server_mode_) 
+        if (NULLPTR != client && !client->server_mode_) 
         {
             servers = (int)client->server_endpoints_.size();
             if (servers > 0) 
@@ -1308,7 +1308,7 @@ namespace aggligator
         }
         else 
         {
-            return NULL;
+            return NULLPTR;
         }
     }
 
@@ -1381,13 +1381,13 @@ namespace aggligator
 
     bool aggligator::client::send(Byte* packet, int packet_length) noexcept
     {
-        if (NULL == packet || packet_length < 1)
+        if (NULLPTR == packet || packet_length < 1)
         {
             return false;
         }
 
         convergence_ptr convergence = convergence_;
-        if (NULL == convergence)
+        if (NULLPTR == convergence)
         {
             return false;
         }
@@ -1403,7 +1403,7 @@ namespace aggligator
         uint32_t seq = ++convergence->seq_no_;
 
         std::shared_ptr<Byte> message = convergence->pack(packet, packet_length, seq, message_length);
-        if (NULL == message || message_length < 1)
+        if (NULLPTR == message || message_length < 1)
         {
             return false;
         }
@@ -1575,20 +1575,20 @@ namespace aggligator
         using tcp_endpoint_list = list<boost::asio::ip::tcp::endpoint>;
 
         std::shared_ptr<aggligator> aggligator = app_;
-        if (NULL == aggligator)
+        if (NULLPTR == aggligator)
         {
             return false;
         }
 
         std::shared_ptr<tcp_endpoint_list> list = make_shared_object<tcp_endpoint_list>();
-        if (NULL == list)
+        if (NULLPTR == list)
         {
             return false;
         }
 
         client_ptr self = shared_from_this();
         convergence_ptr pconvergence = make_shared_object<convergence>(aggligator, self);
-        if (NULL == pconvergence)
+        if (NULLPTR == pconvergence)
         {
             return false;
         }
@@ -1638,7 +1638,7 @@ namespace aggligator
         return timeout() && connect_to_server(master_node,
             [this, list, connect_to_server](connection* connection) noexcept
             {
-                if (NULL == list)
+                if (NULLPTR == list)
                 {
                     return false;
                 }
@@ -1646,7 +1646,7 @@ namespace aggligator
                 bool any = false;
                 for (const boost::asio::ip::tcp::endpoint& server : *list)
                 {
-                    any |= connect_to_server(server, NULL);
+                    any |= connect_to_server(server, NULLPTR);
                 }
 
                 return any;
@@ -1656,24 +1656,24 @@ namespace aggligator
     std::shared_ptr<Byte> aggligator::convergence::pack(Byte* packet, int packet_length, uint32_t seq, int& out) noexcept
     {
         out = 0;
-        if (NULL == packet || packet_length < 1)
+        if (NULLPTR == packet || packet_length < 1)
         {
-            return NULL;
+            return NULLPTR;
         }
 
         int message_length = 4 + packet_length;
         int final_length = 2 + message_length;
 
         std::shared_ptr<aggligator> aggligator = app_;
-        if (NULL == aggligator)
+        if (NULLPTR == aggligator)
         {
-            return NULL;
+            return NULLPTR;
         }
 
         std::shared_ptr<Byte> message = aggligator->make_shared_bytes(final_length);
-        if (NULL == message)
+        if (NULLPTR == message)
         {
-            return NULL;
+            return NULLPTR;
         }
 
         Byte* stream = message.get();
@@ -1692,13 +1692,13 @@ namespace aggligator
 
     bool aggligator::convergence::input(Byte* packet, int packet_length) noexcept
     {
-        if (NULL == packet || packet_length < 4)
+        if (NULLPTR == packet || packet_length < 4)
         {
             return false;
         }
 
         std::shared_ptr<aggligator> aggligator = app_;
-        if (NULL == aggligator)
+        if (NULLPTR == aggligator)
         {
             return false;
         }
@@ -2090,7 +2090,7 @@ namespace aggligator
         for (connection_ptr& connection : client->connections_)
         {
             std::shared_ptr<boost::asio::ip::tcp::socket> connection_socket = connection->socket_;
-            if (NULL == connection_socket)
+            if (NULLPTR == connection_socket)
             {
                 return false;
             }

@@ -33,7 +33,7 @@ namespace ppp
             virtual std::shared_ptr<ITransmissionStatistics>                            Clone() noexcept 
             {
                 std::shared_ptr<ITransmissionStatistics> statistics = make_shared_object<ITransmissionStatistics>();
-                if (NULL != statistics) {
+                if (NULLPTR != statistics) {
                     statistics->Copy(*this);
                 }
 
@@ -63,7 +63,7 @@ namespace ppp
                 // Copy a transport layer network traffic statistics snapshot, not directly using the atomic object pointed to, 
                 // But copying its value to the function stack, which is adopted for multithreaded parallel arithmetic security evaluation.
                 statistics_snapshot = left->Clone();
-                if (NULL == statistics_snapshot)
+                if (NULLPTR == statistics_snapshot)
                 {
                     return false;
                 }

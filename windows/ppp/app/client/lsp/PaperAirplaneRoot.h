@@ -4,7 +4,18 @@
 #include <stdint.h>
 
 #include <utility>
+#include <memory>
+#include <functional>
+
 #include <boost/asio.hpp>
+
+#if !defined(NULL)
+#define NULL 0
+#endif
+
+#if !defined(NULLPTR)
+#define NULLPTR nullptr
+#endif
 
 struct sockaddr;
 
@@ -61,8 +72,8 @@ namespace ppp
                         bool                                    Set(int interface_index, int port, uint32_t ip, uint32_t mask) noexcept;
 
                     private:
-                        void*                                   hMap   = NULL;
-                        void*                                   pBlock = NULL;
+                        void*                                   hMap   = NULLPTR;
+                        void*                                   pBlock = NULLPTR;
                     };
 
                     bool                                        IsInNetwork(uint32_t destination, uint32_t ip, uint32_t mask) noexcept;

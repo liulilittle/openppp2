@@ -561,7 +561,7 @@ namespace ppp {
             return false;
         }
 
-        static bool IPOrHostIsValid(const ppp::string& host_string, boost::asio::ip::address* out = NULL) noexcept {
+        static bool IPOrHostIsValid(const ppp::string& host_string, boost::asio::ip::address* out = NULLPTR) noexcept {
             if (host_string.empty()) {
                 return false;
             }
@@ -573,7 +573,7 @@ namespace ppp {
             }
             elif(address.is_v4() || address.is_v6()) {
                 bool valid = !IPEndPoint::IsInvalid(address);
-                if (NULL != out && valid) {
+                if (NULLPTR != out && valid) {
                     *out = address;
                 }
 
@@ -640,7 +640,7 @@ namespace ppp {
             }
 
             ppp::string vbgp = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["vbgp"])));
-            if (!ppp::net::http::HttpClient::VerifyUri(vbgp, NULL, NULL, NULL, NULL)) {
+            if (!ppp::net::http::HttpClient::VerifyUri(vbgp, NULLPTR, NULLPTR, NULLPTR, NULLPTR)) {
                 vbgp = ppp::string();
             }
 

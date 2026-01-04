@@ -68,7 +68,7 @@ namespace ppp {
 
                 exchanger_->ReleaseDatagramPort(sourceEP_);
                 if (fin && transmission) {
-                    if (!exchanger_->DoSendTo(transmission, sourceEP_, sourceEP_, NULL, 0, nullof<YieldContext>())) {
+                    if (!exchanger_->DoSendTo(transmission, sourceEP_, sourceEP_, NULLPTR, 0, nullof<YieldContext>())) {
                         transmission->Dispose();
                     }
                 }
@@ -84,7 +84,7 @@ namespace ppp {
             }
 
             bool VEthernetDatagramPort::SendTo(const void* packet, int packet_length, const boost::asio::ip::udp::endpoint& destinationEP) noexcept {
-                if (NULL == packet || packet_length < 1) {
+                if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
 
@@ -107,7 +107,7 @@ namespace ppp {
 
                 do {
                     std::shared_ptr<ITransmission> transmission = transmission_;
-                    if (NULL == transmission) {
+                    if (NULLPTR == transmission) {
                         fin = true;
                         break;
                     }
@@ -152,7 +152,7 @@ namespace ppp {
 
                             // If you are currently trying to open the socket, cache the data and do not send it until it is opened.
                             std::shared_ptr<Byte> packet_managed = ppp::net::asio::IAsynchronousWriteIoQueue::Copy(allocator, packet, packet_length);
-                            if (NULL == packet_managed) {
+                            if (NULLPTR == packet_managed) {
                                 break;
                             }
 
@@ -235,7 +235,7 @@ namespace ppp {
 
                 // Protect udp sockets to prevent udp data from being sent to the VPN loop.
                 auto protector_network = ProtectorNetwork; 
-                if (NULL != protector_network) {
+                if (NULLPTR != protector_network) {
                     if (!protector_network->Protect(socket_.native_handle(), y)) {
                         return false;
                     }

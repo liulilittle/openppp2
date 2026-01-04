@@ -255,7 +255,7 @@ namespace ppp {
                 boost::system::error_code ec_;
                 std::size_t length_;
                 std::shared_ptr<boost::asio::streambuf> response_ = make_shared_object<boost::asio::streambuf>();
-                if (NULL == response_) {
+                if (NULLPTR == response_) {
                     return false;
                 }
 

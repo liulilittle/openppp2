@@ -18,7 +18,7 @@ namespace ppp {
                         disposed_ = true;
                         ssl_websocket_.reset();
 
-                        if (NULL == ssl_websocket) {
+                        if (NULLPTR == ssl_websocket) {
                             return false;
                         }
 
@@ -37,7 +37,7 @@ namespace ppp {
 
             bool sslwebsocket::ShiftToScheduler() noexcept {
                 std::shared_ptr<SslvWebSocket> ssl_websocket = ssl_websocket_;
-                if (NULL == ssl_websocket) {
+                if (NULLPTR == ssl_websocket) {
                     return false;
                 }
 

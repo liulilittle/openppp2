@@ -15,7 +15,7 @@ namespace ppp {
             static std::false_type              SFINAE_TEST(...) noexcept;
 
         public:
-            static constexpr bool               value = decltype(SFINAE_TEST<T>(NULL))::value;
+            static constexpr bool               value = decltype(SFINAE_TEST<T>(NULLPTR))::value;
         };
 
         template <typename T>

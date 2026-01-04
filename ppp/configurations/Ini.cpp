@@ -15,7 +15,7 @@ namespace ppp {
             Tokenize<ppp::string>(ZTrim(config), lines, "\r\n\r\n");
 
             ppp::string sectionKey;
-            Section* sectionPtr = NULL;
+            Section* sectionPtr = NULLPTR;
 
             for (std::size_t i = 0, length = lines.size(); i < length; i++) {
                 ppp::string& line = lines[i];
@@ -122,26 +122,26 @@ namespace ppp {
 
         Ini::Section* Ini::Get(const ppp::string& section) noexcept {
             if (section.empty()) {
-                return NULL;
+                return NULLPTR;
             }
 
-            Ini::Section* out = NULL;
+            Ini::Section* out = NULLPTR;
             Dictionary::TryGetValuePointer(sections_, section, out);
             return out;
         }
 
         Ini::Section* Ini::Add(const ppp::string& section) noexcept {
             if (section.empty()) {
-                return NULL;
+                return NULLPTR;
             }
 
             if (Dictionary::ContainsKey(sections_, section)) {
-                return NULL;
+                return NULLPTR;
             }
 
             SectionTable::iterator indexer;
             if (!Dictionary::TryAdd(sections_, section, Ini::Section(section), indexer)) {
-                return NULL;
+                return NULLPTR;
             }
 
             return addressof(indexer->second);
@@ -156,7 +156,7 @@ namespace ppp {
         }
 
         bool Ini::ContainsKey(const ppp::string& section) noexcept {
-            return NULL != Get(section);
+            return NULLPTR != Get(section);
         }
 
         int Ini::Count() noexcept {
@@ -230,37 +230,37 @@ namespace ppp {
         template <>
         int32_t Ini::Section::GetValue(const ppp::string& key) noexcept {
             ppp::string value = GetValue(key);
-            return strtol(value.data(), NULL, 10);
+            return strtol(value.data(), NULLPTR, 10);
         }
 
         template <>
         uint32_t Ini::Section::GetValue(const ppp::string& key) noexcept {
             ppp::string value = GetValue(key);
-            return strtoul(value.data(), NULL, 10);
+            return strtoul(value.data(), NULLPTR, 10);
         }
 
         template <>
         int64_t Ini::Section::GetValue(const ppp::string& key) noexcept {
             ppp::string value = GetValue(key);
-            return strtoll(value.data(), NULL, 10);
+            return strtoll(value.data(), NULLPTR, 10);
         }
 
         template <>
         uint64_t Ini::Section::GetValue(const ppp::string& key) noexcept {
             ppp::string value = GetValue(key);
-            return strtoull(value.data(), NULL, 10);
+            return strtoull(value.data(), NULLPTR, 10);
         }
 
         template <>
         float Ini::Section::GetValue(const ppp::string& key) noexcept {
             ppp::string value = GetValue(key);
-            return strtof(value.data(), NULL);
+            return strtof(value.data(), NULLPTR);
         }
 
         template <>
         double Ini::Section::GetValue(const ppp::string& key) noexcept {
             ppp::string value = GetValue(key);
-            return strtod(value.data(), NULL);
+            return strtod(value.data(), NULLPTR);
         }
 
         template <>
@@ -344,7 +344,7 @@ namespace ppp {
             int length = path.size();
             std::shared_ptr<Byte> config = ppp::io::File::ReadAllBytes(path.data(), length);
 
-            if (NULL == config || length < 1) {
+            if (NULLPTR == config || length < 1) {
                 return make_shared_object<Ini>();
             }
 

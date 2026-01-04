@@ -40,8 +40,8 @@ namespace ppp {
 
             SSL* AsyncSslvWebSocket::GetSslHandle() noexcept {
                 SslvWebSocketPtr& ssl_websocket = GetSslSocket();
-                if (NULL == ssl_websocket) {
-                    return NULL;
+                if (NULLPTR == ssl_websocket) {
+                    return NULLPTR;
                 }
 
                 SslvTcpSocket& ssl_socket = ssl_websocket->next_layer();

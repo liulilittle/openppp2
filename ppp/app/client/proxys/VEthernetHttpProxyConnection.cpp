@@ -64,7 +64,7 @@ namespace ppp {
                     }
                 };
 
-                static std::shared_ptr<VEthernetHttpProxyConnectionStaticVariable>  gStaticVariable = NULL;
+                static std::shared_ptr<VEthernetHttpProxyConnectionStaticVariable>  gStaticVariable = NULLPTR;
 
                 // VEthernetHttpProxyConnection class's static constructor.
                 void VEthernetHttpProxyConnection_cctor() noexcept {
@@ -83,7 +83,7 @@ namespace ppp {
 
                 bool VEthernetHttpProxyConnection::ProtocolReadHeaders(ppp::io::MemoryStream& ms, ppp::vector<ppp::string>& headers, ppp::string* out_) noexcept {
                     std::shared_ptr<Byte> protocol = ms.GetBuffer();
-                    if (NULL == protocol) {
+                    if (NULLPTR == protocol) {
                         return false;
                     }
 
@@ -92,7 +92,7 @@ namespace ppp {
                         return false;
                     }
 
-                    if (NULL != out_) {
+                    if (NULLPTR != out_) {
                         *out_ = ppp::string((char*)protocol.get(), protocol_size);
                         return Tokenize<ppp::string>(*out_, headers, "\r\n") > 0;
                     }
@@ -103,21 +103,21 @@ namespace ppp {
 
                 std::shared_ptr<VEthernetHttpProxyConnection::ProtocolRoot> VEthernetHttpProxyConnection::GetProtocolRootFromSocket(ppp::io::MemoryStream& ms) noexcept {
                     std::shared_ptr<ProtocolRoot> protocolRoot = make_shared_object<ProtocolRoot>();
-                    if (NULL == protocolRoot) {
-                        return NULL;
+                    if (NULLPTR == protocolRoot) {
+                        return NULLPTR;
                     }
 
                     ppp::vector<ppp::string> headers;
                     if (!ProtocolReadHeaders(ms, headers, &protocolRoot->RawRotocol)) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     if (!ProtocolReadFirstRoot(headers, protocolRoot)) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     if (!ProtocolReadAllHeaders(headers, protocolRoot->Headers)) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     return protocolRoot;
@@ -136,7 +136,7 @@ namespace ppp {
                         }
 
                         std::shared_ptr<Byte> protocol_array_ptr = protocol_array.GetBuffer();
-                        if (NULL == protocol_array_ptr) {
+                        if (NULLPTR == protocol_array_ptr) {
                             return false;
                         }
 
@@ -171,7 +171,7 @@ namespace ppp {
                     }
 
                     std::shared_ptr<Byte> protocol_array_ptr = protocol_array.GetBuffer();
-                    if (NULL == protocol_array_ptr) {
+                    if (NULLPTR == protocol_array_ptr) {
                         return false;
                     }
 
@@ -217,7 +217,7 @@ namespace ppp {
                     }
 
                     std::shared_ptr<boost::asio::ip::tcp::socket> socket = GetSocket();
-                    if (NULL == socket) {
+                    if (NULLPTR == socket) {
                         return false;
                     }
 
@@ -256,7 +256,7 @@ namespace ppp {
                         }
 
                         std::shared_ptr<Byte> packet_array = ms.GetBuffer();
-                        if (NULL == packet_array) {
+                        if (NULLPTR == packet_array) {
                             return false;
                         }
 
@@ -265,7 +265,7 @@ namespace ppp {
                 }
 
                 bool VEthernetHttpProxyConnection::ConnectBridgeToPeer(const std::shared_ptr<ProtocolRoot>& protocolRoot, YieldContext& y) noexcept {
-                    if (NULL == protocolRoot) {
+                    if (NULLPTR == protocolRoot) {
                         return false;
                     }
                     
@@ -274,17 +274,17 @@ namespace ppp {
                 }
 
                 std::shared_ptr<ppp::app::protocol::AddressEndPoint> VEthernetHttpProxyConnection::GetAddressEndPointByProtocol(const std::shared_ptr<ProtocolRoot>& protocolRoot) noexcept {
-                    if (NULL == protocolRoot) {
-                        return NULL;
+                    if (NULLPTR == protocolRoot) {
+                        return NULLPTR;
                     }
 
                     ppp::string host = protocolRoot->Host;
                     if (host.empty()) {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     int port = PPP_HTTP_SYS_PORT; 
-                    if (char* p = (char*)::strchr(host.data(), ':'); NULL != p) {
+                    if (char* p = (char*)::strchr(host.data(), ':'); NULLPTR != p) {
                         port = atoi(p + 1);
                         if (port <= ppp::net::IPEndPoint::MinPort || port > ppp::net::IPEndPoint::MaxPort) {
                             port = PPP_HTTP_SYS_PORT;
@@ -304,7 +304,7 @@ namespace ppp {
                     static const ppp::string HTTP_COLON_TEXT   = "HTTP:";
                     static const ppp::string DOUBLE_SLASH_TEXT = "//";
 
-                    if (NULL == protocolRoot) {
+                    if (NULLPTR == protocolRoot) {
                         return false;
                     }
 

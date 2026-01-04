@@ -77,7 +77,7 @@ namespace ppp {
                 virtual void                                                Open(const boost::asio::ip::tcp::endpoint& localEP, const boost::asio::ip::tcp::endpoint& remoteEP) noexcept;
                 virtual bool                                                Update() noexcept;
                 virtual void                                                Dispose() noexcept;
-                bool                                                        IsLwip() noexcept     { return lwip_ != 0; }
+                bool                                                        IsLwip() const noexcept { return lwip_ != 0; }
                 bool                                                        IsDisposed() noexcept { return disposed_.load() != FALSE; }
 
             public:
@@ -130,7 +130,7 @@ namespace ppp {
             std::shared_ptr<ppp::threading::BufferswapAllocator>            GetBufferAllocator() noexcept
             {
                 std::shared_ptr<ITap> tap = this->Tap;
-                return NULL != tap ? tap->BufferAllocator : NULL;
+                return NULLPTR != tap ? tap->BufferAllocator : NULLPTR;
             }
             std::shared_ptr<VNetstack>                                      GetReference() noexcept { return shared_from_this(); }
             SynchronizedObject&                                             GetSynchronizedObject() noexcept { return syncobj_; }

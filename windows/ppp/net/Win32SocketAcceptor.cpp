@@ -36,9 +36,9 @@ namespace ppp
     {
         Win32SocketAcceptor::Win32SocketAcceptor(const std::shared_ptr<boost::asio::io_context>& context) noexcept
             : listenfd_(INVALID_SOCKET)
-            , hEvent_(NULL)
+            , hEvent_(NULLPTR)
             , in_(false)
-            , afo_(NULL)
+            , afo_(NULLPTR)
             , context_(context)
         {
 
@@ -56,7 +56,7 @@ namespace ppp
 
         bool Win32SocketAcceptor::IsOpen() noexcept
         {
-            bool b = NULL != hEvent_ && NULL != afo_ && NULL != context_;
+            bool b = NULLPTR != hEvent_ && NULLPTR != afo_ && NULLPTR != context_;
             if (b)
             {
                 b = listenfd_ != INVALID_SOCKET;
@@ -72,7 +72,7 @@ namespace ppp
                 return false;
             }
 
-            if (NULL == localIP || *localIP == '\x0')
+            if (NULLPTR == localIP || *localIP == '\x0')
             {
                 return false;
             }
@@ -82,17 +82,17 @@ namespace ppp
                 return false;
             }
 
-            if (NULL != hEvent_)
+            if (NULLPTR != hEvent_)
             {
                 return false;
             }
 
-            if (NULL != afo_)
+            if (NULLPTR != afo_)
             {
                 return false;
             }
 
-            if (NULL == context_)
+            if (NULLPTR == context_)
             {
                 return false;
             }
@@ -122,7 +122,7 @@ namespace ppp
                     return false;
                 }
 
-                listenfd_ = WSASocket(AF_INET6, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
+                listenfd_ = WSASocket(AF_INET6, SOCK_STREAM, IPPROTO_TCP, NULLPTR, 0, WSA_FLAG_OVERLAPPED);
                 if (listenfd_ == INVALID_SOCKET)
                 {
                     return false;
@@ -157,7 +157,7 @@ namespace ppp
                     return false;
                 }
 
-                listenfd_ = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
+                listenfd_ = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULLPTR, 0, WSA_FLAG_OVERLAPPED);
                 if (listenfd_ == INVALID_SOCKET)
                 {
                     return false;
@@ -202,7 +202,7 @@ namespace ppp
         void Win32SocketAcceptor::Dispose() noexcept
         {
             std::shared_ptr<boost::asio::io_context> context = context_;
-            if (NULL != context)
+            if (NULLPTR != context)
             {
                 auto self = shared_from_this();
                 boost::asio::post(*context, 
@@ -228,7 +228,7 @@ namespace ppp
         bool Win32SocketAcceptor::Next() noexcept
         {
             boost::asio::windows::object_handle* afo = reinterpret_cast<boost::asio::windows::object_handle*>(afo_.get());
-            if (NULL == afo)
+            if (NULLPTR == afo)
             {
                 return false;
             }
@@ -240,7 +240,7 @@ namespace ppp
             }
 
             void* hEvent = hEvent_;
-            if (NULL == hEvent)
+            if (NULLPTR == hEvent)
             {
                 return false;
             }
@@ -264,7 +264,7 @@ namespace ppp
                                 struct sockaddr_in6 address = { 0 };
                                 int address_size = sizeof(address);
 
-                                int sockfd = WSAAccept(listenfd_, (sockaddr*)&address, &address_size, NULL, NULL);
+                                int sockfd = WSAAccept(listenfd_, (sockaddr*)&address, &address_size, NULLPTR, NULL);
                                 if (sockfd != INVALID_SOCKET)
                                 {
                                     AcceptSocketEventArgs e = { Adjust(sockfd) };
@@ -294,15 +294,15 @@ namespace ppp
         void Win32SocketAcceptor::Finalize() noexcept
         {
             boost::asio::windows::object_handle* afo = reinterpret_cast<boost::asio::windows::object_handle*>(afo_.get());
-            if (NULL != afo)
+            if (NULLPTR != afo)
             {
                 ppp::win32::Win32Native::CloseHandle(afo);
-                afo_ = NULL;
-                hEvent_ = NULL;
+                afo_ = NULLPTR;
+                hEvent_ = NULLPTR;
             }
 
             void* hEvent = hEvent_;
-            if (NULL != hEvent)
+            if (NULLPTR != hEvent)
             {
                 ppp::win32::Win32Native::WSACloseEvent(hEvent);
             }
@@ -313,10 +313,10 @@ namespace ppp
                 closesocket(listenfd);
             }
 
-            AcceptSocket.reset();
-            afo_ = NULL;
-            hEvent_ = NULL;
-            context_ = NULL;
+            AcceptSocket = NULL;
+            afo_ = NULLPTR;
+            hEvent_ = NULLPTR;
+            context_ = NULLPTR;
             listenfd_ = INVALID_SOCKET;
         }
     }

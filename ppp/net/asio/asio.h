@@ -59,7 +59,7 @@ namespace ppp {
                 boost::asio::ip::basic_endpoint<TProtocol>                      GetAddressByHostName(boost::asio::ip::basic_resolver<TProtocol>& resolver, const char* hostname, int port, ResolveCall&& resolver_resolve) noexcept {
                     typedef boost::asio::ip::basic_resolver<TProtocol> protocol_resolver;
 
-                    if (NULL == hostname || *hostname == '\x0') {
+                    if (NULLPTR == hostname || *hostname == '\x0') {
                         return ppp::net::IPEndPoint::AnyAddressV4<TProtocol>(ppp::net::IPEndPoint::MinPort);
                     }
 

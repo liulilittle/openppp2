@@ -99,7 +99,7 @@ namespace ppp {
                 , id_(id)
                 , socket_(socket) {
 
-                if (NULL != socket) {
+                if (NULLPTR != socket) {
 #if defined(_WIN32)
                     if (ppp::net::Socket::IsDefaultFlashTypeOfService()) {
                         if (socket->is_open()) {
@@ -145,7 +145,7 @@ namespace ppp {
 
                 typedef VirtualEthernetLinklayer::ERROR_CODES ERROR_CODES;
 
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
@@ -166,7 +166,7 @@ namespace ppp {
                 Update();
 
                 auto connector = make_shared_object<STATIC_VIRTUAL_ETHERNET_TCPIP_CONNECTOR_NEST>(this, configuration_, context_, id_);
-                if (NULL == connector) {
+                if (NULLPTR == connector) {
                     return false;
                 }
                 else {
@@ -185,7 +185,7 @@ namespace ppp {
 
                 int packet_size = 0;
                 std::shared_ptr<Byte> packet = transmission->Read(y, packet_size);
-                if (NULL == packet || packet_size < 1) {
+                if (NULLPTR == packet || packet_size < 1) {
                     return false;
                 }
 
@@ -234,11 +234,11 @@ namespace ppp {
                 ITransmissionPtr&                       transmission, 
                 const AcceptMuxAsynchronousCallback&    ac) noexcept {
 
-                if (NULL == ac) {
+                if (NULLPTR == ac) {
                     return false;
                 }
 
-                return MuxOrAccept(y, transmission, NULL, ac, true);
+                return MuxOrAccept(y, transmission, NULLPTR, ac, true);
             }
 
             bool VirtualEthernetTcpipConnection::MuxOrAccept(
@@ -250,7 +250,7 @@ namespace ppp {
 
                 typedef VirtualEthernetLinklayer::ERROR_CODES ERROR_CODES;
 
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
@@ -270,12 +270,12 @@ namespace ppp {
 
                 int packet_size = -1;
                 std::shared_ptr<Byte> packet = transmission->Read(y, packet_size);
-                if (NULL == packet || packet_size < 1) {
+                if (NULLPTR == packet || packet_size < 1) {
                     return false;
                 }
 
                 auto connector = make_shared_object<STATIC_VIRTUAL_ETHERNET_TCPIP_CONNECTOR_NEST>(this, configuration_, context_, id_);
-                if (NULL == connector) {
+                if (NULLPTR == connector) {
                     return false;
                 }
 
@@ -301,7 +301,7 @@ namespace ppp {
                 else {
                     boost::asio::ip::tcp::endpoint& destinationEP = connector->Destination;
                     if (!connector->Connect) {
-                        if (NULL != accept_mux_ac) {
+                        if (NULLPTR != accept_mux_ac) {
                             goto LABEL_MUXON;
                         }
 
@@ -326,7 +326,7 @@ namespace ppp {
                     // And IPV6 does not affect the physical layer network communication of the VPN.
                     if (destinationIP.is_v4() && !destinationIP.is_loopback()) {
                         auto protector_network = ProtectorNetwork;
-                        if (NULL != protector_network) {
+                        if (NULLPTR != protector_network) {
                             if (!protector_network->Protect(socket_->native_handle(), y)) {
                                 return false;
                             }
@@ -339,7 +339,7 @@ namespace ppp {
                     ppp::net::Socket::AdjustSocketOptional(*socket_, destinationIP.is_v4(), configuration->tcp.fast_open, configuration->tcp.turbo);
 
                     bool ok = ppp::coroutines::asio::async_connect(*socket_, destinationEP, y);
-                    if (NULL != logger) {
+                    if (NULLPTR != logger) {
                         logger->Connect(GetId(), transmission, socket_->local_endpoint(ec), destinationEP, connector->Host);
                     }
 
@@ -371,7 +371,7 @@ namespace ppp {
                 ITransmissionPtr transmission = std::move(transmission_); 
                 transmission_.reset();
                 
-                if (NULL != transmission) {
+                if (NULLPTR != transmission) {
                     transmission->Dispose();
                 }
 
@@ -421,7 +421,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetTcpipConnection::SendBufferToPeer(YieldContext& y, const void* packet, int packet_length) noexcept {
-                if (NULL == packet || packet_length < 1) {
+                if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
 
@@ -434,7 +434,7 @@ namespace ppp {
                 }
 
                 ITransmissionPtr transmission = transmission_;
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
@@ -442,7 +442,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetTcpipConnection::ForwardSocketToTransmission(const std::shared_ptr<Byte>& buffer, int buffer_size, int bytes_transferred) noexcept {
-                if (NULL == buffer || buffer_size < 1 || bytes_transferred < 1) {
+                if (NULLPTR == buffer || buffer_size < 1 || bytes_transferred < 1) {
                     return false;
                 }
 
@@ -455,7 +455,7 @@ namespace ppp {
                 }
 
                 ITransmissionPtr transmission = transmission_;
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
@@ -467,7 +467,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetTcpipConnection::ReceiveSocketToTransmission(const std::shared_ptr<Byte>& buffer, int buffer_size) noexcept {
-                if (NULL == buffer || buffer_size < 1) {
+                if (NULLPTR == buffer || buffer_size < 1) {
                     return false;
                 }
 
@@ -511,7 +511,7 @@ namespace ppp {
 
                 auto allocator = configuration_->GetBufferAllocator();
                 auto buffer = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, PPP_BUFFER_SIZE);
-                if (NULL == buffer) {
+                if (NULLPTR == buffer) {
                     return false;
                 }
 
@@ -530,13 +530,13 @@ namespace ppp {
                 bool any = false;
                 while (!disposed_) {
                     ITransmissionPtr transmission = transmission_;
-                    if (NULL == transmission) {
+                    if (NULLPTR == transmission) {
                         break;
                     }
 
                     int packet_length = 0;
                     std::shared_ptr<Byte> packet = transmission->Read(y, packet_length);
-                    if (NULL == packet || packet_length < 1) {
+                    if (NULLPTR == packet || packet_length < 1) {
                         break;
                     }
 

@@ -71,13 +71,13 @@ namespace ppp {
                         else {
                             // This buffer is used for reading and must be persisted.
                             std::shared_ptr<boost::beast::flat_buffer> buffer = make_shared_object<boost::beast::flat_buffer>();
-                            if (NULL == buffer) {
+                            if (NULLPTR == buffer) {
                                 return false;
                             }
 
                             // Declare a container to hold the response.
                             std::shared_ptr<http_request> req = make_shared_object<http_request>();
-                            if (NULL == req) {
+                            if (NULLPTR == req) {
                                 return false;
                             }
 

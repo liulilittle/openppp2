@@ -122,8 +122,8 @@ extern "C" {
      /*
       * Iterate through the free and allocated slots and call the provided function for each of them.
       *
-      * If the provided function returns a non-NULL result the iteration stops and the result
-      * is returned to called. NULL is returned upon completing iteration without stopping.
+      * If the provided function returns a non-NULLPTR result the iteration stops and the result
+      * is returned to called. NULLPTR is returned upon completing iteration without stopping.
       *
       * The iteration order is implementation-defined and may change between versions.
       */
@@ -457,25 +457,25 @@ extern "C" {
         size_t at_alignment, main_alignment, buddy_size, buddy_tree_order;
         struct buddy* buddy;
 
-        if (at == NULL) {
-            return NULL;
+        if (at == NULLPTR) {
+            return NULLPTR;
         }
-        if (main == NULL) {
-            return NULL;
+        if (main == NULLPTR) {
+            return NULLPTR;
         }
         if (at == main) {
-            return NULL;
+            return NULLPTR;
         }
         if (!is_valid_alignment(alignment)) {
-            return NULL; /* invalid */
+            return NULLPTR; /* invalid */
         }
         at_alignment = ((uintptr_t)at) % BUDDY_ALIGNOF(struct buddy);
         if (at_alignment != 0) {
-            return NULL;
+            return NULLPTR;
         }
         main_alignment = ((uintptr_t)main) % BUDDY_ALIGNOF(size_t);
         if (main_alignment != 0) {
-            return NULL;
+            return NULLPTR;
         }
         /* Trim down memory to alignment */
         if (memory_size % alignment) {
@@ -483,7 +483,7 @@ extern "C" {
         }
         buddy_size = buddy_sizeof_alignment(memory_size, alignment);
         if (buddy_size == 0) {
-            return NULL;
+            return NULLPTR;
         }
         buddy_tree_order = buddy_tree_order_for_memory(memory_size, alignment);
 
@@ -507,19 +507,19 @@ extern "C" {
         struct buddy* buddy;
 
         if (!main) {
-            return NULL;
+            return NULLPTR;
         }
         if (!is_valid_alignment(alignment)) {
-            return NULL; /* invalid */
+            return NULLPTR; /* invalid */
         }
         check_result = buddy_embed_offset(memory_size, alignment);
         if (!check_result.can_fit) {
-            return NULL;
+            return NULLPTR;
         }
 
         buddy = buddy_init_alignment(main + check_result.offset, main, check_result.offset, alignment);
         if (!buddy) { /* regular initialization failed */
-            return NULL;
+            return NULLPTR;
         }
 
         buddy->buddy_flags |= BUDDY_RELATIVE_MODE;
@@ -550,7 +550,7 @@ extern "C" {
 
         /* Account for tree use */
         if (!buddy_is_free(buddy, new_memory_size)) {
-            return NULL;
+            return NULLPTR;
         }
 
         /* Release the virtual slots */
@@ -576,13 +576,13 @@ extern "C" {
         /* Ensure that the embedded allocator can fit */
         check_result = buddy_embed_offset(new_memory_size, buddy->alignment);
         if (!check_result.can_fit) {
-            return NULL;
+            return NULLPTR;
         }
 
         /* Resize the allocator in the normal way */
         resized = buddy_resize_standard(buddy, check_result.offset);
         if (!resized) {
-            return NULL;
+            return NULLPTR;
         }
 
         /* Get the absolute main address. The relative will be invalid after relocation. */
@@ -600,14 +600,14 @@ extern "C" {
     }
 
     bool buddy_can_shrink(struct buddy* buddy) {
-        if (buddy == NULL) {
+        if (buddy == NULLPTR) {
             return false;
         }
         return buddy_is_free(buddy, buddy->memory_size / 2);
     }
 
     bool buddy_is_empty(struct buddy* buddy) {
-        if (buddy == NULL) {
+        if (buddy == NULLPTR) {
             return false;
         }
         return buddy_is_free(buddy, 0);
@@ -617,7 +617,7 @@ extern "C" {
         struct buddy_tree* tree;
         struct buddy_tree_pos pos;
 
-        if (buddy == NULL) {
+        if (buddy == NULLPTR) {
             return false;
         }
         tree = buddy_tree(buddy);
@@ -626,7 +626,7 @@ extern "C" {
     }
 
     size_t buddy_arena_size(struct buddy* buddy) {
-        if (buddy == NULL) {
+        if (buddy == NULLPTR) {
             return 0;
         }
         return buddy->memory_size;
@@ -668,22 +668,22 @@ extern "C" {
         struct buddy_tree* tree;
         struct buddy_tree_pos pos;
 
-        if (buddy == NULL) {
-            return NULL;
+        if (buddy == NULLPTR) {
+            return NULLPTR;
         }
         if (requested_size == 0) {
             /*
              * Batshit crazy code exists that calls malloc(0) and expects
              * a result that can be safely passed to free().
-             * And even though this allocator will safely handle a free(NULL)
-             * the particular batshit code will expect a non-NULL malloc(0) result!
+             * And even though this allocator will safely handle a free(NULLPTR)
+             * the particular batshit code will expect a non-NULLPTR malloc(0) result!
              *
              * See also https://wiki.sei.cmu.edu/confluence/display/c/MEM04-C.+Beware+of+zero-length+allocations
              */
             requested_size = 1;
         }
         if (requested_size > buddy->memory_size) {
-            return NULL;
+            return NULLPTR;
         }
 
         target_depth = depth_for_size(buddy, requested_size);
@@ -691,7 +691,7 @@ extern "C" {
         pos = buddy_tree_find_free(tree, (uint8_t)target_depth);
 
         if (!buddy_tree_valid(tree, pos)) {
-            return NULL; /* no slot found */
+            return NULLPTR; /* no slot found */
         }
 
         /* Allocate the slot */
@@ -712,7 +712,7 @@ extern "C" {
         }
         /* Check for overflow */
         if (((members_count * member_size) / members_count) != member_size) {
-            return NULL;
+            return NULLPTR;
         }
         total_size = members_count * member_size;
         result = buddy_malloc(buddy, total_size);
@@ -730,29 +730,29 @@ extern "C" {
 
         /*
          * realloc is a joke:
-         * - NULL ptr degrades into malloc
+         * - NULLPTR ptr degrades into malloc
          * - Zero size degrades into free
          * - Same size as previous malloc/calloc/realloc is a no-op or a rellocation
          * - Smaller size than previous *alloc decrease the allocated size with an optional rellocation
-         * - If the new allocation cannot be satisfied NULL is returned BUT the slot is preserved
+         * - If the new allocation cannot be satisfied NULLPTR is returned BUT the slot is preserved
          * - Larger size than previous *alloc increase tha allocated size with an optional rellocation
          */
-        if (ptr == NULL) {
+        if (ptr == NULLPTR) {
             return buddy_malloc(buddy, requested_size);
         }
         if (requested_size == 0) {
             buddy_free(buddy, ptr);
-            return NULL;
+            return NULLPTR;
         }
         if (requested_size > buddy->memory_size) {
-            return NULL;
+            return NULLPTR;
         }
 
         /* Find the position tracking this address */
         tree = buddy_tree(buddy);
         origin = position_for_address(buddy, (unsigned char*)ptr);
         if (!buddy_tree_valid(tree, origin)) {
-            return NULL;
+            return NULLPTR;
         }
         current_depth = buddy_tree_depth(origin);
         target_depth = depth_for_size(buddy, requested_size);
@@ -764,7 +764,7 @@ extern "C" {
         if (!buddy_tree_valid(tree, new_pos)) {
             /* allocation failure, restore mark and return null */
             buddy_tree_mark(tree, origin);
-            return NULL;
+            return NULLPTR;
         }
 
         if (origin.index == new_pos.index) {
@@ -794,7 +794,7 @@ extern "C" {
         }
         /* Check for overflow */
         if ((members_count * member_size) / members_count != member_size) {
-            return NULL;
+            return NULLPTR;
         }
         return buddy_realloc(buddy, ptr, members_count * member_size, ignore_data);
     }
@@ -804,10 +804,10 @@ extern "C" {
         struct buddy_tree* tree;
         struct buddy_tree_pos pos;
 
-        if (buddy == NULL) {
+        if (buddy == NULLPTR) {
             return;
         }
-        if (ptr == NULL) {
+        if (ptr == NULLPTR) {
             return;
         }
         dst = (unsigned char*)ptr;
@@ -834,10 +834,10 @@ extern "C" {
         struct buddy_tree_pos pos;
         size_t allocated_size_for_depth;
 
-        if (buddy == NULL) {
+        if (buddy == NULLPTR) {
             return;
         }
-        if (ptr == NULL) {
+        if (ptr == NULLPTR) {
             return;
         }
         dst = (unsigned char*)ptr;
@@ -888,11 +888,11 @@ extern "C" {
         struct buddy_tree_pos test_pos;
         void* callback_result;
 
-        if (buddy == NULL) {
-            return NULL;
+        if (buddy == NULLPTR) {
+            return NULLPTR;
         }
-        if (fp == NULL) {
-            return NULL;
+        if (fp == NULLPTR) {
+            return NULLPTR;
         }
         main = buddy_main(buddy);
         effective_memory_size = buddy_effective_memory_size(buddy);
@@ -929,20 +929,20 @@ extern "C" {
                  *  means that all subsequent slots will be virtual,
                  *  hence we can return early.
                  */
-                return NULL;
+                return NULLPTR;
             }
             callback_result = (fp)(ctx, addr, pos_size, pos_status > 0);
-            if (callback_result != NULL) {
+            if (callback_result != NULLPTR) {
                 return callback_result;
             }
             state.going_up = 1;
 
         } while (buddy_tree_walk(tree, &state));
-        return NULL;
+        return NULLPTR;
     }
 
     unsigned char buddy_fragmentation(struct buddy* buddy) {
-        if (buddy == NULL) {
+        if (buddy == NULLPTR) {
             return 0;
         }
         return buddy_tree_fragmentation(buddy_tree(buddy));
@@ -1092,10 +1092,10 @@ extern "C" {
         size_t offset;
         struct buddy_tree_pos pos;
 
-        if (buddy == NULL) {
+        if (buddy == NULLPTR) {
             return;
         }
-        if (ptr == NULL) {
+        if (ptr == NULLPTR) {
             return;
         }
         if (requested_size == 0) {

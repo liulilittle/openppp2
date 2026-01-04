@@ -44,7 +44,7 @@ namespace ppp {
 
             private:
 #if defined(_WIN32)
-                std::atomic<FILE*>                                              log_file_ = NULL;
+                std::atomic<FILE*>                                              log_file_ = NULLPTR;
 #else
                 std::shared_ptr<boost::asio::posix::stream_descriptor>          log_file_;
 #endif

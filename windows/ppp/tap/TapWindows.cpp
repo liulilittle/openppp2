@@ -123,32 +123,32 @@ namespace ppp
 
         std::shared_ptr<ITap> TapWindows::Create(const std::shared_ptr<boost::asio::io_context>& context, const ppp::string& componentId, uint32_t ip, uint32_t gw, uint32_t mask, uint32_t lease_time_in_seconds, bool hosted_network, const ppp::vector<uint32_t>& dns_addresses)
         {
-            if (NULL == context)
+            if (NULLPTR == context)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             if (componentId.empty())
             {
-                return NULL;
+                return NULLPTR;
             }
 
             IPEndPoint ipEP(ip, 0);
             if (IPEndPoint::IsInvalid(ipEP))
             {
-                return NULL;
+                return NULLPTR;
             }
 
             IPEndPoint gwEP(ip, 0);
             if (IPEndPoint::IsInvalid(gwEP))
             {
-                return NULL;
+                return NULLPTR;
             }
 
             IPEndPoint maskEP(ip, 0);
             if (IPEndPoint::IsInvalid(maskEP))
             {
-                return NULL;
+                return NULLPTR;
             }
 
             if (lease_time_in_seconds < 1)
@@ -159,13 +159,13 @@ namespace ppp
             int interface_index = GetNetworkInterfaceIndex(componentId);
             if (interface_index < -1)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             void* tun = OpenDriver(componentId.data());
-            if (NULL == tun || tun == INVALID_HANDLE_VALUE)
+            if (NULLPTR == tun || tun == INVALID_HANDLE_VALUE)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             bool ok = ConfigureDriver_SetNetifUp(tun, true) &&
@@ -175,14 +175,14 @@ namespace ppp
             if (!ok)
             {
                 CloseHandle(tun);
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<TapWindows> tap = make_shared_object<TapWindows>(context, componentId, tun, ip, gw, mask, hosted_network);
-            if (NULL == tap)
+            if (NULLPTR == tap)
             {
                 CloseHandle(tun);
-                return NULL;
+                return NULLPTR;
             }
             else 
             {
@@ -225,19 +225,19 @@ namespace ppp
             char szDeviceName[MAX_PATH];
             if (snprintf(szDeviceName, sizeof(szDeviceName), "\\\\.\\Global\\%s.tap", componentId.data()) < 1)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             HANDLE handle = CreateFileA(szDeviceName,
                 GENERIC_READ | GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
-                NULL,
+                NULLPTR,
                 OPEN_EXISTING,
                 FILE_FLAG_OVERLAPPED | FILE_ATTRIBUTE_SYSTEM,
-                NULL);
-            if (NULL == handle || handle == INVALID_HANDLE_VALUE)
+                NULLPTR);
+            if (NULLPTR == handle || handle == INVALID_HANDLE_VALUE)
             {
-                handle = NULL;
+                handle = NULLPTR;
             }
 
             return handle;
@@ -272,7 +272,7 @@ namespace ppp
 
         bool TapWindows::ConfigureDriver_SetNetifUp(const void* handle, bool up) noexcept
         {
-            if (NULL == handle || handle == INVALID_HANDLE_VALUE)
+            if (NULLPTR == handle || handle == INVALID_HANDLE_VALUE)
             {
                 return false;
             }
@@ -288,7 +288,7 @@ namespace ppp
 
         bool TapWindows::ConfigureDriver_SetDhcpMASQ(const void* handle, uint32_t ip, uint32_t gw, uint32_t mask, uint32_t lease_time_in_seconds) noexcept
         {
-            if (NULL == handle || handle == INVALID_HANDLE_VALUE)
+            if (NULLPTR == handle || handle == INVALID_HANDLE_VALUE)
             {
                 return false;
             }
@@ -305,7 +305,7 @@ namespace ppp
 
         bool TapWindows::ConfigureDriver_SetNetifTunMode(const void* handle, uint32_t ip, uint32_t gw, uint32_t mask) noexcept
         {
-            if (NULL == handle || handle == INVALID_HANDLE_VALUE)
+            if (NULLPTR == handle || handle == INVALID_HANDLE_VALUE)
             {
                 return false;
             }
@@ -321,7 +321,7 @@ namespace ppp
 
         bool TapWindows::ConfigureDriver_SetDhcpOptionData(const void* handle, uint32_t ip, uint32_t gw, uint32_t mask, uint32_t dhcp, const ppp::vector<uint32_t>& dns_addresses) noexcept
         {
-            if (NULL == handle || handle == INVALID_HANDLE_VALUE)
+            if (NULLPTR == handle || handle == INVALID_HANDLE_VALUE)
             {
                 return false;
             }
@@ -510,7 +510,7 @@ namespace ppp
             ppp::win32::network::NetworkInterfacePtr network_interface;
             TapWindows_FindComponentId(componentId, network_interface);
 
-            if (NULL == network_interface)
+            if (NULLPTR == network_interface)
             {
                 return false;
             }

@@ -8,7 +8,7 @@
 namespace ppp {
     namespace cryptography {
         bool rc4_sbox_impl(unsigned char* sbox, int sboxlen, unsigned char* key, int keylen, bool ascending) noexcept {
-            if (NULL == sbox || NULL == key || keylen < 1 || sboxlen < 1) {
+            if (NULLPTR == sbox || NULLPTR == key || keylen < 1 || sboxlen < 1) {
                 return false;
             }
 
@@ -40,7 +40,7 @@ namespace ppp {
         }
 
         bool rc4_crypt_sbox(unsigned char* key, int keylen, unsigned char* sbox, int sboxlen, unsigned char* data, int datalen, int subtract, int E) noexcept {
-            if (NULL == key || keylen < 1 || NULL == data || datalen < 1 || NULL == sbox || sboxlen < 1) {
+            if (NULLPTR == key || keylen < 1 || NULLPTR == data || datalen < 1 || NULLPTR == sbox || sboxlen < 1) {
                 return false;
             }
 
@@ -66,7 +66,7 @@ namespace ppp {
         }
 
         bool rc4_crypt_sbox_c(unsigned char* key, int keylen, unsigned char* sbox, int sboxlen, unsigned char* data, int datalen, int subtract, int E) noexcept {
-            if (NULL == key || keylen < 1 || NULL == data || datalen < 1 || NULL == sbox || sboxlen < 1) {
+            if (NULLPTR == key || keylen < 1 || NULLPTR == data || datalen < 1 || NULLPTR == sbox || sboxlen < 1) {
                 return false;
             }
 
@@ -92,7 +92,7 @@ namespace ppp {
         }
 
         bool rc4_crypt(unsigned char* key, int keylen, unsigned char* data, int datalen, int subtract, int E) noexcept {
-            if (NULL == key || keylen < 1 || NULL == data || datalen < 1) {
+            if (NULLPTR == key || keylen < 1 || NULLPTR == data || datalen < 1) {
                 return false;
             }
 
@@ -108,7 +108,7 @@ namespace ppp {
             , _method(method)
             , _password(password) {
             std::shared_ptr<Byte> iv = make_shared_alloc<Byte>(RC4_MAXBIT);
-            if (NULL != iv) {
+            if (NULLPTR != iv) {
                 ppp::string sbox_key = hash_hmac(password.data(), password.size(), (DigestAlgorithmic)algorithm, false);
                 if (ascending) {
                     rc4_sbox((unsigned char*)iv.get(), RC4_MAXBIT, (unsigned char*)sbox_key.data(), sbox_key.size());
@@ -123,24 +123,24 @@ namespace ppp {
 
         std::shared_ptr<Byte> RC4::Encrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, Byte* data, int datalen, int& outlen) noexcept {
             outlen = -1;
-            if ((datalen < 0) || (NULL == data && datalen != 0)) {
-                return NULL;
+            if ((datalen < 0) || (NULLPTR == data && datalen != 0)) {
+                return NULLPTR;
             }
 
             if (datalen == 0) {
                 outlen = 0;
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<Byte> plaintext = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, datalen);
-            if (NULL == plaintext) {
-                return NULL;
+            if (NULLPTR == plaintext) {
+                return NULLPTR;
             }
 
             memcpy(plaintext.get(), data, datalen);
             if (!rc4_crypt_sbox_c((unsigned char*)_password.data(), _password.size(),
                 (unsigned char*)_sbox.get(), RC4_MAXBIT, (unsigned char*)plaintext.get(), datalen, _subtract, _E)) {
-                return NULL;
+                return NULLPTR;
             }
 
             outlen = datalen;
@@ -185,7 +185,7 @@ namespace ppp {
 
         std::shared_ptr<RC4> RC4::Create(const ppp::string& method, const ppp::string& password) noexcept {
             if (method.empty()) {
-                return NULL;
+                return NULLPTR;
             }
 
             if (method == "rc4-md5") {
@@ -212,7 +212,7 @@ namespace ppp {
                 return make_shared_object<RC4SHA512>(method, password);
             }
 
-            return NULL;
+            return NULLPTR;
         }
     }
 }

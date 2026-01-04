@@ -40,15 +40,15 @@ namespace ppp {
                 std::shared_ptr<vmux::vmux_skt> connection_mux = std::move(connection_mux_);
                 connection_mux_.reset();
 
-                if (NULL != connection) {
+                if (NULLPTR != connection) {
                     connection->Dispose();
                 }
 
-                if (NULL != connection_rinetd) {
+                if (NULLPTR != connection_rinetd) {
                     connection_rinetd->Dispose();
                 }
 
-                if (NULL != connection_mux) {
+                if (NULLPTR != connection_mux) {
                     connection_mux->close();
                 }
             }
@@ -57,7 +57,7 @@ namespace ppp {
                 auto self = shared_from_this();
                 auto socket = GetSocket(); 
 
-                if (NULL != socket) {
+                if (NULLPTR != socket) {
                     boost::asio::post(socket->get_executor(), 
                         [self, this, socket]() noexcept {
                             Finalize();
@@ -85,18 +85,18 @@ namespace ppp {
 
                 // If rinetd local loopback link forwarding is not used, failure will be returned, 
                 // Otherwise the link to the peer will be processed successfully.
-                if (std::shared_ptr<RinetdConnection> connection_rinetd = connection_rinetd_; NULL != connection_rinetd) {
+                if (std::shared_ptr<RinetdConnection> connection_rinetd = connection_rinetd_; NULLPTR != connection_rinetd) {
                     return connection_rinetd->Run();
                 }
 
                 // If the link is relayed through the VPN remote switcher, then run the VPN link relay subroutine.
-                if (std::shared_ptr<VirtualEthernetTcpipConnection> connection = connection_; NULL != connection) {
+                if (std::shared_ptr<VirtualEthernetTcpipConnection> connection = connection_; NULLPTR != connection) {
                     bool ok = connection->Run(y);
                     IDisposable::DisposeReferences(connection);
                     return ok;
                 }
 
-                if (std::shared_ptr<vmux::vmux_skt> connection_mux = connection_mux_; NULL != connection_mux) {
+                if (std::shared_ptr<vmux::vmux_skt> connection_mux = connection_mux_; NULLPTR != connection_mux) {
                     return connection_mux->run();
                 }
 
@@ -110,7 +110,7 @@ namespace ppp {
                 // Indicating whether to use VPN link or Rinetd local loopback forwarding.
                 do {
                     std::shared_ptr<VEthernetExchanger> exchanger = exchanger_;
-                    if (NULL == exchanger) {
+                    if (NULLPTR == exchanger) {
                         return false;
                     }
 
@@ -119,17 +119,17 @@ namespace ppp {
                     }
 
                     std::shared_ptr<boost::asio::io_context> context = GetContext();
-                    if (NULL == context) {
+                    if (NULLPTR == context) {
                         return false;
                     }
 
                     std::shared_ptr<AppConfiguration> configuration = exchanger->GetConfiguration();
-                    if (NULL == configuration) {
+                    if (NULLPTR == configuration) {
                         return false;
                     }
 
                     std::shared_ptr<boost::asio::ip::tcp::socket> socket = GetSocket();
-                    if (NULL == socket) {
+                    if (NULLPTR == socket) {
                         return false;
                     }
 
@@ -148,20 +148,20 @@ namespace ppp {
                     }
 
                     std::shared_ptr<ppp::transmissions::ITransmission> transmission = exchanger->ConnectTransmission(context, strand, y);
-                    if (NULL == transmission) {
+                    if (NULLPTR == transmission) {
                         return false;
                     }
 
                     std::shared_ptr<VEthernetTcpipConnection> connection =
                         make_shared_object<VEthernetTcpipConnection>(self, configuration, context, strand, exchanger->GetId(), socket);
-                    if (NULL == connection) {
+                    if (NULLPTR == connection) {
                         IDisposable::DisposeReferences(transmission);
                         return false;
                     }
 
 #if defined(_LINUX)
                     auto switcher = exchanger->GetSwitcher(); 
-                    if (NULL != switcher) {
+                    if (NULLPTR != switcher) {
                         connection->ProtectorNetwork = switcher->GetProtectorNetwork();
                     }
 #endif
@@ -218,22 +218,22 @@ namespace ppp {
                     return false;
                 }
 
-                if (NULL == coroutine) {
+                if (NULLPTR == coroutine) {
                     return false;
                 }
 
                 std::shared_ptr<VEthernetExchanger> exchanger = exchanger_;
-                if (NULL == exchanger) {
+                if (NULLPTR == exchanger) {
                     return false;
                 }
 
                 std::shared_ptr<ppp::configurations::AppConfiguration> configuration = exchanger->GetConfiguration();
-                if (NULL == configuration) {
+                if (NULLPTR == configuration) {
                     return false;
                 }
 
                 ppp::threading::Executors::ContextPtr context = GetContext();
-                if (NULL == context) {
+                if (NULLPTR == context) {
                     return false;
                 }
 
@@ -270,17 +270,17 @@ namespace ppp {
 #endif
 
             bool VEthernetNetworkTcpipConnection::EndAccept(const std::shared_ptr<boost::asio::ip::tcp::socket>& socket, const boost::asio::ip::tcp::endpoint& natEP) noexcept {
-                if (NULL == socket) {
+                if (NULLPTR == socket) {
                     return false;
                 }
 
                 std::shared_ptr<VEthernetExchanger> exchanger = exchanger_;
-                if (NULL == exchanger) {
+                if (NULLPTR == exchanger) {
                     return false;
                 }
 
                 std::shared_ptr<ppp::configurations::AppConfiguration> configuration = exchanger->GetConfiguration();
-                if (NULL == configuration) {
+                if (NULLPTR == configuration) {
                     return false;
                 }
                 

@@ -52,7 +52,7 @@ namespace ppp {
                     return Transmission_Packet_Read(transmission->configuration_, allocator, EVP_protocol, EVP_transport, outlen, transmission, y, safest);
                 }
                 else {
-                    return Transmission_Packet_Read(transmission->configuration_, allocator, NULL, NULL, outlen, transmission, y, safest);
+                    return Transmission_Packet_Read(transmission->configuration_, allocator, NULLPTR, NULLPTR, outlen, transmission, y, safest);
                 }
             }
 
@@ -63,7 +63,7 @@ namespace ppp {
         public:
             static std::shared_ptr<Byte>                Encrypt(ITransmission* transmission, Byte* data, int datalen, int& outlen) noexcept {
                 std::shared_ptr<Byte> packet = EncryptBinary(transmission, data, datalen, outlen);
-                if (NULL != packet) {
+                if (NULLPTR != packet) {
                     AppConfigurationPtr& configuration = transmission->configuration_;
                     if (!transmission->handshaked_ || configuration->key.plaintext) {
                         packet = base94_encode(transmission, configuration, transmission->BufferAllocator, 
@@ -71,7 +71,7 @@ namespace ppp {
                     }
                 }
 
-                if (NULL != packet) {
+                if (NULLPTR != packet) {
                     return packet;
                 }
                 else {
@@ -92,7 +92,7 @@ namespace ppp {
                     packet = DecryptBinary(transmission, data, datalen, outlen);
                 }
 
-                if (NULL != packet) {
+                if (NULLPTR != packet) {
                     return packet;
                 }
                 else {
@@ -103,7 +103,7 @@ namespace ppp {
             static std::shared_ptr<Byte>                Read(ITransmission* transmission, YieldContext& y, int& outlen) noexcept {
                 outlen = 0;
                 if (transmission->disposed_) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<Byte> packet;
@@ -117,12 +117,12 @@ namespace ppp {
                     packet = ReadBinary(transmission, y, outlen);
                 }
 
-                if (NULL != packet) {
+                if (NULLPTR != packet) {
                     return packet;
                 }
                 else {
                     outlen = 0;
-                    return NULL;
+                    return NULLPTR;
                 }
             }
 
@@ -162,7 +162,7 @@ namespace ppp {
                 }
 
                 YieldContext* co = y.GetPtr();
-                if (NULL != co) {
+                if (NULLPTR != co) {
                     return transmission->DoWriteYield<AsynchronousWriteCallback>(*co, packet, packet_length,
                         [transmission](const void* packet, int packet_length, const AsynchronousWriteCallback& cb) noexcept {
                             return ITransmissionBridge::Write(transmission, packet, packet_length, cb);
@@ -188,11 +188,11 @@ namespace ppp {
 #endif
 
             static bool                                 Write(ITransmission* transmission, const void* packet, int packet_length, const ITransmission::AsynchronousWriteBytesCallback& cb) noexcept {
-                if (NULL == packet || packet_length < 1) {
+                if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
 
-                if (NULL == cb) {
+                if (NULLPTR == cb) {
                     return false;
                 }
 
@@ -202,7 +202,7 @@ namespace ppp {
 
                 int messages_size = 0;
                 std::shared_ptr<Byte> messages = Encrypt(transmission, (Byte*)packet, packet_length, messages_size);
-                if (NULL == messages) {
+                if (NULLPTR == messages) {
                     return false;
                 }
 
@@ -295,21 +295,21 @@ namespace ppp {
             }
             static std::shared_ptr<Byte>                base94_encode(ITransmission* transmission, const AppConfigurationPtr& configuration, const std::shared_ptr<BufferswapAllocator>& allocator, Byte* data, int datalen, int kf, int& outlen) noexcept {
                 std::shared_ptr<Byte> payload = ssea::base94_encode(allocator, data, datalen, kf, outlen);
-                if (NULL == payload) {
-                    return NULL;
+                if (NULLPTR == payload) {
+                    return NULLPTR;
                 }
 
                 ppp::string k = base94_encode_length(transmission, configuration, outlen, kf);
                 if (k.size() < EVP_HEADER_XSS) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int k_size = k.size();
                 int packet_length = outlen + k_size;
 
                 std::shared_ptr<Byte> packet = BufferswapAllocator::MakeByteArray(allocator, packet_length);
-                if (NULL == packet) {
-                    return NULL;
+                if (NULLPTR == packet) {
+                    return NULLPTR;
                 }
 
                 Byte* memory = packet.get();
@@ -322,8 +322,8 @@ namespace ppp {
             static std::shared_ptr<Byte>                base94_decode(const AppConfigurationPtr& configuration, const std::shared_ptr<BufferswapAllocator>& allocator, Byte* data, int datalen, int kf, int& outlen) noexcept {
                 outlen = 0;
 
-                if (NULL == data || datalen < EVP_HEADER_XSS) {
-                    return NULL;
+                if (NULLPTR == data || datalen < EVP_HEADER_XSS) {
+                    return NULLPTR;
                 }
                 else {
                     base94_decode_kf(data);
@@ -331,11 +331,11 @@ namespace ppp {
 
                 int payload_length = base94_decode_length(configuration, data, kf);
                 if (payload_length < 1) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if ((payload_length + EVP_HEADER_XSS) != datalen) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 Byte* payload = data + EVP_HEADER_XSS;
@@ -343,7 +343,7 @@ namespace ppp {
             }
             static int                                  base94_decode_length_rn(ITransmission* transmission, YieldContext& y) noexcept {
                 std::shared_ptr<Byte> packet = ReadBytes(transmission, y, EVP_HEADER_XSS);
-                if (NULL == packet) {
+                if (NULLPTR == packet) {
                     return -1;
                 }
 
@@ -356,7 +356,7 @@ namespace ppp {
             }
             static int                                  base94_decode_length_r1(ITransmission* transmission, YieldContext& y) noexcept {
                 std::shared_ptr<Byte> packet = ReadBytes(transmission, y, EVP_HEADER_XSS + EVP_HEADER_MSS);
-                if (NULL == packet) {
+                if (NULLPTR == packet) {
                     return -1;
                 }
 
@@ -396,12 +396,12 @@ namespace ppp {
 
                 int payload_length = base94_decode_length(transmission, y);
                 if (payload_length < 1) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<Byte> packet = ReadBytes(transmission, y, payload_length);
-                if (NULL == packet) {
-                    return NULL;
+                if (NULLPTR == packet) {
+                    return NULLPTR;
                 }
 
                 AppConfigurationPtr& configuration = transmission->configuration_;
@@ -423,7 +423,7 @@ namespace ppp {
 
             // Packet Alignment: 65536 -> 65535   
             if (--EVP_payload_length < 0) {
-                return NULL;
+                return NULLPTR;
             }
 
             Byte EVP_payload_length_array[EVP_HEADER_MSS] = {
@@ -438,8 +438,8 @@ namespace ppp {
             // Byte encryption.
             if (EVP_protocol) {
                 std::shared_ptr<Byte> EVP_header_length_buff = EVP_protocol->Encrypt(allocator, EVP_payload_length_array + 1, EVP_HEADER_TSS, EVP_header_length);
-                if (NULL == EVP_header_length_buff || EVP_header_length != EVP_HEADER_TSS) {
-                    return NULL;
+                if (NULLPTR == EVP_header_length_buff || EVP_header_length != EVP_HEADER_TSS) {
+                    return NULLPTR;
                 }
 
                 memcpy(EVP_payload_length_array + 1, EVP_header_length_buff.get(), EVP_HEADER_TSS);
@@ -456,7 +456,7 @@ namespace ppp {
 
             // Delta encode.
             std::shared_ptr<Byte> output;
-            return ssea::delta_encode(allocator, EVP_payload_length_array, EVP_header_datalen, APP->key.kf, output) != EVP_header_length ? NULL : output;
+            return ssea::delta_encode(allocator, EVP_payload_length_array, EVP_header_datalen, APP->key.kf, output) != EVP_header_length ? NULLPTR : output;
         }
 
         static int                                      Transmission_Header_Decrypt(
@@ -486,7 +486,7 @@ namespace ppp {
             int EVP_header_length = 0;
             if (EVP_protocol) {
                 std::shared_ptr<Byte> EVP_header_length_buff = EVP_protocol->Decrypt(allocator, EVP_payload_length_array + 1, EVP_HEADER_TSS, EVP_header_length);
-                if (NULL == EVP_header_length_buff || EVP_header_length != EVP_HEADER_TSS) {
+                if (NULLPTR == EVP_header_length_buff || EVP_header_length != EVP_HEADER_TSS) {
                     return 0;
                 }
 
@@ -530,12 +530,12 @@ namespace ppp {
             // Delta encode.
             std::shared_ptr<Byte> output;
             if (safest || APP->key.delta_encode) {
-                return ssea::delta_encode(allocator, data, datalen, APP->key.kf, output) != datalen ? NULL : output;
+                return ssea::delta_encode(allocator, data, datalen, APP->key.kf, output) != datalen ? NULLPTR : output;
             }
             else {
                 output = BufferswapAllocator::MakeByteArray(allocator, datalen);
-                if (NULL == output) {
-                    return NULL;
+                if (NULLPTR == output) {
+                    return NULLPTR;
                 }
                 else {
                     memcpy(output.get(), data, datalen);
@@ -575,7 +575,7 @@ namespace ppp {
             if (safest || APP->key.delta_encode) {
                 std::shared_ptr<Byte> EVP_payload_array_managed; // Delta encode.
                 if (ssea::delta_decode(allocator, data.get(), datalen, APP->key.kf, EVP_payload_array_managed) != datalen) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 Transmission_Payload_Decrypt_Partial(APP, kf, EVP_payload_array_managed.get(), datalen, safest);
@@ -599,8 +599,8 @@ namespace ppp {
                 EVP_header_length + EVP_payload_length;
 
             std::shared_ptr<Byte> packet = BufferswapAllocator::MakeByteArray(allocator, EVP_packet_length);
-            if (NULL == packet) {
-                return NULL;
+            if (NULLPTR == packet) {
+                return NULLPTR;
             }
 
             Byte* memory = packet.get();
@@ -627,20 +627,20 @@ namespace ppp {
             if (EVP_protocol && EVP_transport) {
                 // Encrypt payload data (A).
                 std::shared_ptr<Byte> EVP_payload = EVP_transport->Encrypt(allocator, data, datalen, EVP_payload_length);
-                if (NULL == EVP_payload || EVP_payload_length != datalen) {
-                    return NULL;
+                if (NULLPTR == EVP_payload || EVP_payload_length != datalen) {
+                    return NULLPTR;
                 }
 
                 // Encrypt header data.
                 std::shared_ptr<Byte> EVP_header = Transmission_Header_Encrypt(APP, allocator, EVP_protocol, EVP_payload_length, EVP_header_length, EVP_header_kf);
-                if (NULL == EVP_header) {
-                    return NULL;
+                if (NULLPTR == EVP_header) {
+                    return NULLPTR;
                 }
 
                 // Encrypt payload data (B).
                 EVP_payload = Transmission_Payload_Encrypt(APP, allocator, EVP_header_kf, EVP_payload.get(), datalen, EVP_payload_length, safest);
-                if (NULL == EVP_payload) {
-                    return NULL;
+                if (NULLPTR == EVP_payload) {
+                    return NULLPTR;
                 }
                 else {
                     return Transmission_Packet_Pack(allocator, EVP_header, EVP_header_length, EVP_payload, EVP_payload_length, outlen);
@@ -649,14 +649,14 @@ namespace ppp {
             else {
                 // Encrypt header data.
                 std::shared_ptr<Byte> EVP_header = Transmission_Header_Encrypt(APP, allocator, EVP_protocol, datalen, EVP_header_length, EVP_header_kf);
-                if (NULL == EVP_header) {
-                    return NULL;
+                if (NULLPTR == EVP_header) {
+                    return NULLPTR;
                 }
 
                 // Encrypt payload data.
                 std::shared_ptr<Byte> EVP_payload = Transmission_Payload_Encrypt(APP, allocator, EVP_header_kf, data, datalen, EVP_payload_length, safest);
-                if (NULL == EVP_payload) {
-                    return NULL;
+                if (NULLPTR == EVP_payload) {
+                    return NULLPTR;
                 }
                 else {
                     return Transmission_Packet_Pack(allocator, EVP_header, EVP_header_length, EVP_payload, EVP_payload_length, outlen);
@@ -678,36 +678,36 @@ namespace ppp {
             outlen = 0;
 
             if (datalen <= EVP_HEADER_MSS) {
-                return NULL;
+                return NULLPTR;
             }
 
             int EVP_payload_length = Transmission_Header_Decrypt(APP, allocator, EVP_protocol, data, EVP_header_kf);
             if (EVP_payload_length < 1) {
-                return NULL;
+                return NULLPTR;
             }
 
             int EVP_packet_length = EVP_payload_length + EVP_HEADER_MSS;
             if (EVP_packet_length != datalen) {
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<Byte> EVP_payload = BufferswapAllocator::MakeByteArray(allocator, EVP_payload_length);
-            if (NULL == EVP_payload) {
-                return NULL;
+            if (NULLPTR == EVP_payload) {
+                return NULLPTR;
             }
             else {
                 memcpy(EVP_payload.get(), data + EVP_HEADER_MSS, EVP_payload_length);
             }
 
             EVP_payload = Transmission_Payload_Decrypt(APP, allocator, EVP_header_kf, EVP_payload, EVP_payload_length, outlen, safest);
-            if (NULL == EVP_payload) {
-                return NULL;
+            if (NULLPTR == EVP_payload) {
+                return NULLPTR;
             }
 
             if (EVP_protocol && EVP_transport) {
                 EVP_payload = EVP_transport->Decrypt(allocator, EVP_payload.get(), EVP_payload_length, outlen);
-                if (NULL == EVP_payload || EVP_payload_length != outlen) {
-                    return NULL;
+                if (NULLPTR == EVP_payload || EVP_payload_length != outlen) {
+                    return NULLPTR;
                 }
             }
 
@@ -728,29 +728,29 @@ namespace ppp {
             outlen = 0;
 
             std::shared_ptr<Byte> EVP_header = ITransmissionBridge::ReadBytes(transmission, y, EVP_HEADER_MSS);
-            if (NULL == EVP_header) {
-                return NULL;
+            if (NULLPTR == EVP_header) {
+                return NULLPTR;
             }
 
             int EVP_payload_length = Transmission_Header_Decrypt(APP, allocator, EVP_protocol, EVP_header.get(), EVP_header_kf);
             if (EVP_payload_length < 1) {
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<Byte> EVP_payload = ITransmissionBridge::ReadBytes(transmission, y, EVP_payload_length);
-            if (NULL == EVP_payload) {
-                return NULL;
+            if (NULLPTR == EVP_payload) {
+                return NULLPTR;
             }
 
             EVP_payload = Transmission_Payload_Decrypt(APP, allocator, EVP_header_kf, EVP_payload, EVP_payload_length, outlen, safest);
-            if (NULL == EVP_payload) {
-                return NULL;
+            if (NULLPTR == EVP_payload) {
+                return NULLPTR;
             }
 
             if (EVP_protocol && EVP_transport) {
                 EVP_payload = EVP_transport->Decrypt(allocator, EVP_payload.get(), EVP_payload_length, outlen);
-                if (NULL == EVP_payload || EVP_payload_length != outlen) {
-                    return NULL;
+                if (NULLPTR == EVP_payload || EVP_payload_length != outlen) {
+                    return NULLPTR;
                 }
             }
 
@@ -818,8 +818,8 @@ namespace ppp {
             }
 
             std::shared_ptr<Byte> messages = BufferswapAllocator::MakeByteArray(allocator, packet_length += sizeof(kfs));
-            if (NULL == messages) {
-                return NULL;
+            if (NULLPTR == messages) {
+                return NULLPTR;
             }
 
             Byte* memory = messages.get();
@@ -835,7 +835,7 @@ namespace ppp {
             bool&                                       eagin) noexcept {
 
             eagin = false;
-            if (NULL == packet_managed) {
+            if (NULLPTR == packet_managed) {
                 return 0;
             }
 
@@ -880,7 +880,7 @@ namespace ppp {
             int packet_length = 0;
             std::shared_ptr<Byte> packet_managed = Transmission_Handshake_Pack_SessionId(APP, 
                 transmission->BufferAllocator, session_id, packet_length);
-            if (NULL == packet_managed) {
+            if (NULLPTR == packet_managed) {
                 return false;
             }
 
@@ -898,7 +898,7 @@ namespace ppp {
                 // (e.g., printable plaintext, differential restoration, byte sequence scrambling, advanced encryption layer, etc.)
                 int packet_length = 0;
                 std::shared_ptr<Byte> packet_managed = ITransmissionBridge::Read(transmission, y, packet_length);
-                if (NULL == packet_managed) {
+                if (NULLPTR == packet_managed) {
                     return 0;
                 }
 
@@ -941,7 +941,7 @@ namespace ppp {
         }
 
         ITransmission::ITransmission(const ContextPtr& context, const StrandPtr& strand, const AppConfigurationPtr& configuration) noexcept
-            : IAsynchronousWriteIoQueue(NULL != configuration ? configuration->GetBufferAllocator() : NULL)
+            : IAsynchronousWriteIoQueue(NULLPTR != configuration ? configuration->GetBufferAllocator() : NULLPTR)
             , disposed_(false)
             , frame_rn_(false)
             , frame_tn_(false)
@@ -971,7 +971,7 @@ namespace ppp {
             QoS.reset();
             Statistics.reset();
 
-            if (NULL != timeout) {
+            if (NULLPTR != timeout) {
                 Socket::Cancel(*timeout);
             }
         }
@@ -990,13 +990,13 @@ namespace ppp {
 
         std::shared_ptr<Byte> ITransmission::Encrypt(Byte* data, int datalen, int& outlen) noexcept {
             outlen = 0;
-            if (datalen < 0 || (NULL == data && datalen != 0)) {
+            if (datalen < 0 || (NULLPTR == data && datalen != 0)) {
                 outlen = ~0;
-                return NULL;
+                return NULLPTR;
             }
 
             if (datalen == 0) {
-                return NULL;
+                return NULLPTR;
             }
 
             return ITransmissionBridge::Encrypt(this, data, datalen, outlen);
@@ -1004,13 +1004,13 @@ namespace ppp {
 
         std::shared_ptr<Byte> ITransmission::Decrypt(Byte* data, int datalen, int& outlen) noexcept {
             outlen = 0;
-            if (datalen < 0 || (NULL == data && datalen != 0)) {
+            if (datalen < 0 || (NULLPTR == data && datalen != 0)) {
                 outlen = ~0;
-                return NULL;
+                return NULLPTR;
             }
 
             if (datalen == 0) {
-                return NULL;
+                return NULLPTR;
             }
 
             return ITransmissionBridge::Decrypt(this, data, datalen, outlen);
@@ -1050,14 +1050,14 @@ namespace ppp {
                         mux = false;
                     }
 
-                    if (NULL != protocol_ && NULL != transport_) {
+                    if (NULLPTR != protocol_ && NULLPTR != transport_) {
                         ppp::string ivv_string = stl::to_string<ppp::string>(ivv, 32);
                         if (ivv > 0) {
                             ivv_string = "+" + ivv_string;
                         }
 
                         if (ppp::configurations::extensions::IsHaveCiphertext(configuration_.get())) {
-                            if (NULL != protocol_ && NULL != transport_) {
+                            if (NULLPTR != protocol_ && NULLPTR != transport_) {
                                 protocol_ = make_shared_object<Ciphertext>(configuration_->key.protocol, configuration_->key.protocol_key + ivv_string);
                                 transport_ = make_shared_object<Ciphertext>(configuration_->key.transport, configuration_->key.transport_key + ivv_string);
                             }
@@ -1101,14 +1101,14 @@ namespace ppp {
             Int128 ivv = Transmission_Handshake_SessionId(configuration_, this, y);
             if (ivv != 0) {
                 handshaked_ = true;
-                if (NULL != protocol_ && NULL != transport_) {
+                if (NULLPTR != protocol_ && NULLPTR != transport_) {
                     ppp::string ivv_string = stl::to_string<ppp::string>(ivv, 32);
                     if (ivv > 0) {
                         ivv_string = "+" + ivv_string;
                     }
 
                     if (ppp::configurations::extensions::IsHaveCiphertext(configuration_.get())) {
-                        if (NULL != protocol_ && NULL != transport_) {
+                        if (NULLPTR != protocol_ && NULLPTR != transport_) {
                             protocol_ = make_shared_object<Ciphertext>(configuration_->key.protocol, configuration_->key.protocol_key + ivv_string);
                             transport_ = make_shared_object<Ciphertext>(configuration_->key.transport, configuration_->key.transport_key + ivv_string);
                         }
@@ -1123,7 +1123,7 @@ namespace ppp {
             DeadlineTimerPtr timeout = std::move(timeout_);
             timeout_.reset();
 
-            if (NULL != timeout) {
+            if (NULLPTR != timeout) {
                 Socket::Cancel(*timeout);
             }
         }
@@ -1134,20 +1134,20 @@ namespace ppp {
             }
 
             DeadlineTimerPtr timeout = timeout_;
-            if (NULL != timeout) {
+            if (NULLPTR != timeout) {
                 return false;
             }
 
             StrandPtr strand = strand_;
             ContextPtr context = context_;
-            if (NULL == strand && NULL == context) {
+            if (NULLPTR == strand && NULLPTR == context) {
                 return false;
             }
 
             timeout = strand ?
                 make_shared_object<DeadlineTimer>(*strand) :
                 make_shared_object<DeadlineTimer>(*context);
-            if (NULL == timeout) {
+            if (NULLPTR == timeout) {
                 return false;
             }
 
@@ -1167,17 +1167,17 @@ namespace ppp {
 
                     for (;;) {
                         std::shared_ptr<boost::asio::io_context> context = context_; 
-                        if (NULL == context) {
+                        if (NULLPTR == context) {
                             break;
                         }
 
                         AppConfigurationPtr configuration = configuration_;
-                        if (NULL == configuration) {
+                        if (NULLPTR == configuration) {
                             break;
                         }
                         
                         StrandPtr strand = strand_;
-                        return YieldContext::Spawn(NULL, *context, strand.get(), 
+                        return YieldContext::Spawn(NULLPTR, *context, strand.get(), 
                             [self, this, strand, configuration](YieldContext& y) noexcept {
                                 Transmission_Handshake_Nop(configuration, this, y);
                                 Dispose();
@@ -1227,7 +1227,7 @@ namespace ppp {
                 return Transmission_Packet_Encrypt(transmission->configuration_, allocator, EVP_protocol, EVP_transport, data, datalen, outlen, safest);
             }
             else {
-                return Transmission_Packet_Encrypt(transmission->configuration_, allocator, NULL, NULL, data, datalen, outlen, safest);
+                return Transmission_Packet_Encrypt(transmission->configuration_, allocator, NULLPTR, NULLPTR, data, datalen, outlen, safest);
             }
         }
 
@@ -1241,7 +1241,7 @@ namespace ppp {
                 return Transmission_Packet_Decrypt(transmission->configuration_, allocator, EVP_protocol, EVP_transport, data, datalen, outlen, safest);
             }
             else {
-                return Transmission_Packet_Decrypt(transmission->configuration_, allocator, NULL, NULL, data, datalen, outlen, safest);
+                return Transmission_Packet_Decrypt(transmission->configuration_, allocator, NULLPTR, NULLPTR, data, datalen, outlen, safest);
             }
         }
     }

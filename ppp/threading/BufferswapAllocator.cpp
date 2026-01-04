@@ -59,7 +59,7 @@ namespace ppp
 
                     // Request allocation of virtual memory block.
                     std::shared_ptr<BufferblockAllocator> bufffer_block = make_shared_object<BufferblockAllocator>(bufferblock_path, block_memory_size);
-                    if (NULL == bufffer_block)
+                    if (NULLPTR == bufffer_block)
                     {
                         break;
                     }
@@ -96,7 +96,7 @@ namespace ppp
         {
             if (allocated_size == 0)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             int block_length = 0;
@@ -107,13 +107,13 @@ namespace ppp
             {
                 BufferblockAllocatorPtr& allocator = *tail;
                 void* memory = allocator->Alloc(allocated_size);
-                if (NULL != memory)
+                if (NULLPTR != memory)
                 {
                     return memory;
                 }
                 elif(block_length++ >= block_count_)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
                 else 
                 {
@@ -122,12 +122,12 @@ namespace ppp
                     tail = blocks_.begin(); // The following expression is not recommended: tail = std::list.erase(...);
                 }
             }
-            return NULL;
+            return NULLPTR;
         }
 
         bool BufferswapAllocator::Free(const void* allocated_memory) noexcept
         {
-            if (NULL == allocated_memory)
+            if (NULLPTR == allocated_memory)
             {
                 return false;
             }
@@ -154,9 +154,9 @@ namespace ppp
 
         std::shared_ptr<BufferblockAllocator> BufferswapAllocator::IsInBlock(const void* allocated_memory) noexcept
         {
-            if (NULL == allocated_memory)
+            if (NULLPTR == allocated_memory)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             SynchronizedObjectScope scope(syncobj_);
@@ -168,7 +168,7 @@ namespace ppp
                 }
             }
 
-            return NULL;
+            return NULLPTR;
         }
 
         uint32_t BufferswapAllocator::GetPageSize() noexcept

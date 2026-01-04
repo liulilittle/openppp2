@@ -157,13 +157,13 @@ namespace ppp {
                 typename std::enable_if<std::is_base_of<ITransmission, TTransmission>::value, std::shared_ptr<TTransmission>/**/>::type
                 inline                                                                  NewWebsocketTransmission(const ContextPtr& context, const StrandPtr& strand, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket, const ppp::string& host, const ppp::string& path) noexcept {
                     std::shared_ptr<ppp::configurations::AppConfiguration> configuration = GetConfiguration();
-                    if (NULL == configuration) {
-                        return NULL;
+                    if (NULLPTR == configuration) {
+                        return NULLPTR;
                     }
 
                     auto transmission = make_shared_object<TTransmission>(context, strand, socket, configuration);
-                    if (NULL == transmission) {
-                        return NULL;
+                    if (NULLPTR == transmission) {
+                        return NULLPTR;
                     }
                     
                     if (host.size() > 0 && path.size() > 0) {

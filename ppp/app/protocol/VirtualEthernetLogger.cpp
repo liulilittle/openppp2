@@ -16,10 +16,10 @@ namespace ppp {
     namespace app {
         namespace protocol {
             VirtualEthernetLogger::VirtualEthernetLogger(const std::shared_ptr<boost::asio::io_context>& context, const ppp::string& log_path) noexcept
-                : log_file_(NULL)
+                : log_file_(NULLPTR)
                 , log_context_(context) {
 
-                if (NULL != context && log_path.size() > 0) {
+                if (NULLPTR != context && log_path.size() > 0) {
                     ppp::string file_path = ppp::io::File::RewritePath(log_path.data());
                     file_path = ppp::io::File::GetFullPath(file_path.data());
 
@@ -36,7 +36,7 @@ namespace ppp {
                                     bool seek64 = ppp::unix__::UnixAfx::Lseek2(fd, 0, SEEK_END);
                                     if (seek64) {
                                         auto log_file = make_shared_object<boost::asio::posix::stream_descriptor>(*context, fd);
-                                        if (NULL == log_file) {
+                                        if (NULLPTR == log_file) {
                                             close(fd);
                                         }
                                         else {
@@ -60,10 +60,10 @@ namespace ppp {
 
             bool VirtualEthernetLogger::Valid() noexcept {
 #if defined(_WIN32)
-                return NULL != log_file_.load();
+                return NULLPTR != log_file_.load();
 #else
                 std::shared_ptr<boost::asio::posix::stream_descriptor> log = log_file_;
-                if (NULL == log) {
+                if (NULLPTR == log) {
                     return false;
                 }
 
@@ -82,8 +82,8 @@ namespace ppp {
 
             void VirtualEthernetLogger::Finalize() noexcept {
 #if defined(_WIN32)
-                FILE* log = log_file_.exchange(NULL);
-                if (NULL != log) {
+                FILE* log = log_file_.exchange(NULLPTR);
+                if (NULLPTR != log) {
                     fflush(log);
                     fclose(log);
                 }
@@ -91,20 +91,20 @@ namespace ppp {
                 std::shared_ptr<boost::asio::posix::stream_descriptor> log = std::move(log_file_);
                 log_file_.reset();
 
-                if (NULL != log) {
+                if (NULLPTR != log) {
                     ppp::net::Socket::Closestream(log);
                 }
 #endif
             }
 
             bool VirtualEthernetLogger::Write(const void* s, int length, const ppp::function<void(bool)>& cb) noexcept {
-                if (NULL == s || length < 1) {
+                if (NULLPTR == s || length < 1) {
                     return false;
                 }
 
                 std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = BufferAllocator;
                 std::shared_ptr<Byte> buffer = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, length);
-                if (NULL == buffer) {
+                if (NULLPTR == buffer) {
                     return false;
                 }
 
@@ -113,7 +113,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetLogger::Write(const std::shared_ptr<Byte>& s, int length, const ppp::function<void(bool)>& cb) noexcept {
-                if (NULL == s || length < 1) {
+                if (NULLPTR == s || length < 1) {
                     return false;
                 }
 
@@ -123,7 +123,7 @@ namespace ppp {
                     [self, this, s, length, cb]() noexcept {
                         bool ok = false;
                         FILE* log = log_file_.load();
-                        if (NULL != log) {
+                        if (NULLPTR != log) {
                             fwrite(s.get(), 1, length, log);
                             fflush(log);
                         }
@@ -134,7 +134,7 @@ namespace ppp {
                     });
 #else
                 std::shared_ptr<boost::asio::posix::stream_descriptor> log = log_file_;
-                if (NULL == log || !log->is_open()) {
+                if (NULLPTR == log || !log->is_open()) {
                     return false;
                 }
 
@@ -218,11 +218,11 @@ namespace ppp {
                 log += " GATEWAY:";
                 log += mask.to_string() + "\r\n";
 
-                return this->Write(log.data(), log.size(), NULL);
+                return this->Write(log.data(), log.size(), NULLPTR);
             }
 
             bool VirtualEthernetLogger::Connect(Int128 guid, const std::shared_ptr<ppp::transmissions::ITransmission>& transmission, const boost::asio::ip::tcp::endpoint& natEP, const boost::asio::ip::tcp::endpoint& dstEP, const ppp::string& hostDomain) noexcept {
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
@@ -238,11 +238,11 @@ namespace ppp {
                 }
 
                 log += "\r\n";
-                return this->Write(log.data(), log.size(), NULL);
+                return this->Write(log.data(), log.size(), NULLPTR);
             }
 
             bool VirtualEthernetLogger::Vpn(Int128 guid, const std::shared_ptr<ppp::transmissions::ITransmission>& transmission) noexcept {
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
@@ -251,7 +251,7 @@ namespace ppp {
                 log += "VPN SOURCE:";
                 log += GetRemoteEndPoint(transmission) + "\r\n";
 
-                return this->Write(log.data(), log.size(), NULL);
+                return this->Write(log.data(), log.size(), NULLPTR);
             }
 
             bool VirtualEthernetLogger::Dns(Int128 guid, const std::shared_ptr<ppp::transmissions::ITransmission>& transmission, const ppp::string& hostDomain) noexcept {
@@ -261,7 +261,7 @@ namespace ppp {
                 log += GetRemoteEndPoint(transmission) + " DOMAIN:";
                 log += hostDomain + "\r\n";
 
-                return this->Write(log.data(), log.size(), NULL);
+                return this->Write(log.data(), log.size(), NULLPTR);
             }
 
             bool VirtualEthernetLogger::Port(Int128 guid, const std::shared_ptr<ppp::transmissions::ITransmission>& transmission, const boost::asio::ip::udp::endpoint& inEP, const boost::asio::ip::udp::endpoint& natEP) noexcept {
@@ -272,7 +272,7 @@ namespace ppp {
                 log += ppp::net::IPEndPoint::ToEndPoint(inEP).ToString() + " NAT:";
                 log += ppp::net::IPEndPoint::ToEndPoint(natEP).ToString() + "\r\n";
 
-                return this->Write(log.data(), log.size(), NULL);
+                return this->Write(log.data(), log.size(), NULLPTR);
             }
 
             bool VirtualEthernetLogger::MPConnect(Int128 guid, const std::shared_ptr<ppp::transmissions::ITransmission>& transmission, const boost::asio::ip::tcp::endpoint& publicEP, const boost::asio::ip::tcp::endpoint& remoteEP) noexcept {
@@ -283,7 +283,7 @@ namespace ppp {
                 log += ppp::net::IPEndPoint::ToEndPoint(publicEP).ToString() + " REMOTE:";
                 log += ppp::net::IPEndPoint::ToEndPoint(remoteEP).ToString() + "\r\n";
 
-                return this->Write(log.data(), log.size(), NULL);
+                return this->Write(log.data(), log.size(), NULLPTR);
             }
 
             bool VirtualEthernetLogger::MPEntry(Int128 guid, const std::shared_ptr<ppp::transmissions::ITransmission>& transmission, const boost::asio::ip::tcp::endpoint& publicEP, bool protocol_tcp_or_udp) noexcept {
@@ -293,7 +293,7 @@ namespace ppp {
                 log += GetRemoteEndPoint(transmission) + " PUBLIC:";
                 log += ppp::net::IPEndPoint::ToEndPoint(publicEP).ToString() + (ppp::string("/") + (protocol_tcp_or_udp ? "tcp" : "udp") + "\r\n");
 
-                return this->Write(log.data(), log.size(), NULL);
+                return this->Write(log.data(), log.size(), NULLPTR);
             }
         }
     }

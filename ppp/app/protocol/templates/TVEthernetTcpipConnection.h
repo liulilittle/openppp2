@@ -26,7 +26,7 @@ namespace ppp {
                         std::shared_ptr<TConnection> connection = std::move(connection_);
                         connection_.reset();
                         
-                        if (NULL != connection) {
+                        if (NULLPTR != connection) {
                             connection->Dispose();
                         }
 
@@ -34,7 +34,7 @@ namespace ppp {
                     }
                     virtual void                                                Update() noexcept override {
                         std::shared_ptr<TConnection> connection = connection_;
-                        if (NULL != connection) {
+                        if (NULLPTR != connection) {
                             connection->Update();
                         }
                     }

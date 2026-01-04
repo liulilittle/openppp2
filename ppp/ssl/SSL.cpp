@@ -103,7 +103,7 @@ namespace ppp {
             std::shared_ptr<boost::asio::ssl::context> ssl_context = make_shared_object<boost::asio::ssl::context>(
                 ppp::ssl::SSL::SSL_S_METHOD(method));
             if (!ssl_context) {
-                return NULL;
+                return NULLPTR;
             }
 
             boost::system::error_code ec;
@@ -148,7 +148,7 @@ namespace ppp {
             std::shared_ptr<boost::asio::ssl::context> ssl_context = make_shared_object<boost::asio::ssl::context>(
                 ppp::ssl::SSL::SSL_C_METHOD(ppp::ssl::SSL::SSL_METHOD::tlsv13));
             if (!ssl_context) {
-                return NULL;
+                return NULLPTR;
             }
 
             // This holds the root certificate used for verification.

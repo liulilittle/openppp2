@@ -48,7 +48,7 @@ namespace ppp {
                     ppp::coroutines::YieldContext&                          y) noexcept {
 
                     std::shared_ptr<VEthernetNetworkSwitcher> switcher = exchanger->GetSwitcher();
-                    if (NULL == switcher) {
+                    if (NULLPTR == switcher) {
                         return -1;
                     }
 
@@ -79,7 +79,7 @@ namespace ppp {
                         }
                         virtual void                                                        Update() noexcept override {
                             std::shared_ptr<TReference> owner = owner_;
-                            if (NULL != owner) {
+                            if (NULLPTR != owner) {
                                 owner->Update();
                             }
                         }
@@ -89,7 +89,7 @@ namespace ppp {
                             std::shared_ptr<TReference> owner = std::move(owner_);
                             owner_.reset();
 
-                            if (NULL != owner) {
+                            if (NULLPTR != owner) {
                                 owner->Dispose();
                             }
                         }
@@ -100,7 +100,7 @@ namespace ppp {
 
                     std::shared_ptr<VEthernetRinetdConnection> connection_rinetd = 
                         make_shared_object<VEthernetRinetdConnection>(reference, configuration, context, strand, socket);
-                    if (NULL == connection_rinetd) {
+                    if (NULLPTR == connection_rinetd) {
                         return -1;
                     }
 
@@ -130,11 +130,11 @@ namespace ppp {
                     typedef VEthernetExchanger::NetworkState NetworkState;
                     typedef std::shared_ptr<vmux::vmux_skt> VmuxSktPtr;
 
-                    if (auto mux = exchanger->GetMux(); NULL != mux) {
+                    if (auto mux = exchanger->GetMux(); NULLPTR != mux) {
                         auto network_state = exchanger->GetMuxNetworkState();
                         if (network_state == NetworkState::NetworkState_Established) {
                             std::shared_ptr<VmuxSktPtr> pmux_connection = make_shared_object<VmuxSktPtr>();
-                            if (NULL == pmux_connection) {
+                            if (NULLPTR == pmux_connection) {
                                 return -1;
                             }
                             elif(!mux->connect_yield(
@@ -152,7 +152,7 @@ namespace ppp {
                             }
                             
                             VmuxSktPtr mux_connection = *pmux_connection;
-                            if (NULL == mux_connection) {
+                            if (NULLPTR == mux_connection) {
                                 return -1;
                             }
 

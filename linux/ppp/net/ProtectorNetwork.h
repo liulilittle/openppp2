@@ -115,7 +115,7 @@ namespace ppp
         private:                
 #if defined(_ANDROID)
             SynchronizedObject                                      syncobj_;
-            JNIEnv*                                                 env_ = NULL;
+            JNIEnv*                                                 env_ = NULLPTR;
             std::shared_ptr<boost::asio::io_context>                jni_;
 #endif
             const ppp::string                                       dev_;

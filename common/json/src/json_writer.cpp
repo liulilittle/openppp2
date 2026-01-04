@@ -284,7 +284,7 @@ static String valueToQuotedStringN(const char* value, size_t length,
   // We have to walk value and escape any special characters.
   // Appending to String is not efficient, but this should be rare.
   // (Note: forward slashes are *not* rare, but I am not escaping them.)
-  String::size_type maxsize = length * 2 + 3; // allescaped+quotes+NULL
+  String::size_type maxsize = length * 2 + 3; // allescaped+quotes+NULLPTR
   String result;
   result.reserve(maxsize); // to avoid lots of mallocs
   result += "\"";
@@ -396,7 +396,7 @@ void FastWriter::writeValue(const Value& value) {
     document_ += valueToString(value.asDouble());
     break;
   case stringValue: {
-    // Is NULL possible for value.string_? No.
+    // Is NULLPTR possible for value.string_? No.
     char const* str;
     char const* end;
     bool ok = value.getString(&str, &end);
@@ -464,7 +464,7 @@ void StyledWriter::writeValue(const Value& value) {
     pushValue(valueToString(value.asDouble()));
     break;
   case stringValue: {
-    // Is NULL possible for value.string_? No.
+    // Is NULLPTR possible for value.string_? No.
     char const* str;
     char const* end;
     bool ok = value.getString(&str, &end);
@@ -682,7 +682,7 @@ void StyledStreamWriter::writeValue(const Value& value) {
     pushValue(valueToString(value.asDouble()));
     break;
   case stringValue: {
-    // Is NULL possible for value.string_? No.
+    // Is NULLPTR possible for value.string_? No.
     char const* str;
     char const* end;
     bool ok = value.getString(&str, &end);
@@ -956,7 +956,7 @@ void BuiltStyledStreamWriter::writeValue(Value const& value) {
                             precisionType_));
     break;
   case stringValue: {
-    // Is NULL is possible for value.string_? No.
+    // Is NULLPTR is possible for value.string_? No.
     char const* str;
     char const* end;
     bool ok = value.getString(&str, &end);

@@ -101,7 +101,7 @@ namespace ppp {
     }
 
     bool ToBoolean(const char* s) noexcept {
-        if (NULL == s || *s == '\x0') {
+        if (NULLPTR == s || *s == '\x0') {
             return false;
         }
 
@@ -134,7 +134,7 @@ namespace ppp {
     }
 
     int CRC32(const char* s, int len) noexcept {
-        if (s == NULL) {
+        if (s == NULLPTR) {
             return 0;
         }
 
@@ -274,7 +274,7 @@ namespace ppp {
     }
 
     bool HasCommandArgument(const char* name, int argc, const char** argv) noexcept {
-        if (NULL == name || *name == '\x0') {
+        if (NULLPTR == name || *name == '\x0') {
             return false;
         }
 
@@ -310,7 +310,7 @@ namespace ppp {
     }
 
     ppp::string GetCommandArgument(int argc, const char** argv) noexcept {
-        if (NULL == argv || argc <= 1) {
+        if (NULLPTR == argv || argc <= 1) {
             return "";
         }
 
@@ -324,7 +324,7 @@ namespace ppp {
     }
 
     ppp::string GetCommandArgument(const char* name, int argc, const char** argv) noexcept {
-        if (NULL == name || argc <= 1) {
+        if (NULLPTR == name || argc <= 1) {
             return "";
         }
 
@@ -398,7 +398,7 @@ namespace ppp {
         char exe[EXE_MAX + 1]; /* MAX_PATH */
         exe[EXE_MAX] = '\x0';
 
-        GetModuleFileNameA(NULL, exe, EXE_MAX);
+        GetModuleFileNameA(NULLPTR, exe, EXE_MAX);
         return exe;
 #elif defined(_MACOS)
         char path[PATH_MAX + 1];
@@ -432,7 +432,7 @@ namespace ppp {
     ppp::string GetCommandText() noexcept {
 #if defined(_WIN32)
         LPCSTR cmdline = ::GetCommandLineA();
-        return NULL != cmdline ? cmdline : "";
+        return NULLPTR != cmdline ? cmdline : "";
 #else
         char sz[PATH_MAX + 1];
         sz[PATH_MAX] = '\x0';
@@ -520,7 +520,7 @@ namespace ppp {
 #else
         /* https://elliotth.blogspot.com/2012/04/gettid-on-mac-os.html */
         uint64_t tid;
-        pthread_threadid_np(NULL, &tid);
+        pthread_threadid_np(NULLPTR, &tid);
   
         return static_cast<int64_t>(tid);
 #endif
@@ -596,7 +596,7 @@ namespace ppp {
 
     boost::uuids::uuid LexicalCast(const void* guid, int length) noexcept {
         boost::uuids::uuid uuid;
-        if (NULL == guid) {
+        if (NULLPTR == guid) {
             length = 0;
         }
 
@@ -620,7 +620,7 @@ namespace ppp {
             return sgen(guid);
         }
         catch (const std::exception&) {
-            return LexicalCast(NULL, 0);
+            return LexicalCast(NULLPTR, 0);
         }
     }
 
@@ -848,7 +848,7 @@ namespace ppp {
 #if defined(_WIN32)
         CONSOLE_SCREEN_BUFFER_INFO csbi;
         HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-        if (NULL == hConsole) {
+        if (NULLPTR == hConsole) {
             return false;
         }
 
@@ -877,7 +877,7 @@ namespace ppp {
     bool SetConsoleCursorPosition(int x, int y) noexcept {
 #if defined(_WIN32)
         HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-        if (NULL == hConsole) {
+        if (NULLPTR == hConsole) {
             return false;
         }
 
@@ -894,7 +894,7 @@ namespace ppp {
 
 #if defined(_WIN32)
         HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-        if (NULL == hConsole) {
+        if (NULLPTR == hConsole) {
             return false;
         }
 
@@ -922,7 +922,7 @@ namespace ppp {
     bool ClearConsoleOutputCharacter() noexcept {
 #if defined(_WIN32)
         HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
-        if (NULL != hStdOut) {
+        if (NULLPTR != hStdOut) {
             CONSOLE_SCREEN_BUFFER_INFO csbi;
             if (GetConsoleScreenBufferInfo(hStdOut, &csbi)) {
                 DWORD consoleSize = csbi.dwSize.X * csbi.dwSize.Y;
@@ -945,7 +945,7 @@ namespace ppp {
     bool HideConsoleCursor(bool value) noexcept {
 #if defined(_WIN32)
         HANDLE consoleHandle = GetStdHandle(STD_OUTPUT_HANDLE);
-        if (NULL != consoleHandle) {
+        if (NULLPTR != consoleHandle) {
             CONSOLE_CURSOR_INFO cursorInfo;
             if (GetConsoleCursorInfo(consoleHandle, &cursorInfo)) {
                 cursorInfo.bVisible = !value;
@@ -984,7 +984,7 @@ namespace ppp {
             }
         }
 
-        if (NULL != line_count) {
+        if (NULLPTR != line_count) {
             *line_count = line_size;
         }
         return result;
@@ -1045,7 +1045,7 @@ namespace ppp {
     }
 
     bool SetThreadName(const char* name) noexcept {
-        if (NULL == name || *name == '\x0') {
+        if (NULLPTR == name || *name == '\x0') {
             return false;
         }
 
@@ -1063,7 +1063,7 @@ namespace ppp {
     // Only is to compile the Release code and opened the compiler code optimization.
     boost::asio::ip::address StringToAddress(const char* s, boost::system::error_code& ec) noexcept {
         ec = boost::asio::error::invalid_argument;
-        if (NULL == s || *s == '\x0') {
+        if (NULLPTR == s || *s == '\x0') {
             return boost::asio::ip::address_v4::any();
         }
 

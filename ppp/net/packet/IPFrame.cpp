@@ -13,13 +13,13 @@ namespace ppp {
                 std::shared_ptr<BufferSegment> payload_segment = this->Payload;
                 std::shared_ptr<BufferSegment> options_segment = this->Options;
                 int options_size = 0;
-                if (NULL != options_segment) {
+                if (NULLPTR != options_segment) {
                     options_size = options_segment->Length;
                 }
 
                 int payload_offset = sizeof(struct ip_hdr) + options_size;
                 int payload_size = 0;
-                if (NULL != payload_segment) {
+                if (NULLPTR != payload_segment) {
                     payload_size = payload_segment->Length;
                 }
 
@@ -31,20 +31,20 @@ namespace ppp {
                 std::shared_ptr<BufferSegment> payload_segment = this->Payload;
                 std::shared_ptr<BufferSegment> options_segment = this->Options;
                 int options_size = 0;
-                if (NULL != options_segment) {
+                if (NULLPTR != options_segment) {
                     options_size = options_segment->Length;
                 }
 
                 int payload_offset = sizeof(struct ip_hdr) + options_size;
                 int payload_size = 0;
-                if (NULL != payload_segment) {
+                if (NULLPTR != payload_segment) {
                     payload_size = payload_segment->Length;
                 }
 
                 int message_data_size = payload_offset + payload_size;
                 std::shared_ptr<Byte> message_data = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, message_data_size);
-                if (NULL == message_data) {
-                    return NULL;
+                if (NULLPTR == message_data) {
+                    return NULLPTR;
                 }
 
                 struct ip_hdr* iphdr = (struct ip_hdr*)message_data.get();
@@ -78,13 +78,13 @@ namespace ppp {
 
             std::shared_ptr<IPFrame> IPFrame::Parse(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const void* packet, int size) noexcept {
                 struct ip_hdr* iphdr = ip_hdr::Parse(packet, size);
-                if (NULL == iphdr) {
-                    return NULL;
+                if (NULLPTR == iphdr) {
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<IPFrame> frame = make_shared_object<IPFrame>();
-                if (NULL == frame) {
-                    return NULL;
+                if (NULLPTR == frame) {
+                    return NULLPTR;
                 }
 
                 frame->Destination = iphdr->dest;
@@ -100,14 +100,14 @@ namespace ppp {
                 int options_size = (iphdr_hlen - sizeof(struct ip_hdr));
                 if (options_size > 0) {
                     std::shared_ptr<BufferSegment> options_ = make_shared_object<BufferSegment>();
-                    if (NULL == options_) {
-                        return NULL;
+                    if (NULLPTR == options_) {
+                        return NULLPTR;
                     }
 
                     options_->Length = options_size;
                     options_->Buffer = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, options_size);
-                    if (NULL == options_->Buffer) {
-                        return NULL;
+                    if (NULLPTR == options_->Buffer) {
+                        return NULLPTR;
                     }
 
                     frame->Options = options_;
@@ -117,14 +117,14 @@ namespace ppp {
                 int message_size_ = size - iphdr_hlen;
                 if (message_size_ > 0) {
                     std::shared_ptr<BufferSegment> messages_ = make_shared_object<BufferSegment>();
-                    if (NULL == messages_) {
-                        return NULL;
+                    if (NULLPTR == messages_) {
+                        return NULLPTR;
                     }
 
                     messages_->Length = message_size_;
                     messages_->Buffer = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, message_size_);
-                    if (NULL == messages_->Buffer) {
-                        return NULL;
+                    if (NULLPTR == messages_->Buffer) {
+                        return NULLPTR;
                     }
 
                     frame->Payload = messages_;
@@ -135,7 +135,7 @@ namespace ppp {
             }
 
             int IPFrame::Subpackages(ppp::vector<IPFramePtr>& out, const IPFramePtr& packet) noexcept {
-                if (NULL == packet) {
+                if (NULLPTR == packet) {
                     return 0;
                 }
 
@@ -146,13 +146,13 @@ namespace ppp {
 
                 std::shared_ptr<BufferSegment> messages = packet->Payload;
                 std::shared_ptr<BufferSegment> options = packet->Options;
-                if (NULL == messages) {
+                if (NULLPTR == messages) {
                     out.emplace_back(packet);
                     return 1;
                 }
 
                 int max = /*ip_hdr::MTU*/ppp::tap::ITap::Mtu - sizeof(struct ip_hdr);
-                if (NULL != options) {
+                if (NULLPTR != options) {
                     max -= options->Length;
                 }
 
@@ -170,13 +170,13 @@ namespace ppp {
                 std::shared_ptr<IPFrame> fragment;
                 while (szz > max) {
                     fragment = make_shared_object<IPFrame>();
-                    if (NULL == fragment) {
+                    if (NULLPTR == fragment) {
                         return 0; 
                     }
 
                     std::shared_ptr<BufferSegment> packet_payload = 
                         make_shared_object<BufferSegment>(wrap_shared_pointer(buffer.get() + ofs, buffer), max);
-                    if (NULL == packet_payload) {
+                    if (NULLPTR == packet_payload) {
                         return 0;
                     }
 
@@ -191,7 +191,7 @@ namespace ppp {
                     fragment->Payload = packet_payload;
                     fragment->SetFragmentOffset(ofs);
 
-                    options = NULL;
+                    options = NULLPTR;
                     ofs += max;
                     szz -= max;
                     fragmentl++;
@@ -200,13 +200,13 @@ namespace ppp {
 
                 if (szz > 0) {
                     fragment = make_shared_object<IPFrame>();
-                    if (NULL == fragment) {
+                    if (NULLPTR == fragment) {
                         return 0; 
                     }
 
                     std::shared_ptr<BufferSegment> packet_payload = make_shared_object<BufferSegment>(
                         wrap_shared_pointer(buffer.get() + ofs, buffer), szz);
-                    if (NULL == packet_payload) {
+                    if (NULLPTR == packet_payload) {
                         return 0;
                     }
 

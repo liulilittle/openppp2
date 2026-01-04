@@ -65,15 +65,15 @@ namespace ppp
             : dev_(dev)
         {
 #if defined(_ANDROID)
-            env_ = NULL;
-            jni_ = NULL;
+            env_ = NULLPTR;
+            jni_ = NULLPTR;
 #endif
         }
 
         int ProtectorNetwork::Recvfd(const char* unix_path, int milliSecondsTimeout, bool sync, int& fd) noexcept
         {
             fd = -1;
-            if (NULL == unix_path)
+            if (NULLPTR == unix_path)
             {
                 return -1011;
             }
@@ -197,7 +197,7 @@ namespace ppp
         int ProtectorNetwork::Sendfd2(const char* unix_path, int fd, int milliSecondsTimeout, bool sync, char& r) noexcept
         {
             r = 0;
-            if (NULL == unix_path || milliSecondsTimeout < 1)
+            if (NULLPTR == unix_path || milliSecondsTimeout < 1)
             {
                 return -1001;
             }
@@ -273,29 +273,29 @@ namespace ppp
                 return false;
             }
 
-            if (NULL == env)
+            if (NULLPTR == env)
             {
                 return false;
             }
 
             jclass clazz = env->FindClass(LIBOPENPPP2_CLASSNAME);
-            if (NULL != env->ExceptionOccurred())
+            if (NULLPTR != env->ExceptionOccurred())
             {
                 env->ExceptionClear();
             }
 
-            if (NULL == clazz)
+            if (NULLPTR == clazz)
             {
                 return false;
             }
 
             jboolean result = false;
             jmethodID method = env->GetStaticMethodID(clazz, "protect", "(I)Z");
-            if (NULL != env->ExceptionOccurred())
+            if (NULLPTR != env->ExceptionOccurred())
             {
                 env->ExceptionClear();
             }
-            else if (NULL != method)
+            else if (NULLPTR != method)
             {
                 result = env->CallStaticBooleanMethod(clazz, method, fd);
                 if (env->ExceptionCheck())
@@ -312,7 +312,7 @@ namespace ppp
 
         bool ProtectorNetwork::JoinJNI(const std::shared_ptr<boost::asio::io_context>& context, JNIEnv* env) noexcept
         {
-            if (NULL == context || NULL == env)
+            if (NULLPTR == context || NULLPTR == env)
             {
                 return false;
             }
@@ -327,7 +327,7 @@ namespace ppp
                 break;
             }
 
-            if (NULL != jni)
+            if (NULLPTR != jni)
             {
                 ppp::threading::Executors::Exit(jni);
             }
@@ -342,12 +342,12 @@ namespace ppp
             {
                 SynchronizedObjectScope scope(syncobj_);
                 jni = std::move(jni_);
-                env_ = NULL;
-                jni_ = NULL;
+                env_ = NULLPTR;
+                jni_ = NULLPTR;
                 break;
             }
 
-            if (NULL == jni)
+            if (NULLPTR == jni)
             {
                 return false;
             }
@@ -369,10 +369,10 @@ namespace ppp
                         SynchronizedObjectScope scope(syncobj_);
                         jni = jni_;
 
-                        if (NULL != jni)
+                        if (NULLPTR != jni)
                         {
                             JNIEnv* env = env_;
-                            if (NULL != env)
+                            if (NULLPTR != env)
                             {
                                 ok = ProtectorNetwork::ProtectJNI(env, sockfd);
                             }
@@ -396,7 +396,7 @@ namespace ppp
             }
 
             ProtectEventHandler e = ProtectEvent;
-            if (NULL != e)
+            if (NULLPTR != e)
             {
                 return e(sockfd);
             }
@@ -405,7 +405,7 @@ namespace ppp
             // If JNIEnv is set, it means that PPP PRIVATE NETWORK™ 2 is embedded in the Android application as a DLL/SO, 
             // In the form of a JNI reverse call to the JAVA class member static function protect, otherwise it is a sendfd/recvfd structures.
             std::shared_ptr<boost::asio::io_context> context = jni_;
-            if (NULL != context)
+            if (NULLPTR != context)
             {
                 return ProtectJNI(context, sockfd, y);
             }

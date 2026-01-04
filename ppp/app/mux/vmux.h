@@ -56,7 +56,7 @@ namespace vmux {
     // https://original.boost.org/doc/libs/1_79_0/doc/html/boost_asio/overview/composition/spawn.html
 #if BOOST_VERSION >= 108000
 #define vmux_spawn(context_ptr, strand_ptr, fx) \
-    if (NULL != strand_ptr) {                   \
+    if (NULLPTR != strand_ptr) {                   \
         boost::asio::spawn(*strand_ptr,         \
             fx,                                 \
             boost::asio::detached);             \
@@ -68,7 +68,7 @@ namespace vmux {
     }
 #else
 #define vmux_spawn(context_ptr, strand_ptr, fx) \
-    if (NULL != strand_ptr) {                   \
+    if (NULLPTR != strand_ptr) {                   \
         boost::asio::spawn(*strand_ptr, fx);    \
     }                                           \
     else {                                      \

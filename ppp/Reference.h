@@ -17,14 +17,14 @@ namespace ppp {
     public:
         template <typename _Ty1, typename _Ty2>
         static std::shared_ptr<_Ty1>                    AsReference(const std::shared_ptr<_Ty2>& v) noexcept {
-            return v ? std::dynamic_pointer_cast<_Ty1>(v) : NULL;
+            return v ? std::dynamic_pointer_cast<_Ty1>(v) : NULLPTR;
         }
 
     public:
         template <typename _Ty1, typename _Ty2>
         static std::shared_ptr<_Ty1>                    CastReference(const std::shared_ptr<_Ty2>& v) noexcept {
             if (!v) {
-                return NULL;
+                return NULLPTR;
             }
 
             _Ty2* native_pTy2 = constantof(v.get());
@@ -40,8 +40,8 @@ namespace ppp {
             static_assert(sizeof(_Ty1) > 0 && sizeof(_Ty2) > 0, "can't make pointer to incomplete type");
 
             void* memory = Malloc(sizeof(_Ty2));
-            if (NULL == memory) {
-                return NULL;
+            if (NULLPTR == memory) {
+                return NULLPTR;
             }
 
             memset(memory, 0, sizeof(_Ty2));

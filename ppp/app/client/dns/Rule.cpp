@@ -151,7 +151,7 @@ namespace ppp
                         }
                     
                         Ptr rule = make_shared_object<Rule>(Rule{ host, nic, address });
-                        if (NULL == rule)
+                        if (NULLPTR == rule)
                         {
                             break;
                         }
@@ -176,18 +176,18 @@ namespace ppp
                 {
                     if (s.empty())
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     if (rules.empty() && full_rules.empty() && regexp_rules.empty())
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     ppp::string host_lower = ATrim(s);
                     if (host_lower.empty())
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     boost::system::error_code ec;
@@ -196,17 +196,17 @@ namespace ppp
                     boost::asio::ip::address ip = StringToAddress(host_lower, ec);
                     if (ec == boost::system::errc::success)
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
 
                     Rule::Ptr rule = GetWithAbsoluteHost(host_lower, full_rules);
-                    if (NULL != rule) 
+                    if (NULLPTR != rule) 
                     {
                         return rule;
                     }
 
                     rule = GetWithRegExp(host_lower, regexp_rules);
-                    if (NULL != rule) 
+                    if (NULLPTR != rule) 
                     {
                         return rule;
                     }
@@ -218,7 +218,7 @@ namespace ppp
                 {
                     auto tail = rules.find(s);
                     auto endl = rules.end();
-                    return tail != endl ? tail->second : NULL;
+                    return tail != endl ? tail->second : NULLPTR;
                 }
 
                 Rule::Ptr Rule::GetWithRegExp(const ppp::string& s, const ppp::unordered_map<ppp::string, Ptr>& rules) noexcept
@@ -256,7 +256,7 @@ namespace ppp
                         }
                     }
 
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 Rule::Ptr Rule::GetWithRelativePath(const ppp::string& s, const ppp::unordered_map<ppp::string, Ptr>& rules) noexcept
@@ -283,7 +283,7 @@ namespace ppp
                     }
                     else
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
                 }
             }

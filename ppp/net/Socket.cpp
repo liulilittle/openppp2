@@ -146,13 +146,13 @@ namespace ppp {
 
             int hr = -1;
             if (mode == SelectMode_SelectRead) {
-                hr = select(s + 1, &fdset, NULL, NULL, &tv) > 0;
+                hr = select(s + 1, &fdset, NULLPTR, NULLPTR, &tv) > 0;
             }
             elif(mode == SelectMode_SelectWrite) {
-                hr = select(s + 1, NULL, &fdset, NULL, &tv) > 0;
+                hr = select(s + 1, NULLPTR, &fdset, NULLPTR, &tv) > 0;
             }
             else {
-                hr = select(s + 1, NULL, NULL, &fdset, &tv) > 0;
+                hr = select(s + 1, NULLPTR, NULLPTR, &fdset, &tv) > 0;
             }
 
             if (hr > 0) {
@@ -254,25 +254,25 @@ namespace ppp {
         }
 
         void Socket::Cancel(const std::shared_ptr<boost::asio::ip::udp::socket>& socket) noexcept {
-            if (NULL != socket) {
+            if (NULLPTR != socket) {
                 Cancel(*socket);
             }
         }
 
         void Socket::Cancel(const std::shared_ptr<boost::asio::ip::tcp::socket>& socket) noexcept {
-            if (NULL != socket) {
+            if (NULLPTR != socket) {
                 Cancel(*socket);
             }
         }
 
         void Socket::Cancel(const std::shared_ptr<boost::asio::ip::tcp::acceptor>& acceptor) noexcept {
-            if (NULL != acceptor) {
+            if (NULLPTR != acceptor) {
                 Cancel(*acceptor);
             }
         }
 
         bool Socket::Closesocket(const std::shared_ptr<boost::asio::ip::udp::socket>& socket) noexcept {
-            if (NULL != socket) {
+            if (NULLPTR != socket) {
                 return Closesocket(*socket);
             }
             else {
@@ -281,7 +281,7 @@ namespace ppp {
         }
 
         bool Socket::Closesocket(const std::shared_ptr<boost::asio::ip::tcp::socket>& socket) noexcept {
-            if (NULL != socket) {
+            if (NULLPTR != socket) {
                 return Closesocket(*socket);
             }
             else {
@@ -290,7 +290,7 @@ namespace ppp {
         }
 
         bool Socket::Closesocket(const std::shared_ptr<boost::asio::ip::tcp::acceptor>& acceptor) noexcept {
-            if (NULL != acceptor) {
+            if (NULLPTR != acceptor) {
                 return Closesocket(*acceptor);
             }
             else {
@@ -331,7 +331,7 @@ namespace ppp {
                 socklen_t len = sizeof(ttl);
                 if (getsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, &len) < 0) {
                     int mib[] = { CTL_NET, IPPROTO_IP, IPCTL_DEFTTL };
-                    if (sysctl(mib, 3, &ttl, (size_t*)&len, NULL, 0) < 0 || ttl < 1) {
+                    if (sysctl(mib, 3, &ttl, (size_t*)&len, NULLPTR, 0) < 0 || ttl < 1) {
                         ttl = DFL_TTL;
                     }
                 }
@@ -401,8 +401,8 @@ namespace ppp {
             size_t dirty_decay_ms = 0;
             size_t muzzy_decay_ms = 0;
 
-            je_mallctl("arenas.dirty_decay_ms", NULL, 0, reinterpret_cast<void*>(&dirty_decay_ms), sizeof(dirty_decay_ms));
-            je_mallctl("arenas.muzzy_decay_ms", NULL, 0, reinterpret_cast<void*>(&muzzy_decay_ms), sizeof(muzzy_decay_ms));
+            je_mallctl("arenas.dirty_decay_ms", NULLPTR, 0, reinterpret_cast<void*>(&dirty_decay_ms), sizeof(dirty_decay_ms));
+            je_mallctl("arenas.muzzy_decay_ms", NULLPTR, 0, reinterpret_cast<void*>(&muzzy_decay_ms), sizeof(muzzy_decay_ms));
 #endif
         }
 
@@ -723,7 +723,7 @@ namespace ppp {
                     strand_ = make_shared_object<ppp::threading::Executors::Strand>(boost::asio::make_strand(*context_));
                 }
 
-                if (NULL == strand_) {
+                if (NULLPTR == strand_) {
                     context_ = ppp::threading::Executors::GetExecutor();
                 }
             }
@@ -737,7 +737,7 @@ namespace ppp {
 
             boost::asio::ip::tcp::acceptor* const acceptor_ = addressof(acceptor);
             const Socket::AsioTcpSocket           socket_   = strand_ ? make_shared_object<boost::asio::ip::tcp::socket>(*strand_) : make_shared_object<boost::asio::ip::tcp::socket>(*context_);
-            if (NULL == socket_) {
+            if (NULLPTR == socket_) {
                 return false;
             }
 
@@ -807,7 +807,7 @@ namespace ppp {
                 return false;
             }
 
-            AcceptLoopbackSchedulerCallback ac = NULL;
+            AcceptLoopbackSchedulerCallback ac = NULLPTR;
             return SocketAcceptLoopbackAsync(acceptor, callback, context, ac);
         }
 
@@ -816,7 +816,7 @@ namespace ppp {
                 return false;
             }
 
-            return SocketAcceptLoopbackAsync(acceptor, NULL, NULL, callback);
+            return SocketAcceptLoopbackAsync(acceptor, NULLPTR, NULLPTR, callback);
         }
 
         bool Socket::OpenAcceptor(
@@ -1005,7 +1005,7 @@ namespace ppp {
         }
 
         bool Socket::Closestream(boost::asio::posix::stream_descriptor* stream) noexcept {
-            if (NULL == stream) {
+            if (NULLPTR == stream) {
                 return false;
             }
 

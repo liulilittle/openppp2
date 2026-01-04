@@ -48,33 +48,33 @@ namespace ppp
         typedef TapDarwin::NetworkInterface             NetworkInterface;
         typedef NetworkInterface::Ptr                   NetworkInterfacePtr;
 
-        static int FetchAllRouteNtreeStuff(const ppp::function<bool(int interface_index, uint32_t ip, uint32_t gw, uint32_t mask)>& predicate) noexcept /* sysctlbyname("net.route.0.0.dump", buf, &len, NULL, 0) */
+        static int FetchAllRouteNtreeStuff(const ppp::function<bool(int interface_index, uint32_t ip, uint32_t gw, uint32_t mask)>& predicate) noexcept /* sysctlbyname("net.route.0.0.dump", buf, &len, NULLPTR, 0) */
         {
-            if (NULL == predicate)
+            if (NULLPTR == predicate)
             {
                 return -1;
             }
 
             int mib[] = { CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_GATEWAY };
             size_t needed = 0;
-            if (sysctl(mib, arraysizeof(mib), NULL, &needed, NULL, 0) < 0)
+            if (sysctl(mib, arraysizeof(mib), NULLPTR, &needed, NULLPTR, 0) < 0)
             {
                 return -1;
             }
 
             std::shared_ptr<Byte> buffer_managed = ppp::make_shared_alloc<Byte>(needed);
-            if (NULL == buffer_managed)
+            if (NULLPTR == buffer_managed)
             {
                 return -1;
             }
 
             char* buffer = (char*)buffer_managed.get();
-            if (sysctl(mib, arraysizeof(mib), buffer, &needed, NULL, 0) < 0)
+            if (sysctl(mib, arraysizeof(mib), buffer, &needed, NULLPTR, 0) < 0)
             {
                 return -1;
             }
 
-            struct rt_msghdr* rtm = NULL;
+            struct rt_msghdr* rtm = NULLPTR;
             char* buffer_needed = buffer + needed;
 
             for (char* i = buffer; i < buffer_needed; i += rtm->rtm_msglen)
@@ -99,7 +99,7 @@ namespace ppp
 
                 struct sockaddr* sa_tab[RTAX_MAX];
                 struct sockaddr* sa = (struct sockaddr*)(rtm + 1); 
-                if (NULL != sa)
+                if (NULLPTR != sa)
                 {
                     for (int j = 0; j < RTAX_MAX; j++)
                     {
@@ -110,7 +110,7 @@ namespace ppp
                         }
                         else
                         {
-                            sa_tab[j] = NULL;
+                            sa_tab[j] = NULLPTR;
                         }
                     }
                 }
@@ -157,23 +157,23 @@ namespace ppp
 
         static bool FetchAllNetworkInterfaceNative(ppp::unordered_map<int, NetworkInterfacePtr>& interfaces) noexcept
         {
-            struct ifaddrs* ifList = NULL;
+            struct ifaddrs* ifList = NULLPTR;
             if (getifaddrs(&ifList))
             {
                 return false;
             }
 
-            for (struct ifaddrs* ifa = ifList; ifa != NULL; ifa = ifa->ifa_next)
+            for (struct ifaddrs* ifa = ifList; ifa != NULLPTR; ifa = ifa->ifa_next)
             {
                 struct sockaddr_in* sin = (struct sockaddr_in*)ifa->ifa_addr; // ifa_dstaddr
-                if (NULL == sin || sin->sin_family != AF_INET)
+                if (NULLPTR == sin || sin->sin_family != AF_INET)
                 {
                     continue;
                 }
 
                 UInt32 ip = sin->sin_addr.s_addr;
                 sin = (struct sockaddr_in*)ifa->ifa_netmask;
-                if (NULL == sin || (sin->sin_family != AF_INET && (sin->sin_family != AF_UNSPEC || sin->sin_len != '\a')))
+                if (NULLPTR == sin || (sin->sin_family != AF_INET && (sin->sin_family != AF_UNSPEC || sin->sin_len != '\a')))
                 {
                     continue;
                 }
@@ -186,7 +186,7 @@ namespace ppp
                 }
 
                 NetworkInterfacePtr ni = ppp::make_shared_object<NetworkInterface>();
-                if (NULL == ni)
+                if (NULLPTR == ni)
                 {
                     break;
                 }
@@ -241,7 +241,7 @@ namespace ppp
                         return false;
                     }
 
-                    if (NULL == ni)
+                    if (NULLPTR == ni)
                     {
                         return false;
                     }
@@ -259,7 +259,7 @@ namespace ppp
             for (auto&& [interface_index, m] : best_gws)
             {
                 NetworkInterfacePtr ni;
-                if (!Dictionary::TryGetValue(interfaces, interface_index, ni) || NULL == ni)
+                if (!Dictionary::TryGetValue(interfaces, interface_index, ni) || NULLPTR == ni)
                 {
                     continue;
                 }
@@ -285,7 +285,7 @@ namespace ppp
 
             for (auto&& [_, ni] : interfaces)
             {
-                if (NULL == ni || ni->Index == -1)
+                if (NULLPTR == ni || ni->Index == -1)
                 {
                     continue;
                 }
@@ -354,7 +354,7 @@ namespace ppp
             boost::system::error_code ec;
             if (interfaces.empty())
             {
-                return NULL;
+                return NULLPTR;
             }
 
             ppp::string nic_lower = ToLower(ATrim(nic));
@@ -414,7 +414,7 @@ namespace ppp
 
                 return ni;
             }
-            return NULL;
+            return NULLPTR;
         }
 
         NetworkInterface::Ptr TapDarwin::GetPreferredNetworkInterface(const ppp::vector<NetworkInterface::Ptr>& interfaces) noexcept
@@ -426,7 +426,7 @@ namespace ppp
         NetworkInterface::Ptr TapDarwin::GetPreferredNetworkInterface2(const ppp::vector<NetworkInterface::Ptr>& interfaces, const ppp::string& nic) noexcept 
         {
             NetworkInterface::Ptr ni = Darwin_GetPreferredNetworkInterface2(interfaces, nic);
-            if (NULL != ni)
+            if (NULLPTR != ni)
             {
                 return ni;
             }
@@ -439,9 +439,9 @@ namespace ppp
         std::shared_ptr<TapDarwin::RouteInformationTable> TapDarwin::FindAllDefaultGatewayRoutes(const ppp::unordered_set<uint32_t>& bypass_gws) noexcept
         {
             std::shared_ptr<TapDarwin::RouteInformationTable> rib = make_shared_object<TapDarwin::RouteInformationTable>();
-            if (NULL == rib) 
+            if (NULLPTR == rib) 
             {
-                return NULL;
+                return NULLPTR;
             }
 
             bool any = false;
@@ -488,7 +488,7 @@ namespace ppp
             }
             else
             {
-                return NULL;
+                return NULLPTR;
             }
         }
 
@@ -549,32 +549,32 @@ namespace ppp
 
         std::shared_ptr<TapDarwin> TapDarwin::Create(const std::shared_ptr<boost::asio::io_context>& context, const ppp::string& dev, uint32_t ip, uint32_t gw, uint32_t mask, bool promisc, bool hosted_network, const ppp::vector<uint32_t>& dns_addresses) noexcept
         {
-            if (NULL == context)
+            if (NULLPTR == context)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             if (dev.empty())
             {
-                return NULL;
+                return NULLPTR;
             }
 
             IPEndPoint ipEP(ip, 0);
             if (IPEndPoint::IsInvalid(ipEP))
             {
-                return NULL;
+                return NULLPTR;
             }
 
             IPEndPoint gwEP(ip, 0);
             if (IPEndPoint::IsInvalid(gwEP))
             {
-                return NULL;
+                return NULLPTR;
             }
 
             IPEndPoint maskEP(ip, 0);
             if (IPEndPoint::IsInvalid(maskEP))
             {
-                return NULL;
+                return NULLPTR;
             }
 
             // Try to open the utun virtual network adapter. 
@@ -604,7 +604,7 @@ namespace ppp
                 // The vnic still cannot be opened, indicating that the current OS X system may not have the Apple driver for utun.
                 if (tun == -1)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
             }
 
@@ -618,7 +618,7 @@ namespace ppp
             if (!utun_get_if_name(tun, interface_name))
             {
                 close(tun);
-                return NULL;
+                return NULLPTR;
             }
 
             return CreateInternal(context, ip, gw, mask, promisc, hosted_network, tun, interface_name, dns_servers);
@@ -630,21 +630,21 @@ namespace ppp
             if (interface_index == -1)
             {
                 ::close(tun);
-                return NULL;
+                return NULLPTR;
             }
 
             std::shared_ptr<TapDarwin> tap = make_shared_object<TapDarwin>(context, interface_name, reinterpret_cast<void*>(tun), ip, gw, mask, hosted_network);
-            if (NULL == tap)
+            if (NULLPTR == tap)
             {
                 ::close(tun);
-                return NULL;
+                return NULLPTR;
             }
 
             tap->promisc_ = promisc;
             tap->dns_addresses_ = dns_addresses;
 
             ITap* my = tap.get(); 
-            if (NULL != my) 
+            if (NULLPTR != my) 
             {
                 my->GetInterfaceIndex() = interface_index;
             }
@@ -658,7 +658,7 @@ namespace ppp
             // Windows virtual nics need to use Event to write to the kernel asynchronously, 
             // MacOS virtual nics can directly write to the kernel ::write function,
             // Can reduce a memory allocation and replication, improve throughput efficiency.
-            if (NULL == packet || packet_size < 1 || NULL == stream)
+            if (NULLPTR == packet || packet_size < 1 || NULLPTR == stream)
             {
                 return false;
             }
@@ -720,7 +720,7 @@ namespace ppp
 
         static bool DeleteAddAllRoutes(const std::shared_ptr<ppp::net::native::RouteInformationTable>& rib, bool operate_add_or_delete) noexcept
         {
-            if (NULL == rib)
+            if (NULLPTR == rib)
             {
                 return false;
             }

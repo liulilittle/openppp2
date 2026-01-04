@@ -167,11 +167,11 @@ namespace ppp {
                 int                                                 message_length, 
                 const boost::asio::ip::udp::endpoint&               remoteEP) noexcept {
 
-                if (NULL == switcher || NULL == exchanger) {
+                if (NULLPTR == switcher || NULLPTR == exchanger) {
                     return false;
                 }
 
-                if (NULL == messages || message_length < 1) {
+                if (NULLPTR == messages || message_length < 1) {
                     return false;
                 }
 
@@ -186,7 +186,7 @@ namespace ppp {
                 }
 
                 auto allocated_context = exchanger->static_allocated_context_;
-                if (NULL == allocated_context) {
+                if (NULLPTR == allocated_context) {
                     return false;
                 }
 
@@ -207,7 +207,7 @@ namespace ppp {
                     messages,
                     message_length,
                     packet_length);
-                if (NULL == packet_output) {
+                if (NULLPTR == packet_output) {
                     return false;
                 }
 
@@ -220,7 +220,7 @@ namespace ppp {
                 }
 
                 auto statistics = exchanger->GetStatistics(); 
-                if (NULL != statistics) {
+                if (NULLPTR != statistics) {
                     statistics->AddOutgoingTraffic(packet_length);
                 }
 
@@ -247,9 +247,9 @@ namespace ppp {
 
                 using dns_hdr = ppp::net::native::dns::dns_hdr;
 
-                if (NULL != packet && packet_length >= sizeof(dns_hdr)) {
+                if (NULLPTR != packet && packet_length >= sizeof(dns_hdr)) {
                     auto cache = switcher_->GetNamespaceCache();
-                    if (NULL != cache) {
+                    if (NULLPTR != cache) {
                         std::shared_ptr<Byte> response;
                         int response_length;
 
@@ -267,7 +267,7 @@ namespace ppp {
             }
 
             bool VirtualEthernetDatagramPortStatic::SendTo(const void* packet, int packet_length, const boost::asio::ip::udp::endpoint& destinationEP) noexcept {
-                if (NULL == packet || packet_length < 1) {
+                if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
 

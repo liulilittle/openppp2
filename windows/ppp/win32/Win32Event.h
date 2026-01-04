@@ -27,7 +27,7 @@ namespace ppp
             int                 OpenKernelEventObject(const ppp::string& name, bool initialState, bool openOrCreate) noexcept;
 
         private:
-            std::atomic<void*>  hKrlEvt = NULL;
+            std::atomic<void*>  hKrlEvt = NULLPTR;
         };
     }
 }

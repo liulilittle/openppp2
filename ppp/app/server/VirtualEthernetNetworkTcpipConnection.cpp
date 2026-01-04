@@ -48,11 +48,11 @@ namespace ppp {
                 ITransmissionPtr transmission = std::move(transmission_); 
                 transmission_.reset();
 
-                if (NULL != connection) {
+                if (NULLPTR != connection) {
                     connection->Dispose();
                 }
 
-                if (NULL != transmission) {
+                if (NULLPTR != transmission) {
                     transmission->Dispose();
                 }
 
@@ -62,7 +62,7 @@ namespace ppp {
 
             bool VirtualEthernetNetworkTcpipConnection::Run(ppp::coroutines::YieldContext& y) noexcept {
                 std::shared_ptr<VirtualEthernetTcpipConnection> connection = AcceptConnection(y);
-                if (NULL == connection) {
+                if (NULLPTR == connection) {
                     return false;
                 }
                 elif(disposed_) {
@@ -100,30 +100,30 @@ namespace ppp {
                 };
 
                 if (disposed_) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 ITransmissionPtr transmission = transmission_;
-                if (NULL == transmission) {
-                    return NULL;
+                if (NULLPTR == transmission) {
+                    return NULLPTR;
                 }
 
                 AppConfigurationPtr configuration = configuration_;
-                if (NULL == configuration) {
-                    return NULL;
+                if (NULLPTR == configuration) {
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<boost::asio::ip::tcp::socket> socket = strand_ ?
                     make_shared_object<boost::asio::ip::tcp::socket>(*strand_) : make_shared_object<boost::asio::ip::tcp::socket>(*context_);
-                if (NULL == socket) {
-                    return NULL;
+                if (NULLPTR == socket) {
+                    return NULLPTR;
                 }
                 
                 auto self = shared_from_this();
                 std::shared_ptr<VirtualEthernetTcpipConnection> connection =
                     make_shared_object<VirtualEthernetTcpipConnection>(self, configuration, context_, strand_, id_, socket);
-                if (NULL == connection) {
-                    return NULL;
+                if (NULLPTR == connection) {
+                    return NULLPTR;
                 }
 
                 bool ok = 
@@ -134,7 +134,7 @@ namespace ppp {
                         });
                 if (!ok) {
                     connection->Dispose();
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 return connection;
@@ -142,12 +142,12 @@ namespace ppp {
 
             bool VirtualEthernetNetworkTcpipConnection::AcceptMuxLinklayer(const std::shared_ptr<VirtualEthernetTcpipConnection>& connection, uint32_t vlan, uint32_t seq, uint32_t ack, ppp::coroutines::YieldContext& y) noexcept {
                 std::shared_ptr<VirtualEthernetExchanger> exchanger = switcher_->GetExchanger(id_);
-                if (NULL == exchanger) {
+                if (NULLPTR == exchanger) {
                     return false;
                 }
 
                 std::shared_ptr<vmux::vmux_net> mux = exchanger->GetMux();
-                if (NULL == mux) {
+                if (NULLPTR == mux) {
                     return false;
                 }
                 elif(mux->Vlan != vlan) {
@@ -182,7 +182,7 @@ namespace ppp {
                 using Executors = ppp::threading::Executors;
 
                 std::shared_ptr<VirtualEthernetTcpipConnection> connection = connection_;
-                if (NULL != connection && connection->IsLinked()) {
+                if (NULLPTR != connection && connection->IsLinked()) {
                     timeout_ = Executors::GetTickCount() + (UInt64)configuration_->tcp.inactive.timeout * 1000;
                 }
                 else {

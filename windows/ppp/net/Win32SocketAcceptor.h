@@ -26,9 +26,9 @@ namespace ppp
 
         private:
             int                                                                     listenfd_ = -1;
-            void*                                                                   hEvent_   = NULL;
+            void*                                                                   hEvent_   = NULLPTR;
             bool                                                                    in_       = false;
-            std::shared_ptr<void*>                                                  afo_      = NULL;
+            std::shared_ptr<void*>                                                  afo_      = NULLPTR;
             std::shared_ptr<boost::asio::io_context>                                context_;
         };
     }

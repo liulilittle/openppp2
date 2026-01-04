@@ -125,12 +125,12 @@ namespace ppp {
                     }
 
                     std::shared_ptr<DNS_RequestContext> request_context = make_shared_object<DNS_RequestContext>(context);
-                    if (NULL == request_context) {
+                    if (NULLPTR == request_context) {
                         return false;
                     }
 
                     std::shared_ptr<boost::asio::ip::udp::socket> socket = request_context->socket;
-                    if (NULL == socket) {
+                    if (NULLPTR == socket) {
                         return false;
                     }
 
@@ -200,7 +200,7 @@ namespace ppp {
                             }
 
                             std::shared_ptr<DNS_RequestContext> request_context = rc_weak_ptr.lock();
-                            if (NULL != request_context) {
+                            if (NULLPTR != request_context) {
                                 request_context->Event(true);
                             }
                         });
@@ -208,12 +208,12 @@ namespace ppp {
                     return DNS_RequestContext::ReceiveFrom(request_context);
                 }
 
-                static bool                                                                     DNS_ProcessAResponseAddresses(Byte* packet, int packet_size, ppp::unordered_set<boost::asio::ip::address>& addresses, uint16_t& ack, ppp::string* hostname_string = NULL, bool* ipv4_or_ipv6 = NULL) noexcept {
+                static bool                                                                     DNS_ProcessAResponseAddresses(Byte* packet, int packet_size, ppp::unordered_set<boost::asio::ip::address>& addresses, uint16_t& ack, ppp::string* hostname_string = NULLPTR, bool* ipv4_or_ipv6 = NULLPTR) noexcept {
                     using IPEndPoint = ppp::net::IPEndPoint;
                     using AddressFamily = ppp::net::AddressFamily;
 
                     ack = 0;
-                    if (NULL == packet || packet_size < 1) {
+                    if (NULLPTR == packet || packet_size < 1) {
                         return false;
                     }
 
@@ -222,8 +222,8 @@ namespace ppp {
                         return false;
                     }
 
-                    ::dns::QuestionSection* qs = NULL;
-                    if (NULL != hostname_string && !m.questions.empty()) {
+                    ::dns::QuestionSection* qs = NULLPTR;
+                    if (NULLPTR != hostname_string && !m.questions.empty()) {
                         qs = m.questions.data();
                         
                         if (IsReverseQuery(qs->mName.data())) {
@@ -239,22 +239,22 @@ namespace ppp {
                         IPEndPoint ep;
                         if (rr.mType == ::dns::RecordType::kA) {
                             auto in = rr.getRData<::dns::RDataA>();
-                            if (NULL != in) {
+                            if (NULLPTR != in) {
                                 ep = IPEndPoint(AddressFamily::InterNetwork, in->getAddress(), 4, IPEndPoint::MinPort);
                                 addresses.emplace(IPEndPoint::ToEndPoint<boost::asio::ip::udp>(ep).address());
                             }
                         }
                         elif(rr.mType == ::dns::RecordType::kAAAA) {
                             auto in = rr.getRData<::dns::RDataAAAA>();
-                            if (NULL != in) {
+                            if (NULLPTR != in) {
                                 ep = IPEndPoint(AddressFamily::InterNetworkV6, in->getAddress(), 16, IPEndPoint::MinPort);
                                 addresses.emplace(IPEndPoint::ToEndPoint<boost::asio::ip::udp>(ep).address());
                             }
                         }
                     }
 
-                    if (NULL != hostname_string && !m.questions.empty()) {
-                        if (NULL != ipv4_or_ipv6) {
+                    if (NULLPTR != hostname_string && !m.questions.empty()) {
+                        if (NULLPTR != ipv4_or_ipv6) {
                             *ipv4_or_ipv6 = qs->mType == ::dns::RecordType::kA;
                         }
 
@@ -274,19 +274,19 @@ namespace ppp {
                     DNS_RequestContext* const rc = this;
                     DNSRequestAsynchronousCallback f = std::move(rc->cb);
                     if (f) {
-                        rc->cb.reset();
+                        rc->cb = NULLPTR;
                         f(rc->in4 || rc->in6, addresses);
                     }
 
                     if (timeout || (rc->in4 && rc->in6)) {
                         std::shared_ptr<boost::asio::deadline_timer> t = std::move(rc->merge_wait); 
-                        if (NULL != t) {
+                        if (NULLPTR != t) {
                             rc->merge_wait.reset();
                             Socket::Cancel(*t);
                         }
                         
                         std::shared_ptr<boost::asio::ip::udp::socket> socket = std::move(rc->socket);
-                        if (NULL != socket) {
+                        if (NULLPTR != socket) {
                             rc->socket.reset();
                             Socket::Closesocket(socket);
                         }
@@ -327,7 +327,7 @@ namespace ppp {
                         }
 
                         node = make_shared_object<NamespaceRecordNode>();
-                        if (NULL == node) {
+                        if (NULLPTR == node) {
                             return false;
                         }
 
@@ -355,7 +355,7 @@ namespace ppp {
 
                 bool DNS_RequestContext::ReceiveFrom(std::shared_ptr<DNS_RequestContext> request_context) noexcept {
                     std::shared_ptr<boost::asio::ip::udp::socket> socket = request_context->socket;
-                    if (NULL == socket) {
+                    if (NULLPTR == socket) {
                         request_context->Event(true);
                         return false;
                     }
@@ -381,12 +381,12 @@ namespace ppp {
                             else {
                                 while (request_context->in4 || request_context->in6) {
                                     std::shared_ptr<boost::asio::deadline_timer> t = request_context->merge_wait;
-                                    if (NULL != t) {
+                                    if (NULLPTR != t) {
                                         break;
                                     }
 
                                     t = make_shared_object<boost::asio::deadline_timer>(request_context->executor);
-                                    if (NULL == t) {
+                                    if (NULLPTR == t) {
                                         break;
                                     }
                                     
@@ -397,12 +397,12 @@ namespace ppp {
                                     t->async_wait(
                                         [rc_weak_ptr](const boost::system::error_code& ec) noexcept {
                                             std::shared_ptr<DNS_RequestContext> request_context = rc_weak_ptr.lock();
-                                            if (NULL == request_context) {
+                                            if (NULLPTR == request_context) {
                                                 return false;
                                             }
 
                                             std::shared_ptr<boost::asio::deadline_timer> t = request_context->merge_wait;
-                                            if (NULL != t) {
+                                            if (NULLPTR != t) {
                                                 Socket::Cancel(*t);
                                             }
 
@@ -454,7 +454,7 @@ namespace ppp {
                     const char*                                                                     hostname, 
                     ppp::string&                                                                    hostname_string) noexcept {
 
-                    if (NULL == hostname || *hostname == '\x0') {
+                    if (NULLPTR == hostname || *hostname == '\x0') {
                         return false;
                     }
 
@@ -490,7 +490,7 @@ namespace ppp {
                     SynchronizedObjectScope syncobj(c.lockobj);
 
                     if (Dictionary::TryGetValue(c.nr_hmap, hostname, node)) {
-                        if (NULL == node) {
+                        if (NULLPTR == node) {
                             Dictionary::TryRemove(c.nr_hmap, hostname);
                         }
                     }
@@ -512,7 +512,7 @@ namespace ppp {
                         return false;
                     }
 
-                    if (NULL != node) {
+                    if (NULLPTR != node) {
                         boost::asio::post(context, 
                             [node, one_cb, all_cb]() noexcept {
                                 ppp::unordered_set<boost::asio::ip::address>& addresses = node->Value.addresses;
@@ -547,11 +547,11 @@ namespace ppp {
                     const ppp::vector<boost::asio::ip::udp::endpoint>&                              destinations,
                     const ppp::function<void(const boost::asio::ip::address&)>&                     cb) noexcept {
 
-                    if (NULL == cb) {
+                    if (NULLPTR == cb) {
                         return false;
                     }
 
-                    return DNS_ResolveAsync(context, hostname, timeout, destinations, cb, NULL);
+                    return DNS_ResolveAsync(context, hostname, timeout, destinations, cb, NULLPTR);
                 }
 
                 bool                                                                            ResolveAsync2(
@@ -561,11 +561,11 @@ namespace ppp {
                     const ppp::vector<boost::asio::ip::udp::endpoint>&                              destinations,
                     const ppp::function<void(const ppp::unordered_set<boost::asio::ip::address>&)>& cb) noexcept {
 
-                    if (NULL == cb) {
+                    if (NULLPTR == cb) {
                         return false;
                     }
 
-                    return DNS_ResolveAsync(context, hostname, timeout, destinations, NULL, cb);
+                    return DNS_ResolveAsync(context, hostname, timeout, destinations, NULLPTR, cb);
                 }
 
                 bool                                                                            QueryCache(const char* hostname, boost::asio::ip::address& address) noexcept {
@@ -577,14 +577,14 @@ namespace ppp {
                         return false; 
                     }
 
-                    if (NULL == node) {
+                    if (NULLPTR == node) {
                         return false; 
                     }
 
                     DNS_ResolveEventCallback(node->Value.addresses, 
                         [&address](const boost::asio::ip::address& i) noexcept {
                             address = i;
-                        }, NULL);
+                        }, NULLPTR);
 
                     return !IPEndPoint::IsInvalid(address);
                 }
@@ -602,7 +602,7 @@ namespace ppp {
                         return ppp::string(); 
                     }
 
-                    if (NULL == node) {
+                    if (NULLPTR == node) {
                         return ppp::string(); 
                     }
 
@@ -621,7 +621,7 @@ namespace ppp {
                     for (boost::asio::ip::address ip : addresses) {
                         if (in4 && ip.is_v4()) {
                             std::shared_ptr<::dns::RDataA> rd_a = make_shared_object<::dns::RDataA>();
-                            if (NULL == rd_a) {
+                            if (NULLPTR == rd_a) {
                                 break;
                             }
                             else {
@@ -639,7 +639,7 @@ namespace ppp {
                         }
                         elif(in6 && ip.is_v6()) {
                             std::shared_ptr<::dns::RDataAAAA> rd_aaaa = make_shared_object<::dns::RDataAAAA>();
-                            if (NULL == rd_aaaa) {
+                            if (NULLPTR == rd_aaaa) {
                                 break;
                             }
                             else {
@@ -670,7 +670,7 @@ namespace ppp {
                     SynchronizedObjectScope scope(c.lockobj);
 
                     node = c.nr_list.First();
-                    if (NULL != node) {
+                    if (NULLPTR != node) {
                         uint64_t now = Executors::GetTickCount();
                         do {
                             NamespaceRecord& record = node->Value;
@@ -685,12 +685,12 @@ namespace ppp {
                             NamespaceRecordNodePtr next = node->Next;
                             c.nr_list.Remove(node);
                             node = next;
-                        } while (NULL != node);
+                        } while (NULLPTR != node);
                     }
                 }
             
                 bool                                                                            AddCache(const Byte* packet, int packet_size) noexcept {
-                    if (NULL == packet || packet_size < 1) {
+                    if (NULLPTR == packet || packet_size < 1) {
                         return false;
                     }
 
@@ -722,7 +722,7 @@ namespace ppp {
 
                     SynchronizedObjectScope syncobj(c.lockobj);
                     if (Dictionary::TryGetValue(c.nr_hmap, hostname, node)) {
-                        if (NULL == node) {
+                        if (NULLPTR == node) {
                             Dictionary::TryRemove(c.nr_hmap, hostname);
                         }
                         else {
@@ -750,7 +750,7 @@ namespace ppp {
                     }
 
                     node = make_shared_object<NamespaceRecordNode>();
-                    if (NULL == node) {
+                    if (NULLPTR == node) {
                         return false;
                     }
 
@@ -779,7 +779,7 @@ namespace ppp {
                     static constexpr char PPP_DNS_ARPA_QEURY_IPV6[] = ".ip6.arpa";
                     static constexpr char PPP_DNS_ARPA_QEURY_IPV4[] = ".in-addr.arpa";
 
-                    if (NULL == hostname || *hostname == '\x0') {
+                    if (NULLPTR == hostname || *hostname == '\x0') {
                         return false;
                     }
 

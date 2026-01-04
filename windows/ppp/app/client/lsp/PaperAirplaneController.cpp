@@ -45,7 +45,7 @@ namespace ppp
                     PaperAirplaneControlBlockPortPtr block_port = std::move(block_port_);
                     block_port_.reset();
                     
-                    if (NULL != block_port)
+                    if (NULLPTR != block_port)
                     {
                         if (block_port->IsAvailable())
                         {
@@ -76,7 +76,7 @@ namespace ppp
                 bool PaperAirplaneController::OpenAllAcceptors() noexcept
                 {
                     AppConfigurationPtr configuration = GetConfiguration();
-                    if (NULL == configuration)
+                    if (NULLPTR == configuration)
                     {
                         return false;
                     }
@@ -117,7 +117,7 @@ namespace ppp
                 bool PaperAirplaneController::OpenControlBlockPort(int interface_index, uint32_t ip, uint32_t mask) noexcept
                 {
                     std::shared_ptr<PaperAirplaneControlBlockPort> block_port = make_shared_object<PaperAirplaneControlBlockPort>();
-                    if (NULL == block_port)
+                    if (NULLPTR == block_port)
                     {
                         return false;
                     }
@@ -194,7 +194,7 @@ namespace ppp
                         return false;
                     }
 
-                    if (NULL == handler)
+                    if (NULLPTR == handler)
                     {
                         return false;
                     }
@@ -231,24 +231,24 @@ namespace ppp
                             k->Dispose();
 
                             h(k);
-                            h = NULL;
-                            k = NULL;
-                            p = NULL;
+                            h = NULLPTR;
+                            k = NULLPTR;
+                            p = NULLPTR;
                         }
                     };
 
                     std::shared_ptr<TimeoutHandler> h = make_shared_object<TimeoutHandler>();
-                    if (NULL == h)
+                    if (NULLPTR == h)
                     {
                         return false;
                     }
                     
-                    h->k = NULL;
+                    h->k = NULLPTR;
                     h->h = handler;
                     h->p = shared_from_this();
                     
                     std::shared_ptr<Timer> timeout = Timer::Timeout(milliseconds, std::bind(&TimeoutHandler::Call, h, std::placeholders::_1));
-                    if (NULL == timeout)
+                    if (NULLPTR == timeout)
                     {
                         return false;
                     }
@@ -372,7 +372,7 @@ namespace ppp
                     using NetworkState = VEthernetExchanger::NetworkState;
 
                     std::shared_ptr<VEthernetExchanger> exchanger = GetExchanger();
-                    if (NULL == exchanger)
+                    if (NULLPTR == exchanger)
                     {
                         return false;
                     }
@@ -384,13 +384,13 @@ namespace ppp
                     }
 
                     AppConfigurationPtr configuration = exchanger->GetConfiguration();
-                    if (NULL == configuration)
+                    if (NULLPTR == configuration)
                     {
                         return false;
                     }
 
                     std::shared_ptr<PaperAirplaneConnection> connection = NewConnection(context, strand, socket);
-                    if (NULL == connection)
+                    if (NULLPTR == connection)
                     {
                         connection->Dispose();
                         return false;
@@ -432,7 +432,7 @@ namespace ppp
 
                 bool PaperAirplaneController::ReleaseConnection(PaperAirplaneConnection* connection) noexcept
                 {
-                    if (NULL == connection)
+                    if (NULLPTR == connection)
                     {
                         return false;
                     }
@@ -452,7 +452,7 @@ namespace ppp
                             PaperAirplaneConnectionPtr connection_managed = std::move(tail->second);
                             connections_.erase(tail);
 
-                            if (NULL == connection_managed)
+                            if (NULLPTR == connection_managed)
                             {
                                 return false;
                             }
@@ -505,7 +505,7 @@ namespace ppp
                     {
                         int libFileSize = 0;
                         std::shared_ptr<Byte> libFileBytes = File::ReadAllBytes(libPaths[i].data(), libFileSize);
-                        if (NULL == libFileBytes || libFileSize < 1)
+                        if (NULLPTR == libFileBytes || libFileSize < 1)
                         {
                             n++;
                             continue;
@@ -513,7 +513,7 @@ namespace ppp
 
                         int dllFileSize = 0;
                         std::shared_ptr<Byte> dllFileBytes = File::ReadAllBytes(dllPaths[i].data(), dllFileSize);
-                        if (NULL == dllFileBytes || dllFileSize < 1)
+                        if (NULLPTR == dllFileBytes || dllFileSize < 1)
                         {
                             continue;
                         }
@@ -585,7 +585,7 @@ namespace ppp
 
                     if (reboot)
                     {
-                        int result = MessageBoxA(NULL, "You need to reboot your system to complete the update of the \"PaperAirplane\" plugin, do you need to restart system now?",
+                        int result = MessageBoxA(NULLPTR, "You need to reboot your system to complete the update of the \"PaperAirplane\" plugin, do you need to restart system now?",
                             ppp::win32::Win32Native::GetConsoleWindowText().data(), MB_ICONWARNING | MB_YESNO);
                         if (result == IDYES)
                         {
@@ -651,7 +651,7 @@ namespace ppp
 
                     while (!CopyToSystemFolder())
                     {
-                        int result = MessageBoxA(NULL,
+                        int result = MessageBoxA(NULLPTR,
                             "Unable to copy the \"PaperAirplane\" plugin-file to the system disk directory \"System32 and SysWow64\". You are actively rejecting this action. You can ignore this message, but the \"PaperAirplane\" plugin function will be disabled.",
                             ppp::win32::Win32Native::GetConsoleWindowText().data(), MB_ABORTRETRYIGNORE | MB_ICONWARNING);
                         if (result == IDRETRY)
@@ -688,7 +688,7 @@ namespace ppp
                             return 1;
                         }
 
-                        int result = MessageBoxA(NULL,
+                        int result = MessageBoxA(NULLPTR,
                             "Unable to install the \"PaperAirplane\" plugin on your computer system, You are actively rejecting this action. You can ignore this message, but the \"PaperAirplane\" plugin function will be disabled.",
                             ppp::win32::Win32Native::GetConsoleWindowText().data(), MB_ABORTRETRYIGNORE | MB_ICONWARNING);
                         if (result == IDRETRY)

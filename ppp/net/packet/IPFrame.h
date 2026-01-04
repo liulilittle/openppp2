@@ -68,16 +68,16 @@ namespace ppp {
                 }
                 bool                                                    IsEmpty() noexcept {
                     std::shared_ptr<BufferSegment> payload = Payload;
-                    if (NULL == payload) {
+                    if (NULLPTR == payload) {
                         return true;
                     }
 
                     std::shared_ptr<Byte> buffer = payload->Buffer;
-                    return NULL == buffer || payload->Length < 1;
+                    return NULLPTR == buffer || payload->Length < 1;
                 }
                 static int                                              DefaultFlashTypeOfService() noexcept { return 0x68; }
                 static void                                             DefaultFlashTypeOfService(const IPFrame* packet) noexcept { 
-                    if (NULL != packet) {
+                    if (NULLPTR != packet) {
                         IPFrame* frame = constantof(packet);
                         frame->Tos = DefaultFlashTypeOfService();
                     }
@@ -86,8 +86,8 @@ namespace ppp {
             public:     
                 std::shared_ptr<BufferSegment>                          ToArray(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator) noexcept;
                 static std::shared_ptr<BufferSegment>                   ToArray(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const IPFrame* packet) noexcept {
-                    if (NULL == packet) {
-                        return NULL;
+                    if (NULLPTR == packet) {
+                        return NULLPTR;
                     }
 
                     IPFrame* frame = constantof(packet);
@@ -97,7 +97,7 @@ namespace ppp {
             public:
                 int                                                     SizeOf() noexcept;
                 static int                                              SizeOf(const IPFrame* packet) noexcept {
-                    if (NULL == packet) {
+                    if (NULLPTR == packet) {
                         return ~0;
                     }
 

@@ -4184,17 +4184,17 @@ inline std::string SHA_512(const std::string &s) {
 // NOTE: This code came up with the following stackoverflow post:
 // https://stackoverflow.com/questions/9507184/can-openssl-on-windows-use-the-system-certificate-store
 inline bool load_system_certs_on_windows(X509_STORE *store) {
-  auto hStore = CertOpenSystemStoreW((HCRYPTPROV_LEGACY)NULL, L"ROOT");
+  auto hStore = CertOpenSystemStoreW((HCRYPTPROV_LEGACY)NULLPTR, L"ROOT");
 
   if (!hStore) { return false; }
 
-  PCCERT_CONTEXT pContext = NULL;
+  PCCERT_CONTEXT pContext = NULLPTR;
   while ((pContext = CertEnumCertificatesInStore(hStore, pContext)) !=
          nullptr) {
     auto encoded_cert =
         static_cast<const unsigned char *>(pContext->pbCertEncoded);
 
-    auto x509 = d2i_X509(NULL, &encoded_cert, pContext->cbCertEncoded);
+    auto x509 = d2i_X509(NULLPTR, &encoded_cert, pContext->cbCertEncoded);
     if (x509) {
       X509_STORE_add_cert(store, x509);
       X509_free(x509);
@@ -7142,7 +7142,7 @@ public:
     SSL_library_init();
 #else
     OPENSSL_init_ssl(
-        OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS, NULL);
+        OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS, NULLPTR);
 #endif
   }
 

@@ -86,9 +86,9 @@ namespace lwip {
     typedef std::mutex                                  SynchronizedObject;
     typedef std::lock_guard<SynchronizedObject>         SynchronizedObjectScope;
 
-    LIBTCPIP_CLOSED_EVENT                               netstack::closed = NULL;
-    LIBTCPIP_IPV4_OUTPUT                                netstack::output = NULL;
-    LIBTCPIP_ACCEPT_EVENT                               netstack::accept = NULL;
+    LIBTCPIP_CLOSED_EVENT                               netstack::closed = NULLPTR;
+    LIBTCPIP_IPV4_OUTPUT                                netstack::output = NULLPTR;
+    LIBTCPIP_ACCEPT_EVENT                               netstack::accept = NULLPTR;
 
     uint32_t                                            netstack::IP          = 0;
     uint32_t                                            netstack::GW          = 0;
@@ -97,8 +97,8 @@ namespace lwip {
     std::shared_ptr<boost::asio::io_context>            netstack::Executor;
 
     static std::shared_ptr<boost::asio::deadline_timer> timeout_;
-    static struct netif*                                netif_              = NULL;
-    static struct tcp_pcb*                              pcb_                = NULL;
+    static struct netif*                                netif_              = NULLPTR;
+    static struct tcp_pcb*                              pcb_                = NULLPTR;
     static Ptr2Socket                                   p2ss_;
     static Nat2Socket                                   n2ss_;
     static SynchronizedObject                           lockobj_;
@@ -118,7 +118,7 @@ namespace lwip {
 
     void netstack_cctor() noexcept {
         std::shared_ptr<boost::asio::io_context> context = ppp::make_shared_object<boost::asio::io_context>();
-        if (NULL != context) {
+        if (NULLPTR != context) {
             context->stop();
         }
 
@@ -152,23 +152,23 @@ namespace lwip {
 
     static void* netstack_tcp_linksocket(struct tcp_pcb* pcb, const std::shared_ptr<netstack_tcp_socket>& socket) noexcept {
         if (!pcb || !socket) {
-            return NULL;
+            return NULLPTR;
         }
 
         SynchronizedObjectScope scope_(lockobj_);
         std::pair<Ptr2Socket::iterator, bool> r_ = p2ss_.emplace(pcb, socket);
-        return r_.second ? pcb : NULL;
+        return r_.second ? pcb : NULLPTR;
     }
 
     static std::shared_ptr<netstack_tcp_socket> netstack_tcp_getsocket(void* p) noexcept {
         if (!p) {
-            return NULL;
+            return NULLPTR;
         }
 
         SynchronizedObjectScope scope_(lockobj_);
         Ptr2Socket::iterator tail_ = p2ss_.find(p);
         Ptr2Socket::iterator endl_ = p2ss_.end();
-        return tail_ != endl_ ? tail_->second : NULL;
+        return tail_ != endl_ ? tail_->second : NULLPTR;
     }
 
     static std::shared_ptr<netstack_tcp_socket> netstack_tcp_releasesocket(void* p) noexcept {
@@ -197,18 +197,18 @@ namespace lwip {
 
     static std::shared_ptr<netstack_tcp_socket> netstack_tcp_getsocket(int nat) noexcept {
         if (nat < 1 || nat > UINT16_MAX) {
-            return NULL;
+            return NULLPTR;
         }
 
         SynchronizedObjectScope scope_(lockobj_);
         Nat2Socket::iterator tail_ = n2ss_.find(nat);
         Nat2Socket::iterator endl_ = n2ss_.end();
-        return tail_ != endl_ ? tail_->second : NULL;
+        return tail_ != endl_ ? tail_->second : NULLPTR;
     }
 
     static std::shared_ptr<netstack_tcp_socket> netstack_tcp_releasesocket(int nat) noexcept {
         if (nat < 1 || nat > UINT16_MAX) {
-            return NULL;
+            return NULLPTR;
         }
 
         std::shared_ptr<netstack_tcp_socket> socket; {
@@ -300,7 +300,7 @@ namespace lwip {
 
         std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::move(socket_->socket);
         if (socket) {
-            socket_->socket = NULL;
+            socket_->socket = NULLPTR;
             ppp::net::Socket::Closesocket(socket);
         }
 
@@ -310,7 +310,7 @@ namespace lwip {
 
         struct tcp_pcb* pcb = socket_->pcb;
         if (pcb) {
-            socket_->pcb = NULL;
+            socket_->pcb = NULLPTR;
             netstack_tcp_releasesocket(pcb->callback_arg);
         }
 
@@ -330,11 +330,11 @@ namespace lwip {
         }
 
         std::shared_ptr<netstack_tcp_socket> socket_ = netstack_tcp_releasesocket(pcb->callback_arg);
-        netstack_tcp_arg(pcb, NULL);
-        netstack_tcp_event(pcb, NULL, NULL, NULL, NULL);
+        netstack_tcp_arg(pcb, NULLPTR);
+        netstack_tcp_event(pcb, NULLPTR, NULLPTR, NULLPTR, NULLPTR);
 
         if (socket_) {
-            socket_->pcb = NULL;
+            socket_->pcb = NULLPTR;
             netstack_tcp_closesocket(socket_);
         }
 
@@ -344,7 +344,7 @@ namespace lwip {
 
     // Enable or disable Nagle algorithm for a tcp_pcb
     static void netstack_set_tcp_nodelay(struct tcp_pcb* pcb, bool enable) noexcept {
-        if (pcb != NULL) {
+        if (pcb != NULLPTR) {
             if (enable) {
                 tcp_nagle_disable(pcb);
             }
@@ -364,7 +364,7 @@ namespace lwip {
     netstack_tcp_socket::netstack_tcp_socket() noexcept
         : open(false)
         , pnat(ppp::net::IPEndPoint::MinPort)
-        , pcb(NULL)
+        , pcb(NULLPTR)
         , local_ip(netstack_ip_addr_v4_any())
         , local_port(ppp::net::IPEndPoint::MinPort)
         , remote_ip(netstack_ip_addr_v4_any())
@@ -378,7 +378,7 @@ namespace lwip {
 
     struct pbuf* netstack_pbuf_alloc(uint16_t len) noexcept {
         if (!len) {
-            return NULL;
+            return NULLPTR;
         }
         else {
             return pbuf_alloc(PBUF_RAW, len, PBUF_RAM);
@@ -574,7 +574,7 @@ namespace lwip {
             [socket__, chunk_](const boost::system::error_code& ec, size_t sz) noexcept {
                 if (ec == boost::system::errc::success) {
                     struct tcp_pcb* pcb = socket__->pcb;
-                    if (NULL != pcb) {
+                    if (NULLPTR != pcb) {
                         size_t by = sz;
                         while (by > 0) {
                             u16_t len = (u16_t)by;
@@ -723,7 +723,7 @@ namespace lwip {
 
         // pbuf_copy_partial
         LIBTCPIP_IPV4_OUTPUT f = netstack::output;
-        if (NULL == f) {
+        if (NULLPTR == f) {
             return ERR_IF;
         }
 
@@ -740,7 +740,7 @@ namespace lwip {
     static int netstack_tcp_do_before_accept(struct tcp_pcb_listen* pcb, void* arg, ip_addr_t* dest, ip_addr_t* src, void* tcphdr) noexcept {
         if (IP_IS_V4(dest) && IP_IS_V4(src)) {
             LIBTCPIP_ACCEPT_EVENT e = netstack::accept;
-            if (NULL != e) {
+            if (NULLPTR != e) {
                 struct tcp_hdr* h = (struct tcp_hdr*)tcphdr;
                 uint32_t dip      = htonl(ip_addr_get_ip4_u32(dest));
                 uint32_t sip      = htonl(ip_addr_get_ip4_u32(src));
@@ -763,7 +763,7 @@ namespace lwip {
 
     static bool netstack_tcp_init() noexcept {
         struct tcp_pcb* pcb_acceptor = tcp_new();
-        if (NULL == pcb_acceptor) {
+        if (NULLPTR == pcb_acceptor) {
             return false;
         }
         else {
@@ -771,7 +771,7 @@ namespace lwip {
         }
 
         struct tcp_pcb* pcb = tcp_listen(pcb_acceptor);
-        if (NULL == pcb) {
+        if (NULLPTR == pcb) {
             tcp_close(pcb_acceptor);
             return false;
         }
@@ -785,11 +785,11 @@ namespace lwip {
                 lpcb->before_accept = netstack_tcp_do_before_accept;
             }
 
-            tcp_arg(pcb, NULL);
+            tcp_arg(pcb, NULLPTR);
             tcp_accept(pcb, netstack_tcp_doaccept);
 
             pcb_ = pcb;
-            return pcb_ != NULL;
+            return pcb_ != NULLPTR;
         }
     }
 
@@ -807,12 +807,12 @@ namespace lwip {
 
     struct pbuf* netstack_pbuf_copy(const void* packet, int size) noexcept {
         if (!packet || size < 1 || !netif_) {
-            return NULL;
+            return NULLPTR;
         }
 
         struct pbuf* pbuf = netstack_pbuf_alloc(size);
         if (!pbuf) {
-            return NULL;
+            return NULLPTR;
         }
         
         memcpy(pbuf->payload, packet, size);
@@ -829,7 +829,7 @@ namespace lwip {
     }
 
     bool netstack::input(struct pbuf* pbuf) noexcept {
-        if (NULL == pbuf) {
+        if (NULLPTR == pbuf) {
             return false;
         }
 
@@ -898,8 +898,8 @@ namespace lwip {
         boost::asio::post(context, 
             [event]() noexcept {
                 struct tcp_pcb* pcb = pcb_;
-                pcb_   = NULL;
-                netif_ = NULL;
+                pcb_   = NULLPTR;
+                netif_ = NULLPTR;
 
                 boost::system::error_code ec;
                 std::shared_ptr<boost::asio::deadline_timer> timeout = std::move(timeout_);

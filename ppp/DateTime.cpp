@@ -41,7 +41,7 @@ namespace ppp
         static constexpr auto gmtOffset = 
             []() noexcept 
             {
-                time_t t = time(NULL);
+                time_t t = time(NULLPTR);
 
                 struct tm local_tm;
                 struct tm gmt_tm;
@@ -79,12 +79,12 @@ namespace ppp
     bool DateTime::TryParse(const char* s, int len, DateTime& out) noexcept 
     {
         out = MinValue();
-        if (s == NULL && len != 0) 
+        if (s == NULLPTR && len != 0) 
         {
             return false;
         }
 
-        if (s != NULL && len == 0) 
+        if (s != NULLPTR && len == 0) 
         {
             return false;
         }
@@ -178,7 +178,7 @@ namespace ppp
     ppp::string DateTime::ToString(const char* format, bool fixed) noexcept 
     {
         ppp::string result;
-        if (NULL == format || *format == '\x0') 
+        if (NULLPTR == format || *format == '\x0') 
         {
             return result;
         }

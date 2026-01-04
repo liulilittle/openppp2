@@ -44,7 +44,7 @@ int ancil_recv_fds_with_buffer(int sock, int* fds, unsigned n_fds, void* buffer)
 
     nothing_ptr.iov_base = &nothing;
     nothing_ptr.iov_len = 1;
-    msghdr.msg_name = NULL;
+    msghdr.msg_name = NULLPTR;
     msghdr.msg_namelen = 0;
     msghdr.msg_iov = &nothing_ptr;
     msghdr.msg_iovlen = 1;

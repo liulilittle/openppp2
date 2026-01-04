@@ -46,32 +46,32 @@ namespace ppp
             struct ip_hdr* ip_hdr::Parse(const void* packet, int& len) noexcept
             {
                 struct ip_hdr* iphdr = (struct ip_hdr*)packet;
-                if (NULL == iphdr)
+                if (NULLPTR == iphdr)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int iphdr_ver = IPH_V(iphdr);
                 if (iphdr_ver != ip_hdr::IP_VER)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int iphdr_hlen = IPH_HL(iphdr) << 2;
                 if (iphdr_hlen > len)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (iphdr_hlen < IP_HLEN)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int ttl = IPH_TTL(iphdr);
                 if (ttl < 1)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int reft = ntohs(iphdr->len);
@@ -91,18 +91,18 @@ namespace ppp
                 /* All ones (broadcast) or all zeroes (old skool broadcast). */
                 if (iphdr->dest == IP_ADDR_ANY_VALUE)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 /* ~iphdr->dest == IP_ADDR_ANY_VALUE */ 
                 if (iphdr->src == IP_ADDR_ANY_VALUE || iphdr->src == IP_ADDR_BROADCAST_VALUE) 
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 // if ((IPH_OFFSET(iphdr) & ntohs((UInt16)(ip_hdr::IP_OFFMASK | ip_hdr::IP_MF)))) 
                 // {
-                //     return NULL;
+                //     return NULLPTR;
                 // }
 
 #if defined(PACKET_CHECKSUM)
@@ -111,38 +111,38 @@ namespace ppp
                     int checksum = inet_chksum(iphdr, iphdr_hlen);
                     if (checksum != 0)
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
                 }
 #endif
 
                 int proto = IPH_PROTO(iphdr);
-                return proto == IP_PROTO_UDP || proto == IP_PROTO_TCP || proto == IP_PROTO_ICMP ? iphdr : NULL;
+                return proto == IP_PROTO_UDP || proto == IP_PROTO_TCP || proto == IP_PROTO_ICMP ? iphdr : NULLPTR;
             }
 
             struct tcp_hdr* tcp_hdr::Parse(struct ip_hdr* iphdr, const void* packet, int size) noexcept
             {
-                if (NULL == iphdr || size < 1)
+                if (NULLPTR == iphdr || size < 1)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 struct tcp_hdr* tcphdr = (struct tcp_hdr*)packet;
-                if (NULL == tcphdr)
+                if (NULLPTR == tcphdr)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int hdrlen_bytes = TCPH_HDRLEN_BYTES(tcphdr);
                 if (hdrlen_bytes < TCP_HLEN || hdrlen_bytes > size) // 错误的数据报
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int len = size - hdrlen_bytes;
                 if (len < 0)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
 #if defined(PACKET_CHECKSUM)
@@ -155,7 +155,7 @@ namespace ppp
                         iphdr->dest);
                     if (pseudo_checksum != 0)
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
                 }
 #endif
@@ -163,27 +163,27 @@ namespace ppp
             }
 
             struct udp_hdr* udp_hdr::Parse(struct ip_hdr* iphdr, const void* packet, int size) noexcept {
-                if (NULL == iphdr || size < 1)
+                if (NULLPTR == iphdr || size < 1)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 struct udp_hdr* udphdr = (struct udp_hdr*)packet;
-                if (NULL == udphdr)
+                if (NULLPTR == udphdr)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 if (size != ntohs(udphdr->len)) // 错误的数据报
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 int hdrlen_bytes = sizeof(struct udp_hdr);
                 int len = size - hdrlen_bytes;
                 if (len < 1)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
 #if defined(PACKET_CHECKSUM)
@@ -196,7 +196,7 @@ namespace ppp
                         iphdr->dest);
                     if (pseudo_checksum != 0)
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
                 }
 #endif
@@ -205,15 +205,15 @@ namespace ppp
 
             struct icmp_hdr* icmp_hdr::Parse(struct ip_hdr* iphdr, const void* packet, int size) noexcept
             {
-                if (NULL == iphdr || size < 1)
+                if (NULLPTR == iphdr || size < 1)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 struct icmp_hdr* icmphdr = (struct icmp_hdr*)packet;
-                if (NULL == icmphdr)
+                if (NULLPTR == icmphdr)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
 
 #if defined(PACKET_CHECKSUM)
@@ -222,7 +222,7 @@ namespace ppp
                     unsigned short cksum = inet_chksum(icmphdr, size);
                     if (cksum != 0)
                     {
-                        return NULL;
+                        return NULLPTR;
                     }
                 }
 #endif
@@ -230,7 +230,7 @@ namespace ppp
                 int len = size - sizeof(struct icmp_hdr);
                 if (len < 0)
                 {
-                    return NULL;
+                    return NULLPTR;
                 }
                 return icmphdr;
             }
@@ -261,7 +261,7 @@ namespace ppp
             
             bool eth_addr::TryParse(const char* mac_string, struct eth_addr& mac) noexcept
             {
-                if (NULL == mac_string || *mac_string == '\x0')
+                if (NULLPTR == mac_string || *mac_string == '\x0')
                 {
                     return false;
                 }
@@ -704,16 +704,16 @@ namespace ppp
 
             ppp::string eth_addr::BytesToMacAddress(const void* data, int size) noexcept
             {
-                if ((size < 1) || (NULL != data && size < 1))
+                if ((size < 1) || (NULLPTR != data && size < 1))
                 {
-                    data = NULL;
+                    data = NULLPTR;
                     size = 0;
                 }
 
                 // Set default MAC address
                 unsigned char default_byte_arr[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
                 int num_of_bytes_to_copy = (size <= 6) ? size : 6;
-                if (NULL != data)
+                if (NULLPTR != data)
                 {
                     memcpy(default_byte_arr, data, num_of_bytes_to_copy);
                 }
@@ -729,7 +729,7 @@ namespace ppp
             {
                 static bool ExtractName(char* szEncodedStr, uint16_t* pusEncodedStrLen, char* szDotStr, uint16_t nDotStrSize, char* szPacketStartPos, char* szPacketEndPos, char** ppDecodePos) noexcept
                 {
-                    if (NULL == szEncodedStr || NULL == pusEncodedStrLen || NULL == szDotStr || szEncodedStr >= szPacketEndPos)
+                    if (NULLPTR == szEncodedStr || NULLPTR == pusEncodedStrLen || NULLPTR == szDotStr || szEncodedStr >= szPacketEndPos)
                     {
                         return false;
                     }
@@ -762,7 +762,7 @@ namespace ppp
                         {
                             // Message compression format is 11000000 00000000, consisting of two bytes. 
                             // The first two bits are the jump flag, and the last 14 bits are the offset of the jump。
-                            if (NULL == szPacketStartPos)
+                            if (NULLPTR == szPacketStartPos)
                             {
                                 return false;
                             }
@@ -822,13 +822,13 @@ namespace ppp
                 {
                     static constexpr int MAX_DOMAINNAME_LEN_STR = MAX_DOMAINNAME_LEN + 1;
 
-                    if (NULL == fPredicateB || NULL == fPredicateE)
+                    if (NULLPTR == fPredicateB || NULLPTR == fPredicateE)
                     {
                         return ppp::string();
                     }
 
                     struct dns_hdr* pDNSHeader = (struct dns_hdr*)szPacketStartPos;
-                    if (NULL == pDNSHeader || nPacketLength < sizeof(pDNSHeader))
+                    if (NULLPTR == pDNSHeader || nPacketLength < sizeof(pDNSHeader))
                     {
                         return ppp::string();
                     }
@@ -845,13 +845,13 @@ namespace ppp
                     }
 
                     std::shared_ptr<Byte> pioBuffers = make_shared_alloc<Byte>(MAX_DOMAINNAME_LEN_STR);
-                    if (NULL == pioBuffers) 
+                    if (NULLPTR == pioBuffers) 
                     {
                         return ppp::string();
                     }
 
                     uint16_t pusEncodedStrLen = 0;
-                    char* pDecodePos = NULL;
+                    char* pDecodePos = NULLPTR;
                     char* szDomainDotStr = (char*)pioBuffers.get();
 
                     if (!ExtractName((char*)(pDNSHeader + 1), &pusEncodedStrLen, szDomainDotStr,

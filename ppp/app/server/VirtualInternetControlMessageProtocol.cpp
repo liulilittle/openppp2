@@ -23,18 +23,18 @@ namespace ppp {
             }
 
             bool VirtualInternetControlMessageProtocol::Output(const IPFrame* packet, const IPEndPoint& destinationEP) noexcept {
-                if (NULL == packet) {
+                if (NULLPTR == packet) {
                     return false;
                 }
 
                 std::shared_ptr<ITransmission> transmission = transmission_;
-                if (NULL == transmission) {
+                if (NULLPTR == transmission) {
                     return false;
                 }
 
                 std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = this->BufferAllocator;
                 std::shared_ptr<BufferSegment> messages = constantof(packet)->ToArray(allocator);
-                if (NULL == messages) {
+                if (NULLPTR == messages) {
                     return false;
                 }
 

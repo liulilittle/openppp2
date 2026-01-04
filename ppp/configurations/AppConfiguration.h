@@ -198,7 +198,7 @@ namespace ppp {
 
         namespace extensions {
             bool                                                            IsHaveCiphertext(const AppConfiguration& configuration) noexcept;
-            inline bool                                                     IsHaveCiphertext(const AppConfiguration* configuration) noexcept { return NULL != configuration ? IsHaveCiphertext(*configuration) : false; }
+            inline bool                                                     IsHaveCiphertext(const AppConfiguration* configuration) noexcept { return NULLPTR != configuration ? IsHaveCiphertext(*configuration) : false; }
         }
     }
 }

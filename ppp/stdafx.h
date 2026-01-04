@@ -8,6 +8,10 @@
 #define NULL 0
 #endif
 
+#if !defined(NULLPTR)
+#define NULLPTR nullptr
+#endif
+
 #if defined(_DEBUG)
 #if !defined(DEBUG)
 #define DEBUG 1
@@ -216,7 +220,7 @@
 #endif
 
 #ifndef PPP_APPLICATION_VERSION
-#define PPP_APPLICATION_VERSION ("1.0.0.25505") /* 1.0.0.20251212 */
+#define PPP_APPLICATION_VERSION ("1.0.0.26016") /* 1.0.0.20260103 */
 #endif
 
 #ifndef PPP_APPLICATION_NAME
@@ -955,7 +959,7 @@ namespace ppp {
 
     inline void*                                                            Malloc(size_t size) noexcept {
         if (!size) {
-            return NULL;
+            return NULLPTR;
         }
 
         size = Malign(size, PPP_MEMORY_ALIGNMENT_SIZE);
@@ -1007,11 +1011,11 @@ namespace ppp {
     }
 
     template <typename T>
-    constexpr T&                                                            nullof() noexcept { return *(T*)NULL;}
+    constexpr T&                                                            nullof() noexcept { return *(T*)NULLPTR;}
 
     template <typename T>
     void                                                                    destructor_invoked(T* const v) noexcept {
-        if (NULL != v) {
+        if (NULLPTR != v) {
             v->~T();
         }
     }
@@ -1087,7 +1091,7 @@ namespace ppp {
         allocator& operator=(const allocator&) = default;
 
         void deallocate(_Ty* const _Ptr, const size_t _Count) {
-            assert((_Ptr != NULL || _Count == 0) && "null pointer cannot point to a block of non-zero size");
+            assert((_Ptr != NULLPTR || _Count == 0) && "null pointer cannot point to a block of non-zero size");
             // no overflow check on the following multiply; we assume _Allocate did that check
             ppp::Mfree(_Ptr);
         }
@@ -1129,7 +1133,7 @@ namespace ppp {
 
         template <class _Uty>
         void destroy(_Uty* const _Ptr) {
-            if (NULL != _Ptr) {
+            if (NULLPTR != _Ptr) {
                 _Ptr->~_Uty();
             }
         }
@@ -1195,7 +1199,7 @@ namespace ppp {
         char* deli_endptr = deli_ptr + delimiters.size();
         char* data_ptr = (char*)str.data();
         char* data_endptr = data_ptr + str.size();
-        char* last_ptr = NULL;
+        char* last_ptr = NULLPTR;
 
         int length = 0;
         int seg = 0;
@@ -1632,9 +1636,9 @@ namespace ppp {
 
     bool                                                                    SetThreadName(const char* name) noexcept;
 
-    ppp::string                                                             PaddingRightAllLines(std::size_t padding_length, char padding_char, const ppp::string& s, int* line_count = NULL) noexcept;
+    ppp::string                                                             PaddingRightAllLines(std::size_t padding_length, char padding_char, const ppp::string& s, int* line_count = NULLPTR) noexcept;
 
-    ppp::string                                                             PaddingLeftAllLines(std::size_t padding_length, char padding_char, const ppp::string& s, int* line_count = NULL) noexcept;
+    ppp::string                                                             PaddingLeftAllLines(std::size_t padding_length, char padding_char, const ppp::string& s, int* line_count = NULLPTR) noexcept;
 
     template <typename T>
     int                                                                     FindIndexOf(int* next, T* src, int src_len, T* sub, int sub_len) noexcept {
@@ -1694,12 +1698,12 @@ namespace ppp {
         // X86_64  : __ALIGN(8)
         // X64     : __ALIGN(4)
         if (length < 1) {
-            return NULL;
+            return NULLPTR;
         }
 
         T* p = (T*)Malloc(length * sizeof(T));
-        if (NULL == p) {
-            return NULL;
+        if (NULLPTR == p) {
+            return NULLPTR;
         }
 
         return std::shared_ptr<T>(p, Mfree);
@@ -1710,8 +1714,8 @@ namespace ppp {
         static_assert(sizeof(T) > 0, "can't make pointer to incomplete type");
 
         void* memory = Malloc(sizeof(T));
-        if (NULL == memory) {
-            return NULL;
+        if (NULLPTR == memory) {
+            return NULLPTR;
         }
         
         memset(memory, 0, sizeof(T));
@@ -1727,8 +1731,8 @@ namespace ppp {
         static_assert(sizeof(T) > 0, "can't make pointer to incomplete type");
 
         void* memory = Malloc(sizeof(T));
-        if (NULL == memory) {
-            return NULL;
+        if (NULLPTR == memory) {
+            return NULLPTR;
         }
         
         memset(memory, 0, sizeof(T));
@@ -1742,18 +1746,22 @@ namespace ppp {
 
     template <typename T>
     std::shared_ptr<T>                                                      wrap_shared_pointer(const T* v) noexcept {
-        return NULL != v ? std::shared_ptr<T>(constantof(v), [](T*) noexcept {}) : NULL;
+        return NULLPTR != v ? std::shared_ptr<T>(constantof(v), [](T*) noexcept {}) : NULLPTR;
     }
 
     template <typename T, typename Reference>
     std::shared_ptr<T>                                                      wrap_shared_pointer(const T* v, const Reference& reference) noexcept {
-        return NULL != v ? std::shared_ptr<T>(constantof(v), [reference](T*) noexcept {}) : NULL;
+        return NULLPTR != v ? std::shared_ptr<T>(constantof(v), [reference](T*) noexcept {}) : NULLPTR;
     }
 
     namespace global {
         void cctor() noexcept;
     }
 
+#if defined(FUNCTION)
+    template <typename Signature>
+    using function = std::function<Signature>;
+#else
     template <typename Signature>
     class function;
 
@@ -1795,7 +1803,7 @@ namespace ppp {
             function* const left = this;
             if (left != reft) {
                 // Copy the field value on the right to the top of the stack.
-                Function                                reft_f = NULL;
+                Function                                reft_f = NULLPTR;
                 std::shared_ptr<ICallable>              reft_callable;
                 for (;;) {
                     LockScope<typename std::decay<decltype(*this)>::type> reft_scope(constantof(other));
@@ -1824,7 +1832,7 @@ namespace ppp {
             using TFunctionMutable = typename std::remove_const<TFunctionConst>::type;
 
             LockScope<TFunctionMutable> scope(constantof(*this));
-            return NULL != f_ || NULL != callable_;
+            return NULLPTR != f_ || NULLPTR != callable_;
         }
 
     public:
@@ -1835,7 +1843,7 @@ namespace ppp {
             // Calls still first synchronize the destination function address, 
             // held from the  function object or wrap a reference to the calling object onto the stack.
             do {
-                Function f = NULL;
+                Function f = NULLPTR;
                 std::shared_ptr<ICallable> i;
                 for (;;) {
                     LockScope<TFunctionMutable> scope(constantof(*this));
@@ -1844,11 +1852,11 @@ namespace ppp {
                     break;
                 }
 
-                if (NULL != i) {
+                if (NULLPTR != i) {
                     return i->Invoke(std::forward<Args>(args)...);
                 }
 
-                if (NULL != f) {
+                if (NULLPTR != f) {
                     return f(std::forward<Args>(args)...);
                 }
             } while (false);
@@ -1864,7 +1872,7 @@ namespace ppp {
             // Calls still first synchronize the destination function address, 
             // held from the  function object or wrap a reference to the calling object onto the stack.
             do {
-                Function f = NULL;
+                Function f = NULLPTR;
                 std::shared_ptr<ICallable> i;
                 for (;;) {
                     LockScope<TFunctionMutable> scope(constantof(*this));
@@ -1873,12 +1881,12 @@ namespace ppp {
                     break;
                 }
 
-                if (NULL != i) {
+                if (NULLPTR != i) {
                     i->Invoke(std::forward<Args>(args)...);
                     return;
                 }
 
-                if (NULL != f) {
+                if (NULLPTR != f) {
                     f(std::forward<Args>(args)...);
                     return;
                 }
@@ -1892,7 +1900,7 @@ namespace ppp {
     public:
         void                                                                swap(function& other) noexcept {
             // Copy the field values of the function on the left.
-            Function                                left_f = NULL;
+            Function                                left_f = NULLPTR;
             std::shared_ptr<ICallable>              left_callable;
             for (;;) {
                 LockScope<typename std::decay<decltype(*this)>::type> left_scope(*this);
@@ -1902,7 +1910,7 @@ namespace ppp {
             }
 
             // Copy the field values of the function on the right.
-            Function                                reft_f = NULL;
+            Function                                reft_f = NULLPTR;
             std::shared_ptr<ICallable>              reft_callable;
             for (;;) {
                 LockScope<typename std::decay<decltype(*this)>::type> reft_scope(constantof(other));
@@ -1932,7 +1940,7 @@ namespace ppp {
         }
         void                                                                reset() noexcept {
             LockScope<typename std::decay<decltype(*this)>::type> scope(*this);
-            this->f_ = NULL;
+            this->f_ = NULLPTR;
             this->callable_.reset();
         }
         void                                                                reset(const Function& f) noexcept {
@@ -1955,12 +1963,12 @@ namespace ppp {
         void                                                                reset(F&& f) {
             using TCallable = Callable<TFunction>;
 
-            this->f_ = NULL;
+            this->f_ = NULLPTR;
             this->callable_.reset();
 
             if constexpr (std::is_same<Function, TFunction>::value) {
                 this->f_ = f;
-                this->callable_ = NULL;
+                this->callable_ = NULLPTR;
             }
             elif constexpr (std::is_same<function, TFunction>::value) {
                 this->f_ = f.f_;
@@ -1970,16 +1978,16 @@ namespace ppp {
                 static_assert(stl::is_invocable<TFunction, Args...>::value, "Unknown expressions, not supported!");
 
                 this->f_ = f;
-                this->callable_ = NULL;
+                this->callable_ = NULLPTR;
             }
             elif constexpr (std::is_integral<TFunction>::value) {
                 if (f != 0) {
-                    throw std::runtime_error("It's not allowed to pass an integer value to the constructor, but it's allowed to pass an integer 0 to the constructor of a function, which represents a NULL function pointer.");
+                    throw std::runtime_error("It's not allowed to pass an integer value to the constructor, but it's allowed to pass an integer 0 to the constructor of a function, which represents a NULLPTR function pointer.");
                 }
             }
             else {
                 TCallable* fx = new TCallable(std::forward<TFunction>(f));
-                if (NULL != fx) {
+                if (NULLPTR != fx) {
                     this->callable_ = std::shared_ptr<TCallable>(fx);
                 }
             }
@@ -2002,7 +2010,7 @@ namespace ppp {
             }
         }
         void                                                                move(function&& other) noexcept {
-            Function                    left_f = NULL;
+            Function                    left_f = NULLPTR;
             std::shared_ptr<ICallable>  left_callable; // COW.
             for (;;) {
                 // Move and copy the field value of the right function object to the left function object.
@@ -2011,7 +2019,7 @@ namespace ppp {
                 left_callable = std::move(other.callable_);
 
                 // Reset and release the field value reference technique held by the function object on the right and so on.
-                other.f_ = NULL;
+                other.f_ = NULLPTR;
                 other.callable_.reset();
                 break;
             }
@@ -2073,8 +2081,8 @@ namespace ppp {
 
     private:
         mutable std::atomic<int>                                            lk_       = false;
-        mutable Function                                                    f_        = NULL;
-        mutable std::shared_ptr<ICallable>                                  callable_ = NULL; // COW.
+        mutable Function                                                    f_        = NULLPTR;
+        mutable std::shared_ptr<ICallable>                                  callable_ = NULLPTR; // COW.
     };
 
     template <class F>
@@ -2096,6 +2104,7 @@ namespace ppp {
     inline bool operator!=(std::nullptr_t, const function<F>& other) noexcept {
         return static_cast<bool>(other);
     }
+#endif
 }
 
 #if !defined(_WIN32)

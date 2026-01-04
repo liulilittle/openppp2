@@ -71,7 +71,7 @@ namespace ppp {
                 bool binary = binary_;
 
                 std::shared_ptr<AcceptWebSocket> accept = make_shared_object<AcceptWebSocket>(self, websocket_, binary, host, path);
-                if (NULL == accept) {
+                if (NULLPTR == accept) {
                     return false;
                 }
 

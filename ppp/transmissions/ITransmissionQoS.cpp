@@ -43,23 +43,23 @@ namespace ppp {
 
         std::shared_ptr<Byte> ITransmissionQoS::ReadBytes(YieldContext& y, int length, const ReadBytesAsynchronousCallback& cb) noexcept {
             if (length < 1) {
-                return NULL;
+                return NULLPTR;
             }
 
-            if (NULL == cb) {
-                return NULL;
+            if (NULLPTR == cb) {
+                return NULLPTR;
             }
 
             YieldContext* co = y.GetPtr();
-            if (NULL == co) {
-                return NULL;
+            if (NULLPTR == co) {
+                return NULLPTR;
             }
 
             bool bawait = false; 
             for (;;) { // co_await
                 SynchronizedObjectScope scope(syncobj_);
                 if (disposed_) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 bawait = IsPeek();
@@ -73,7 +73,7 @@ namespace ppp {
             if (bawait) {
                 bool suspend = y.Suspend();
                 if (!suspend) {
-                    return NULL;
+                    return NULLPTR;
                 }
             }
 

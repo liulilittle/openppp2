@@ -50,9 +50,9 @@ namespace ppp
                 RtlZeroMemory(&ipi, sizeof(ipi));
 
                 bool b =
-                    InternetSetOption(NULL, INTERNET_OPTION_PROXY_SETTINGS_CHANGED, NULL, 0) &&
-                    InternetSetOption(NULL, INTERNET_OPTION_SETTINGS_CHANGED, &ipi, sizeof(INTERNET_PROXY_INFO)) &&
-                    InternetSetOption(NULL, INTERNET_OPTION_REFRESH, NULL, 0);
+                    InternetSetOption(NULLPTR, INTERNET_OPTION_PROXY_SETTINGS_CHANGED, NULLPTR, 0) &&
+                    InternetSetOption(NULLPTR, INTERNET_OPTION_SETTINGS_CHANGED, &ipi, sizeof(INTERNET_PROXY_INFO)) &&
+                    InternetSetOption(NULLPTR, INTERNET_OPTION_REFRESH, NULLPTR, 0);
                 return b;
             }
 
@@ -68,7 +68,7 @@ namespace ppp
                 ipi.lpszProxy = bypass_bstr;
                 ipi.lpszProxyBypass = bypass_bstr;
 
-                bool b = InternetSetOption(NULL, INTERNET_OPTION_PROXY, &ipi, sizeof(INTERNET_PROXY_INFO));
+                bool b = InternetSetOption(NULLPTR, INTERNET_OPTION_PROXY, &ipi, sizeof(INTERNET_PROXY_INFO));
                 return b;
             }
 
@@ -123,7 +123,7 @@ namespace ppp
 
                 if (dwMajor >= 10) // How-to: Quickly open control panel applets with ms-settings
                 {                  // https://ss64.com/nt/syntax-settings.html
-                    if (ShellExecuteA(NULL, "open", "ms-settings:network-proxy", NULL, NULL, SW_SHOWNORMAL) != 0)
+                    if (ShellExecuteA(NULLPTR, "open", "ms-settings:network-proxy", NULLPTR, NULLPTR, SW_SHOWNORMAL) != 0)
                     {
                         return true;
                     }
@@ -134,7 +134,7 @@ namespace ppp
             bool HttpProxy::OpenControlWindow() noexcept
             {
                 // control.exe inetcpl.cpl
-                return ShellExecute(NULL, TEXT("open"), TEXT("rundll32"), TEXT("shell32.dll,Control_RunDLL inetcpl.cpl"), NULL, SW_SHOWNORMAL);
+                return ShellExecute(NULLPTR, TEXT("open"), TEXT("rundll32"), TEXT("shell32.dll,Control_RunDLL inetcpl.cpl"), NULLPTR, SW_SHOWNORMAL);
             }
 
             bool HttpProxy::OpenControlWindow(int TabIndex) noexcept
@@ -151,7 +151,7 @@ namespace ppp
                 }
 
                 // control.exe inetcpl.cpl
-                return ShellExecuteA(NULL, "open", "rundll32", cmd.data(), NULL, SW_SHOWNORMAL);
+                return ShellExecuteA(NULLPTR, "open", "rundll32", cmd.data(), NULLPTR, SW_SHOWNORMAL);
             }
 
             bool HttpProxy::IsSupportExperimentalQuicProtocol() noexcept

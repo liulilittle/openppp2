@@ -38,12 +38,12 @@ namespace ppp {
 
             std::shared_ptr<VirtualEthernetInformation> VirtualEthernetInformation::FromJson(const Json::Value& json) noexcept {
                 if (!json.isObject()) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<VirtualEthernetInformation> infomartion = make_shared_object<VirtualEthernetInformation>();
-                if (NULL == infomartion) {
-                    return NULL;
+                if (NULLPTR == infomartion) {
+                    return NULLPTR;
                 }
 
                 infomartion->ExpiredTime     = JsonAuxiliary::AsValue<long long>(json["ExpiredTime"]);
@@ -55,7 +55,7 @@ namespace ppp {
 
             std::shared_ptr<VirtualEthernetInformation> VirtualEthernetInformation::FromJson(const ppp::string& json) noexcept {
                 if (json.empty()) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 Json::Value config = JsonAuxiliary::FromString(json);

@@ -37,13 +37,13 @@ namespace ppp
 #if !defined(__MUSL__) 
         static ppp::string ExtractSymbol(const char* symbol)
         {
-            if (NULL == symbol || *symbol == '\x0')
+            if (NULLPTR == symbol || *symbol == '\x0')
             {
                 return ppp::string();
             }
 
-            const char* symbolStart = NULL;
-            const char* symbolEnd = NULL;
+            const char* symbolStart = NULLPTR;
+            const char* symbolEnd = NULLPTR;
             const char* strPtr = symbol;
             while (*strPtr)
             {
@@ -87,7 +87,7 @@ namespace ppp
             char** stackframe_symbols = backtrace_symbols(stackframe_addrs, stackframe_size);
 
             ppp::string stacktraces = "Stack Trace:";
-            if (NULL != stackframe_symbols)
+            if (NULLPTR != stackframe_symbols)
             {
                 ppp::string executable_path = GetFullExecutionFilePath();
                 ppp::string default_line = "\r\n  at ";
@@ -97,7 +97,7 @@ namespace ppp
                     sprintf(buf, "addr2line -e %s %p", executable_path.data(), stackframe_addrs[i]);
 
                     FILE* f = popen(buf, "r");
-                    if (NULL == f)
+                    if (NULLPTR == f)
                     {
                         continue;
                     }
@@ -123,12 +123,12 @@ namespace ppp
                         if (symbol.size() > 0)
                         {
                             int status = -1;
-                            char* demangle = NULL;
+                            char* demangle = NULLPTR;
                             char* p = strchr((char*)symbol.data(), '+');
                             if (p)
                             {
                                 *p = '\x0';
-                                demangle = abi::__cxa_demangle((char*)symbol.data(), NULL, 0, &status);
+                                demangle = abi::__cxa_demangle((char*)symbol.data(), NULLPTR, 0, &status);
                             }
                             else
                             {
@@ -153,7 +153,7 @@ namespace ppp
                                 }
                             }
 
-                            if (NULL != demangle)
+                            if (NULLPTR != demangle)
                             {
                                 std::free(demangle);
                             }

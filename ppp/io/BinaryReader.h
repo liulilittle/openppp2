@@ -20,25 +20,25 @@ namespace ppp {
             template <typename TValueType>           
             std::shared_ptr<TValueType>                     ReadValues(int counts) noexcept {
                 if (counts < 1) {
-                    return NULL;
+                    return NULLPTR;
                 }
 
                 std::shared_ptr<TValueType> buf;
                 std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = _stream.BufferAllocator;
-                if (NULL != allocator) {
+                if (NULLPTR != allocator) {
                     buf = allocator->MakeArray<TValueType>(counts);
                 }
                 else {
                     buf = make_shared_alloc<TValueType>(counts);
                 }
 
-                if (NULL == buf) {
-                    return NULL;
+                if (NULLPTR == buf) {
+                    return NULLPTR;
                 }
 
                 int size = counts * sizeof(TValueType);
                 int len = _stream.Read(buf.get(), 0, size);
-                return len > 0 && len == size ? buf : NULL;
+                return len > 0 && len == size ? buf : NULLPTR;
             }
 
             std::shared_ptr<Byte>                           ReadBytes(int counts) noexcept {
@@ -48,7 +48,7 @@ namespace ppp {
             template <typename TValueType>           
             bool                                            TryReadValue(TValueType& out) noexcept {
                 TValueType* p = (TValueType*)&reinterpret_cast<const char&>(out);
-                if (NULL == p) {
+                if (NULLPTR == p) {
                     return false;
                 }
 

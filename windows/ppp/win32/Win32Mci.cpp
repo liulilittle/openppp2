@@ -169,7 +169,7 @@ namespace ppp
             const DWORD bufferSize = 1000;
             char buffer[bufferSize] = { 0 };
 
-            if (mciSendStringA(command.data(), buffer, bufferSize, NULL) != MMSYSERR_NOERROR)
+            if (mciSendStringA(command.data(), buffer, bufferSize, NULLPTR) != MMSYSERR_NOERROR)
             {
                 throw std::runtime_error("MCI command failed.");
             }
@@ -179,7 +179,7 @@ namespace ppp
 
         bool Win32Mci::PlayCommand(const ppp::string& command) const
         {
-            MCIERROR err = mciSendStringA(command.data(), NULL, 0, NULL);
+            MCIERROR err = mciSendStringA(command.data(), NULLPTR, 0, NULLPTR);
             return err == MMSYSERR_NOERROR;
         }
 

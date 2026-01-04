@@ -22,7 +22,7 @@ namespace ppp {
                 }
 
                 const std::shared_ptr<SslvWebSocket> ssl_websocket = ssl_websocket_;
-                if (NULL == ssl_websocket) {
+                if (NULLPTR == ssl_websocket) {
                     return true;
                 }
 
@@ -71,7 +71,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<boost::asio::ip::tcp::socket> socket = socket_native_;
-                if (NULL == socket) {
+                if (NULLPTR == socket) {
                     return false;
                 }
 
@@ -95,7 +95,7 @@ namespace ppp {
                     certificate_key_password,
                     ciphersuites);
 
-                if (NULL == accept) {
+                if (NULLPTR == accept) {
                     return false;
                 }
                 

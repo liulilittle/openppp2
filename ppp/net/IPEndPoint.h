@@ -175,7 +175,7 @@ namespace ppp {
         public:     
             template <typename TString>     
             static TString                                                      ToAddressString(AddressFamily af, const Byte* address_bytes, int address_size) noexcept {
-                if (NULL == address_bytes || address_size < 1) {
+                if (NULLPTR == address_bytes || address_size < 1) {
                     return "0.0.0.0";
                 }
 
@@ -238,7 +238,7 @@ namespace ppp {
                 return NetmaskToPrefix(reinterpret_cast<unsigned char*>(&mask), sizeof(mask));
             }
             static int                                                          NetmaskToPrefix(unsigned char* bytes, int bytes_size) noexcept {
-                if (NULL == bytes || bytes_size < 1) {
+                if (NULLPTR == bytes || bytes_size < 1) {
                     return 0;
                 }
 
@@ -254,7 +254,7 @@ namespace ppp {
             }
             static bool                                                         IsInvalid(const IPEndPoint* p) noexcept {
                 IPEndPoint* __p = (IPEndPoint*)p;
-                if (NULL == __p) {
+                if (NULLPTR == __p) {
                     return true;
                 }
 
@@ -332,7 +332,7 @@ namespace ppp {
             static boost::asio::ip::basic_endpoint<TProtocol>                   NewAddress(const char* address, int port) noexcept {
                 typedef boost::asio::ip::basic_endpoint<TProtocol> protocol_endpoint;
 
-                if (NULL == address || *address == '\x0') {
+                if (NULLPTR == address || *address == '\x0') {
                     address = "0.0.0.0";
                 }
 

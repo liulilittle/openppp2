@@ -70,7 +70,7 @@ namespace ppp {
                 using TKey = typename TObjects::key_type;
                 using TValue = typename TObjects::value_type::second_type;
 
-                if (IDisposable::HAS_MEMBER_DISPOSE_FUNCTION<typename std::remove_reference<decltype(**(TValue*)NULL)>::type>::value) {
+                if (IDisposable::HAS_MEMBER_DISPOSE_FUNCTION<typename std::remove_reference<decltype(**(TValue*)NULLPTR)>::type>::value) {
                     ppp::vector<TValue> release_objects;
                     for (auto&& kv : objects) {
                         release_objects.emplace_back(std::move(kv.second));
@@ -97,7 +97,7 @@ namespace ppp {
                     objects.erase(tail);
                 }
 
-                if (NULL != obj) {
+                if (NULLPTR != obj) {
                     IDisposable::Dispose(*obj);
                 }
 
@@ -109,7 +109,7 @@ namespace ppp {
                 auto tail = objects.find(key);
                 auto endl = objects.end();
                 if (tail == endl) {
-                    return NULL;
+                    return NULLPTR;
                 }
                 else {
                     return tail->second;
@@ -142,11 +142,11 @@ namespace ppp {
             }
 
             template <typename TDictionary>
-            static bool                                             RemoveValueByKey(TDictionary& dictionary, const typename TDictionary::key_type& key, typename TDictionary::value_type::second_type* value = NULL) noexcept {
+            static bool                                             RemoveValueByKey(TDictionary& dictionary, const typename TDictionary::key_type& key, typename TDictionary::value_type::second_type* value = NULLPTR) noexcept {
                 auto tail = dictionary.find(key);
                 auto endl = dictionary.end();
                 if (tail != endl) {
-                    if (NULL != value) {
+                    if (NULLPTR != value) {
                         *value = std::move(tail->second);
                     }
 
@@ -316,7 +316,7 @@ namespace ppp {
             static bool                                             TryRemove2Layer(TDictionary& dictionary, const TKey1& key1, const TKey2& key2) noexcept {
                 typedef typename TDictionary::value_type::second_type TSubDictionary;
 
-                TSubDictionary* subdictionary = NULL;
+                TSubDictionary* subdictionary = NULLPTR;
                 if (!Dictionary::TryGetValuePointer(dictionary, key1, subdictionary)) {
                     return false;
                 }
@@ -335,7 +335,7 @@ namespace ppp {
             static bool                                             TryRemove2Layer(TDictionary& dictionary, const TKey1& key1, const TKey2& key2, TValue& value) noexcept {
                 typedef typename TDictionary::value_type::second_type TSubDictionary;
 
-                TSubDictionary* subdictionary = NULL;
+                TSubDictionary* subdictionary = NULLPTR;
                 if (!Dictionary::TryGetValuePointer(dictionary, key1, subdictionary)) {
                     return false;
                 }
@@ -354,7 +354,7 @@ namespace ppp {
             static bool                                             TryGetValuePointer2Layer(TDictionary& dictionary, const TKey1& key1, const TKey2& key2, TValue*& value) noexcept {
                 typedef typename TDictionary::value_type::second_type TSubDictionary;
 
-                TSubDictionary* subdictionary = NULL;
+                TSubDictionary* subdictionary = NULLPTR;
                 if (!Dictionary::TryGetValuePointer(dictionary, key1, subdictionary)) {
                     return false;
                 }
@@ -368,7 +368,7 @@ namespace ppp {
                 typename TDictionary::iterator tail = dictionary.find(key);
                 typename TDictionary::iterator endl = dictionary.end();
                 if (tail == endl) {
-                    value = NULL;
+                    value = NULLPTR;
                     return false;
                 }
 
@@ -380,7 +380,7 @@ namespace ppp {
             static bool                                             TryGetValue2Layer(TDictionary& dictionary, const TKey1& key1, const TKey2& key2, TValue& value) noexcept {
                 typedef typename TDictionary::value_type::second_type TSubDictionary;
 
-                TSubDictionary* subdictionary = NULL;
+                TSubDictionary* subdictionary = NULLPTR;
                 if (!Dictionary::TryGetValuePointer(dictionary, key1, subdictionary)) {
                     return false;
                 }
@@ -391,7 +391,7 @@ namespace ppp {
 
             template <typename TDictionary, typename TKey, typename TValue>
             static bool                                             TryGetValue(TDictionary& dictionary, const TKey& key, TValue& value) noexcept {
-                TValue* out = NULL;
+                TValue* out = NULLPTR;
                 if (!TryGetValuePointer(dictionary, key, out)) {
                     return false;
                 }

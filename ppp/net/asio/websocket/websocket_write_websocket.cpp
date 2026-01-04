@@ -12,11 +12,11 @@ namespace ppp {
     namespace net {
         namespace asio {
             bool websocket::Write(const void* buffer, int offset, int length, const AsynchronousWriteCallback& cb) noexcept {
-                if (NULL == buffer || offset < 0 || length < 1) {
+                if (NULLPTR == buffer || offset < 0 || length < 1) {
                     return false;
                 }
 
-                if (NULL == cb) {
+                if (NULLPTR == cb) {
                     return false;
                 }
 

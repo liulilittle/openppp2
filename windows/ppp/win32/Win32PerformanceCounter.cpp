@@ -7,8 +7,8 @@ namespace ppp
     namespace win32
     {
         PerformanceCounter::PerformanceCounter() noexcept
-            : m_phQuery(NULL)
-            , m_phCounter(NULL)
+            : m_phQuery(NULLPTR)
+            , m_phCounter(NULLPTR)
         {
 
         }
@@ -20,13 +20,13 @@ namespace ppp
 
         void PerformanceCounter::Open(int pid, LPCSTR counter)
         {
-            void* phQuery = NULL;
-            if (PdhOpenQueryA(NULL, pid, &phQuery) != ERROR_SUCCESS)
+            void* phQuery = NULLPTR;
+            if (PdhOpenQueryA(NULLPTR, pid, &phQuery) != ERROR_SUCCESS)
             {
                 throw std::exception("The handle to the PerformanceCounter could not be opened.");
             }
 
-            void* phCounter = NULL;
+            void* phCounter = NULLPTR;
             if (PdhAddCounterA(phQuery, counter, 0, &phCounter) != ERROR_SUCCESS)
             {
                 PdhCloseQuery(phCounter);
@@ -43,7 +43,7 @@ namespace ppp
 
         double PerformanceCounter::Next() noexcept
         {
-            if (m_phQuery == NULL)
+            if (m_phQuery == NULLPTR)
             {
                 return 0;
             }
@@ -53,7 +53,7 @@ namespace ppp
             }
 
             PDH_FMT_COUNTERVALUE counterValue;
-            if (PdhGetFormattedCounterValue(m_phCounter, PDH_FMT_DOUBLE, NULL, &counterValue) == ERROR_SUCCESS)
+            if (PdhGetFormattedCounterValue(m_phCounter, PDH_FMT_DOUBLE, NULLPTR, &counterValue) == ERROR_SUCCESS)
             {
                 return counterValue.doubleValue;
             }
@@ -68,14 +68,14 @@ namespace ppp
 
         void PerformanceCounter::Release() noexcept
         {
-            void* phCounter = m_phCounter.exchange(NULL);
-            if (NULL != phCounter)
+            void* phCounter = m_phCounter.exchange(NULLPTR);
+            if (NULLPTR != phCounter)
             {
                 PdhRemoveCounter(phCounter);
             }
 
-            void* phQuery = m_phQuery.exchange(NULL);
-            if (phQuery != NULL)
+            void* phQuery = m_phQuery.exchange(NULLPTR);
+            if (phQuery != NULLPTR)
             {
                 PdhCloseQuery(phQuery);
             }

@@ -19,6 +19,7 @@
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
 
+// Platform-specific includes
 #if defined(_WIN32)
 #include <windows/ppp/net/proxies/HttpProxy.h>
 #include <windows/ppp/tap/TapWindows.h>
@@ -35,6 +36,7 @@
 #endif
 #endif
 
+// Third-party library includes
 #if defined(CURLINC_CURL)
 #include <curl/curl.h>
 #endif
@@ -49,6 +51,7 @@
 #include <common/aesni/aes.h>
 #include <common/chnroutes2/chnroutes2.h>
 
+// Using declarations for cleaner code
 using ppp::configurations::AppConfiguration;
 using ppp::threading::Executors;
 using ppp::threading::Thread;
@@ -73,72 +76,77 @@ using ppp::app::client::proxys::VEthernetHttpProxySwitcher;
 using ppp::app::client::proxys::VEthernetSocksProxySwitcher;
 using ppp::Int128;
 
-// Custom restart signals are useful only on linux/macos platforms.
+// Custom restart signal definition for Unix-like platforms
 #if !defined(_WIN32) && !defined(_ANDROID) && !defined(_IPHONE)  
 #define SIGRESTART 64 
 #endif
 
-static constexpr int PPP_VIRR_UPDATE_STRETCH  = 300;
-static constexpr int PPP_VIRR_UPDATE_INTERVAL = 86400;
-static constexpr int PPP_VBGP_UPDATE_INTERVAL = 3600;
+// Constants for IP list update intervals
+static constexpr int PPP_VIRR_UPDATE_STRETCH  = 300;    // Retry interval in seconds if update fails
+static constexpr int PPP_VIRR_UPDATE_INTERVAL = 86400;  // Daily update interval in seconds
+static constexpr int PPP_VBGP_UPDATE_INTERVAL = 3600;   // Hourly vBGP update interval
 
+// Network interface configuration structure
 struct NetworkInterface final
 {
 #if defined(_WIN32)
-    uint32_t                                        LeaseTimeInSeconds = 0;
-    bool                                            SetHttpProxy       = false;
+    uint32_t                                        LeaseTimeInSeconds = 0;  // DHCP lease time
+    bool                                            SetHttpProxy       = false; // Enable HTTP proxy
 #else
-    bool                                            Promisc            = false;
-    int                                             Ssmt               = 0;
+    bool                                            Promisc            = false; // Promiscuous mode
+    int                                             Ssmt               = 0;     // SSMT thread count
 #if defined(_LINUX)
-    bool                                            SsmtMQ             = false;
-    bool                                            ProtectNetwork     = false;
+    bool                                            SsmtMQ             = false; // SSMT message queue mode
+    bool                                            ProtectNetwork     = false; // Protect network routes
 #endif
 #endif
 
-    bool                                            StaticMode         = false;
-    bool                                            Lwip               = false;
-    bool                                            VNet               = false;
-    bool                                            HostedNetwork      = false;
-    bool                                            BlockQUIC          = false;
+    bool                                            StaticMode         = false; // Static tunnel mode
+    bool                                            Lwip               = false; // Use LWIP stack
+    bool                                            VNet               = false; // Subnet forwarding
+    bool                                            HostedNetwork      = false; // Prefer host network
+    bool                                            BlockQUIC          = false; // Block QUIC protocol
 
-    uint16_t                                        Mux                = 0;
-    uint8_t                                         MuxAcceleration    = 0;
+    uint16_t                                        Mux                = 0;     // MUX connection count
+    uint8_t                                         MuxAcceleration    = 0;     // MUX acceleration mode
 
-    ppp::string                                     Bypass;
+    ppp::string                                     Bypass;                     // IP bypass list file path
 #if defined(_LINUX)
-    ppp::string                                     BypassNic;
+    ppp::string                                     BypassNic;                  // Network interface for bypass
 #endif
-    boost::asio::ip::address                        BypassNgw;
+    boost::asio::ip::address                        BypassNgw;                  // Gateway for bypass routes
 
-    ppp::string                                     ComponentId;
-    ppp::string                                     FirewallRules;
-    ppp::string                                     DNSRules;
-    ppp::string                                     Nic;
+    ppp::string                                     ComponentId;                // TAP device identifier
+    ppp::string                                     FirewallRules;              // Firewall rules file path
+    ppp::string                                     DNSRules;                   // DNS rules file path
+    ppp::string                                     Nic;                        // Physical network interface
 
-    ppp::vector<boost::asio::ip::address>           DnsAddresses;
+    ppp::vector<boost::asio::ip::address>           DnsAddresses;               // DNS server addresses
 
-    boost::asio::ip::address                        Ngw;
-    boost::asio::ip::address                        IPAddress;
-    boost::asio::ip::address                        GatewayServer;
-    boost::asio::ip::address                        SubmaskAddress;
+    boost::asio::ip::address                        Ngw;                        // Preferred gateway
+    boost::asio::ip::address                        IPAddress;                  // Virtual adapter IP
+    boost::asio::ip::address                        GatewayServer;              // Virtual adapter gateway
+    boost::asio::ip::address                        SubmaskAddress;             // Subnet mask
 };
 
+// Console window dimensions structure
 struct ConsoleForegroundWindowSize final
 {
-    int                                             x   = -1;
-    int                                             y   = -1;
-    bool                                            tty = true;
+    int                                             x   = -1;   // Width in characters
+    int                                             y   = -1;   // Height in characters
+    bool                                            tty = true; // Is a terminal device
 };
 
+// Console printing helper class with line counting
 class PrintToConsoleForegroundWindow final 
 {
 public:
-    ConsoleForegroundWindowSize*                    console_window_size    = NULL;
-    ppp::string*                                    console_window_content = NULL;
-    int*                                            console_window_heights = NULL;
+    ConsoleForegroundWindowSize*                    console_window_size    = NULLPTR;    // Console dimensions
+    ppp::string*                                    console_window_content = NULLPTR;    // Output buffer
+    int*                                            console_window_heights = NULLPTR;    // Line counter
 
 public:
+    // Print formatted text with line counting and truncation
     template <class... A>
     void                                            operator()(const char* format, A&&... args) noexcept 
     {
@@ -154,12 +162,14 @@ public:
     }
 
 private:
+    // Format text with padding and line endings
     template <class... A>
     ppp::string                                     PrintToString(std::size_t padding_length, char padding_char, const char* format, A&&... args) noexcept 
     {
         char buf[8096];
         int dw = snprintf(buf, sizeof(buf), format, std::forward<A&&>(args)...);
 
+        // Handle buffer overflow
         if (dw >= sizeof(buf))
         {
             dw = sizeof(buf) - 1;
@@ -172,10 +182,12 @@ private:
         ppp::string result;
         buf[dw] = '\x0';
 
+        // Apply right padding
         result = ppp::PaddingRight<ppp::string>(
             ppp::string(buf, dw), 
             padding_length, padding_char);
             
+        // Add line endings for non-terminal output
         if (!console_window_size->tty) 
         {
             result.append("\r\n");
@@ -185,6 +197,7 @@ private:
     }
 };
 
+// Main application class
 class PppApplication : public std::enable_shared_from_this<PppApplication>
 {
 public:
@@ -192,92 +205,119 @@ public:
     virtual ~PppApplication() noexcept;
 
 public:
+    // Application entry point
     int                                             Main(int argc, const char* argv[]) noexcept;
+    // Clean up resources
     void                                            Dispose() noexcept;
+    // Final release
     void                                            Release() noexcept;
 
 public:
+    // Singleton access
     static std::shared_ptr<PppApplication>          GetDefault() noexcept;
+    // Shutdown handler
     static bool                                     OnShutdownApplication() noexcept;
+    // Trigger application shutdown/restart
     static bool                                     ShutdownApplication(bool restart) noexcept;
+    // Register shutdown handlers
     static bool                                     AddShutdownApplicationEventHandler() noexcept;
 
 public:
+    // Configuration accessors
     std::shared_ptr<AppConfiguration>               GetConfiguration() noexcept;
     std::shared_ptr<VirtualEthernetSwitcher>        GetServer() noexcept;
     std::shared_ptr<VEthernetNetworkSwitcher>       GetClient() noexcept;
     std::shared_ptr<BufferswapAllocator>            GetBufferAllocator() noexcept;
 
 public:
+    // Display help information
     void                                            PrintHelpInformation() noexcept;
+    // Download IP lists from APNIC
     void                                            PullIPList(const ppp::string& command, bool virr) noexcept;
+    // Synchronous IP list download
     int                                             PullIPList(const ppp::string& url, ppp::set<ppp::string>& ips) noexcept;
+    // Asynchronous IP list download with callback
     bool                                            PullIPList(const ppp::string& url, const ppp::function<void(int, const ppp::set<ppp::string>&)>& cb) noexcept;
+    // Parse command line arguments
     int                                             PreparedArgumentEnvironment(int argc, const char* argv[]) noexcept;
 
 protected:
+    // Main tick handler - called every second
     virtual bool                                    OnTick(uint64_t now) noexcept;
 
 private:
+    // Load configuration file
     std::shared_ptr<AppConfiguration>               LoadConfiguration(int argc, const char* argv[], ppp::string& path) noexcept;
+    // Determine if running in client or server mode
     bool                                            IsModeClientOrServer(int argc, const char* argv[]) noexcept;
+    // Parse network interface configuration from arguments
     std::shared_ptr<NetworkInterface>               GetNetworkInterface(int argc, const char* argv[]) noexcept;
+    // Parse IP address from command line with validation
     boost::asio::ip::address                        GetNetworkAddress(const char* name, int MIN_PREFIX_ADDRESS, int MAX_PREFIX_ADDRESS, int argc, const char* argv[]) noexcept;
+    // Parse IP address with default value
     boost::asio::ip::address                        GetNetworkAddress(const char* name, int MIN_PREFIX_ADDRESS, int MAX_PREFIX_ADDRESS, const char* default_address_string, int argc, const char* argv[]) noexcept;
+    // Parse DNS server addresses
     void                                            GetDnsAddresses(ppp::vector<boost::asio::ip::address>& addresses, int argc, const char* argv[]) noexcept;
+    // Initialize network environment
     bool                                            PreparedLoopbackEnvironment(const std::shared_ptr<NetworkInterface>& network_interface) noexcept;
+    // Print current status and statistics
     bool                                            PrintEnvironmentInformation() noexcept;
 
 private:
+    // Start/stop periodic tick handler
     static bool                                     NextTickAlwaysTimeout(bool next) noexcept;
     void                                            ClearTickAlwaysTimeout() noexcept;
 
 private:
+    // Get traffic statistics
     bool                                            GetTransmissionStatistics(uint64_t& incoming_traffic, uint64_t& outgoing_traffic, std::shared_ptr<ppp::transmissions::ITransmissionStatistics>& statistics_snapshot) noexcept;
 
 private:
-    ConsoleForegroundWindowSize                     console_window_size_last_;
-    std::size_t                                     console_window_buff_size_   = 0;       
-    bool                                            client_mode_                = false;
-    bool                                            quic_                       = false;
-    std::shared_ptr<AppConfiguration>               configuration_;
-    std::shared_ptr<VirtualEthernetSwitcher>        server_;
-    std::shared_ptr<VEthernetNetworkSwitcher>       client_;
-    ppp::string                                     configuration_path_;
-    std::shared_ptr<NetworkInterface>               network_interface_;
-    std::shared_ptr<Timer>                          timeout_                    = 0;
-    Stopwatch                                       stopwatch_;
-    PreventReturn                                   prevent_rerun_;
-    ppp::transmissions::ITransmissionStatistics     transmission_statistics_;
+    ConsoleForegroundWindowSize                     console_window_size_last_;       // Previous console size
+    std::size_t                                     console_window_buff_size_   = 0; // Console buffer size
+    bool                                            client_mode_                = false; // Current mode flag
+    bool                                            quic_                       = false; // Original QUIC setting (Windows)
+    std::shared_ptr<AppConfiguration>               configuration_;                    // Application configuration
+    std::shared_ptr<VirtualEthernetSwitcher>        server_;                          // Server switcher
+    std::shared_ptr<VEthernetNetworkSwitcher>       client_;                          // Client switcher
+    ppp::string                                     configuration_path_;               // Configuration file path
+    std::shared_ptr<NetworkInterface>               network_interface_;                // Network interface config
+    std::shared_ptr<Timer>                          timeout_                    = 0;   // Periodic timer
+    Stopwatch                                       stopwatch_;                        // Application uptime
+    PreventReturn                                   prevent_rerun_;                    // Prevent multiple instances
+    ppp::transmissions::ITransmissionStatistics     transmission_statistics_;          // Traffic statistics
 };
-static std::shared_ptr<PppApplication>              DEFAULT_;
+
+// Global variables
+static std::shared_ptr<PppApplication>              DEFAULT_;                         // Application instance
 static struct {
-    bool                                            restart                     = false;
-    bool                                            vbgp                        = false;
-    uint64_t                                        vbgp_last                   = 0;
+    bool                                            restart                     = false; // Restart flag
+    bool                                            vbgp                        = false; // vBGP enabled
+    uint64_t                                        vbgp_last                   = 0;     // Last vBGP update
 
-    int                                             link_restart                = 0;
-    int                                             auto_restart                = 0;
+    int                                             link_restart                = 0;     // Link restart count
+    int                                             auto_restart                = 0;     // Auto restart interval
 
-    bool                                            virr                        = false;
-    uint64_t                                        virr_next                   = 0;
-    ppp::string                                     virr_argument;
+    bool                                            virr                        = false; // Auto-IP update enabled
+    uint64_t                                        virr_next                   = 0;     // Next IP update time
+    ppp::string                                     virr_argument;                      // IP update argument
 
-    ppp::string                                     bypass;
-}                                                   GLOBAL_;
+    ppp::string                                     bypass;                             // Bypass file path
+}                                                   GLOBAL_;                         // Global application state
 
+// Constructor
 PppApplication::PppApplication() noexcept
 {
-    // Hide the cursor that is currently flashing on the console.
+    // Hide console cursor for cleaner output
     ppp::HideConsoleCursor(true);
 
 #if defined(_WIN32)
-    // Set the title information for the current user-facing console window!
+    // Set console window title
     SetConsoleTitle(TEXT("PPP PRIVATE NETWORK™ 2"));
 
-    // Set the default matrix size for the console window, valid only on Windows platforms.
+    // Set console buffer and window size on Windows
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE); 
-    if (NULL != hConsole)
+    if (NULLPTR != hConsole)
     {
         COORD cSize = { 120, ppp::win32::Win32Native::IsWindows11OrLaterVersion() ? 46 : 47 };
         if (SetConsoleScreenBufferSize(hConsole, cSize))
@@ -287,34 +327,37 @@ PppApplication::PppApplication() noexcept
         }
     }
 
-    // Hide the close button of the console window to prevent users from illegally forcing the VPN program to close.
+    // Disable console close button to prevent accidental termination
     ppp::win32::Win32Native::EnabledConsoleWindowClosedButton(false);
 #endif
 }
 
+// Destructor
 PppApplication::~PppApplication() noexcept
 {
     Release();
 }
 
+// Clean up resources
 void PppApplication::Release() noexcept 
 {
-    // Display the cursor that is currently flashing on the console.
+    // Restore console cursor
     ppp::HideConsoleCursor(false);
 
 #if defined(_WIN32)
-    // Display the close button of the console window, otherwise the host console window close button cannot be clicked.
+    // Re-enable console close button
     ppp::win32::Win32Native::EnabledConsoleWindowClosedButton(true);
 #endif
 
-    // Turn off the global named mutex lock that prevents programs from running repeatedly!
+    // Release prevention lock
     prevent_rerun_.Close();
 }
 
+// Asynchronous IP list download
 bool PppApplication::PullIPList(const ppp::string& url, const ppp::function<void(int, const ppp::set<ppp::string>&)>& cb) noexcept
 {
-    // Realize automatic asn route pulling, which is similar to the dynamic route allocation of bgp border gateways.
-    if (NULL == cb || url.empty()) 
+    // Download IP list from URL in background thread
+    if (NULLPTR == cb || url.empty()) 
     {
         return false;
     }
@@ -332,6 +375,7 @@ bool PppApplication::PullIPList(const ppp::string& url, const ppp::function<void
     return true;
 }
 
+// Synchronous IP list download
 int PppApplication::PullIPList(const ppp::string& url, ppp::set<ppp::string>& ips) noexcept 
 {
     // Realize the collection of route lists captured from Internet resources of the HTTP/HTTPS protocol that comply with the ip route configuration rules.
@@ -342,33 +386,38 @@ int PppApplication::PullIPList(const ppp::string& url, ppp::set<ppp::string>& ip
     int port;
     bool https;
 
+    // Parse URL components
     if (!HttpClient::VerifyUri(url, ppp::addressof(host), &port, ppp::addressof(path), &https)) 
     {
         return -1;
     }
 
+    // Create HTTP client with SSL support if needed
     HttpClient http_client((https ? "https://" : "http://") + host, chnroutes2_cacertpath_default());
     
     int http_status_code = -1;
     std::string http_response_body = http_client.Get(path, http_status_code);
 
+    // Check HTTP status
     if (http_status_code < 200 || http_status_code >= 300) 
     {
         return -1;
     }
 
+    // Parse IP list from response
     return chnroutes2_getiplist(ips, ppp::string(), stl::transform<ppp::string>(http_response_body));
 }
 
+// Download IP list with progress notification
 void PppApplication::PullIPList(const ppp::string& command, bool virr) noexcept
 {
-    // Notify the customer that the IPlist is being pulled from the APNIC.
+    // Show progress message for non-VIRR updates
     if (!virr)
     {
         fprintf(stdout, "[%s]PULL\r\n", chnroutes2_gettime(chnroutes2_gettime()).data());
     }
 
-    // Gets ip address list and nation parameters passed into the command-line.
+    // Parse command into path and country code
     ppp::string path;
     ppp::string nation;
     for (ppp::string command_string = ppp::LTrim(ppp::RTrim(command)); command_string.size() > 0;) 
@@ -389,20 +438,20 @@ void PppApplication::PullIPList(const ppp::string& command, bool virr) noexcept
         break;
     }
 
-    // If no path is passed to save the IP list file, the default storage path is automatically obtained.
+    // Use default path if not specified
     if (path.empty()) 
     {
         path = chnroutes2_filepath_default();
     }
 
-    // Rewrite the file path to an absolute path, which ensures that there are no ambiguities.
+    // Convert to absolute path
     path = File::GetFullPath(File::RewritePath(path.data()).data());
 
-    // Getting the latest IPlist routing table information from APNIC.
+    // Download IP list
     bool ok = false;
     if (virr)
     {
-        // Asynchronous execution does not block the main thread.
+        // Asynchronous download for auto-updates
         chnroutes2_getiplist_async(
             [path, nation](const ppp::string& response_text) noexcept 
             {
@@ -415,37 +464,36 @@ void PppApplication::PullIPList(const ppp::string& command, bool virr) noexcept
                             return -1;
                         }
                     
-                        // The file path is different. You only need to save the file and do not need to restart the VPN route.
+                        // Only save file if path differs from current bypass
                         if (GLOBAL_.bypass != path)
                         {
                             chnroutes2_saveiplist(path, ips);
                             return 0;
                         }
                     
-                        // Check whether the local ip.txt is the same as the iplist captured on the apnic. If not, you need to restart the app.
+                        // Compare with existing file to avoid unnecessary restarts
                         ppp::set<ppp::string> olds;
                         ppp::string iplist = ppp::LTrim(ppp::RTrim(File::ReadAllText(path.data())));
                     
-                        // Determine if it is the same as the local bypass file. If it is the same, there is no need to restart the route.
                         chnroutes2_getiplist(olds, ppp::string(), iplist);
                         if (chnroutes2_equals(ips, olds))
                         {
                             return 0;
                         }
                     
-                        // Write to file failed, this may be a disk is full or other errors
+                        // Save new list and restart if changed
                         ppp::string news = chnroutes2_toiplist(ips);
                         if (!File::WriteAllBytes(path.data(), news.data(), news.size()))
                         {
                             return -1;
                         }
                         
-                        // Post the restart application event.
+                        // Trigger application restart
                         ShutdownApplication(true);
                         return 1;
                     };
 
-                // If the returned value of the processing is less than 0, it indicates that this is caused by an error and needs to be reprocessed after a certain period of time.
+                // Process result and schedule retry on failure
                 int return_code = process();
                 if (return_code < 0)
                 {   
@@ -458,7 +506,7 @@ void PppApplication::PullIPList(const ppp::string& command, bool virr) noexcept
     }
     else 
     {
-        // synchronized execution will block the main thread.
+        // Synchronous download for manual updates
         ppp::set<ppp::string> ips;
         if (chnroutes2_getiplist(ips, nation) > 0)
         {
@@ -466,7 +514,7 @@ void PppApplication::PullIPList(const ppp::string& command, bool virr) noexcept
         }
     }
 
-    // Reports the current status of the IPlist pulled from the APNIC.
+    // Show completion status
     if (!virr)
     {
         if (ok)
@@ -480,33 +528,33 @@ void PppApplication::PullIPList(const ppp::string& command, bool virr) noexcept
     }
 }
 
+// Print current application status to console
 bool PppApplication::PrintEnvironmentInformation() noexcept
 {
-    // Check if the network interface information for the current app exists and is valid, otherwise return failure.
     std::shared_ptr<NetworkInterface> network_interface = network_interface_;
-    if (NULL == network_interface)
+    if (NULLPTR == network_interface)
     {
         return false;
     }
 
-    // Get the size of the console window.
+    // Get console window size
     ConsoleForegroundWindowSize console_window_size;
     if (isatty(fileno(stdout)) == 0 || !ppp::GetConsoleWindowSize(console_window_size.x, console_window_size.y)) 
     {
-        // No need to determine: isatty(STDOUT_FILENO) or isatty(fileno(stdout))
+        // Default size for non-terminal output
         fseek(stdout, 0, SEEK_SET);
-        console_window_size.x = 80; /* Console-default-size: 80*25 */
+        console_window_size.x = 80;
         console_window_size.y = 80; 
         console_window_size.tty = false;
     }
 
-    // Move the current console cursor position to the initial position and re-render the console output.
+    // Move cursor to top-left for refresh
     if (console_window_size.tty && !ppp::SetConsoleCursorPosition(0, 0))
     {
         return false;
     }
     
-    // Retrieve the current hosting environment, which essentially distinguishes between the debug and release versions, but it doesn't have significant meaning.
+    // Determine hosting environment
     ppp::string hosting_environment;
 #if defined(_DEBUG)
     hosting_environment = "development";
@@ -515,9 +563,9 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
 #endif
 
     std::shared_ptr<VEthernetNetworkSwitcher> client = client_;
-    hosting_environment = (NULL != client ? "client:" : "server:") + hosting_environment;
+    hosting_environment = (NULLPTR != client ? "client:" : "server:") + hosting_environment;
 
-    // If the size of the current console window changes, clear the output content of the console window.
+    // Clear console if size changed
     if (console_window_size_last_.x != console_window_size.x || console_window_size_last_.y != console_window_size.y)
     {
         console_window_size_last_ 
@@ -529,7 +577,7 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
         }
     }
 
-    // Define an anonymous arrow function that prints and newline with a locally variable argument list.
+    // Build console output
     ppp::string console_window_content;
     if (console_window_buff_size_ > 0)
     {
@@ -539,11 +587,11 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
     int console_window_heights = 0;
     PrintToConsoleForegroundWindow printfn = { &console_window_size, &console_window_content, &console_window_heights };
 
-    // Get the separator symbol for console tabs.
+    // Create separator line
     ppp::string section_separator;
     section_separator = ppp::PaddingRight(section_separator, console_window_size.x, '-');
 
-    // Printing ready-to-start VPN client or server program log informations.
+    // Print application header
     printfn("%s", PPP_APPLICATION_NAME);
     printfn("%s", section_separator.data());
     printfn("%s", "Application started. Press Ctrl+C to shut down.");
@@ -567,13 +615,13 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
     printfn("Cwd                   : %s", ppp::GetCurrentDirectoryPath().data());
     printfn("Template              : %s", configuration_path_.data());
 
-    // Print some information about the server's Virtual Ethernet switcher.
+    // Print server-specific information
     std::shared_ptr<VirtualEthernetSwitcher> server = server_;
-    if (NULL != server)
+    if (NULLPTR != server)
     {
         // Displays the link status and link Uri of the VPN back-end management server.
         auto managed_server = server->GetManagedServer(); 
-        if (NULL != managed_server)
+        if (NULLPTR != managed_server)
         {
             const char* link_state = "connecting";
             if (managed_server->LinkIsAvailable()) 
@@ -590,17 +638,17 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
         }
     }
 
-    // Print some information about the client's Virtual Ethernet switcher.
-    if (NULL != client)
+    // Print client-specific information
+    if (NULLPTR != client)
     {
-        // Print the address of the remote server currently in use by the client!
+        // Remote server information
         if (ppp::string remote_uri = client->GetRemoteUri(); remote_uri.size() > 0)
         {
             std::shared_ptr<VEthernetExchanger> exchanger = client->GetExchanger();
-            printfn("VPN Server            : %s [%s]", remote_uri.data(), NULL != exchanger && exchanger->StaticEchoAllocated() ? "static" : "dynamic");
+            printfn("VPN Server            : %s [%s]", remote_uri.data(), NULLPTR != exchanger && exchanger->StaticEchoAllocated() ? "static" : "dynamic");
         }
 
-        // Print the information related to the http/socks proxy server tab.
+        // Local proxy servers
         struct 
         {
             const char*                                     proxy;
@@ -613,7 +661,7 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
         for (auto& st : proxys)
         {
             std::shared_ptr<VEthernetLocalProxySwitcher> switcher = st.switcher;
-            if (NULL == switcher) 
+            if (NULLPTR == switcher) 
             {
                 continue;
             }
@@ -622,7 +670,7 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
             boost::asio::ip::address localIP = localEP.address();
             if (localIP.is_unspecified())
             {
-                if (auto ni = client->GetUnderlyingNetowrkInterface(); NULL != ni)
+                if (auto ni = client->GetUnderlyingNetowrkInterface(); NULLPTR != ni)
                 {
                     localIP = ni->IPAddress;
                 }
@@ -634,24 +682,23 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
         }
 
 #if defined(_WIN32)
-        // Displays the open status of the current paper Airplane session layer plugins.
         printfn("P/A Controller        : %s", client->GetPaperAirplaneController() ? "on" : "off");
 #endif
     }
 
-    // Print some display information of the current virtual ethernet server!
-    if (std::shared_ptr<VirtualEthernetSwitcher> server = server_; NULL != server)
+    // Print server network information
+    if (std::shared_ptr<VirtualEthernetSwitcher> server = server_; NULLPTR != server)
     {
         using NAC = VirtualEthernetSwitcher::NetworkAcceptorCategories;
 
         // Print the public IP address and interface IP address configured for the current virtual Ethernet server!
-        if (std::shared_ptr<AppConfiguration> configuration = configuration_; NULL != configuration)
+        if (std::shared_ptr<AppConfiguration> configuration = configuration_; NULLPTR != configuration)
         {
             printfn("Public IP             : %s", configuration->ip.public_.data());
             printfn("Interface IP          : %s", configuration->ip.interface_.data());
         }
 
-        // Displays the port numbers of various server public service addresses that are currently monitored.
+        // List listening ports for various services
         const char* categories[] = { "ppp+tcp", "ppp+udp", "ppp+ws", "ppp+wss", "cdn+1", "cdn+2" };
         VirtualEthernetSwitcher::NetworkAcceptorCategories categoriess[] = 
         { 
@@ -686,10 +733,9 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
     // To print a blank line as a separator for major categories.
     printfn("");
 
-    // Displays information about the bearer network interface used by the VPN.
-    if (NULL != client)
+    // Print network interface details
+    if (NULLPTR != client)
     {
-        // Print all display information related to TAP tabs one by one.
         struct
         {
             std::shared_ptr<VEthernetNetworkSwitcher::NetworkInterface> ni;
@@ -702,7 +748,7 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
         for (auto&& sti : stnis)
         {
             auto ni = sti.ni; 
-            if (NULL != ni)
+            if (NULLPTR != ni)
             {
                 printfn("%s", sti.tab);
                 printfn("%s", section_separator.data());
@@ -726,9 +772,10 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
 
                 if (sti.tun)
                 {
+                    // Aggligator status
                     for (const char* aggligator_status[] = { "none", "unknown", "connecting", "reconnecting", "established" };;)
                     {
-                        if (std::shared_ptr<aggligator::aggligator> aggligator = client->GetAggligator(); NULL != aggligator)
+                        if (std::shared_ptr<aggligator::aggligator> aggligator = client->GetAggligator(); NULLPTR != aggligator)
                         {
                             int max_channel = 0;
                             int max_servers = 0;
@@ -752,9 +799,10 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
                         break;
                     }
 
+                    // Forwarding proxy
                     for (std::shared_ptr<ppp::transmissions::proxys::IForwarding> forwarding = client->GetForwarding();;)
                     {
-                        if (NULL != forwarding)
+                        if (NULLPTR != forwarding)
                         {
                             ppp::string proxy_url = forwarding->GetProxyUrl();
                             printfn("Proxy Interlayer      : %s", proxy_url.data());
@@ -770,7 +818,7 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
                     printfn("TCP/IP CC             : %s", client->IsLwip() ? "lwip" : "ctcp");
                     printfn("Block QUIC            : %s", client->IsBlockQUIC() ? "blocked" : "unblocked");
 
-                    if (std::shared_ptr<VEthernetExchanger> exchanger = client->GetExchanger(); NULL != exchanger)
+                    if (std::shared_ptr<VEthernetExchanger> exchanger = client->GetExchanger(); NULLPTR != exchanger)
                     {
                         const char* network_states[] = { "connecting", "established", "reconnecting" };
                         ppp::string network_state_string;
@@ -778,7 +826,7 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
                         {
                             network_state_string = network_states[(int)exchanger->GetMuxNetworkState()];
                             network_state_string += ", ";
-                            network_state_string += stl::to_string<ppp::string>(client->Mux(NULL));
+                            network_state_string += stl::to_string<ppp::string>(client->Mux(NULLPTR));
                             network_state_string += "-channel";
                         }
                         else 
@@ -796,6 +844,7 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
                     }
                 }
 
+                // DNS servers
                 for (std::size_t i = 0, l = ni->DnsAddresses.size(); i < l; i++)
                 {
                     ppp::string tmp = "DNS Server " + stl::to_string<ppp::string>(i + 1);
@@ -810,7 +859,7 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
         }
     }
 
-    // Get statistics on the physical network transport layer of the Virtual Ethernet switcher.
+    // Get transmission statistics
     struct
     {
         uint64_t incoming_traffic;
@@ -822,14 +871,14 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
     {
         TransmissionStatistics.incoming_traffic = 0;
         TransmissionStatistics.outgoing_traffic = 0;
-        TransmissionStatistics.statistics_snapshot = NULL;
+        TransmissionStatistics.statistics_snapshot = NULLPTR;
     }
 
-    // Implement some information printing on the console window for VPN information.
+    // Print VPN statistics
     printfn("%s", "VPN");
     printfn("%s", section_separator.data());
     printfn("Duration              : %s", stopwatch_.Elapsed().ToString("TT:mm:ss", false).data());
-    if (NULL != server) 
+    if (NULLPTR != server) 
     {
         printfn("Sessions              : %s", stl::to_string<ppp::string>(server->GetAllExchangerNumber()).data());
     }
@@ -842,63 +891,57 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
         printfn("OUT                   : %s", ppp::StrFormatByteSize(statistics->OutgoingTraffic).data());
     }
 
-    // Dynamically calculates the default buffer size for the console window's string container before the next print operation.
+    // Update buffer size for next render
     std::size_t console_window_content_size = console_window_content.size();
     if (console_window_content_size > console_window_buff_size_)
     {
         console_window_buff_size_ = ppp::Malign(console_window_content_size, 1 << 6);
     }
 
-    // Print text to the console window screen, or on Linux to the _tty of the shell-terminal.
+    // Output to console
     fprintf(stdout, "%s", console_window_content.data());
     return true;
 }
 
+// Initialize network environment
 bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkInterface>& network_interface) noexcept
 {
     std::shared_ptr<AppConfiguration> configuration = GetConfiguration();
-    if (NULL == configuration)
+    if (NULLPTR == configuration)
     {
         return false;
     }
 
     std::shared_ptr<boost::asio::io_context> context = Executors::GetDefault();
-    if (NULL == context)
+    if (NULLPTR == context)
     {
         return false;
     }
     else
     {
 #if defined(_WIN32)
-        // The system32 firewall Settings are automatically deployed and set in the os, 
-        // Because overlapping io requires its support, otherwise it cannot be used.
+        // Configure Windows Firewall rules
         ppp::string executable_path = File::GetFullPath(File::RewritePath(ppp::GetFullExecutionFilePath().data()).data());
 
-        // Compatibility failure: In some LTSB versions of Windows operating systems, the kernel firewall may not be initialized, 
-        // Resulting in openppp2 having no way to configure the kernel firewall rules in this scenario.
         ppp::win32::network::Fw::NetFirewallAddApplication(PPP_APPLICATION_NAME, executable_path.data());
         ppp::win32::network::Fw::NetFirewallAddAllApplication(PPP_APPLICATION_NAME, executable_path.data());
 
-        // There are some basic transactions that need to be configured in the operating system before running openppp2 client mode.
+        // Client-specific Windows setup
         if (client_mode_)
         {
-            // If the configuration file specifies that the paper plane needs to be pulled up, 
-            // The initialization actions associated with the paper plane are performed.
+            // Install paper airplane plugin if needed
             if (network_interface->HostedNetwork && configuration->client.paper_airplane.tcp)
             {
-                // Try to install or update the paper airplane plugin into the operating system.
                 if (ppp::app::client::lsp::PaperAirplaneController::Install() < 0)
                 {
                     return false;
                 }
             }
 
-            // Prohibit some system programs from loading LSPS /DLLs plug-ins because these programs may cause problems. 
-            // The solution is to completely prohibit these programs from loading LSP/s.
+            // Prevent problematic programs from loading LSPs
             ppp::app::client::lsp::PaperAirplaneController::NoLsp();
 
-            // Reset the paper plane controller Settings because the program may have closed abnormally, 
-            // Which may cause the paper plane controller to not close properly.
+            // Reset paper airplane controller
             ppp::app::client::lsp::PaperAirplaneController::Reset();
         }
 #endif
@@ -907,11 +950,11 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
     bool success = false;
     if (client_mode_)
     {
-        std::shared_ptr<VEthernetNetworkSwitcher> ethernet = NULL;
-        std::shared_ptr<ITap> tap = NULL;
+        std::shared_ptr<VEthernetNetworkSwitcher> ethernet = NULLPTR;
+        std::shared_ptr<ITap> tap = NULLPTR;
         do
         {
-            // Try to open the tun/tap virtual Ethernet device!
+            // Create TAP device
 #if defined(_WIN32)
             tap = ITap::Create(context,
                 network_interface->ComponentId,
@@ -931,7 +974,7 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
                 network_interface->HostedNetwork,
                 Ipep::AddressesTransformToStrings(network_interface->DnsAddresses));
 #endif
-            if (NULL == tap)
+            if (NULLPTR == tap)
             {
                 fprintf(stdout, "%s\r\n", "Open tun/tap driver failure.");
                 break;
@@ -941,7 +984,7 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
                 fprintf(stdout, "%s\r\n", "Open tun/tap driver success.");
             }
 
-            // Gets the current buffer allocator and sets it to tun/tap.
+            // Configure TAP device
             tap->BufferAllocator = configuration->GetBufferAllocator();
             if (!tap->Open())
             {
@@ -953,27 +996,29 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
                 fprintf(stdout, "%s\r\n", "Listen tun/tap driver success.");
             }
 
-            // Construct the switcher instance after creating the virtual ethernet network switcher object in client mode 
-            // And adding the iplist file to load to bypass the vpn route.
+            // Create client switcher
             ethernet = ppp::make_shared_object<VEthernetNetworkSwitcher>(context, network_interface->Lwip, network_interface->VNet, configuration->concurrent > 1, configuration);
-            if (NULL == ethernet)
+            if (NULLPTR == ethernet)
             {
                 break;
             }
 
 #if !defined(_WIN32)
-            // Ssmt technology squeezes the machine performance of the device as much as possible for VPN VEthernet services.
+            // Configure SSMT settings
             ethernet->Ssmt(&network_interface->Ssmt);
 #if defined(_LINUX)
             ethernet->SsmtMQ(&network_interface->SsmtMQ);
             ethernet->ProtectMode(&network_interface->ProtectNetwork);
 #endif
 #endif
+            // Configure switcher properties
             ethernet->Mux(&network_interface->Mux);
             ethernet->MuxAcceleration(&network_interface->MuxAcceleration);
             ethernet->StaticMode(&network_interface->StaticMode);
             ethernet->PreferredNgw(network_interface->Ngw);
             ethernet->PreferredNic(network_interface->Nic);
+
+            // Load bypass IP lists
 #if defined(_LINUX)
             ethernet->AddLoadIPList(network_interface->Bypass, network_interface->BypassNic, network_interface->BypassNgw, ppp::string());
 #else
@@ -994,11 +1039,14 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
 #endif
             }
 
+            // Load DNS rules
             ethernet->LoadAllDnsRules(network_interface->DNSRules, true);
+            
+            // Open switcher
             if (!ethernet->Open(tap))
             {
                 auto ni = ethernet->GetUnderlyingNetowrkInterface();
-                if (NULL != ni)
+                if (NULLPTR != ni)
                 {
                     fprintf(stdout, "%s\r\n", "Failed to open the vpn client.");
                 }
@@ -1013,17 +1061,17 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
             client_ = ethernet;
         } while (false);
 
-        // When the creation of a virtual Ethernet switch fails, it is important to close and reclaim any unnecessary managed resources.
+        // Cleanup on failure
         if (!success)
         {
             client_.reset();
-            if (NULL != ethernet)
+            if (NULLPTR != ethernet)
             {
                 ethernet->Dispose();
             }
 
             // Turn off the tun/tap virtual network card driver that has been opened.
-            if (NULL != tap)
+            if (NULLPTR != tap)
             {
                 tap->Dispose();
             }
@@ -1031,23 +1079,25 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
     }
     else
     {
-        std::shared_ptr<VirtualEthernetSwitcher> ethernet = NULL;
+        // Server mode setup
+        std::shared_ptr<VirtualEthernetSwitcher> ethernet = NULLPTR;
         do
         {
-            // Instantiate and open a vpn virtual ethernet network switcher object in server-mode.
+            // Create server switcher
             ethernet = ppp::make_shared_object<VirtualEthernetSwitcher>(configuration);
-            if (NULL == ethernet)
+            if (NULLPTR == ethernet)
             {
                 break;
             }
 
+            // Open switcher
             if (!ethernet->Open(network_interface->FirewallRules))
             {
                 fprintf(stdout, "%s\r\n", "Failed to open the vpn server.");
                 break;
             }
 
-            // Run all externally provided services of the switcher object that have just been instantiated and opened.
+            // Run services
             if (!ethernet->Run())
             {
                 fprintf(stdout, "%s\r\n", "Listen to vpn server failure.");
@@ -1058,11 +1108,11 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
             server_ = ethernet;
         } while (false);
 
-        // When the creation of a virtual Ethernet switch fails, it is important to close and reclaim any unnecessary managed resources.
+        // Cleanup on failure
         if (!success)
         {
             server_.reset();
-            if (NULL != ethernet)
+            if (NULLPTR != ethernet)
             {
                 ethernet->Dispose();
             }
@@ -1071,12 +1121,13 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
     return success;
 }
 
+// Get buffer allocator from configuration
 std::shared_ptr<BufferswapAllocator> PppApplication::GetBufferAllocator() noexcept
 {
     std::shared_ptr<AppConfiguration> configuration = GetConfiguration();
-    if (NULL == configuration)
+    if (NULLPTR == configuration)
     {
-        return NULL;
+        return NULLPTR;
     }
     else
     {
@@ -1084,18 +1135,22 @@ std::shared_ptr<BufferswapAllocator> PppApplication::GetBufferAllocator() noexce
     }
 }
 
+// Parse and prepare command line arguments
 int PppApplication::PreparedArgumentEnvironment(int argc, const char* argv[]) noexcept
 {
-    // Check whether the network mode is set to flash.
+    // Configure socket flash TOS
     Socket::SetDefaultFlashTypeOfService(ppp::ToBoolean(ppp::GetCommandArgument("--tun-flash", argc, argv).data()));
+    
+    // Show help if requested
     if (ppp::IsInputHelpCommand(argc, argv))
     {
         return -1;
     }
 
+    // Load configuration
     ppp::string path;
     std::shared_ptr<AppConfiguration> configuration = LoadConfiguration(argc, argv, path);
-    if (NULL == configuration)
+    if (NULLPTR == configuration)
     {
         return -1;
     }
@@ -1105,6 +1160,7 @@ int PppApplication::PreparedArgumentEnvironment(int argc, const char* argv[]) no
         client_mode_ = IsModeClientOrServer(argc, argv);
     }
 
+    // Configure thread pool
     int max_concurrent = configuration->concurrent - 1;
     if (max_concurrent > 0)
     {
@@ -1115,21 +1171,26 @@ int PppApplication::PreparedArgumentEnvironment(int argc, const char* argv[]) no
         }
     }
 
+    // Parse network interface configuration
     std::shared_ptr<NetworkInterface> network_interface = GetNetworkInterface(argc, argv);
-    if (NULL == network_interface)
+    if (NULLPTR == network_interface)
     {
         return -1;
     }
 
+    // Store configuration
     configuration_path_ = path;
     configuration_ = configuration;
     network_interface_ = network_interface;
     
+    // Configure DNS settings
     ppp::net::asio::vdns::ttl = configuration->udp.dns.ttl;
     ppp::net::asio::vdns::enabled = configuration->udp.dns.turbo;
+    
     return 0;
 }
 
+// Format version string
 static ppp::string GetVersionString(int major, int minor, int patch = 0) noexcept
 {
     char buf[100];
@@ -1147,6 +1208,7 @@ static ppp::string GetVersionString(int major, int minor, int patch = 0) noexcep
     return buf;
 }
 
+// Get Boost library version string
 static ppp::string GetBoostVersionString() noexcept 
 {
     constexpr int version = BOOST_VERSION;
@@ -1158,19 +1220,20 @@ static ppp::string GetBoostVersionString() noexcept
     return GetVersionString(major, minor, patch);
 }
 
+// Print comprehensive help information
 void PppApplication::PrintHelpInformation() noexcept
 {
     ppp::string execution_file_name = ppp::GetExecutionFileName();
     ppp::string cwd = ppp::GetCurrentDirectoryPath();
     
-    // Define column widths for perfect alignment
+    // Define column widths for alignment
     static constexpr int col_option_width = 40;
     static constexpr int col_description_width = 48;
     static constexpr int col_default_width = 23;
     static constexpr int col_command_width = 38;
     static constexpr int col_command_width_utlity = col_command_width + 2;
 
-    // Print header information
+    // Print header
     printf("┌──────────────────────────────────────────────────────────────────────┐\n");
     printf("│                       PPP PRIVATE NETWORK™ 2                         │\n");
     printf("│  Next-generation security network access technology, providing high- │\n");
@@ -1184,7 +1247,7 @@ void PppApplication::PrintHelpInformation() noexcept
     printf("USAGE:\n");
     printf("    %s [OPTIONS]\n\n", execution_file_name.data());
     
-    // GENERAL OPTIONS
+    // GENERAL OPTIONS table
     printf("GENERAL OPTIONS:\n");
     printf("┌──────────────────────────────────────────┬──────────────────────────────────────────────────┬─────────────────────────┐\n");
     printf("│ %-*s │ %-*s │ %-*s │\n", 
@@ -1235,7 +1298,7 @@ void PppApplication::PrintHelpInformation() noexcept
     
     printf("└──────────────────────────────────────────┴──────────────────────────────────────────────────┴─────────────────────────┘\n\n");
     
-    // SERVER-SPECIFIC OPTIONS
+    // SERVER-SPECIFIC OPTIONS table
     printf("SERVER-SPECIFIC OPTIONS:\n");
     printf("┌──────────────────────────────────────────┬──────────────────────────────────────────────────┬─────────────────────────┐\n");
     printf("│ %-*s │ %-*s │ %-*s │\n", 
@@ -1251,7 +1314,7 @@ void PppApplication::PrintHelpInformation() noexcept
     
     printf("└──────────────────────────────────────────┴──────────────────────────────────────────────────┴─────────────────────────┘\n\n");
     
-    // CLIENT-SPECIFIC OPTIONS
+    // CLIENT-SPECIFIC OPTIONS table
     printf("CLIENT-SPECIFIC OPTIONS:\n");
     printf("┌──────────────────────────────────────────┬──────────────────────────────────────────────────┬─────────────────────────┐\n");
     printf("│ %-*s │ %-*s │ %-*s │\n", 
@@ -1387,7 +1450,7 @@ void PppApplication::PrintHelpInformation() noexcept
     
     printf("└──────────────────────────────────────────┴──────────────────────────────────────────────────┴─────────────────────────┘\n\n");
     
-    // ROUTING OPTIONS
+    // ROUTING OPTIONS table
     printf("ROUTING OPTIONS:\n");
     printf("┌──────────────────────────────────────────┬──────────────────────────────────────────────────┬─────────────────────────┐\n");
     printf("│ %-*s │ %-*s │ %-*s │\n", 
@@ -1425,7 +1488,7 @@ void PppApplication::PrintHelpInformation() noexcept
     
     printf("└──────────────────────────────────────────┴──────────────────────────────────────────────────┴─────────────────────────┘\n\n");
     
-    // WINDOWS-SPECIFIC COMMANDS
+    // WINDOWS-SPECIFIC COMMANDS table
 #if defined(_WIN32)
     printf("WINDOWS-SPECIFIC COMMANDS:\n");
     printf("┌──────────────────────────────────────────┬──────────────────────────────────────────────────┐\n");
@@ -1457,7 +1520,7 @@ void PppApplication::PrintHelpInformation() noexcept
     printf("└──────────────────────────────────────────┴──────────────────────────────────────────────────┘\n\n");
 #endif
     
-    // UTILITY COMMANDS
+    // UTILITY COMMANDS table
     printf("UTILITY COMMANDS:\n");
     printf("┌──────────────────────────────────────────┬──────────────────────────────────────────────────┬─────────────────────────┐\n");
     printf("│ %-*s │ %-*s │ %-*s │\n", 
@@ -1512,6 +1575,7 @@ void PppApplication::PrintHelpInformation() noexcept
     printf("\n");
 }
 
+// Parse IP address or netmask from command line
 boost::asio::ip::address PppApplication::GetNetworkAddress(const char* name, int MIN_PREFIX_ADDRESS, int MAX_PREFIX_ADDRESS, int argc, const char* argv[]) noexcept
 {
     ppp::string address_string = ppp::GetCommandArgument(name, argc, argv);
@@ -1530,6 +1594,7 @@ boost::asio::ip::address PppApplication::GetNetworkAddress(const char* name, int
     boost::asio::ip::address address;
     if (StringAuxiliary::WhoisIntegerValueString(address_string))
     {
+        // Handle netmask prefix notation (e.g., "24")
         int prefix = atoll(address_string.data());
         if (prefix < 1 || prefix > MAX_PREFIX_ADDRESS)
         {
@@ -1545,6 +1610,7 @@ boost::asio::ip::address PppApplication::GetNetworkAddress(const char* name, int
     }
     else
     {
+        // Handle dotted-decimal notation
         address = Ipep::ToAddress(address_string, true);
     }
 
@@ -1556,6 +1622,7 @@ boost::asio::ip::address PppApplication::GetNetworkAddress(const char* name, int
     return address;
 }
 
+// Parse IP address with default value
 boost::asio::ip::address PppApplication::GetNetworkAddress(const char* name, int MIN_PREFIX_ADDRESS, int MAX_PREFIX_ADDRESS, const char* default_address_string, int argc, const char* argv[]) noexcept
 {
     boost::asio::ip::address address = GetNetworkAddress(name, MIN_PREFIX_ADDRESS, MAX_PREFIX_ADDRESS, argc, argv);
@@ -1566,7 +1633,7 @@ boost::asio::ip::address PppApplication::GetNetworkAddress(const char* name, int
 
     if (IPEndPoint::IsInvalid(address))
     {
-        if (NULL == default_address_string)
+        if (NULLPTR == default_address_string)
         {
             default_address_string = "";
         }
@@ -1579,6 +1646,7 @@ boost::asio::ip::address PppApplication::GetNetworkAddress(const char* name, int
     }
 }
 
+// Parse DNS server addresses from command line
 void PppApplication::GetDnsAddresses(ppp::vector<boost::asio::ip::address>& addresses, int argc, const char* argv[]) noexcept
 {
 #if defined(_WIN32)
@@ -1599,10 +1667,11 @@ void PppApplication::GetDnsAddresses(ppp::vector<boost::asio::ip::address>& addr
     }
 }
 
+// Parse network interface configuration from command line arguments
 std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, const char* argv[]) noexcept
 {
     std::shared_ptr<NetworkInterface> ni = ppp::make_shared_object<NetworkInterface>();
-    if (NULL != ni)
+    if (NULLPTR != ni)
     {
 #if defined(_WIN32)
         ni->Lwip = ppp::ToBoolean(ppp::GetCommandArgument("--lwip", argc, argv, "y").data());
@@ -1613,7 +1682,7 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
         ni->Nic = ppp::RTrim(ppp::LTrim(ppp::GetCommandArgument("--nic", argc, argv)));
         ni->BlockQUIC = ppp::ToBoolean(ppp::GetCommandArgument("--block-quic", argc, argv).data());
 
-        // Get and set the dns domain name server to be used.
+        // Parse DNS servers
         GetDnsAddresses(ni->DnsAddresses, argc, argv);
         if (!ni->DnsAddresses.empty()) {
             auto dns_servers = ppp::net::asio::vdns::servers;
@@ -1624,16 +1693,17 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
             }
         }
 
+        // Parse network addresses
         ni->Ngw = GetNetworkAddress("--ngw", 0, 32, "0.0.0.0", argc, argv);
         ni->IPAddress = GetNetworkAddress("--tun-ip", 0, 32, "10.0.0.2", argc, argv);
-        ni->SubmaskAddress = GetNetworkAddress("--tun-mask", 16, 32, "255.255.255.252", argc, argv); // IP-ranges: 0 ~ 65535.
+        ni->SubmaskAddress = GetNetworkAddress("--tun-mask", 16, 32, "255.255.255.252", argc, argv);
 
 #if defined(_WIN32)
         // Suggested Ethernet card address setting for TAP-Windows(ndis-5/6) driver.
         ni->GatewayServer = GetNetworkAddress("--tun-gw", 0, 32, "10.0.0.0", argc, argv);
 
         // DHCP-MASQ lease time in seconds.
-        ni->LeaseTimeInSeconds = strtoul(ppp::GetCommandArgument("--tun-lease-time-in-seconds", argc, argv).data(), NULL, 10);
+        ni->LeaseTimeInSeconds = strtoul(ppp::GetCommandArgument("--tun-lease-time-in-seconds", argc, argv).data(), NULLPTR, 10);
         if (ni->LeaseTimeInSeconds < 1)
         {
             ni->LeaseTimeInSeconds = 7200;
@@ -1643,7 +1713,7 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
         ni->GatewayServer = GetNetworkAddress("--tun-gw", 0, 32, "10.0.0.1", argc, argv);
 #endif
 
-        // Enabled the vEthernet bearer network to take over the Layer L2/L3 vEthernet traffic of the entire operating system.
+        // Calculate valid IP address based on gateway and subnet
         ni->IPAddress = Ipep::FixedIPAddress(ni->IPAddress, ni->GatewayServer, ni->SubmaskAddress);
         ni->StaticMode = ppp::ToBoolean(ppp::GetCommandArgument("--tun-static", argc, argv).data());
         ni->HostedNetwork = ppp::ToBoolean(ppp::GetCommandArgument("--tun-host", argc, argv, "y").data());
@@ -1655,8 +1725,11 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
         ni->BypassNgw = GetNetworkAddress("--bypass-ngw", 0, 32, "0.0.0.0", argc, argv);
         ni->Bypass = File::GetFullPath(File::RewritePath(ppp::LTrim(ppp::RTrim(ppp::GetCommandArgument("--bypass", argc, argv, "./ip.txt"))).data()).data());
 
+        // Parse configuration files
         ni->DNSRules = ppp::GetCommandArgument("--dns-rules", argc, argv, "./dns-rules.txt");
         ni->FirewallRules = ppp::GetCommandArgument("--firewall-rules", argc, argv, "./firewall-rules.txt");
+        
+        // Parse MUX settings
         ni->Mux = (uint16_t)std::max<int>(0, atoi(ppp::GetCommandArgument("--tun-mux", argc, argv).data()));
         ni->MuxAcceleration = (uint8_t)std::max<int>(0, atoi(ppp::GetCommandArgument("--tun-mux-acceleration", argc, argv).data()));
         if (ni->MuxAcceleration > PPP_MUX_ACCELERATION_MAX) 
@@ -1671,7 +1744,7 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
         ni->ComponentId = ppp::GetCommandArgument("--tun", argc, argv);
 
 #if defined(_LINUX)
-        // Determine whether to set the control mode of the vEthernet route to compatibility mode.
+        // Enable route compatibility mode if requested
         if (ppp::ToBoolean(ppp::GetCommandArgument("--tun-route", argc, argv).data())) 
         {
             ppp::tap::TapLinux::CompatibleRoute(true);
@@ -1682,6 +1755,7 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
         ni->Ssmt = 0;
         ni->SsmtMQ = false;
 
+        // Parse SSMT configuration
         if (ppp::string ssmt = ppp::GetCommandArgument("--tun-ssmt", argc, argv); !ssmt.empty()) 
         {
             char ssmt_mq_keys[] = { 'm', 'q' };
@@ -1706,10 +1780,11 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
 #endif
 #endif
 
+        // Clean up component ID
         ni->ComponentId = ppp::LTrim<ppp::string>(ni->ComponentId);
         ni->ComponentId = ppp::RTrim<ppp::string>(ni->ComponentId);
 
-        // If no virtual network card name is specified else find the default virtual ethernet network card name.
+        // Find default TAP device if not specified
         if (ni->ComponentId.empty()) 
         {
             ni->ComponentId = ppp::tap::ITap::FindAnyDevice();
@@ -1718,6 +1793,7 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
     return ni;
 }
 
+// Determine if application should run in client or server mode
 bool PppApplication::IsModeClientOrServer(int argc, const char* argv[]) noexcept
 {
     static constexpr const char* keys[] = { "--mode", "--m", "-mode", "-m" };
@@ -1743,27 +1819,30 @@ bool PppApplication::IsModeClientOrServer(int argc, const char* argv[]) noexcept
     return mode_string.empty() ? false : mode_string[0] == 'c';
 }
 
+// Clean up resources
 void PppApplication::Dispose() noexcept
 {
+    // Clean up server
     std::shared_ptr<VirtualEthernetSwitcher> server = std::move(server_);
-    if (NULL != server)
+    if (NULLPTR != server)
     {
         server_.reset();
         server->Dispose();
     }
 
+    // Clean up client
     std::shared_ptr<VEthernetNetworkSwitcher> client = std::move(client_);
-    if (NULL != client)
+    if (NULLPTR != client)
     {
         // Release the local virtual ethernet client switcher.
         client_.reset();
         client->Dispose();
 
 #if defined(_WIN32)
-        // Restore the original QUIC support Settings of the current system.
+        // Restore original QUIC settings
         ppp::net::proxies::HttpProxy::SetSupportExperimentalQuicProtocol(quic_);
 
-        // Clear the proxy configured in the system environment when the VPN client adapter program works.
+        // Clear system proxy settings
         if (network_interface_->SetHttpProxy)
         {
             client->ClearHttpProxyToSystemEnv();
@@ -1774,30 +1853,31 @@ void PppApplication::Dispose() noexcept
     ClearTickAlwaysTimeout();
 }
 
+// Get transmission statistics from current switcher
 bool PppApplication::GetTransmissionStatistics(uint64_t& incoming_traffic, uint64_t& outgoing_traffic, std::shared_ptr<ppp::transmissions::ITransmissionStatistics>& statistics_snapshot) noexcept
 {
     // Initialization requires the initial value of the FAR outgoing parameter.
-    statistics_snapshot = NULL;
+    statistics_snapshot = NULLPTR;
     incoming_traffic = 0;
     outgoing_traffic = 0;
 
-    // The transport layer network statistics are obtained only when the current client switch or server switch is not released.
+    // Get statistics from active switcher
     std::shared_ptr<VirtualEthernetSwitcher> server = server_;
     std::shared_ptr<VEthernetNetworkSwitcher> client = client_;
-    if ((NULL != server && !server->IsDisposed()) || (NULL != client && !client->IsDisposed()))
+    if ((NULLPTR != server && !server->IsDisposed()) || (NULLPTR != client && !client->IsDisposed()))
     {
         // Obtain transport layer traffic statistics from the client switch or server switch management object.
         std::shared_ptr<ppp::transmissions::ITransmissionStatistics> transmission_statistics;
-        if (NULL != client)
+        if (NULLPTR != client)
         {
             transmission_statistics = client->GetStatistics();
         }
-        elif(NULL != server)
+        elif(NULLPTR != server)
         {
             transmission_statistics = server->GetStatistics();
         }
 
-        if (NULL != transmission_statistics)
+        if (NULLPTR != transmission_statistics)
         {
             return ppp::transmissions::ITransmissionStatistics::GetTransmissionStatistics(transmission_statistics, transmission_statistics_, incoming_traffic, outgoing_traffic, statistics_snapshot);
         }
@@ -1806,12 +1886,13 @@ bool PppApplication::GetTransmissionStatistics(uint64_t& incoming_traffic, uint6
     return false;
 }
 
+// Main periodic tick handler
 bool PppApplication::OnTick(uint64_t now) noexcept
 {
     using RouteIPListTablePtr = VEthernetNetworkSwitcher::RouteIPListTablePtr;
     using NetworkState        = VEthernetExchanger::NetworkState;
 
-    // Print the current VPN client or server running status and environment information!
+    // Update console display
     PrintEnvironmentInformation();
 
 #if defined(_WIN32)
@@ -1820,7 +1901,7 @@ bool PppApplication::OnTick(uint64_t now) noexcept
     ppp::win32::Win32Native::OptimizedProcessWorkingSize();
 #endif
 
-    // Process the support flow for setting the auto-restart command line options.
+    // Check auto-restart timer
     if (GLOBAL_.auto_restart > 0)
     {
         int64_t elapsed_milliseconds = stopwatch_.ElapsedMilliseconds() / 1000;
@@ -1830,25 +1911,25 @@ bool PppApplication::OnTick(uint64_t now) noexcept
         }
     }
 
-    // Check whether the current VPN client exists.
+    // Client-specific periodic tasks
     std::shared_ptr<VEthernetNetworkSwitcher> client = client_;
-    if (NULL == client) 
+    if (NULLPTR == client) 
     {
         return false;
     }
 
     // Check whether the current VPN exchanger exists.
     std::shared_ptr<VEthernetExchanger> exchanger = client->GetExchanger(); 
-    if (NULL == exchanger)
+    if (NULLPTR == exchanger)
     {
         return false;
     }
 
-    // Determine the link status of the current VPN network.
+    // Check link status
     NetworkState network_state = exchanger->GetNetworkState();
     if (network_state == NetworkState::NetworkState_Established) 
     {
-        // If the link restart is set, this is used to fix the issue where the VPN cannot continue to work after the physical network card of the VM is disabled and then enabled.
+        // Handle link restart count
         if (GLOBAL_.link_restart > 0) 
         {
             // If the number of link reconnections exceeds a certain number, the program needs to be restarted immediately.
@@ -1863,7 +1944,7 @@ bool PppApplication::OnTick(uint64_t now) noexcept
         return false;
     }
 
-    // The automatic iplist option takes effect only when enabled and automatically attempts to synchronize from apnic once every minute.
+    // Check for IP list updates
     if (now >= GLOBAL_.virr_next)
     {
         // Update the last automatic pull time and decide whether to pull the IP list file based on the en1abled options.
@@ -1874,13 +1955,13 @@ bool PppApplication::OnTick(uint64_t now) noexcept
         }
     }
 
-    // To achieve automatic pulling of the operator routing table, if the operator routing table changes, the routes will be restarted to take effect. This is similar to vBGP.
+    // Check for vBGP updates
     if ((now - GLOBAL_.vbgp_last) / 1000 >= PPP_VBGP_UPDATE_INTERVAL)
     {
         GLOBAL_.vbgp_last = now;
-        if (RouteIPListTablePtr vbgp = client->GetVbgp(); GLOBAL_.vbgp && NULL != vbgp)
+        if (RouteIPListTablePtr vbgp = client->GetVbgp(); GLOBAL_.vbgp && NULLPTR != vbgp)
         {
-            // Loop the border gateway route list in vBGP, which is similar to bgp receiving route hop broadcasts from different line ASNs
+            // Update all vBGP routes
             for (auto&& kv : *vbgp) 
             {
                 // The low-version C/C++ compiler of the OS X platform has source code compilation compatibility.  
@@ -1895,6 +1976,7 @@ bool PppApplication::OnTick(uint64_t now) noexcept
                             return -1;
                         }
                         
+                        // Compare with existing file
                         ppp::set<ppp::string> olds;
                         ppp::string iplist = ppp::LTrim(ppp::RTrim(File::ReadAllText(path.data())));
 
@@ -1918,37 +2000,39 @@ bool PppApplication::OnTick(uint64_t now) noexcept
     return true;
 }
 
+// Start/stop periodic tick timer
 bool PppApplication::NextTickAlwaysTimeout(bool next) noexcept
 {
     std::shared_ptr<boost::asio::io_context> context = Executors::GetDefault();
-    if (NULL == context)
+    if (NULLPTR == context)
     {
         return false;
     }
 
     std::shared_ptr<PppApplication> app = DEFAULT_;
-    if (NULL == app)
+    if (NULLPTR == app)
     {
         return false;
     }
 
     std::shared_ptr<VirtualEthernetSwitcher> server = app->server_;
     std::shared_ptr<VEthernetNetworkSwitcher> client = app->client_;
-    if (NULL == server && NULL == client)
+    if (NULLPTR == server && NULLPTR == client)
     {
         return false;
     }
 
+    // Create periodic timer
     std::shared_ptr<Timer> timeout = Timer::Timeout(context, 1000, 
         [](Timer*) noexcept
         {
             std::shared_ptr<PppApplication> app = DEFAULT_;
-            if (NULL != app)
+            if (NULLPTR != app)
             {
                 app->NextTickAlwaysTimeout(true);
             }
         });
-    if (NULL == timeout)
+    if (NULLPTR == timeout)
     {
         return false;
     }
@@ -1962,40 +2046,47 @@ bool PppApplication::NextTickAlwaysTimeout(bool next) noexcept
     return true;
 }
 
+// Stop periodic tick timer
 void PppApplication::ClearTickAlwaysTimeout() noexcept
 {
     std::shared_ptr<Timer> timeout = std::move(timeout_);
-    if (NULL != timeout)
+    if (NULLPTR != timeout)
     {
         timeout_.reset();
         timeout->Dispose();
     }
 }
 
+// Get server switcher instance
 std::shared_ptr<VirtualEthernetSwitcher> PppApplication::GetServer() noexcept
 {
     return server_;
 }
 
+// Get client switcher instance
 std::shared_ptr<VEthernetNetworkSwitcher> PppApplication::GetClient() noexcept
 {
     return client_;
 }
 
+// Get application singleton instance
 std::shared_ptr<PppApplication> PppApplication::GetDefault() noexcept
 {
     return DEFAULT_;
 }
 
+// Get application configuration
 std::shared_ptr<AppConfiguration> PppApplication::GetConfiguration() noexcept
 {
     return configuration_;
 }
 
+// Load configuration from file
 std::shared_ptr<AppConfiguration> PppApplication::LoadConfiguration(int argc, const char* argv[], ppp::string& path) noexcept
 {
     static constexpr const char* argument_keys[] = { "-c", "--c", "-config", "--config" };
 
+    // Find configuration file from command line
     for (const char* argument_key : argument_keys)
     {
         ppp::string argument_value = ppp::GetCommandArgument(argument_key, argc, argv);
@@ -2018,6 +2109,7 @@ std::shared_ptr<AppConfiguration> PppApplication::LoadConfiguration(int argc, co
         }
     }
 
+    // Try default configuration file locations
     ppp::string configuration_paths[] =
     {
         path,
@@ -2033,7 +2125,7 @@ std::shared_ptr<AppConfiguration> PppApplication::LoadConfiguration(int argc, co
         }
 
         std::shared_ptr<AppConfiguration> configuration = ppp::make_shared_object<AppConfiguration>();
-        if (NULL == configuration)
+        if (NULLPTR == configuration)
         {
             continue;
         }
@@ -2043,6 +2135,7 @@ std::shared_ptr<AppConfiguration> PppApplication::LoadConfiguration(int argc, co
             continue;
         }
 
+        // Initialize buffer allocator if configured
 #if defined(_WIN32)
         if (configuration->vmem.size > 0)
 #else
@@ -2051,7 +2144,7 @@ std::shared_ptr<AppConfiguration> PppApplication::LoadConfiguration(int argc, co
         {
             std::shared_ptr<BufferswapAllocator> allocator = ppp::make_shared_object<BufferswapAllocator>(configuration->vmem.path,
                 std::max<int64_t>((int64_t)1LL << (int64_t)25LL, (int64_t)configuration->vmem.size << (int64_t)20LL));
-            if (NULL != allocator && allocator->IsVaild())
+            if (NULLPTR != allocator && allocator->IsVaild())
             {
                 configuration->SetBufferAllocator(allocator);
             }
@@ -2062,18 +2155,20 @@ std::shared_ptr<AppConfiguration> PppApplication::LoadConfiguration(int argc, co
     }
 
     path.clear();
-    return NULL;
+    return NULLPTR;
 }
 
+// Shutdown application handler
 bool PppApplication::OnShutdownApplication() noexcept 
 {
     return ShutdownApplication(false);
 }
 
+// Trigger application shutdown or restart
 bool PppApplication::ShutdownApplication(bool restart) noexcept 
 {
     std::shared_ptr<boost::asio::io_context> context = Executors::GetDefault();
-    if (NULL == context)
+    if (NULLPTR == context)
     {
         return false;
     }
@@ -2085,7 +2180,7 @@ bool PppApplication::ShutdownApplication(bool restart) noexcept
             {
                 // References to move app application domains.
                 std::shared_ptr<PppApplication> APP = std::move(DEFAULT_);
-                if (NULL == APP)
+                if (NULLPTR == APP)
                 {
                     return false;
                 }
@@ -2097,19 +2192,20 @@ bool PppApplication::ShutdownApplication(bool restart) noexcept
                 DEFAULT_.reset();
                 APP->Dispose();
 
-                // It requires a delay of waiting X seconds before exiting all worker threads, so that the application can close links and virtual network card drivers.
+                // Delay before exit to allow clean shutdown
                 std::shared_ptr<Timer> timeout = Timer::Timeout(context, 1000, 
                     [](Timer*) noexcept
                     {
                         // Exit all the app loops.
                         Executors::Exit();
                     });
-                return NULL != timeout;
+                return NULLPTR != timeout;
             });
         return true;
     }
 }
 
+// Register OS-specific shutdown handlers
 bool PppApplication::AddShutdownApplicationEventHandler() noexcept
 {
 #if defined(_WIN32)
@@ -2119,10 +2215,11 @@ bool PppApplication::AddShutdownApplicationEventHandler() noexcept
 #endif
 }
 
+// Windows-specific TAP driver installation
 #if defined(_WIN32)
 static bool Windows_PreparedEthernetEnvironment(const std::shared_ptr<NetworkInterface>& network_interface) noexcept
 {
-    // If TAP-Windows vEthernet is not installed, you can try deploying the vNIC.
+    // Install TAP-Windows driver if not present
     if (network_interface->ComponentId.empty())
     {
         LOG_INFO("%s", "Installing TAP-Windows driver.");
@@ -2148,6 +2245,7 @@ static bool Windows_PreparedEthernetEnvironment(const std::shared_ptr<NetworkInt
     return true;
 }
 
+// Disable LSP for specific program
 static bool Windows_NoLsp(int argc, const char* argv[]) noexcept
 {
     char key[] = "--no-lsp";
@@ -2196,9 +2294,9 @@ static bool Windows_NoLsp(int argc, const char* argv[]) noexcept
     return true;
 }
 
+// Windows network configuration commands
 static bool Windows_PreferredNetwork(int argc, const char* argv[]) noexcept 
 {
-
     bool ok = false;
     if (ppp::HasCommandArgument("--system-network-preferred-ipv4", argc, argv))
     {
@@ -2222,16 +2320,17 @@ static bool Windows_PreferredNetwork(int argc, const char* argv[]) noexcept
 }
 #endif
 
+// Main application entry point
 int PppApplication::Main(int argc, const char* argv[]) noexcept
 {
-    // Check whether you are running as user Administrator on Linux as user ROOT and on Windows as user administrator.
+    // Require administrator/root privileges
     if (!ppp::IsUserAnAdministrator()) // $ROOT is 0.
     {
         fprintf(stdout, "%s\r\n", "Non-administrators are not allowed to run.");
         return -1;
     }
 
-    // Check if the client mode of the VPN is currently running repeatedly!
+    // Prevent multiple instances
     ppp::string rerun_name = (client_mode_ ? "client://" : "server://") + configuration_path_;
     if (prevent_rerun_.Exists(rerun_name.data()))
     {
@@ -2239,7 +2338,7 @@ int PppApplication::Main(int argc, const char* argv[]) noexcept
         return -1;
     }
 
-    // Create a global mutex lock object that prevents clients from running repeatedly.
+    // Create instance lock
     if (!prevent_rerun_.Open(rerun_name.data()))
     {
         fprintf(stdout, "%s\r\n", "Failed to open the repeat run lock.");
@@ -2247,7 +2346,7 @@ int PppApplication::Main(int argc, const char* argv[]) noexcept
     }
 
 #if defined(_WIN32)
-    // Prepare the Ethernet environment only in client mode.
+    // Windows-specific setup
     if (client_mode_)
     {
         // Prepare the environment for the virtual Ethernet network device card.
@@ -2257,26 +2356,26 @@ int PppApplication::Main(int argc, const char* argv[]) noexcept
         }
     }
 
-    // Fetch quic enable policy status of the windows operating system.  This is used to restore the changed quic policy status when ppp is closed.
+    // Save original QUIC setting
     quic_ = ppp::net::proxies::HttpProxy::IsSupportExperimentalQuicProtocol();
 #endif
 
-    // Prepare the handling for the loopback environment of the virtual Ethernet switch.
+    // Initialize network environment
     if (!PreparedLoopbackEnvironment(network_interface_))
     {
         return -1;
     }
 
-    // Initialize the values of some counters for the app.
+    // Initialize timers and statistics
     stopwatch_.Restart();
     transmission_statistics_.Clear();
 
-    // Setting control function parameter properties for the client's vEthernet switcher adapter.
+    // Configure client if running in client mode
     std::shared_ptr<VEthernetNetworkSwitcher> client = client_;
-    if (NULL != client)
+    if (NULLPTR != client)
     {
 #if defined(_WIN32)
-        // Windows platform manages whether these browsers use the QUIC protocol by setting methods such as Edge/Chrome global policy.
+        // Configure QUIC blocking
         ppp::net::proxies::HttpProxy::SetSupportExperimentalQuicProtocol(!network_interface_->BlockQUIC);
 #endif
 
@@ -2301,7 +2400,7 @@ int PppApplication::Main(int argc, const char* argv[]) noexcept
         }
 #endif
 
-        // Only in client mode can the automatic pull option function be run.
+        // Configure auto-update settings
         GLOBAL_.virr = ppp::HasCommandArgument("--virr", argc, argv);
         if (GLOBAL_.virr) 
         {
@@ -2313,19 +2412,18 @@ int PppApplication::Main(int argc, const char* argv[]) noexcept
         GLOBAL_.vbgp = ppp::ToBoolean(ppp::GetCommandArgument("--vbgp", argc, argv, "y").data());
     }
 
-    // Auto restart the unit is second, the server mode is supported.
+    // Parse restart configuration
     GLOBAL_.auto_restart = std::max<int>(0, atoi(ppp::GetCommandArgument("--auto-restart", argc, argv).data()));
-
-    // Whether to restart is determined by detecting the number of unlimited reconnections of the link.
     GLOBAL_.link_restart = (uint8_t)std::max<int>(0, atoi(ppp::GetCommandArgument("--link-restart", argc, argv).data()));
 
-    // Open and move to the next tick for the continuous timeout handling function
+    // Start periodic updates
     return NextTickAlwaysTimeout(false) ? 0 : -1;
 }
 
+// Application runner function
 static int Run(const std::shared_ptr<PppApplication>& APP, int prepared_status, int argc, const char* argv[]) noexcept
 {
-    // Check whether the cli command to pull the IPList list for a specific locale from the APNIC is executed.
+    // Handle IP list download command
     if (ppp::HasCommandArgument("--pull-iplist", argc, argv))
     {
         APP->PullIPList(ppp::GetCommandArgument("--pull-iplist", argc, argv), false);
@@ -2333,7 +2431,7 @@ static int Run(const std::shared_ptr<PppApplication>& APP, int prepared_status, 
     }
 
 #if defined(_WIN32)
-    // If the current command is to configure the Windows operating system preferred IPV4 or IPV6 network.
+    // Handle Windows-specific commands
     if (Windows_PreferredNetwork(argc, argv))
     {
         return -1;
@@ -2345,7 +2443,7 @@ static int Run(const std::shared_ptr<PppApplication>& APP, int prepared_status, 
         return -1;
     }
 
-    // The operating system network kernel parameter tuning is optimized once by default only on the Windows platform.
+    // Handle network optimization command
     if (ppp::HasCommandArgument("--system-network-optimization", argc, argv))
     {
         ppp::string datetime = chnroutes2_gettime(chnroutes2_gettime());
@@ -2354,34 +2452,35 @@ static int Run(const std::shared_ptr<PppApplication>& APP, int prepared_status, 
     }
 #endif
 
-    // Print help information for vpn command line interfaces!
+    // Show help if arguments invalid
     if (prepared_status != 0)
     {
         APP->PrintHelpInformation();
         return -1;
     }
 
-    // Added shutdown application event handler.
+    // Register shutdown handlers
     PppApplication::AddShutdownApplicationEventHandler();
 
-    // Added control signals for restarting applications on Linux/MacOS X platforms only.
+    // Register restart signal handler on Unix-like systems
 #if SIGRESTART
     signal(SIGRESTART, (decltype(SIG_DFL))&PppApplication::ShutdownApplication);
 #endif
 
+    // Run main application
     return APP->Main(argc, argv);
 }
 
+// Program entry point
 int main(int argc, const char* argv[]) noexcept
 {
-    // If the balanced mode is enabled, the kernel scheduling priority of the thread is set to the normal thread level; otherwise, 
-    // The thread uses the highest priority (approximately equivalent to the real-time thread mode).
+    // Configure real-time mode
     ppp::RT = ppp::ToBoolean(ppp::GetCommandArgument("--rt", argc, argv, "y").data());
     
-    // Global static constructor for PPP PRIVATE NETWORK™ 2. (For OS X platform compatibility.)
+    // Initialize global state
     ppp::global::cctor();
 
-    // Enable io-uring, it is necessary to check the compatible minimum kernel version.
+    // Check io_uring compatibility on Linux
 #if BOOST_ASIO_HAS_IO_URING != 0
     if (!ppp::diagnostics::IfIOUringKernelVersion()) 
     {
@@ -2390,11 +2489,11 @@ int main(int argc, const char* argv[]) noexcept
     }
 #endif
 
-    // Instantiate and construct a vpn application object.
+    // Create application instance
     std::shared_ptr<PppApplication> APP = ppp::make_shared_object<PppApplication>();
     DEFAULT_ = APP;
 
-    // Prepare the environment for the current console command line input parameters.
+    // Prepare environment and run
     int prepared_status = APP->PreparedArgumentEnvironment(argc, argv);
     int result_code = Executors::Run(APP->GetBufferAllocator(), 
         [APP, prepared_status](int argc, const char* argv[]) noexcept -> int
@@ -2409,17 +2508,16 @@ int main(int argc, const char* argv[]) noexcept
             return result_code;
         }, argc, argv);
     
-    // Releasing the application's reference, it triggers the finalize, 
-    // If the finalize is not performed, then there is an engineering structural problem that requires 
-    // A detailed memory and reference correlation analysis to ensure that the established plan can be restored.
+    // Clean up and optionally restart
     APP->Release();
     APP.reset();
     DEFAULT_.reset();
 
-    // When the Restart application flag is set, you need to restart the current application.
+    // Restart application if requested
     if (GLOBAL_.restart)
     {
 #if defined(_WIN32)
+        // Build command line for restart
         ppp::string command_line = "\"" + ppp::string(*argv) + "\"";
         for (int i = 1; i < argc; ++i) 
         {
@@ -2433,12 +2531,14 @@ int main(int argc, const char* argv[]) noexcept
         si.cb = sizeof(si);
         ZeroMemory(&pi, sizeof(pi));
 
-        if (CreateProcessA(NULL, command_line.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+        // Launch new instance
+        if (CreateProcessA(NULLPTR, command_line.data(), NULLPTR, NULLPTR, FALSE, 0, NULLPTR, NULLPTR, &si, &pi))
         {
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
         }
 #else
+        // Unix exec restart
         execvp(*argv, (char**)argv);
 #endif
     }

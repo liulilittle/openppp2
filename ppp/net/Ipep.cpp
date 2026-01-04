@@ -102,7 +102,7 @@ namespace ppp {
         }
 
         boost::asio::ip::udp::udp::endpoint Ipep::ParseEndPoint(const ppp::string& address) noexcept {
-            ppp::string* destinationAddress = NULL;
+            ppp::string* destinationAddress = NULLPTR;
             return Ipep::ParseEndPoint(address, destinationAddress);
         }
 
@@ -127,7 +127,7 @@ namespace ppp {
                 destinationPort = IPEndPoint::MinPort;
             }
 
-            if (NULL != destinationAddress) {
+            if (NULLPTR != destinationAddress) {
                 *destinationAddress = std::move(destinationIP);
             }
 
@@ -140,7 +140,7 @@ namespace ppp {
         }
 
         ppp::string Ipep::ToIpepAddress(const IPEndPoint* ep) noexcept {
-            if (NULL == ep) {
+            if (NULLPTR == ep) {
                 return "0.0.0.0:0";
             }
 
@@ -166,11 +166,11 @@ namespace ppp {
             req.ai_family = AF_UNSPEC;
             req.ai_socktype = SOCK_STREAM;
 
-            if (getaddrinfo(host.data(), NULL, &req, &hints) < 0) {
+            if (getaddrinfo(host.data(), NULLPTR, &req, &hints) < 0) {
                 return IPEndPoint(IPEndPoint::AnyAddress, port);
             }
 
-            for (p = hints; NULL != p; p = p->ai_next) {
+            for (p = hints; NULLPTR != p; p = p->ai_next) {
                 if (p->ai_family == AF_INET) {
                     struct sockaddr_in* ipv4 = (struct sockaddr_in*)p->ai_addr;
                     return IPEndPoint(AddressFamily::InterNetwork,
@@ -178,7 +178,7 @@ namespace ppp {
                 }
             }
 
-            for (p = hints; NULL != p; p = p->ai_next) {
+            for (p = hints; NULLPTR != p; p = p->ai_next) {
                 if (p->ai_family == AF_INET6) {
                     struct sockaddr_in6* ipv6 = (struct sockaddr_in6*)p->ai_addr;
                     return IPEndPoint(AddressFamily::InterNetworkV6,
@@ -208,12 +208,12 @@ namespace ppp {
 
             boost::asio::ip::address address = StringToAddress(host_copy, ec);
             if (ec && resolver) {
-                if (NULL != pcontext) {
+                if (NULLPTR != pcontext) {
                     return Ipep_GetEndPointWithBoost(*pcontext, host_copy, port);
                 }
                 else {
                     std::shared_ptr<boost::asio::io_context> context = ppp::threading::Executors::GetCurrent(false);
-                    if (NULL != context) {
+                    if (NULLPTR != context) {
                         return Ipep_GetEndPointWithBoost(*context, host_copy, port);
                     }
                 }
@@ -234,7 +234,7 @@ namespace ppp {
         }
 
         IPEndPoint Ipep::GetEndPoint(const ppp::string& host, int port, bool resolver) noexcept {
-            boost::asio::io_context* pcontext = NULL;
+            boost::asio::io_context* pcontext = NULLPTR;
             return Ipep_GetEndPoint(pcontext, host, port, resolver);
         }
 
@@ -779,7 +779,7 @@ namespace ppp {
         }
 
         bool Ipep::PacketIsQUIC(const IPEndPoint& destinationEP, Byte* p, int length) noexcept {
-            if (NULL == p || length < 1) {
+            if (NULLPTR == p || length < 1) {
                 return false;
             }
 
@@ -849,7 +849,7 @@ namespace ppp {
         }
 
         bool Ipep::GetAddressByHostName(boost::asio::io_context& context, const ppp::string& hostname, int port, const GetAddressByHostNameCallback& callback) noexcept {
-            if (NULL == callback) {
+            if (NULLPTR == callback) {
                 return false;
             }
 
@@ -870,12 +870,12 @@ namespace ppp {
             }
             elif(ppp::net::asio::vdns::enabled) {
                 auto dns_servers = ppp::net::asio::vdns::servers; 
-                if (NULL != dns_servers && !dns_servers->empty()) {
+                if (NULLPTR != dns_servers && !dns_servers->empty()) {
                     return ppp::net::asio::vdns::ResolveAsync(context, hostname.data(), PPP_RESOLVE_DNS_TIMEOUT, *dns_servers, 
                         [dns_servers, port, callback](const boost::asio::ip::address& ip) noexcept {
                             boost::asio::ip::tcp::endpoint endpoint(ip, port);
                             if (IPEndPoint ip = IPEndPoint::ToEndPoint(endpoint); IPEndPoint::IsInvalid(ip)) {
-                                callback(NULL);
+                                callback(NULLPTR);
                             }
                             else {
                                 callback(&ip);
@@ -885,7 +885,7 @@ namespace ppp {
             }
 
             std::shared_ptr<boost::asio::ip::tcp::resolver> resolver = make_shared_object<boost::asio::ip::tcp::resolver>(context);
-            if (NULL == resolver) {
+            if (NULLPTR == resolver) {
                 return false;
             }
 
@@ -893,13 +893,13 @@ namespace ppp {
             resolver->async_resolve(q,
                 [resolver, callback, port](const boost::system::error_code& ec, const auto& r) noexcept {
                     if (ec) {
-                        callback(NULL);
+                        callback(NULLPTR);
                         return;
                     }
 
                     boost::asio::ip::tcp::endpoint endpoint = ppp::net::asio::internal::GetAddressByHostName<boost::asio::ip::tcp>(r, port);
                     if (IPEndPoint ip = IPEndPoint::ToEndPoint(endpoint); IPEndPoint::IsInvalid(ip)) {
-                        callback(NULL);
+                        callback(NULLPTR);
                     }
                     else {
                         callback(&ip);

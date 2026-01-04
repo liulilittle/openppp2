@@ -70,7 +70,7 @@ namespace ppp
                 StrandPtr&                                                                          strand) noexcept
             {
                 scheduler = ppp::threading::Executors::GetScheduler();
-                if (NULL == scheduler)
+                if (NULLPTR == scheduler)
                 {
                     return false;
                 }
@@ -89,13 +89,13 @@ namespace ppp
                 }
 
                 strand = make_shared_object<Strand>(boost::asio::make_strand(*scheduler));
-                if (NULL == strand)
+                if (NULLPTR == strand)
                 {
                     return false;
                 }
 
                 socket_new = make_shared_object<TSocket>(*strand);
-                if (NULL == socket_new)
+                if (NULLPTR == socket_new)
                 {
                     return false;
                 }

@@ -31,8 +31,8 @@ namespace ppp
         	LinkedList() noexcept
         	{
         		this->m_count = 0;
-        		this->m_first = NULL;
-        		this->m_last = NULL;
+        		this->m_first = NULLPTR;
+        		this->m_last = NULLPTR;
         	}
 			~LinkedList() noexcept
 			{
@@ -82,16 +82,16 @@ namespace ppp
         template <typename T>
         inline bool LinkedList<T>::AddFirst(std::shared_ptr<LinkedListNode<T> > value) noexcept
         {
-        	if (value == NULL)
+        	if (value == NULLPTR)
         	{
         		return false;
         	}
 
-        	value->LinkedList_ = NULL;
-        	value->Next = NULL;
-        	value->Previous = NULL;
+        	value->LinkedList_ = NULLPTR;
+        	value->Next = NULLPTR;
+        	value->Previous = NULLPTR;
 
-        	if (this->m_last == NULL)
+        	if (this->m_last == NULLPTR)
         	{
         		this->m_last = value;
         		this->m_first = value;
@@ -113,16 +113,16 @@ namespace ppp
         template <typename T>
         inline bool LinkedList<T>::AddLast(std::shared_ptr<LinkedListNode<T> > node) noexcept
         {
-        	if (node == NULL)
+        	if (node == NULLPTR)
         	{
         		return false;
         	}
 
-        	node->LinkedList_ = NULL;
-        	node->Next = NULL;
-        	node->Previous = NULL;
+        	node->LinkedList_ = NULLPTR;
+        	node->Next = NULLPTR;
+        	node->Previous = NULLPTR;
 
-        	if (this->m_last == NULL)
+        	if (this->m_last == NULLPTR)
         	{
         		this->m_first = node;
         		this->m_last = node;
@@ -141,18 +141,18 @@ namespace ppp
         template <typename T>
         inline bool LinkedList<T>::AddAfter(std::shared_ptr<LinkedListNode<T> > node, std::shared_ptr<LinkedListNode<T> > value) noexcept
         {
-        	if (node == NULL || value == NULL)
+        	if (node == NULLPTR || value == NULLPTR)
         	{
         		return false;
         	}
 
-        	value->LinkedList_ = NULL;
-        	value->Next = NULL;
-        	value->Previous = NULL;
+        	value->LinkedList_ = NULLPTR;
+        	value->Next = NULLPTR;
+        	value->Previous = NULLPTR;
 
         	std::shared_ptr<LinkedListNode<T> > current = node->Next;
         	node->Next = value;
-        	if (current != NULL)
+        	if (current != NULLPTR)
         	{
         		current->Previous = value;
         	}
@@ -172,17 +172,17 @@ namespace ppp
         template <typename T>
         inline bool LinkedList<T>::AddBefore(std::shared_ptr<LinkedListNode<T> > node, std::shared_ptr<LinkedListNode<T> > value) noexcept
         {
-        	if (node == NULL || value == NULL)
+        	if (node == NULLPTR || value == NULLPTR)
         	{
         		return false;
         	}
 
-        	value->LinkedList_ = NULL;
-        	value->Next = NULL;
-        	value->Previous = NULL;
+        	value->LinkedList_ = NULLPTR;
+        	value->Next = NULLPTR;
+        	value->Previous = NULLPTR;
 
         	LinkedListNode<T> current = node->Previous;
-        	if (current == NULL)
+        	if (current == NULLPTR)
         	{
         		return this->AddFirst(value);
         	}
@@ -205,27 +205,27 @@ namespace ppp
         inline bool LinkedList<T>::RemoveFirst() noexcept
         {
         	std::shared_ptr<LinkedListNode<T> > first = this->m_first;
-        	if (first == NULL)
+        	if (first == NULLPTR)
         	{
         		return false;
         	}
 
         	std::shared_ptr<LinkedListNode<T> > current = first->Next;
-        	first->Previous = NULL;
-        	first->LinkedList_ = NULL;
-        	first->Next = NULL;
-        	if (current != NULL)
+        	first->Previous = NULLPTR;
+        	first->LinkedList_ = NULLPTR;
+        	first->Next = NULLPTR;
+        	if (current != NULLPTR)
         	{
-        		current->Previous = NULL;
+        		current->Previous = NULLPTR;
         	}
 
         	this->m_count--;
         	if (this->m_count <= 0)
         	{
         		this->m_count = 0;
-        		this->m_first = NULL;
-        		this->m_last = NULL;
-        		current = NULL;
+        		this->m_first = NULLPTR;
+        		this->m_last = NULLPTR;
+        		current = NULLPTR;
         	}
 
         	this->m_first = current;
@@ -236,27 +236,27 @@ namespace ppp
         inline bool LinkedList<T>::RemoveLast() noexcept
         {
         	std::shared_ptr<LinkedListNode<T> > last = this->m_last;
-        	if (last == NULL)
+        	if (last == NULLPTR)
         	{
         		return false;
         	}
 
         	std::shared_ptr<LinkedListNode<T> > current = last->Previous;
-        	last->Previous = NULL;
-        	last->LinkedList_ = NULL;
-        	last->Next = NULL;
-        	if (current != NULL)
+        	last->Previous = NULLPTR;
+        	last->LinkedList_ = NULLPTR;
+        	last->Next = NULLPTR;
+        	if (current != NULLPTR)
         	{
-        		current->Next = NULL;
+        		current->Next = NULLPTR;
         	}
 
         	this->m_count--;
         	if (this->m_count <= 0)
         	{
         		this->m_count = 0;
-        		this->m_first = NULL;
-        		this->m_last = NULL;
-        		current = NULL;
+        		this->m_first = NULLPTR;
+        		this->m_last = NULLPTR;
+        		current = NULLPTR;
         	}
 
         	this->m_last = current;
@@ -266,7 +266,7 @@ namespace ppp
         template <typename T>
         inline bool LinkedList<T>::Remove(std::shared_ptr<LinkedListNode<T> > node) noexcept
         {
-        	if (node == NULL)
+        	if (node == NULLPTR)
         	{
         		return false;
         	}
@@ -290,13 +290,13 @@ namespace ppp
         	if (this->m_count <= 0)
         	{
         		this->m_count = 0;
-        		this->m_first = NULL;
-        		this->m_last = NULL;
+        		this->m_first = NULLPTR;
+        		this->m_last = NULLPTR;
         	}
 
-        	node->Next = NULL;
-        	node->Previous = NULL;
-        	node->LinkedList_ = NULL;
+        	node->Next = NULLPTR;
+        	node->Previous = NULLPTR;
+        	node->LinkedList_ = NULLPTR;
         	return true;
         }
 
@@ -304,7 +304,7 @@ namespace ppp
         inline std::shared_ptr<LinkedListNode<T> > LinkedList<T>::Find(T value) noexcept
         {
         	std::shared_ptr<LinkedListNode<T> > i = this->m_first;
-        	while (i != NULL)
+        	while (i != NULLPTR)
         	{
         		if (i->Value == value)
         		{
@@ -315,27 +315,27 @@ namespace ppp
         		    i = i->Next;
                 }
         	}
-        	return NULL;
+        	return NULLPTR;
         }
 
         template <typename T>
         inline void LinkedList<T>::Clear() noexcept
         {
         	std::shared_ptr<LinkedListNode<T> > i = this->m_first;
-        	while (i != NULL)
+        	while (i != NULLPTR)
         	{
         		std::shared_ptr<LinkedListNode<T> > j = i->Next;
         		{
-        			i->LinkedList_ = NULL;
-        			i->Next = NULL;
-        			i->Previous = NULL;
+        			i->LinkedList_ = NULLPTR;
+        			i->Next = NULLPTR;
+        			i->Previous = NULLPTR;
         		}
         		i = j;
         	}
 
-        	this->m_first = NULL;
+        	this->m_first = NULLPTR;
         	this->m_count = 0;
-        	this->m_last = NULL;
+        	this->m_last = NULLPTR;
         }
     }
 }

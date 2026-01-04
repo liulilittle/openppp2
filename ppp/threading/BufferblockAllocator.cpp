@@ -26,9 +26,9 @@ namespace ppp
         BufferblockAllocator::BufferblockAllocator(const ppp::string& path, uint32_t memory_size, uint32_t page_size) noexcept
             : path_(path)
             , page_size_(0)
-            , buddy_(NULL)
-            , memory_start_(NULL)
-            , memory_maxof_(NULL)
+            , buddy_(NULLPTR)
+            , memory_start_(NULLPTR)
+            , memory_maxof_(NULLPTR)
         {
             // The page size cannot be less than 16 bytes, otherwise the page size of the operating system is obtained.
             if (page_size < PPP_MEMORY_ALIGNMENT_SIZE)
@@ -41,14 +41,14 @@ namespace ppp
             memory_size = (uint32_t)Malign<int64_t>(memory_size, (page_size_ = page_size)); // For byte size alignment by page size, the memory size of the request file map must be a power of two.
 
             // An attempt is made to open a file mapping, but success is not guaranteed.
-            void* buddy_arena = NULL;
+            void* buddy_arena = NULLPTR;
             if (memory_size > 0)
             {
 #if defined(_WIN32)
                 // Windows directly calls the system interface to allocate virtual memory, no longer through the MMF technology to 
                 // Allocate virtual memory, MMF technology to allocate virtual memory, exit the program will be stuck for a long time.
-                memory_start_ = (char*)VirtualAlloc(NULL, memory_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-                if (NULL != memory_start_)
+                memory_start_ = (char*)VirtualAlloc(NULLPTR, memory_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                if (NULLPTR != memory_start_)
                 {
                     buddy_arena = memory_start_;
                     memory_maxof_ = (char*)buddy_arena + memory_size;
@@ -80,7 +80,7 @@ namespace ppp
                             // Swap the currently open file map and map area objects into the managed resource variables held by the object.
                             bip_mapping_file = make_shared_object<boost::interprocess::file_mapping>();
                             bip_mapped_region = make_shared_object<boost::interprocess::mapped_region>();
-                            if (NULL != bip_mapping_file && NULL != bip_mapped_region)
+                            if (NULLPTR != bip_mapping_file && NULLPTR != bip_mapped_region)
                             {
                                 bip_mapping_file->swap(mapping_file);
                                 bip_mapped_region->swap(mapped_region);
@@ -93,7 +93,7 @@ namespace ppp
                     }
 
                     // When the file map is open and mapped to the memory address space of the process.
-                    if (NULL != bip_mapping_file && NULL != bip_mapped_region)
+                    if (NULLPTR != bip_mapping_file && NULLPTR != bip_mapped_region)
                     {
                         bip_mapping_file_ = bip_mapping_file;
                         bip_mapped_region_ = bip_mapped_region;
@@ -103,11 +103,11 @@ namespace ppp
 #endif
             }
 
-            if (NULL != buddy_arena)
+            if (NULLPTR != buddy_arena)
             {
                 /* You need space for arena and builtin metadata */
                 struct buddy* buddy = buddy_embed((unsigned char*)buddy_arena, memory_size);
-                if (NULL != buddy)
+                if (NULLPTR != buddy)
                 {
                     buddy_ = buddy; /* buddy_init(buddy_metadata, buddy_arena, arena_size); */
                 }
@@ -134,16 +134,16 @@ namespace ppp
 #if defined(_WIN32)
             if (VirtualFree(memory_start_, 0, MEM_RELEASE))
             {
-                memory_start_ = NULL;
-                memory_maxof_ = NULL;
+                memory_start_ = NULLPTR;
+                memory_maxof_ = NULLPTR;
             }
 #else
-            bip_mapped_region_ = NULL;
-            bip_mapping_file_ = NULL;
+            bip_mapped_region_ = NULLPTR;
+            bip_mapping_file_ = NULLPTR;
 #endif
-            buddy_ = NULL;
-            memory_start_ = NULL;
-            memory_maxof_ = NULL;
+            buddy_ = NULLPTR;
+            memory_start_ = NULLPTR;
+            memory_maxof_ = NULLPTR;
 
 #if !defined(_WIN32)
             ppp::io::File::Delete(path_.data());
@@ -152,12 +152,12 @@ namespace ppp
 
         bool BufferblockAllocator::IsVaild() noexcept
         {
-            return NULL != buddy_;
+            return NULLPTR != buddy_;
         }
 
         bool BufferblockAllocator::IsInBlock(const void* allocated_memory) noexcept
         {
-            if (NULL == buddy_ || NULL == allocated_memory)
+            if (NULLPTR == buddy_ || NULLPTR == allocated_memory)
             {
                 return false;
             }
@@ -191,7 +191,7 @@ namespace ppp
         {
             SynchronizedObjectScope scope(syncobj_);
             struct buddy* buddy = reinterpret_cast<struct buddy*>(buddy_);
-            if (NULL == buddy)
+            if (NULLPTR == buddy)
             {
                 return 0;
             }
@@ -201,7 +201,7 @@ namespace ppp
 
         bool BufferblockAllocator::Free(const void* allocated_memory) noexcept
         {
-            if (NULL == allocated_memory)
+            if (NULLPTR == allocated_memory)
             {
                 return false;
             }
@@ -213,7 +213,7 @@ namespace ppp
 
             SynchronizedObjectScope scope(syncobj_);
             struct buddy* buddy = reinterpret_cast<struct buddy*>(buddy_);
-            if (NULL == buddy)
+            if (NULLPTR == buddy)
             {
                 return false;
             }
@@ -227,14 +227,14 @@ namespace ppp
         {
             if (allocated_size == 0)
             {
-                return NULL;
+                return NULLPTR;
             }
 
             SynchronizedObjectScope scope(syncobj_);
             struct buddy* buddy = reinterpret_cast<struct buddy*>(buddy_);
-            if (NULL == buddy)
+            if (NULLPTR == buddy)
             {
-                return NULL;
+                return NULLPTR;
             }
             else
             {

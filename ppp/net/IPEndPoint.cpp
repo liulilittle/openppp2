@@ -24,7 +24,7 @@ namespace ppp {
             : _AddressFamily(AddressFamily::InterNetwork)
             , Port(port) {
             
-            if (NULL == address || *address == '\x0') {
+            if (NULLPTR == address || *address == '\x0') {
                 this->_AddressFamily = AddressFamily::InterNetwork;
                 *(UInt32*)this->_AddressBytes = IPEndPoint::NoneAddress;
             }
@@ -59,7 +59,7 @@ namespace ppp {
             }
 
             memset(this->_AddressBytes, 0, limit_size);
-            if (NULL != address_bytes && address_size > 0) {
+            if (NULLPTR != address_bytes && address_size > 0) {
                 memcpy(this->_AddressBytes, address_bytes, std::min<int>(address_size, limit_size));
             }
             

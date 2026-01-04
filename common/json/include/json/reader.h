@@ -254,7 +254,7 @@ public:
    *                      document to read. Must be >= beginDoc.
    * \param[out] root     Contains the root value of the document if it was
    *                      successfully parsed.
-   * \param[out] errs     Formatted error messages (if not NULL) a user
+   * \param[out] errs     Formatted error messages (if not NULLPTR) a user
    *                      friendly string that lists errors in the parsed
    *                      document.
    * \return \c true if the document was successfully parsed, \c false if an
@@ -348,13 +348,13 @@ public:
   Value& operator[](const String& key);
 
   /** Called by ctor, but you can use this to reset settings_.
-   * \pre 'settings' != NULL (but Json::null is fine)
+   * \pre 'settings' != NULLPTR (but Json::null is fine)
    * \remark Defaults:
    * \snippet src/lib_json/json_reader.cpp CharReaderBuilderDefaults
    */
   static void setDefaults(Json::Value* settings);
   /** Same as old Features::strictMode().
-   * \pre 'settings' != NULL (but Json::null is fine)
+   * \pre 'settings' != NULLPTR (but Json::null is fine)
    * \remark Defaults:
    * \snippet src/lib_json/json_reader.cpp CharReaderBuilderStrictMode
    */
