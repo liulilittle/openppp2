@@ -905,7 +905,7 @@ The value of `udp.static.aggligator` determines the operating mode:
 |------------|--------|--------------|---------|
 | `--mode` | `server` | Operation mode | Run as server, receive and forward data |
 | `--flash` | `yes` | QoS control | Enable advanced QoS policies |
-| `--congestions` | `1024` | Window size | Max congestion window, 1024 UDP packets<br>- Memory usage ≈ 1024 × MTU(1500 bytes) ≈ 1.5MB<br>- Recommended: 512-2048 per core |
+| `--congestions` | `1024` | Window size | Max congestion window, 1024 UDP packets<br>- Memory usage ≈ 1024 × MTU(1500 bytes) ≈ 1.5MB |
 | `--bind` | `10000,10001` | Listening ports | Local listening ports (comma-separated)<br>- Receive data on these ports<br>- Support load balancing over multiple ports |
 | `--host` | `192.168.0.24:7000` | Forward target | Final forwarding target<br>- Must be UDP service<br>- Format: `IP:port` or `domain:port` |
 

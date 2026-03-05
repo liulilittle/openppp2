@@ -274,39 +274,55 @@ namespace ppp {
     }
 
     bool HasCommandArgument(const char* name, int argc, const char** argv) noexcept {
-        if (NULLPTR == name || *name == '\x0') {
+        if (NULLPTR == name || *name == '\0') {
             return false;
         }
 
-        ppp::string commandText = ppp::GetCommandArgument(argc, argv);
-        if (commandText.empty()) {
+        if (argc <= 1) {
             return false;
         }
 
-        auto fx = 
-            [](ppp::string& commandText, const ppp::string& name) noexcept -> bool {
-                std::size_t index = commandText.find(name);
-                if (index == ppp::string::npos) {
-                    return false;
+        ppp::string line = ppp::GetCommandArgument(argc, argv);;
+        if (line.empty()) {
+            return false;
+        }
+
+        const size_t name_len = strlen(name);
+        bool in_double_quote = false;
+        bool in_single_quote = false;
+        size_t start = 0;
+
+        for (size_t i = 0; i <= line.size(); ++i) {
+            char c = (i < line.size()) ? line[i] : ' ';
+            if (c == '"' && !in_single_quote) {
+                in_double_quote = !in_double_quote;
+                continue;
+            }
+
+            if (c == '\'' && !in_double_quote) {
+                in_single_quote = !in_single_quote;
+                continue;
+            }
+
+            if (c == ' ' && !in_double_quote && !in_single_quote) {
+                if (i > start) {
+                    size_t token_len = i - start;
+                    if (token_len >= name_len &&
+                        memcmp(line.data() + start, name, name_len) == 0) {
+
+                        if (token_len == name_len) {
+                            return true;
+                        }
+                        else if (line[start + name_len] == '=') {
+                            return true;
+                        }
+                    }
                 }
 
-                if (index == 0) {
-                    return true;
-                }
-
-                char ch = commandText[index - 1];
-                if (ch == ' ') {
-                    return true;
-                }
-                else {
-                    return false;
-                }
-            };
-
-        bool result = false;
-        result = result || fx(commandText, name + ppp::string("="));
-        result = result || fx(commandText, name + ppp::string(" "));
-        return result;
+                start = i + 1;
+            }
+        }
+        return false;
     }
 
     ppp::string GetCommandArgument(int argc, const char** argv) noexcept {
@@ -323,72 +339,90 @@ namespace ppp {
         return line;
     }
 
+    static ppp::string unquote(const char* data, size_t len) noexcept {
+        if (len < 2) {
+            return ppp::string(data, len);
+        }
+
+        if (data[0] == '"' && data[len - 1] == '"') {
+            return ppp::string(data + 1, len - 2);
+        }
+
+        if (data[0] == '\'' && data[len - 1] == '\'') {
+            return ppp::string(data + 1, len - 2);
+        }
+
+        return ppp::string(data, len);
+    }
+
     ppp::string GetCommandArgument(const char* name, int argc, const char** argv) noexcept {
         if (NULLPTR == name || argc <= 1) {
             return "";
         }
-
-        ppp::string key1 = name;
-        if (key1.empty()) {
-            return "";
-        }
-
-        ppp::string key2 = key1 + " ";
-        key1.append("=");
 
         ppp::string line = GetCommandArgument(argc, argv);
         if (line.empty()) {
             return "";
         }
 
-        ppp::string* key = addressof(key1);
-        std::size_t L = line.find(*key);
-        if (L == ppp::string::npos) {
-            key = addressof(key2);
-            L = line.find(*key);
-            if (L == ppp::string::npos) {
-                return "";
-            }
+        const size_t line_len = line.size();
+        const size_t name_len = strlen(name);
+        if (name_len == 0) {
+            return "";
         }
 
-        if (L) {
-            char ch = line[L - 1];
-            if (ch != ' ') {
-                return "";
-            }
-        }
+        bool in_double_quote = false;
+        bool in_single_quote = false;
+        size_t start = 0;
+        bool waiting_for_value = false;
 
-        ppp::string cmd;
-        std::size_t M = L + key->size();
-        std::size_t R = line.find(' ', L);
-        if (M >= R) {
-            R = ppp::string::npos;
-            for (std::size_t I = M, SZ = line.size(); I < SZ; I++) {
-                int ch = line[I];
-                if (ch == ' ') {
-                    R = I;
-                    L = M;
-                    break;
+        for (size_t i = 0; i <= line_len; ++i) {
+            char c = (i < line_len) ? line[i] : ' ';
+            if (c == '"' && !in_single_quote) {
+                in_double_quote = !in_double_quote;
+                continue;
+            }
+
+            if (c == '\'' && !in_double_quote) {
+                in_single_quote = !in_single_quote;
+                continue;
+            }
+
+            if (c == ' ' && !in_double_quote && !in_single_quote) {
+                if (i > start) {
+                    const char* token = line.data() + start;
+                    size_t token_len = i - start;
+
+                    if (waiting_for_value) {
+                        if (token_len > 0) {
+                            return unquote(token, token_len);
+                        }
+
+                        waiting_for_value = false;
+                    }
+
+                    if (token_len >= name_len) {
+                        if (memcmp(token, name, name_len) == 0) {
+                            if (token_len == name_len) {
+                                waiting_for_value = true;
+                            }
+                            else if (token_len > name_len && token[name_len] == '=') {
+                                size_t value_start = name_len + 1;
+                                if (value_start < token_len) {
+                                    return unquote(token + value_start, token_len - value_start);
+                                }
+
+                                return "";
+                            }
+                        }
+                    }
                 }
-            }
 
-            if (!L || L == ppp::string::npos) {
-                return "";
+                start = i + 1;
             }
         }
 
-        if (R == ppp::string::npos) {
-            if (M != line.size()) {
-                cmd = line.substr(M);
-            }
-        }
-        else {
-            int S = (int)(R - M);
-            if (S > 0) {
-                cmd = line.substr(M, S);
-            }
-        }
-        return cmd;
+        return "";
     }
 
     ppp::string GetFullExecutionFilePath() noexcept {

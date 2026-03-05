@@ -1279,7 +1279,7 @@ void PppApplication::PrintHelpInformation() noexcept
     printf("│ %-*s │ %-*s │ %-*s │\n", 
         col_option_width, "--tun-flash=[yes|no]", 
         col_description_width, "Enable advanced QoS policy", 
-        col_default_width, "disabled");
+        col_default_width, "no");
     
     printf("│ %-*s │ %-*s │ %-*s │\n", 
         col_option_width, "--auto-restart=<seconds>", 
@@ -1421,7 +1421,7 @@ void PppApplication::PrintHelpInformation() noexcept
     printf("│ %-*s │ %-*s │ %-*s │\n", 
         col_option_width, "--tun-ssmt=<threads>", 
         col_description_width, "SSMT thread optimization", 
-        col_default_width, "4");
+        col_default_width, "0");
 #elif defined(_LINUX)
     printf("│ %-*s │ %-*s │ %-*s │\n", 
         col_option_width, "--tun-ssmt=<N>[/<mode>]", 
