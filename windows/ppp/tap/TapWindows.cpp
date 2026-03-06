@@ -169,9 +169,11 @@ namespace ppp
             }
 
             bool ok = ConfigureDriver_SetNetifUp(tun, true) &&
-                ConfigureDriver_SetNetifTunMode(tun, ip, gw, mask) &&
+                (ConfigureDriver_SetTunModeWithAddress(tun, ip, gw, mask) || 
+                    ConfigureDriver_SetTunModeWithAddress(tun, ip, (ip & mask), mask)) &&
                 ConfigureDriver_SetDhcpMASQ(tun, ip, gw, mask, lease_time_in_seconds) &&
                 ConfigureDriver_SetDhcpOptionData(tun, ip, mask, gw, gw, dns_addresses);
+
             if (!ok)
             {
                 CloseHandle(tun);
@@ -303,17 +305,37 @@ namespace ppp
             return ppp::win32::Win32Native::DeviceIoControl(handle, TAP_WIN_IOCTL_CONFIG_DHCP_MASQ, dhcp, sizeof(dhcp));
         }
 
-        bool TapWindows::ConfigureDriver_SetNetifTunMode(const void* handle, uint32_t ip, uint32_t gw, uint32_t mask) noexcept
+        // Configures TAP-Windows driver for TUN mode operation (NOT TAP mode).
+        // CRITICAL: In TUN mode, the driver requires the "gateway" parameter to be the NETWORK ADDRESS (ip & mask),
+        // NOT the actual gateway IP (e.g., 10.0.0.1). This serves as the TUN interface's peer address per driver specification.
+        //
+        // Why this is necessary:
+        //   - TAP-Windows driver in TUN mode expects network address (e.g., 10.0.0.0 for 10.0.0.0/24) as the peer endpoint
+        //   - Actual gateway configuration is handled separately by SetAddresses():
+        //        * hosted_network mode: Sets OS interface gateway to intended gw (e.g., 10.0.0.1)
+        //        * non-hosted_network mode: Sets gateway to 0.0.0.0 (no gateway)
+        //   - This separation resolves the historical inconsistency:
+        //        * Driver layer: Uses network address (required by TAP-Windows TUN implementation)
+        //        * OS network layer: Uses standard gateway (10.0.0.1) for cross-platform consistency
+        //        * Other platforms (Linux/Unix): Configure gateway directly at OS layer without driver quirks
+        //
+        // Parameter note:
+        //   gw MUST be (ip & mask) - passing actual gateway IP here will break TUN mode operation.
+        //   See Create() implementation: ConfigureDriver_SetTunModeWithAddress(tun, ip, (ip & mask), mask)
+        //
+        // This function is essential for TUN mode initialization on Windows and MUST be called
+        // with correctly computed network address. Do not confuse with OS-level gateway configuration.
+        bool TapWindows::ConfigureDriver_SetTunModeWithAddress(const void* handle, uint32_t ip, uint32_t gw, uint32_t mask) noexcept
         {
             if (NULLPTR == handle || handle == INVALID_HANDLE_VALUE)
             {
                 return false;
             }
 
-            uint32_t address[3] = 
+            uint32_t address[3] =
             {
                 ip,
-                gw,
+                gw,      // MUST be network address (ip & mask), NOT actual gateway
                 mask,
             };
             return ppp::win32::Win32Native::DeviceIoControl(handle, TAP_WIN_IOCTL_CONFIG_TUN, address, sizeof(address));

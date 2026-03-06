@@ -34,7 +34,7 @@ namespace ppp
         private:
             static void*                            OpenDriver(const ppp::string& componentId) noexcept;
             static bool                             ConfigureDriver_SetDhcpMASQ(const void* handle, uint32_t ip, uint32_t gw, uint32_t mask, uint32_t lease_time_in_seconds) noexcept;
-            static bool                             ConfigureDriver_SetNetifTunMode(const void* handle, uint32_t ip, uint32_t gw, uint32_t mask) noexcept;
+            static bool                             ConfigureDriver_SetTunModeWithAddress(const void* handle, uint32_t ip, uint32_t gw, uint32_t mask) noexcept;
             static bool                             ConfigureDriver_SetNetifUp(const void* handle, bool up) noexcept;
             static bool                             ConfigureDriver_SetDhcpOptionData(const void* handle, uint32_t ip, uint32_t gw, uint32_t mask, uint32_t dhcp, const ppp::vector<uint32_t>& dns_addresses) noexcept;
         };

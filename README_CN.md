@@ -295,7 +295,7 @@
 |------|------|------|:------:|
 | `--tun` | 网卡名称 | `--tun <名称>` | [平台相关](#network-card-name-default-guide) |
 | `--tun-ip` | IP地址 | `--tun-ip <IP>` | `10.0.0.2` |
-| `--tun-gw` | 网关地址 | `--tun-gw <IP>` | [平台相关](#network-card-gateway-address-default-guide) |
+| `--tun-gw` | 网关地址 | `--tun-gw <IP>` | `10.0.0.1` |
 | `--tun-mask` | 子网掩码 | `--tun-mask <位数>` | `30` |
 | `--tun-host` | 首选网络 | `--tun-host=[yes｜no]` | `yes` |
 
@@ -361,16 +361,6 @@
 | Windows | `PPP` |
 | Linux | `ppp` |
 | macOS | `utun0` |
-
-<a id="network-card-gateway-address-default-guide"></a>
-
-### <img src="https://icons.veryicon.com/png/o/business/icons-related-to-operation-and-maintenance/cloud-gateway.png" width="20" height="20"> 虚拟网关服务器默认值
-
-| 平台    | 默认值        | 规则             |
-|---------|--------------|------------------|
-| Windows | `10.0.0.0`   | (IP & MASK)      |
-| Linux   | `10.0.0.1`   | (IP & MASK) + 1  |
-| macOS   | `10.0.0.1`   | (IP & MASK) + 1  |
 
 <a id="ssmt-threading-optimize-mode-guide"></a>
 

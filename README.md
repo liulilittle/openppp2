@@ -295,7 +295,7 @@ Next-generation security network access technology, providing high-performance V
 |---------|----------|--------|---------|
 | `--tun` | Network card name | `--tun <name>` | [Platform related](#network-card-name-default-guide) |
 | `--tun-ip` | IP address | `--tun-ip <IP>` | `10.0.0.2` |
-| `--tun-gw` | Gateway address | `--tun-gw <IP>` | [Platform related](#network-card-gateway-address-default-guide) |
+| `--tun-gw` | Gateway address | `--tun-gw <IP>` | `10.0.0.1` |
 | `--tun-mask` | Subnet mask | `--tun-mask <bits>` | `30` |
 | `--tun-mask` | Preferred network | `--tun-host=[yes｜no]` | `yes` |
 
@@ -361,15 +361,6 @@ Next-generation security network access technology, providing high-performance V
 | Windows | `PPP` |
 | Linux | `ppp` |
 | macOS | `utun0` |
-
-<a id="network-card-gateway-address-default-guide"></a>
-
-### <img src="https://icons.veryicon.com/png/o/business/icons-related-to-operation-and-maintenance/cloud-gateway.png" width="20" height="20"> Virtual Gateway Server Default Values
-| Platform | Default Value | Rules                     |
-|----------|----------------|---------------------------|
-| Windows  | `10.0.0.0`     | (IP & MASK)               |
-| Linux    | `10.0.0.1`     | (IP & MASK) + 1           |
-| macOS    | `10.0.0.1`     | (IP & MASK) + 1           |
 
 <a id="ssmt-threading-optimize-mode-guide"></a>
 

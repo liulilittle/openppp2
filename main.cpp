@@ -1367,18 +1367,11 @@ void PppApplication::PrintHelpInformation() noexcept
         col_option_width, "--tun-ip=<ip>", 
         col_description_width, "Virtual adapter IP address", 
         col_default_width, "10.0.0.2");
-    
-    ppp::string default_tun_gw;
-#if defined(_WIN32)
-    default_tun_gw = "10.0.0.0";
-#else
-    default_tun_gw = "10.0.0.1";
-#endif
-    
+
     printf("│ %-*s │ %-*s │ %-*s │\n", 
         col_option_width, "--tun-gw=<ip>", 
         col_description_width, "Virtual adapter gateway", 
-        col_default_width, default_tun_gw.c_str());
+        col_default_width, "10.0.0.1");
     
     printf("│ %-*s │ %-*s │ %-*s │\n", 
         col_option_width, "--tun-mask=<bits>", 
@@ -1698,19 +1691,16 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
         ni->IPAddress = GetNetworkAddress("--tun-ip", 0, 32, "10.0.0.2", argc, argv);
         ni->SubmaskAddress = GetNetworkAddress("--tun-mask", 16, 32, "255.255.255.252", argc, argv);
 
-#if defined(_WIN32)
-        // Suggested Ethernet card address setting for TAP-Windows(ndis-5/6) driver.
-        ni->GatewayServer = GetNetworkAddress("--tun-gw", 0, 32, "10.0.0.0", argc, argv);
+        // Suggested Ethernet card address setting.
+        ni->GatewayServer = GetNetworkAddress("--tun-gw", 0, 32, "10.0.0.1", argc, argv);
 
+#if defined(_WIN32)
         // DHCP-MASQ lease time in seconds.
         ni->LeaseTimeInSeconds = strtoul(ppp::GetCommandArgument("--tun-lease-time-in-seconds", argc, argv).data(), NULLPTR, 10);
         if (ni->LeaseTimeInSeconds < 1)
         {
             ni->LeaseTimeInSeconds = 7200;
         }
-#else
-        // Suggested Ethernet card address setting for Linux or unix tun/tap driver.
-        ni->GatewayServer = GetNetworkAddress("--tun-gw", 0, 32, "10.0.0.1", argc, argv);
 #endif
 
         // Calculate valid IP address based on gateway and subnet
