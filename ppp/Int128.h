@@ -158,11 +158,6 @@ namespace ppp
         template <typename TString>
         TString                                                         ToBinary() const;
 
-    public:
-        static unsigned int                                             htole32(unsigned int x) noexcept;
-        static unsigned int                                             le32toh(unsigned int x) noexcept;
-        static bool                                                     is_little_endian() noexcept;
-
     private:
         // Core arithmetic helpers
         static Int128                                                   Multiply(const Int128& left, const Int128& right) noexcept;
@@ -509,7 +504,7 @@ namespace ppp
 
     // Compile-time endianness detection with fallback for unknown compilers.
     // Returns true if the host is little-endian.
-    inline bool Int128::is_little_endian() noexcept
+    inline bool is_little_endian() noexcept
     {
 #if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
         return __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__;
@@ -524,8 +519,13 @@ namespace ppp
 #endif
     }
 
+    // In the ARM environment, system header files define htole32 and le32toh as macros (expanding to __uint32_identity).
+    // #define htole32(x) __uint32_identity(x)
+    // #define le32toh(x) __uint32_identity(x)
+
+#ifndef htole32
     // Convert a 32-bit word to little-endian byte order.
-    inline unsigned int Int128::htole32(unsigned int x) noexcept
+    inline unsigned int htole32(unsigned int x) noexcept
     {
         if (is_little_endian())
             return x;
@@ -535,13 +535,16 @@ namespace ppp
                ((x & 0x00FF0000U) >> 8) |
                ((x & 0xFF000000U) >> 24);
     }
+#endif
 
+#ifndef le32toh
     // Convert a little-endian 32-bit word to host byte order.
-    inline unsigned int Int128::le32toh(unsigned int x) noexcept
+    inline unsigned int le32toh(unsigned int x) noexcept
     {
         // Conversion is symmetric.
         return htole32(x);
     }
+#endif
 
     inline std::ostream& operator<<(std::ostream& out, const Int128& value)
     {
@@ -550,7 +553,7 @@ namespace ppp
 
         for (int i = 0; i < 4; ++i)
         {
-            unsigned int word = Int128::htole32(parts[i]);   // convert to little-endian
+            unsigned int word = htole32(parts[i]);   // convert to little-endian
             out.write(reinterpret_cast<const char*>(&word), sizeof(word));
         }
         return out;
@@ -569,7 +572,7 @@ namespace ppp
                 value = 0;
                 return in;
             }
-            parts[i] = Int128::le32toh(word);   // convert from little-endian to host
+            parts[i] = le32toh(word);   // convert from little-endian to host
         }
         value = Int128::Compose(parts);
         return in;
