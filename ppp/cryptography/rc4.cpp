@@ -2,7 +2,7 @@
 #include "digest.h"
 
 #ifndef RC4_MAXBIT
-#define RC4_MAXBIT 0xff
+#define RC4_MAXBIT 0x100
 #endif
 
 namespace ppp {

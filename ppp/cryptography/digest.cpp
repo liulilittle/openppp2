@@ -69,10 +69,12 @@ namespace ppp {
                 return false;
             }
 
+            int sha_agorithm = ((int)agorithm) - 1;
             unsigned char digest_sz[SHA512_DIGEST_LENGTH];
-            size_t digest_sz_len = sha_len_table[(int)agorithm];
 
-            SHA_PROC sha_proc = sha_proc_table[(int)agorithm];
+            size_t digest_sz_len = sha_len_table[sha_agorithm];
+
+            SHA_PROC sha_proc = sha_proc_table[sha_agorithm];
             sha_proc((unsigned char*)data, size, digest_sz);
 
             if (!hex_or_binarys) {
@@ -80,7 +82,7 @@ namespace ppp {
             }
             else {
                 char hex_sz[SHA512_DIGEST_LENGTH * 2];
-                const char* hex_fmt = toupper ? "%02X" : "02x";
+                const char* hex_fmt = toupper ? "%02X" : "%02x";
                 for (size_t i = 0; i < digest_sz_len; i++) {
                     int ch = digest_sz[i];
                     sprintf(hex_sz + (i * 2), hex_fmt, ch);

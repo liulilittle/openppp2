@@ -1826,7 +1826,6 @@ void PppApplication::Dispose() noexcept
     {
         // Release the local virtual ethernet client switcher.
         client_.reset();
-        client->Dispose();
 
 #if defined(_WIN32)
         // Restore original QUIC settings
@@ -1838,6 +1837,8 @@ void PppApplication::Dispose() noexcept
             client->ClearHttpProxyToSystemEnv();
         }
 #endif
+
+        client->Dispose();
     }
 
     ClearTickAlwaysTimeout();
@@ -2454,7 +2455,11 @@ static int Run(const std::shared_ptr<PppApplication>& APP, int prepared_status, 
 
     // Register restart signal handler on Unix-like systems
 #if SIGRESTART
-    signal(SIGRESTART, (decltype(SIG_DFL))&PppApplication::ShutdownApplication);
+    signal(SIGRESTART, // SIG_DFL
+        [](int) noexcept
+        {
+            PppApplication::ShutdownApplication(true);
+        });
 #endif
 
     // Run main application
