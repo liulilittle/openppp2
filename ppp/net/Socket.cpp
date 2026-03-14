@@ -49,6 +49,10 @@
 #endif
 #endif
 
+#ifndef INFINITE
+#define INFINITE ~0 // INFINITY
+#endif
+
 // https://elixir.bootlin.com/linux/latest/source/include/uapi/linux/ip.h#L26
 // https://man7.org/linux/man-pages/man7/ip.7.html
 #if defined(_WIN32)
@@ -136,8 +140,8 @@ namespace ppp {
 
             struct timeval tv;
             if (microSeconds < 0) {
-                tv.tv_sec = INFINITY;
-                tv.tv_usec = INFINITY;
+                tv.tv_sec = (int)INFINITE;
+                tv.tv_usec = (int)INFINITE;
             }
             else {
                 tv.tv_sec = microSeconds / 1000000;
@@ -178,7 +182,7 @@ namespace ppp {
 
             int hr;
             if (microSeconds < 0) {
-                int timeout_ = (int)INFINITY;
+                int timeout_ = (int)INFINITE;
                 hr = poll(fds, 1, timeout_);
             }
             else {
@@ -449,7 +453,7 @@ namespace ppp {
             }
 #endif
             if (SOCKET_RESTRICTIONS_.IP_TOS_ON) {
-                any |= ::setsockopt(fd, IPPROTO_IP, IPV6_TCLASS, (char*)&tos, sizeof(tos)) == 0;
+                any |= ::setsockopt(fd, IPPROTO_IP, IP_TOS, (char*)&tos, sizeof(tos)) == 0;
             }
 #else
 #if defined(IPV6_TCLASS)

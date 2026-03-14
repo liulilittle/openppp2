@@ -236,7 +236,7 @@ namespace ppp {
 
                 if (NULLPTR != forwarding) {
                     boost::asio::ip::tcp::endpoint forwarding_to_endpoint = forwarding->GetLocalEndPoint();
-                    if (int forwarding_to_port = forwarding_to_endpoint.port(); forwarding_to_port > IPEndPoint::MinPort && forwarding_to_port < IPEndPoint::MaxPort) {
+                    if (int forwarding_to_port = forwarding_to_endpoint.port(); forwarding_to_port > IPEndPoint::MinPort && forwarding_to_port <= IPEndPoint::MaxPort) {
                         forwarding->SetRemoteEndPoint(hostname, port);
                         port = forwarding_to_port;
                         address = forwarding_to_endpoint.address().to_string();
@@ -747,7 +747,7 @@ namespace ppp {
 
             void VEthernetExchanger::ExchangeToEstablishState() noexcept {
                 uint64_t now = Executors::GetTickCount();
-                sekap_last_ = Executors::GetTickCount();
+                sekap_last_ = now;
                 sekap_next_ = now + RandomNext(SEND_ECHO_KEEP_ALIVE_PACKET_MIN_TIMEOUT, SEND_ECHO_KEEP_ALIVE_PACKET_MAX_TIMEOUT);
                 network_state_.exchange(NetworkState_Established);
                 reconnection_count_ = 0;

@@ -227,7 +227,6 @@ namespace ppp
                             }
 
                             p->timeouts_.erase(tail);
-                            k->Stop();
                             k->Dispose();
 
                             h(k);
@@ -260,7 +259,6 @@ namespace ppp
                     bool ok = timeouts_.emplace(timeout.get(), timeout).second;
                     if (!ok)
                     {
-                        timeout->Stop();
                         timeout->Dispose();
                     }
 

@@ -420,7 +420,7 @@ namespace ppp {
                         global::PACKET_IPEndPoint<boost::asio::ip::udp>(GetFirewall(), p, packet_length, y, destinationHost);
 
                     int destinationPort = destinationEP.port();
-                    if (destinationPort > IPEndPoint::MinPort && destinationPort < IPEndPoint::MaxPort) {
+                    if (destinationPort > IPEndPoint::MinPort && destinationPort <= IPEndPoint::MaxPort) {
                         ppp::string sourceHost;
                         boost::asio::ip::udp::endpoint sourceEP = global::PACKET_IPEndPoint<boost::asio::ip::udp>(GetFirewall(), p, packet_length, y, sourceHost);
                         if (sourceEP.port() && packet_length > -1) {

@@ -18,20 +18,17 @@ namespace ppp {
                         disposed_ = true;
                         ssl_websocket_.reset();
 
-                        if (NULLPTR == ssl_websocket) {
-                            return false;
+                        if (NULLPTR != ssl_websocket) {
+                            ssl_websocket->async_close(boost::beast::websocket::close_code::normal,
+                                [self, this, ssl_websocket](const boost::system::error_code& ec_) noexcept {
+                                    sslwebsocket::SslvTcpSocket& ssl_socket = ssl_websocket->next_layer();
+                                    ssl_socket.async_shutdown(
+                                        [self, this, ssl_websocket, &ssl_socket](const boost::system::error_code& ec_) noexcept {
+                                            Socket::Closesocket(ssl_socket.next_layer());
+                                        });
+                                    return true;
+                                });
                         }
-
-                        ssl_websocket->async_close(boost::beast::websocket::close_code::normal,
-                            [self, this, ssl_websocket](const boost::system::error_code& ec_) noexcept {
-                                sslwebsocket::SslvTcpSocket& ssl_socket = ssl_websocket->next_layer();
-                                ssl_socket.async_shutdown(
-                                    [self, this, ssl_websocket, &ssl_socket](const boost::system::error_code& ec_) noexcept {
-                                        Socket::Closesocket(ssl_socket.next_layer());
-                                    });
-                                return true;
-                            });
-                        return true;
                     });
             }
 

@@ -916,15 +916,14 @@ namespace ppp {
 
             void VirtualEthernetSwitcher::CloseAllAcceptors() noexcept {
                 for (int i = NetworkAcceptorCategories_Min; i < NetworkAcceptorCategories_Max; i++) {
-                    std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor = std::move(acceptors_[i]);
-                    if (NULLPTR == acceptor) {
+                    std::shared_ptr<boost::asio::ip::tcp::acceptor>& acceptor = acceptors_[i];
+                    std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor_copy = std::move(acceptor);
+                    if (NULLPTR == acceptor_copy) {
                         continue;
                     }
 
-                    Socket::Closesocket(acceptor);
-                    if (NULLPTR != acceptor) {
-                        acceptors_[i] = NULLPTR;
-                    }
+                    acceptor.reset();
+                    Socket::Closesocket(acceptor_copy);
                 }
             }
 

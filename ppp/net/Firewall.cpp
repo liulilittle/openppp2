@@ -109,7 +109,7 @@ namespace ppp
             }
 
             ppp::string host_lower = LTrim(RTrim(ToLower(host)));
-            if (host.empty())
+            if (host_lower.empty())
             {
                 return false;
             }

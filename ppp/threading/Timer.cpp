@@ -183,7 +183,6 @@ namespace ppp {
 
             t->TickEvent = 
                 [handler](Timer* sender, Timer::TickEventArgs& e) noexcept {
-                    sender->Stop();
                     sender->Dispose();
                     handler(sender);
                 };

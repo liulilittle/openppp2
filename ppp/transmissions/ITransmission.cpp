@@ -788,7 +788,6 @@ namespace ppp {
                 int i = 0;
                 for (; i < max; i++) {
                     session_id_string.append(1, RandomNext(0x20, 0x7e));
-                    break;
                 }
 
                 if (i == max) {
@@ -966,7 +965,7 @@ namespace ppp {
             DeadlineTimerPtr timeout = std::move(timeout_);
             timeout_.reset();
 
-            disposed_ = false;
+            disposed_ = true;
             handshaked_ = false;
             QoS.reset();
             Statistics.reset();

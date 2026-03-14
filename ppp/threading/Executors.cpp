@@ -292,12 +292,15 @@ namespace ppp
             else
             {
                 ExecutorTable& contexts = Internal->ContextTable;
-                SynchronizedObjectScope scope(Internal->Lock);
-
-                ExecutorTable::iterator tail = contexts.find(threadId);
-                ExecutorTable::iterator endl = contexts.end();
-                if (tail != endl)
+                for (SynchronizedObjectScope scope(Internal->Lock);;)
                 {
+                    ExecutorTable::iterator tail = contexts.find(threadId);
+                    ExecutorTable::iterator endl = contexts.end();
+                    if (tail == endl)
+                    {
+                        break;
+                    }
+
                     return tail->second;
                 }
 
@@ -308,12 +311,14 @@ namespace ppp
         std::shared_ptr<boost::asio::io_context> Executors::GetExecutor() noexcept
         {
             std::shared_ptr<boost::asio::io_context> context;
-            do
+
+            ExecutorLinkedList& fifo = Internal->ContextFifo;
+            ExecutorTable& contexts = Internal->ContextTable;
+
+            for (SynchronizedObjectScope scope(Internal->Lock);;)
             {
-                ExecutorLinkedList& fifo = Internal->ContextFifo;
-                ExecutorTable& contexts = Internal->ContextTable;
-                SynchronizedObjectScope scope(Internal->Lock);
-                if (contexts.size() == 1)
+                std::size_t context_size = contexts.size();
+                if (context_size == 1)
                 {
                     ExecutorTable::iterator tail = contexts.begin();
                     context = tail->second;
@@ -329,8 +334,9 @@ namespace ppp
                         fifo.emplace_back(context);
                     }
                 }
-            } while (false);
-            return Internal->Default;
+
+                return Internal->Default;
+            }
         }
 
         std::shared_ptr<boost::asio::io_context> Executors::GetScheduler() noexcept

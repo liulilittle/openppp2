@@ -293,7 +293,7 @@ namespace ppp {
                     return DoStatic(transmission, allocated_context->fsid, allocated_id, remote_port, y);
                 }
                 else {
-                    return DoStatic(transmission, allocated_context->fsid, 0, IPEndPoint::MinPort, y);
+                    return DoStatic(transmission, 0, 0, IPEndPoint::MinPort, y);
                 }
             }
 
@@ -351,17 +351,21 @@ namespace ppp {
                 elif(NULLPTR == packet || packet_length < 1) {
                     fin = true;
                 }
-
+               
+                FirewallPtr firewall = firewall_;
                 int destinationPort = destinationEP.port();
-                if (firewall_->IsDropNetworkPort(destinationPort, false)) {
-                    return false;
+
+                if (NULLPTR != firewall) {
+                    if (firewall->IsDropNetworkPort(destinationPort, false)) {
+                        return false;
+                    }
+
+                    boost::asio::ip::address destinationIP = destinationEP.address();
+                    if (firewall->IsDropNetworkSegment(destinationIP)) {
+                        return false;
+                    }
                 }
 
-                boost::asio::ip::address destinationIP = destinationEP.address();
-                if (firewall_->IsDropNetworkSegment(destinationIP)) {
-                    return false;
-                }
-                
                 VirtualEthernetLoggerPtr logger = switcher_->GetLogger();
                 if (destinationPort == PPP_DNS_SYS_PORT) {
                     uint16_t queries_type = 0;
@@ -378,8 +382,10 @@ namespace ppp {
                             logger->Dns(GetId(), transmission, hostDomain);
                         }
 
-                        if (firewall_->IsDropNetworkDomains(hostDomain)) {
-                            return false;
+                        if (NULL != firewall) {
+                            if (firewall->IsDropNetworkDomains(hostDomain)) {
+                                return false;
+                            }
                         }
                     }
 
@@ -795,9 +801,12 @@ namespace ppp {
                     return false;
                 }
 
-                boost::asio::ip::address destinationIP = Ipep::ToAddress(ip->Destination);
-                if (firewall_->IsDropNetworkSegment(destinationIP)) {
-                    return false;
+                FirewallPtr firewall = firewall_;
+                if (NULLPTR != firewall) {
+                    boost::asio::ip::address destinationIP = Ipep::ToAddress(ip->Destination);
+                    if (firewall->IsDropNetworkSegment(destinationIP)) {
+                        return false;
+                    }
                 }
 
                 std::shared_ptr<IcmpFrame> icmp = IcmpFrame::Parse(ip.get());
@@ -1133,7 +1142,8 @@ namespace ppp {
                             logger->Dns(GetId(), transmission, hostDomain);
                         }
 
-                        if (firewall_->IsDropNetworkDomains(hostDomain)) {
+                        FirewallPtr firewall = firewall_;
+                        if (NULL != firewall && firewall->IsDropNetworkDomains(hostDomain)) {
                             return false;
                         }
                     }

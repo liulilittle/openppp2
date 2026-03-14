@@ -79,7 +79,7 @@ namespace ppp {
                         }
                     }
 
-                    disposed_ = false;
+                    disposed_ = true;
                     if (std::shared_ptr<IForwarding> forwarding = std::move(forwarding_); NULLPTR != forwarding) {
                         forwarding_.reset();
                         forwarding->TryRemove(this, false);
@@ -673,7 +673,6 @@ namespace ppp {
                     return timer;
                 }
 
-                timer->Stop();
                 timer->Dispose();
                 return NULLPTR;
             }

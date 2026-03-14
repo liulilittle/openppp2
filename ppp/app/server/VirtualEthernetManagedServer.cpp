@@ -599,8 +599,9 @@ namespace ppp {
                     }
                     ~websocket_auto_destroy() noexcept {
                         if (!ok_) {
-                            if (NULLPTR != ws_) {
-                                ws_->Dispose();
+                            IWebScoketPtr p = ws_;
+                            if (NULLPTR != p) {
+                                p->Dispose();
                             }
                         }
                     }
@@ -723,23 +724,23 @@ namespace ppp {
             }
 
             void VirtualEthernetManagedServer::IWebSocket::Dispose() noexcept {
-                if (std::shared_ptr<WebSocket> p = std::move(ws); NULLPTR != ws) {
+                if (std::shared_ptr<WebSocket> p = std::move(ws); NULLPTR != p) {
                     ws.reset();
                     p->Dispose();
                 }
 
-                if (std::shared_ptr<WebSocketSsl> p = std::move(wss); NULLPTR != wss) {
+                if (std::shared_ptr<WebSocketSsl> p = std::move(wss); NULLPTR != p) {
                     wss.reset();
                     p->Dispose();
                 }
             }
 
             bool VirtualEthernetManagedServer::IWebSocket::IsDisposed() noexcept {
-                if (auto p = ws; NULLPTR != ws) {
+                if (auto p = ws; NULLPTR != p) {
                     return p->IsDisposed();
                 }
 
-                if (auto p = wss; NULLPTR != wss) {
+                if (auto p = wss; NULLPTR != p) {
                     return p->IsDisposed();
                 }
 
@@ -747,11 +748,11 @@ namespace ppp {
             }
 
             bool VirtualEthernetManagedServer::IWebSocket::Read(const void* buffer, int offset, int length, YieldContext& y) noexcept {
-                if (auto p = ws; NULLPTR != ws) {
+                if (auto p = ws; NULLPTR != p) {
                     return p->Read(buffer, offset, length, y);
                 }
 
-                if (auto p = wss; NULLPTR != wss) {
+                if (auto p = wss; NULLPTR != p) {
                     return p->Read(buffer, offset, length, y);
                 }
 
@@ -759,14 +760,14 @@ namespace ppp {
             }
 
             bool VirtualEthernetManagedServer::IWebSocket::Run(HandshakeType type, const ppp::string& host, const ppp::string& path, YieldContext& y) noexcept {
-                if (auto p = ws; NULLPTR != ws) {
+                if (auto p = ws; NULLPTR != p) {
                     return p->Run(type, host, path, y);
                 }
 
                 // Do not verify SSL server and only perform one-way authentication instead of mutual authentication, 
                 // As the server's certificate may have expired or it could be a private certificate. 
                 // There is no need for SSL/TLS mutual authentication in this cases.
-                if (auto p = wss; NULLPTR != wss) {
+                if (auto p = wss; NULLPTR != p) {
                     std::string ssl_certificate_file;
                     std::string ssl_certificate_key_file;
                     std::string ssl_certificate_chain_file;
@@ -787,11 +788,11 @@ namespace ppp {
             }
 
             bool VirtualEthernetManagedServer::IWebSocket::Write(const void* buffer, int offset, int length, const AsynchronousWriteCallback& cb) noexcept {
-                if (auto p = ws; NULLPTR != ws) {
+                if (auto p = ws; NULLPTR != p) {
                     return p->Write(buffer, offset, length, cb);
                 }
 
-                if (auto p = wss; NULLPTR != wss) {
+                if (auto p = wss; NULLPTR != p) {
                     return p->Write(buffer, offset, length, cb);
                 }
 
