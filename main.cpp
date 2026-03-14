@@ -383,8 +383,8 @@ int PppApplication::PullIPList(const ppp::string& url, ppp::set<ppp::string>& ip
 
     ppp::string host;
     ppp::string path;
-    int port;
-    bool https;
+    int port = IPEndPoint::MinPort;
+    bool https = false;
 
     // Parse URL components
     if (!HttpClient::VerifyUri(url, ppp::addressof(host), &port, ppp::addressof(path), &https)) 

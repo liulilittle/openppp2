@@ -231,7 +231,7 @@ namespace ppp {
                 return ToAddressString<ppp::string>(af, (Byte*)address_bytes.data(), (int)address_bytes.size());
             }
             static UInt32                                                       PrefixToNetmask(int prefix) noexcept {
-                UInt32 mask = prefix ? (-1L << (32L - prefix)) : 0L;
+                UInt32 mask = prefix ? (~0UL << (32 - prefix)) : 0L;
                 return htonl(mask);
             }
             static int                                                          NetmaskToPrefix(UInt32 mask) noexcept {

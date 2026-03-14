@@ -152,7 +152,14 @@ namespace ppp
                         // Install our layered protocol and get dwLayeredCatalogId
                         // Copy a base protocol structure as template
                         WSAPROTOCOL_INFOW LayeredProtocolInfo;
-                        memcpy(&LayeredProtocolInfo, &OriginalProtocolInfo[0], sizeof(WSAPROTOCOL_INFOW));
+                        if (nArrayCount < 1)
+                        {
+                            return FALSE;
+                        }
+                        else
+                        {
+                            memcpy(&LayeredProtocolInfo, &OriginalProtocolInfo[0], sizeof(WSAPROTOCOL_INFOW));
+                        }
 
                         // Modify protocol name, type, add PFL_HIDDEN flag
                         wcscpy(LayeredProtocolInfo.szProtocol, wszLSPName);

@@ -1029,7 +1029,7 @@ namespace ppp {
     }
 
     inline uint16_t                                                         MAKE_WORD(uint8_t low, uint8_t high) noexcept {
-        return ((uint16_t)high << 16) | ((uint16_t)low);
+        return ((uint16_t)high << 8) | ((uint16_t)low);
     }
 
     template <typename TValue>

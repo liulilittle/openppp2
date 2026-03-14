@@ -71,7 +71,7 @@ namespace ppp {
             hostname[0x00] = '\x0';
             hostname[0xff] = '\x0';
 
-            if (::gethostname(hostname, 0xff) != 0) {
+            if (::gethostname(hostname, sizeof(hostname)) != 0) {
                 *hostname = '\x0';
             }
 

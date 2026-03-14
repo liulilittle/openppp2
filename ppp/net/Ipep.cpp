@@ -160,29 +160,41 @@ namespace ppp {
         }
 
         static IPEndPoint Ipep_GetEndPointWithNative(const ppp::string& host, int port) noexcept {
-            struct addrinfo req, * hints, * p;
-            memset(&req, 0, sizeof(req));
+            struct AddrinfoDeleter final {
+                void operator()(struct addrinfo* p) const noexcept {
+                    if (p) {
+                        freeaddrinfo(p);
+                    }
+                }
+            };
 
+            using AddrinfoPtr = std::unique_ptr<struct addrinfo, AddrinfoDeleter>;
+
+            struct addrinfo req {};
             req.ai_family = AF_UNSPEC;
             req.ai_socktype = SOCK_STREAM;
 
-            if (getaddrinfo(host.data(), NULLPTR, &req, &hints) < 0) {
+            struct addrinfo* hints_raw = nullptr;
+            if (getaddrinfo(host.data(), nullptr, &req, &hints_raw) != 0) {
                 return IPEndPoint(IPEndPoint::AnyAddress, port);
             }
 
-            for (p = hints; NULLPTR != p; p = p->ai_next) {
+            AddrinfoPtr hints(hints_raw); 
+            for (struct addrinfo* p = hints.get(); p != nullptr; p = p->ai_next) {
                 if (p->ai_family == AF_INET) {
-                    struct sockaddr_in* ipv4 = (struct sockaddr_in*)p->ai_addr;
+                    auto* ipv4 = reinterpret_cast<struct sockaddr_in*>(p->ai_addr);
                     return IPEndPoint(AddressFamily::InterNetwork,
-                        reinterpret_cast<Byte*>(&ipv4->sin_addr), sizeof(ipv4->sin_addr), port);
+                        reinterpret_cast<Byte*>(&ipv4->sin_addr),
+                        sizeof(ipv4->sin_addr), port);
                 }
             }
 
-            for (p = hints; NULLPTR != p; p = p->ai_next) {
+            for (struct addrinfo* p = hints.get(); p != nullptr; p = p->ai_next) {
                 if (p->ai_family == AF_INET6) {
-                    struct sockaddr_in6* ipv6 = (struct sockaddr_in6*)p->ai_addr;
+                    auto* ipv6 = reinterpret_cast<struct sockaddr_in6*>(p->ai_addr);
                     return IPEndPoint(AddressFamily::InterNetworkV6,
-                        reinterpret_cast<Byte*>(&ipv6->sin6_addr), sizeof(ipv6->sin6_addr), port);
+                        reinterpret_cast<Byte*>(&ipv6->sin6_addr),
+                        sizeof(ipv6->sin6_addr), port);
                 }
             }
 

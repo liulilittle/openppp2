@@ -636,7 +636,7 @@ namespace ppp {
 
         const int max_length = sizeof(uuid.data);
         if (length >= max_length) {
-            memcpy(uuid.data, guid, length);
+            memcpy(uuid.data, guid, max_length);
         }
         elif(length > 0) {
             memcpy(uuid.data, guid, length);

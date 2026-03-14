@@ -782,7 +782,15 @@ namespace ppp
                     }
 
                     ++pDecodePos;
-                    szDotStr[usPlainStrLen - 1] = '\0';
+                    if (usPlainStrLen > 0)
+                    {
+                        szDotStr[usPlainStrLen - 1] = '\0';
+                    }
+                    else
+                    {
+                        *szDotStr = '\0';
+                    }
+
                     *pusEncodedStrLen += 1;
                     return true;
                 }
@@ -828,7 +836,7 @@ namespace ppp
                     }
 
                     struct dns_hdr* pDNSHeader = (struct dns_hdr*)szPacketStartPos;
-                    if (NULLPTR == pDNSHeader || nPacketLength < sizeof(pDNSHeader))
+                    if (NULLPTR == pDNSHeader || nPacketLength < sizeof(*pDNSHeader))
                     {
                         return ppp::string();
                     }

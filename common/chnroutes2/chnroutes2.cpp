@@ -85,6 +85,7 @@ curl_write_data(char* buf, size_t size, size_t nmemb, void* lpVoid) noexcept {
             unsigned long length = stream_->length_;
             unsigned char* buffer = (unsigned char*)ppp::Malloc(length + dw);
             memcpy(buffer, stream_->stream_, length);
+
             stream_->stream_ = buffer;
             stream_->length_ = (unsigned long)dw + length;
             memcpy(buffer + length, buf, dw);

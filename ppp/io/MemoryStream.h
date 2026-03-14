@@ -303,12 +303,12 @@ namespace ppp {
                         num = 256;
                     }
                     
-                    int ndw = capacity * 2;
+                    int64_t ndw = (int64_t)capacity << 1;
                     if (num < ndw) {
                         num = ndw;
                     }
                     
-                    if ((UInt32)(ndw) > 2147483591u) {
+                    if (ndw > 2147483591u) {
                         if (value > 2147483591) {
                             return false;
                         }

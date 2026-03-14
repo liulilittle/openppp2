@@ -99,9 +99,6 @@ namespace ppp
     public:     
         int                                                             Sign();
 
-        template <typename TString>     
-        static Int128                                                   Parse(const TString& v, int radix);
-
     public:     
         template <typename TString>     
         TString                                                         ToString();
@@ -331,16 +328,6 @@ namespace ppp
 
     inline Int128 operator|(const Int128& left, const Int128& right)
     {
-        if (left == 0)
-        {
-            return right;
-        }
-
-        if (right == 0)
-        {
-            return left;
-        }
-
         Int128 R = left;
         R.hi |= right.hi;
         R.lo |= right.lo;
@@ -349,16 +336,6 @@ namespace ppp
 
     inline Int128 operator&(const Int128& left, const Int128& right)
     {
-        if (left == 0)
-        {
-            return right;
-        }
-
-        if (right == 0)
-        {
-            return left;
-        }
-
         Int128 R = left;
         R.hi &= right.hi;
         R.lo &= right.lo;
@@ -367,16 +344,6 @@ namespace ppp
 
     inline Int128 operator^(const Int128& left, const Int128& right)
     {
-        if (left == 0)
-        {
-            return right;
-        }
-
-        if (right == 0)
-        {
-            return left;
-        }
-
         Int128 R = left;
         R.hi ^= right.hi;
         R.lo ^= right.lo;

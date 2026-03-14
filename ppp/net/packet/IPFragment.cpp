@@ -15,7 +15,7 @@ namespace ppp {
                 Int128 key = (Int128)packet->Source;
                 key = key | ((Int128)packet->Destination) << 32;
                 key = key | ((Int128)packet->Id) << 64;
-                return true;
+                return key;
             }
 
             bool IPFragment::Input(const std::shared_ptr<IPFrame>& packet) noexcept {

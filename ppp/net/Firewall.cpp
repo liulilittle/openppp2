@@ -74,7 +74,7 @@ namespace ppp
                     prefix = 32;
                 }
 
-                UInt32 __mask = prefix ? -1 << (32 - prefix) : 0L;
+                UInt32 __mask = prefix ? ~0u << (32 - prefix) : 0L;
                 UInt32 __ip = ip.to_v4().to_uint();
                 UInt32 __networkIP = __ip & __mask;
 
@@ -166,7 +166,7 @@ namespace ppp
 
             for (int prefix = max_prefix; prefix >= MIN_PREFIX_VALUE; prefix--)
             {
-                T __mask = prefix ? -1 << (max_prefix - prefix) : 0L;
+                T __mask = prefix ? 0u << (max_prefix - prefix) : 0L;
                 T __networkIP = __ip & __mask;
 
                 auto tail = network_segments.find(__networkIP);
