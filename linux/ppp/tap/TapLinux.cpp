@@ -75,7 +75,7 @@ namespace ppp {
             ~IfcctlSocket() noexcept {
                 int fd = sock_v4;
                 sock_v4 = -1;
-                
+
                 if (fd != -1) {
                     ::close(fd);
                 }
@@ -498,7 +498,7 @@ namespace ppp {
                     return true;
                 }
             }
-            
+
             char sz[256];
             if (TapLinux::GetDefaultGateway(sz, &gw)) {
                 interface_ = sz;
@@ -751,7 +751,7 @@ namespace ppp {
         void TapLinux::Dispose() noexcept {
             std::shared_ptr<ITap> self = shared_from_this();
             std::shared_ptr<boost::asio::io_context> context = GetContext();
-            boost::asio::dispatch(*context, 
+            boost::asio::dispatch(*context,
                 [self, this, context]() noexcept {
                     Finalize();
                 });
@@ -793,7 +793,7 @@ namespace ppp {
             if (disposed != FALSE) {
                 return false;
             }
-            
+
             // https://man7.org/linux/man-pages/man2/write.2.html
             int tun = static_cast<int>(reinterpret_cast<std::intptr_t>(GetHandle()));
             if (Ssmt()) {
@@ -854,7 +854,7 @@ namespace ppp {
             int disposed = disposed_.load();
             if (disposed != FALSE) {
                 return false;
-            }   
+            }
 
             bool opened = sd->is_open();
             if (!opened) {
@@ -862,7 +862,7 @@ namespace ppp {
             }
 
             std::shared_ptr<ITap> self = shared_from_this();
-            sd->async_read_some(boost::asio::buffer(buffer.get(), ITap::Mtu), 
+            sd->async_read_some(boost::asio::buffer(buffer.get(), ITap::Mtu),
                 [self, this, context, buffer, sd, fd](const boost::system::error_code& ec, std::size_t sz) noexcept {
                     if (ec != boost::system::errc::operation_canceled) {
                         int len = std::max<int>(ec ? -1 : sz, -1);
@@ -936,7 +936,7 @@ namespace ppp {
             if (!ok) {
                 return false;
             }
-            
+
             return !up || SetInterfaceMtu(ITap::Mtu);
         }
 
@@ -985,10 +985,10 @@ namespace ppp {
                 return NULLPTR;
             }
 
-            tap->promisc_            = promisc;
-            tap->dns_addresses_      = dns_addresses;
+            tap->promisc_ = promisc;
+            tap->dns_addresses_ = dns_addresses;
 
-            ITap* my = tap.get(); 
+            ITap* my = tap.get();
             if (NULLPTR != my) {
                 my->GetInterfaceIndex() = interface_index;
             }
@@ -1138,17 +1138,22 @@ namespace ppp {
                 });
             return any ? rib : NULLPTR;
         }
-    
+
 #if defined(_ANDROID)
         static bool ITAP_FROM_REQUIRED(
             const std::shared_ptr<boost::asio::io_context>& context,
-            const ppp::string&                              id, 
-            void*                                           tun, 
-            uint32_t                                        address, 
-            uint32_t                                        gw, 
-            uint32_t                                        mask) noexcept 
+            const ppp::string& id,
+            void* tun,
+            uint32_t                                        address,
+            uint32_t                                        gw,
+            uint32_t                                        mask) noexcept
         {
             if (tun == INVALID_HANDLE_VALUE)
+            {
+                return false;
+            }
+
+            if (NULL == context)
             {
                 return false;
             }
@@ -1164,13 +1169,13 @@ namespace ppp {
                 return false;
             }
 
-            IPEndPoint maskEP(address, 0);
+            IPEndPoint maskEP(mask, 0);
             if (IPEndPoint::IsInvalid(maskEP))
             {
                 return false;
             }
 
-            IPEndPoint gwEP(address, 0);
+            IPEndPoint gwEP(gw, 0);
             if (IPEndPoint::IsInvalid(gwEP))
             {
                 return false;
@@ -1203,7 +1208,7 @@ namespace ppp {
 
             // Get interface index of the vnic device, including the set interface name.
             int interface_index = -1;
-            if (TapLinux::GetInterfaceName(tun_fd, interface_name)) 
+            if (TapLinux::GetInterfaceName(tun_fd, interface_name))
             {
                 std::size_t len = interface_name.size();
                 if (len > 0)
@@ -1211,10 +1216,10 @@ namespace ppp {
                     interface_index = TapLinux::GetInterfaceIndex(interface_name.data());
                 }
             }
-            
+
             linux_tap->IsPromisc() = promisc;
             tap->GetInterfaceIndex() = interface_index;
-            
+
             return linux_tap;
         }
 #endif

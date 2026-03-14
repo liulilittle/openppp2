@@ -118,8 +118,8 @@ namespace ppp {
                     AuthenticationToManagedServerAsyncCallback f;
                 } ReleaseInfo;
 
-                ppp::vector<ReleaseInfo> releases; {
-                    SynchronizedObjectScope scope(syncobj_);
+                ppp::vector<ReleaseInfo> releases; 
+                for (SynchronizedObjectScope scope(syncobj_);;) {
                     for (auto&& kv : authentications_) {
                         auto& aw = kv.second;
                         if (now >= aw.timeout) {
@@ -127,6 +127,8 @@ namespace ppp {
                             aw.ac = NULLPTR;
                         }
                     }
+
+                    break;
                 }
 
                 VirtualEthernetInformationPtr nullVEI;
@@ -135,6 +137,8 @@ namespace ppp {
                     if (f) {
                         f(false, nullVEI);
                     }
+
+                    DeleteAuthenticationToManagedServer(ri.k);
                 }
             }
 

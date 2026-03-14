@@ -1434,7 +1434,7 @@ namespace ppp
                     }
                 }
 
-                AdapterInterfacePtr ai = GetUnderlyingNetowrkInterface(id);
+                AdapterInterfacePtr ai = GetUnderlyingNetworkInterface(id);
                 if (NULLPTR == ai)
                 {
                     return { NULLPTR, NULLPTR };
@@ -1443,7 +1443,7 @@ namespace ppp
                 return { ai, ppp::win32::network::GetNetworkInterfaceByInterfaceIndex(ai->IfIndex) };
             }
 
-            AdapterInterfacePtr GetUnderlyingNetowrkInterface(const ppp::string& id) noexcept
+            AdapterInterfacePtr GetUnderlyingNetworkInterface(const ppp::string& id) noexcept
             {
                 ppp::vector<ppp::win32::network::AdapterInterfacePtr> adapters;
                 if (!ppp::win32::network::GetAllAdapterInterfaces2(adapters))

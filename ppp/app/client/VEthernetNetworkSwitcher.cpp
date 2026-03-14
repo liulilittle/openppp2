@@ -602,7 +602,7 @@ namespace ppp {
                 ppp::string dev;
                 return make_shared_object<ProtectorNetwork>(dev);
 #else
-                std::shared_ptr<NetworkInterface> ni = GetUnderlyingNetowrkInterface();
+                std::shared_ptr<NetworkInterface> ni = GetUnderlyingNetworkInterface();
                 if (NULLPTR == ni) {
                     return NULLPTR;
                 }
@@ -1227,7 +1227,7 @@ namespace ppp {
                 ppp::win32::network::AddAllRoutes(rib_);
 #elif defined(_MACOS)
                 // Delete all found default gateway routes.
-                if (auto underlying_ni = GetUnderlyingNetowrkInterface(); NULLPTR != underlying_ni) {
+                if (auto underlying_ni = GetUnderlyingNetworkInterface(); NULLPTR != underlying_ni) {
                     if (auto tap = GetTap(); NULLPTR != tap) {
                         ppp::tap::TapDarwin* darwin_tap = dynamic_cast<ppp::tap::TapDarwin*>(tap.get());
                         if (NULLPTR != darwin_tap && !darwin_tap->IsPromisc()) {
@@ -1244,7 +1244,7 @@ namespace ppp {
                 }
 #else
                 // Adds the loaded route table to the operating system.
-                if (auto underlying_ni = GetUnderlyingNetowrkInterface(); NULLPTR != underlying_ni) {
+                if (auto underlying_ni = GetUnderlyingNetworkInterface(); NULLPTR != underlying_ni) {
                     if (auto tap_ni = GetTapNetworkInterface(); NULLPTR != tap_ni) {
                         // Find and delete all default route information.
                         if (auto tap = GetTap(); NULLPTR != tap) {
@@ -1322,7 +1322,7 @@ namespace ppp {
                 }
 #elif defined(_MACOS)
                 // Delete the loaded route table from the osx operating system.
-                if (auto underlying_ni = GetUnderlyingNetowrkInterface(); NULLPTR != underlying_ni) {
+                if (auto underlying_ni = GetUnderlyingNetworkInterface(); NULLPTR != underlying_ni) {
                     // Delete all rib route table information found.
                     ppp::tap::TapDarwin::DeleteAllRoutes(rib_);
 
@@ -1340,7 +1340,7 @@ namespace ppp {
                 }
 #else
                 // Delete the loaded route table from the linux operating system.
-                if (auto underlying_ni = GetUnderlyingNetowrkInterface(); NULLPTR != underlying_ni) {
+                if (auto underlying_ni = GetUnderlyingNetworkInterface(); NULLPTR != underlying_ni) {
                     if (auto tap_ni = GetTapNetworkInterface(); NULLPTR != tap_ni) {
                         if (auto tap = GetTap(); NULLPTR != tap) {
                             // Delete all rib route table information found.
@@ -1927,7 +1927,7 @@ namespace ppp {
                     ppp::tap::TapWindows::DnsFlushResolverCache();
 #else
                     // Restore the original linux /etc/resolve.conf to linux operating system configuration files.
-                    UnixNetworkInterface::SetDnsResolveConfiguration(GetUnderlyingNetowrkInterface());
+                    UnixNetworkInterface::SetDnsResolveConfiguration(GetUnderlyingNetworkInterface());
 #endif
                 }
 

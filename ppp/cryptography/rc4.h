@@ -55,7 +55,7 @@ namespace ppp {
         PPP_CRYPTOGRAPHY_RC4_DERIVE(RC4SHA1,   DigestAlgorithmic_sha1);
         PPP_CRYPTOGRAPHY_RC4_DERIVE(RC4SHA224, DigestAlgorithmic_sha224);
         PPP_CRYPTOGRAPHY_RC4_DERIVE(RC4SHA256, DigestAlgorithmic_sha256);
-        PPP_CRYPTOGRAPHY_RC4_DERIVE(RC4SHA386, DigestAlgorithmic_sha386);
+        PPP_CRYPTOGRAPHY_RC4_DERIVE(RC4SHA384, DigestAlgorithmic_sha384);
         PPP_CRYPTOGRAPHY_RC4_DERIVE(RC4SHA512, DigestAlgorithmic_sha512);
 #undef PPP_CRYPTOGRAPHY_RC4_DERIVE
     }

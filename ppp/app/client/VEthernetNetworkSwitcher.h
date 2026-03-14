@@ -148,7 +148,7 @@ namespace ppp {
                 bool                                                                ProtectMode(bool* protect_mode) noexcept;
 #endif
                 std::shared_ptr<NetworkInterface>                                   GetTapNetworkInterface()        noexcept { return tun_ni_; }
-                std::shared_ptr<NetworkInterface>                                   GetUnderlyingNetowrkInterface() noexcept { return underlying_ni_; }
+                std::shared_ptr<NetworkInterface>                                   GetUnderlyingNetworkInterface() noexcept { return underlying_ni_; }
                 virtual void                                                        PreferredNgw(const boost::asio::ip::address& gw) noexcept;
                 virtual void                                                        PreferredNic(const ppp::string& nic) noexcept;
                 virtual bool                                                        AddLoadIPList(

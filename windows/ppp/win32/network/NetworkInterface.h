@@ -103,7 +103,7 @@ namespace ppp
             bool                                                DeleteAllDefaultGatewayRoutes(ppp::vector<MIB_IPFORWARDROW>& routes, const ppp::unordered_set<uint32_t>& bypass_gws) noexcept;
 
             int                                                 GetNetworkInterfaceIndexByDefaultRoute() noexcept;
-            AdapterInterfacePtr                                 GetUnderlyingNetowrkInterface(const ppp::string& id) noexcept;
+            AdapterInterfacePtr                                 GetUnderlyingNetworkInterface(const ppp::string& id) noexcept;
             std::pair<AdapterInterfacePtr, NetworkInterfacePtr> GetUnderlyingNetowrkInterface2(const ppp::string& id, const ppp::string& nic) noexcept;
         }
     }

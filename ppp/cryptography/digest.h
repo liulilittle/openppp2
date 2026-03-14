@@ -9,7 +9,7 @@ namespace ppp {
             DigestAlgorithmic_sha1,
             DigestAlgorithmic_sha224,
             DigestAlgorithmic_sha256,
-            DigestAlgorithmic_sha386,
+            DigestAlgorithmic_sha384,
             DigestAlgorithmic_sha512,
         };
 

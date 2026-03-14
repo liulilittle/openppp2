@@ -670,7 +670,7 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
             boost::asio::ip::address localIP = localEP.address();
             if (localIP.is_unspecified())
             {
-                if (auto ni = client->GetUnderlyingNetowrkInterface(); NULLPTR != ni)
+                if (auto ni = client->GetUnderlyingNetworkInterface(); NULLPTR != ni)
                 {
                     localIP = ni->IPAddress;
                 }
@@ -743,7 +743,7 @@ bool PppApplication::PrintEnvironmentInformation() noexcept
             bool                                                        tun;
         } stnis[] = {
             { client->GetTapNetworkInterface(), "TUN", true,  },
-            { client->GetUnderlyingNetowrkInterface(), "NIC", false },
+            { client->GetUnderlyingNetworkInterface(), "NIC", false },
         };
         for (auto&& sti : stnis)
         {
@@ -1045,7 +1045,7 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
             // Open switcher
             if (!ethernet->Open(tap))
             {
-                auto ni = ethernet->GetUnderlyingNetowrkInterface();
+                auto ni = ethernet->GetUnderlyingNetworkInterface();
                 if (NULLPTR != ni)
                 {
                     fprintf(stdout, "%s\r\n", "Failed to open the vpn client.");

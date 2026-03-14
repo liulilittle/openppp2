@@ -1791,7 +1791,7 @@ namespace ppp {
                 std::shared_ptr<aggligator::aggligator> aggligator = switcher_->GetAggligator();
                 if (NULLPTR != aggligator) {
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                    auto ni = switcher_->GetUnderlyingNetowrkInterface(); 
+                    auto ni = switcher_->GetUnderlyingNetworkInterface(); 
                     if (NULLPTR != ni) {
                         boost::asio::ip::udp::endpoint ep = aggligator->client_endpoint(ni->IPAddress);
                         return Ipep::V4ToV6(ep);

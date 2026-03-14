@@ -137,7 +137,7 @@ namespace ppp {
 
             if (EVP_CipherUpdate(_decryptCTX.get(),
                 cipherText.get(), &feedbacklen, data, datalen) < 1) {
-                feedbacklen = ~0;
+                outlen = ~0;
                 return NULLPTR;
             }
 
