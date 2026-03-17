@@ -43,10 +43,7 @@ namespace ppp {
 
             void VirtualEthernetNetworkTcpipConnection::Finalize() noexcept {
                 std::shared_ptr<VirtualEthernetTcpipConnection> connection = std::move(connection_); 
-                connection_.reset();
-
                 ITransmissionPtr transmission = std::move(transmission_); 
-                transmission_.reset();
 
                 if (NULLPTR != connection) {
                     connection->Dispose();

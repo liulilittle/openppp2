@@ -72,10 +72,7 @@ namespace ppp {
 
                 if (disposed != TRUE) {
                     std::shared_ptr<Server> server = std::move(server_); 
-                    server_.reset();
-
                     std::shared_ptr<Client> client = std::move(client_); 
-                    client_.reset();
 
                     if (NULLPTR != server) {
                         ppp::net::Socket::Closesocket(server->socket_udp_);
@@ -457,10 +454,7 @@ namespace ppp {
                     }
 
                     std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::move(socket_);
-                    socket_.reset();
-
                     std::shared_ptr<Server> server = std::move(server_);
-                    server_.reset();
 
                     if (NULLPTR != socket) {
                         ppp::net::Socket::Closesocket(socket);
@@ -944,8 +938,7 @@ namespace ppp {
 
             void VirtualEthernetMappingPort::Client::Connection::Finalize(bool disconnect) noexcept {
                 std::shared_ptr<ITransmission> transmission = std::move(transmission_);
-                transmission_.reset();
-
+     
                 int connection_state = connection_stated_.exchange(4);
                 if (connection_state != 4) {
                     if (!disconnect && connection_state == 3) {
@@ -963,11 +956,8 @@ namespace ppp {
                     }
 
                     std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::move(socket_);
-                    socket_.reset();
-
                     std::shared_ptr<Client> client = std::move(client_);
-                    client_.reset();
-
+     
                     if (NULLPTR != socket) {
                         ppp::net::Socket::Closesocket(socket);
                     }
@@ -1251,8 +1241,6 @@ namespace ppp {
                 int disposed = disposed_.exchange(TRUE);
                 if (disposed != TRUE) {
                     std::shared_ptr<Client> client = std::move(client_); 
-                    client_.reset();
-
                     if (NULLPTR != client) {
                         ppp::collections::Dictionary::TryRemove(client->socket_datagram_ports_, nat_ep_);
                     }

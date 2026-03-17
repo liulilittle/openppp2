@@ -1032,7 +1032,6 @@ namespace ppp {
         // Cleans up resources, cancels timers, resets state
         void ITransmission::Finalize() noexcept {
             DeadlineTimerPtr timeout = std::move(timeout_);
-            timeout_.reset();
 
             disposed_ = true;
             handshaked_ = false;
@@ -1204,8 +1203,6 @@ namespace ppp {
         // Clears the handshake timeout timer
         void ITransmission::InternalHandshakeTimeoutClear() noexcept {
             DeadlineTimerPtr timeout = std::move(timeout_);
-            timeout_.reset();
-
             if (NULLPTR != timeout) {
                 Socket::Cancel(*timeout);
             }

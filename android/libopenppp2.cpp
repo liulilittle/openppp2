@@ -506,7 +506,6 @@ bool                                                                        libo
     }
 
     configuration_.reset();
-    client_.reset();
     stopwatch_.Reset();
 
     network_interface_.reset();
@@ -1131,13 +1130,11 @@ static int                                                                      
 
     std::shared_ptr<ppp::string> bypass_ip_list = std::move(app->bypass_ip_list_); 
     if (NULLPTR != bypass_ip_list) {
-        app->bypass_ip_list_.reset();
         client->SetBypassIpList(std::move(*bypass_ip_list));
     }
     
     std::shared_ptr<ppp::string> dns_rules_list = std::move(app->dns_rules_list_); 
     if (NULLPTR != dns_rules_list) {
-        app->dns_rules_list_.reset();
         client->LoadAllDnsRules(std::move(*dns_rules_list), false);
     }
 

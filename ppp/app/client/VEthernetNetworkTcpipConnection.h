@@ -87,8 +87,6 @@ namespace ppp {
                     private:
                         void                                                                Finalize() noexcept {
                             std::shared_ptr<TReference> owner = std::move(owner_);
-                            owner_.reset();
-
                             if (NULLPTR != owner) {
                                 owner->Dispose();
                             }

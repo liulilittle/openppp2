@@ -32,13 +32,8 @@ namespace ppp {
 
             void VEthernetNetworkTcpipConnection::Finalize() noexcept {
                 std::shared_ptr<VirtualEthernetTcpipConnection> connection = std::move(connection_); 
-                connection_.reset();
-
                 std::shared_ptr<RinetdConnection> connection_rinetd = std::move(connection_rinetd_); 
-                connection_rinetd_.reset();
-
                 std::shared_ptr<vmux::vmux_skt> connection_mux = std::move(connection_mux_);
-                connection_mux_.reset();
 
                 if (NULLPTR != connection) {
                     connection->Dispose();

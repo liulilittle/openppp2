@@ -16,7 +16,6 @@ namespace ppp {
                     [self, this, context, strand]() noexcept {
                         std::shared_ptr<SslvWebSocket> ssl_websocket = std::move(ssl_websocket_);
                         disposed_ = true;
-                        ssl_websocket_.reset();
 
                         if (NULLPTR != ssl_websocket) {
                             ssl_websocket->async_close(boost::beast::websocket::close_code::normal,

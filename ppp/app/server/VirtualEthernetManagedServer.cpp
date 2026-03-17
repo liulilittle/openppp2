@@ -433,7 +433,6 @@ namespace ppp {
                 disposed_ = true;
 
                 if (NULLPTR != websocket) {
-                    server_.reset();
                     websocket->Dispose();
                 }
             }
@@ -729,12 +728,10 @@ namespace ppp {
 
             void VirtualEthernetManagedServer::IWebSocket::Dispose() noexcept {
                 if (std::shared_ptr<WebSocket> p = std::move(ws); NULLPTR != p) {
-                    ws.reset();
                     p->Dispose();
                 }
 
                 if (std::shared_ptr<WebSocketSsl> p = std::move(wss); NULLPTR != p) {
-                    wss.reset();
                     p->Dispose();
                 }
             }

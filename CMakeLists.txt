@@ -16,6 +16,12 @@ ADD_DEFINITIONS(-DJEMALLOC)
 ADD_DEFINITIONS(-DFUNCTION)
 ADD_DEFINITIONS(-DBUDDY_ALLOC_IMPLEMENTATION)
 
+# This file is shared with liburing and that has to autodetect
+# If linux/time_types.h is available or not, it can
+# Define UAPI_LINUX_IO_URING_H_SKIP_LINUX_TIME_TYPES_H
+# If linux/time_types.h is not available
+# ADD_DEFINITIONS(-DUAPI_LINUX_IO_URING_H_SKIP_LINUX_TIME_TYPES_H)
+
 # When compiling with the musl-libc standard library, 
 # You need to define the _MUSL__ preprocessor macro to ensure correct compilation.
 # https://wiki.musl-libc.org/faq

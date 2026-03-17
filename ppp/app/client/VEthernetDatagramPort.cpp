@@ -46,9 +46,8 @@ namespace ppp {
 
             void VEthernetDatagramPort::Finalize() noexcept {
                 std::shared_ptr<ITransmission> transmission = std::move(transmission_);
-                transmission_.reset();
-
                 bool fin = false; 
+
                 for (;;) {
                     SynchronizedObjectScope scope(syncobj_);
                     if (sendto_ && !finalize_) {

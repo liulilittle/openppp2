@@ -86,6 +86,7 @@ namespace ppp {
 
                 for (;;) {
                     SynchronizedObjectScope scope(syncobj_);
+                    disposed_ = true;
 
                     mappings = std::move(mappings_);
                     mappings_.clear();
@@ -93,15 +94,12 @@ namespace ppp {
                     datagrams = std::move(datagrams_);
                     datagrams_.clear();
 
-                    transmission = std::move(transmission_);
-                    transmission_.reset();
-
                     deadline_timers = std::move(deadline_timers_);
                     deadline_timers_.clear();
                     
                     mux_vlan_ = 0;
                     mux = std::move(mux_);
-                    mux_.reset();
+                    transmission = std::move(transmission_);
                     break;
                 }
 
@@ -110,7 +108,6 @@ namespace ppp {
                     transmission->Dispose();
                 }
 
-                disposed_ = true;
                 for (auto&& [_, deadline_timer] : deadline_timers) {
                     ppp::net::Socket::Cancel(*deadline_timer);
                 }
@@ -273,7 +270,7 @@ namespace ppp {
                 ppp::string address;
                 ppp::string path;
                 ppp::string server;
-                int port;
+                int port = IPEndPoint::MinPort;
                 ProtocolType protocol_type = ProtocolType::ProtocolType_PPP;
 
                 if (!GetRemoteEndPoint(y.GetPtr(), hostname, address, path, port, protocol_type, server, remoteEP)) {
@@ -468,7 +465,6 @@ namespace ppp {
                             }
 
                             transmission->Dispose();
-                            transmission.reset();
                         }
                     } ExchangeToReconnectingState();
 
@@ -579,8 +575,6 @@ namespace ppp {
 
                 if (!successes) {
                     std::shared_ptr<vmux::vmux_net> mux = std::move(mux_);
-                    mux_.reset();
-
                     if (NULLPTR != mux) {
                         mux->close_exec();
                     }
@@ -1280,8 +1274,7 @@ namespace ppp {
                 for (int i = 0; i < arraysizeof(static_echo_sockets_); i++) {
                     std::shared_ptr<StaticEchoDatagarmSocket>& r = static_echo_sockets_[i];
                     std::shared_ptr<StaticEchoDatagarmSocket> socket = std::move(r);
-                    r.reset();
-
+  
                     Socket::Closesocket(socket);
                 }
                 

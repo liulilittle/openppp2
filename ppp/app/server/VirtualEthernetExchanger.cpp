@@ -93,19 +93,12 @@ namespace ppp {
                     mappings_.clear();
 
                     Timer::ReleaseAllTimeouts(timeouts_);
-                    timeouts_.clear();
+                    timeouts_.clear(); 
 
                     VirtualInternetControlMessageProtocolPtr echo = std::move(echo_); 
-                    echo_.reset();
-
                     std::shared_ptr<VirtualInternetControlMessageProtocolStatic> static_echo = std::move(static_echo_); 
-                    static_echo_.reset();
-
                     ITransmissionPtr transmission = std::move(transmission_); 
-                    transmission_.reset();
-
                     std::shared_ptr<vmux::vmux_net> mux = std::move(mux_);
-                    mux_.reset();
 
                     if (NULLPTR != echo) {
                         echo->Dispose();
@@ -244,7 +237,6 @@ namespace ppp {
 
                 if (err) {
                     if (std::shared_ptr<vmux::vmux_net> mux = std::move(mux_); NULLPTR != mux) {
-                        mux_.reset();
                         mux->close_exec();
                     }
 
@@ -868,7 +860,7 @@ namespace ppp {
                     uint32_t current = htonl(ip->src);
                     uint32_t mask = ntohl(source->SubmaskAddress);
                     uint32_t first = current & mask;
-                    uint32_t boardcast = first | (~first & 0xff);
+                    uint32_t boardcast = first | (~mask); // first | (~first & 0xff);
 
                     for (uint32_t address = first; address < boardcast; address++) {
                         if (current == address) {

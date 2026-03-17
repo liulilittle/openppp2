@@ -335,7 +335,7 @@ namespace ppp
                     }
                 }
 
-                return Internal->Default;
+                return context ? context : Internal->Default;
             }
         }
 
@@ -703,8 +703,6 @@ namespace ppp
                 [this]() noexcept
                 {
                     std::shared_ptr<Executors::Awaitable> awaitable = std::move(NetstackExitAwaitable);
-                    NetstackExitAwaitable.reset();
-
                     if (NULLPTR != awaitable)
                     {
                         awaitable->Processed();

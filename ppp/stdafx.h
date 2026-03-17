@@ -2020,7 +2020,6 @@ namespace ppp {
 
                 // Reset and release the field value reference technique held by the function object on the right and so on.
                 other.f_ = NULLPTR;
-                other.callable_.reset();
                 break;
             }
 

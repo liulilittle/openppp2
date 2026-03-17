@@ -43,8 +43,6 @@ namespace ppp {
 
             void VirtualEthernetDatagramPort::Finalize() noexcept {
                 std::shared_ptr<ITransmission> transmission = std::move(transmission_); 
-                transmission_.reset();
-                
                 if (sendto_ && !finalize_) {
                     if (NULLPTR != transmission) {
                         if (!exchanger_->DoSendTo(transmission, sourceEP_, sourceEP_, NULLPTR, 0, nullof<YieldContext>())) {

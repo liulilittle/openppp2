@@ -366,8 +366,6 @@ namespace ppp {
 
             void sniproxy::clear_timeout() noexcept {
                 std::shared_ptr<Timer> timeout = std::move(timeout_);
-                timeout_.reset();
-
                 if (timeout) {
                     timeout->Dispose();
                 }

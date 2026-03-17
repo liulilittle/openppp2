@@ -250,7 +250,6 @@ namespace ppp
                 ppp::net::Socket::Closestream(stream);
             }
 
-            _stream.reset();
             PacketInput = NULLPTR;
         }
 

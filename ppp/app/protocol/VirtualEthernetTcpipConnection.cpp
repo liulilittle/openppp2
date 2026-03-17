@@ -369,8 +369,6 @@ namespace ppp {
 
             void VirtualEthernetTcpipConnection::Finalize() noexcept {
                 ITransmissionPtr transmission = std::move(transmission_); 
-                transmission_.reset();
-                
                 if (NULLPTR != transmission) {
                     transmission->Dispose();
                 }

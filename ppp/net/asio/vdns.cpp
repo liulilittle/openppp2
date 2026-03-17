@@ -281,13 +281,11 @@ namespace ppp {
                     if (timeout || (rc->in4 && rc->in6)) {
                         std::shared_ptr<boost::asio::deadline_timer> t = std::move(rc->merge_wait); 
                         if (NULLPTR != t) {
-                            rc->merge_wait.reset();
                             Socket::Cancel(*t);
                         }
                         
                         std::shared_ptr<boost::asio::ip::udp::socket> socket = std::move(rc->socket);
                         if (NULLPTR != socket) {
-                            rc->socket.reset();
                             Socket::Closesocket(socket);
                         }
 

@@ -185,19 +185,14 @@ namespace aggligator
 #endif
 
             std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::move(socket_);
-            socket_.reset();
-
             if (socket)
             {
                 aggligator::socket_close(*socket);
             }
 
-            std::shared_ptr<aggligator> aggligator = app_;
-            app_.reset();
-
+            std::shared_ptr<aggligator> aggligator = std::move(app_);
             convergence_ptr convergence = std::move(convergence_);
-            convergence_.reset();
-
+ 
             next_packet_.reset();
             if (convergence)
             {
@@ -205,8 +200,6 @@ namespace aggligator
             }
 
             client_ptr client = std::move(client_);
-            client_.reset();
-
             if (client)
             {
                 client->close();
@@ -269,8 +262,6 @@ namespace aggligator
             else
             {
                 std::shared_ptr<Byte> next_packet = std::move(next_packet_);
-                next_packet_.reset();
-
                 if (next_packet)
                 {
                     return sent(next_packet, 2);
@@ -601,13 +592,11 @@ namespace aggligator
 
         if (server)
         {
-            server_.reset();
             server->close();
         }
 
         if (client)
         {
-            client_.reset();
             client->close();
         }
 
@@ -719,10 +708,9 @@ namespace aggligator
 
     void aggligator::deadline_timer_cancel(deadline_timer& t) noexcept
     {
-        deadline_timer p = std::move(t);
-        t.reset();
-
         boost::system::error_code ec;
+        deadline_timer p = std::move(t);
+
         if (p)
         {
             p->cancel(ec);
@@ -1245,8 +1233,6 @@ namespace aggligator
         }
 
         client_ptr pclient = std::move(client_);
-        client_.reset();
-
         if (pclient)
         {
             pclient->close();
@@ -1351,10 +1337,7 @@ namespace aggligator
     void aggligator::client::close() noexcept
     {
         std::shared_ptr<aggligator> aggligator = std::move(app_);
-        app_.reset();
-
         convergence_ptr convergence = std::move(convergence_);
-        convergence_.reset();
 
         if (convergence)
         {
@@ -1630,6 +1613,7 @@ namespace aggligator
 
         boost::asio::ip::tcp::endpoint master_node = list->front();
         list->pop_front();
+
         if (list->begin() == list->end())
         {
             list.reset();
@@ -1794,10 +1778,7 @@ namespace aggligator
     void aggligator::convergence::close() noexcept
     {
         std::shared_ptr<client> client = std::move(client_);
-        client_.reset();
-
         std::shared_ptr<aggligator> aggligator = std::move(app_);
-        app_.reset();
 
         send_queue_.clear();
         recv_queue_.clear();

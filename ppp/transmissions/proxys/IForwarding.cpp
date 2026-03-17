@@ -73,15 +73,12 @@ namespace ppp {
                     for (int i = 0; i < arraysizeof(sockets_); i++) {
                         std::shared_ptr<boost::asio::ip::tcp::socket>& reference = sockets_[i];
                         if (std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::move(reference); NULLPTR != socket) {
-                            reference.reset();
-
                             Socket::Closesocket(socket);
                         }
                     }
 
                     disposed_ = true;
                     if (std::shared_ptr<IForwarding> forwarding = std::move(forwarding_); NULLPTR != forwarding) {
-                        forwarding_.reset();
                         forwarding->TryRemove(this, false);
                     }
                 }

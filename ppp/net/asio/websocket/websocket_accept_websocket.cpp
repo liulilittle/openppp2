@@ -21,8 +21,6 @@ namespace ppp {
 
             void AcceptWebSocket::Dispose() noexcept {
                 std::shared_ptr<websocket> reference = std::move(reference_);
-                reference_.reset();
-                
                 if (reference) {
                     reference->Dispose();
                 }
@@ -55,6 +53,7 @@ namespace ppp {
                 , context_(context)
                 , strand_(strand)
                 , websocket_(std::move(*socket)) {
+
                 boost::system::error_code ec;
                 remoteEP_ = IPEndPoint::ToEndPoint(websocket_.next_layer().remote_endpoint(ec));
             }

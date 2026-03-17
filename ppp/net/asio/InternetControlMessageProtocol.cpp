@@ -252,8 +252,6 @@ namespace ppp {
                 }
                 void                                                    Release() noexcept {
                     std::shared_ptr<Timer> timeout = std::move(timeout_);
-                    timeout_.reset();
-
                     if (NULLPTR != timeout) {
                         timeout->Dispose();
                     }

@@ -43,8 +43,6 @@ namespace ppp
                 void PaperAirplaneController::Finalize() noexcept
                 {
                     PaperAirplaneControlBlockPortPtr block_port = std::move(block_port_);
-                    block_port_.reset();
-                    
                     if (NULLPTR != block_port)
                     {
                         if (block_port->IsAvailable())

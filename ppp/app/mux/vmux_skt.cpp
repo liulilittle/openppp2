@@ -45,10 +45,9 @@ namespace vmux {
 #endif
 
         rx_queue_.clear();
-        active_event = NULLPTR;
 
+        active_event = NULLPTR;
         tx_socket = std::move(tx_socket_);
-        tx_socket_.reset();
 
         mux_->release_connection(connection_id_, this);
         if (fin) {

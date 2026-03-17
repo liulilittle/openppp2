@@ -1816,7 +1816,6 @@ void PppApplication::Dispose() noexcept
     std::shared_ptr<VirtualEthernetSwitcher> server = std::move(server_);
     if (NULLPTR != server)
     {
-        server_.reset();
         server->Dispose();
     }
 
@@ -1824,9 +1823,6 @@ void PppApplication::Dispose() noexcept
     std::shared_ptr<VEthernetNetworkSwitcher> client = std::move(client_);
     if (NULLPTR != client)
     {
-        // Release the local virtual ethernet client switcher.
-        client_.reset();
-
 #if defined(_WIN32)
         // Restore original QUIC settings
         ppp::net::proxies::HttpProxy::SetSupportExperimentalQuicProtocol(quic_);
@@ -2043,7 +2039,6 @@ void PppApplication::ClearTickAlwaysTimeout() noexcept
     std::shared_ptr<Timer> timeout = std::move(timeout_);
     if (NULLPTR != timeout)
     {
-        timeout_.reset();
         timeout->Dispose();
     }
 }
@@ -2180,7 +2175,6 @@ bool PppApplication::ShutdownApplication(bool restart) noexcept
                 fprintf(stdout, "%s\r\n", restart ? "Application is restarting..." : "Application is shutting down...");
 
                 // Release app instances.
-                DEFAULT_.reset();
                 APP->Dispose();
 
                 // Delay before exit to allow clean shutdown
@@ -2505,8 +2499,6 @@ int main(int argc, const char* argv[]) noexcept
     
     // Clean up and optionally restart
     APP->Release();
-    APP.reset();
-    DEFAULT_.reset();
 
     // Restart application if requested
     if (GLOBAL_.restart)

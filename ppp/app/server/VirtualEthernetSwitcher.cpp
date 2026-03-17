@@ -698,7 +698,7 @@ namespace ppp {
                     return allocated_context;
                 }
                 
-                for (int i = ppp::net::IPEndPoint::MinPort; i < ppp::net::IPEndPoint::MaxPort; i++) {
+                for (int i = ppp::net::IPEndPoint::MinPort; i <= ppp::net::IPEndPoint::MaxPort; i++) {
                     int generate_id = abs(RandomNext());
                     if (generate_id < 1) {
                         continue;
@@ -875,16 +875,13 @@ namespace ppp {
 
                 for (;;) {
                     SynchronizedObjectScope scope(syncobj_);
+                    disposed_ = true;
+
                     CloseAllAcceptors();
 
                     cache = std::move(namespace_cache_);
-                    namespace_cache_.reset();
-
                     nats = std::move(nats_);
-                    nats_.clear();
-
                     logger = std::move(logger_);
-                    logger_.reset();
 
                     exchangers = std::move(exchangers_);
                     exchangers_.clear();
@@ -896,7 +893,6 @@ namespace ppp {
                     break;
                 }
 
-                disposed_ = true;
                 CloseAlwaysTimeout();
 
                 CancelAllResolver(tresolver);
@@ -929,8 +925,6 @@ namespace ppp {
 
             bool VirtualEthernetSwitcher::CloseAlwaysTimeout() noexcept {
                 TimerPtr timeout = std::move(timeout_);
-                timeout_.reset();
-                
                 if (timeout) {
                     timeout->Dispose();
                     return true;
@@ -993,8 +987,12 @@ namespace ppp {
             }
 
             bool VirtualEthernetSwitcher::OnTick(UInt64 now) noexcept {
-                if (disposed_) {
-                    return false;
+                for (SynchronizedObjectScope scope(syncobj_);;) {
+                    if (disposed_) {
+                        return false;
+                    }
+
+                    break;
                 }
 
                 TickAllExchangers(now);

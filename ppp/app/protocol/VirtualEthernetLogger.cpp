@@ -89,8 +89,6 @@ namespace ppp {
                 }
 #else
                 std::shared_ptr<boost::asio::posix::stream_descriptor> log = std::move(log_file_);
-                log_file_.reset();
-
                 if (NULLPTR != log) {
                     ppp::net::Socket::Closestream(log);
                 }

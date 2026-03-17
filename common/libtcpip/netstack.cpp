@@ -300,7 +300,6 @@ namespace lwip {
 
         std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::move(socket_->socket);
         if (socket) {
-            socket_->socket = NULLPTR;
             ppp::net::Socket::Closesocket(socket);
         }
 
@@ -904,7 +903,6 @@ namespace lwip {
                 boost::system::error_code ec;
                 std::shared_ptr<boost::asio::deadline_timer> timeout = std::move(timeout_);
                 if (timeout) {
-                    timeout_.reset();
                     ppp::net::Socket::Cancel(*timeout);
                 }
 
@@ -912,6 +910,7 @@ namespace lwip {
                 for (;;) {
                     SynchronizedObjectScope scope_(lockobj_);
                     sockets = std::move(p2ss_);
+
                     p2ss_.clear();
                     break;
                 }

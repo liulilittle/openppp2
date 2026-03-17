@@ -70,8 +70,6 @@ namespace ppp
         void VEthernet::ReleaseAllObjects() noexcept
         {
             std::shared_ptr<IPFragment> fragment = std::move(fragment_);
-            fragment_.reset();
-
             if (NULLPTR != fragment)
             {
                 fragment->Release();
@@ -83,9 +81,6 @@ namespace ppp
             {
                 std::shared_ptr<ITap>& netstack_tap = constantof(netstack->Tap);
                 tap = std::move(netstack_tap);
-                
-                netstack_.reset();
-                netstack_tap.reset();
 
                 netstack->Release();
             }
@@ -108,8 +103,6 @@ namespace ppp
         void VEthernet::StopTimeout() noexcept
         {
             std::shared_ptr<ppp::threading::Timer> timeout = std::move(timeout_);
-            timeout_.reset();
-
             if (NULLPTR != timeout)
             {
                 timeout->Dispose();

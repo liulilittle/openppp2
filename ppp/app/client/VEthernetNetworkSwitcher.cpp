@@ -1869,44 +1869,37 @@ namespace ppp {
 
                 // Stop and release the http-proxy service.
                 if (VEthernetHttpProxySwitcherPtr http_proxy = std::move(http_proxy_); NULLPTR != http_proxy) {
-                    http_proxy_.reset();
                     http_proxy->Dispose();
                 }
 
                 // Stop and release the socks-proxy service.
                 if (VEthernetSocksProxySwitcherPtr socks_proxy = std::move(socks_proxy_); NULLPTR != socks_proxy) {
-                    socks_proxy_.reset();
                     socks_proxy->Dispose();
                 }
 
                 // Close and release the exchanger.
                 if (std::shared_ptr<VEthernetExchanger> exchanger = std::move(exchanger_); NULLPTR != exchanger) {
-                    exchanger_.reset();
                     exchanger->Dispose();
                 }
 
                 // Shutdown and release the qos control module.
                 if (std::shared_ptr<ppp::transmissions::ITransmissionQoS> qos = std::move(qos_);  NULLPTR != qos) {
-                    qos_.reset();
                     qos->Dispose();
                 }
 
                 // Close and release the aggligator.
                 if (std::shared_ptr<aggligator::aggligator> aggligator = std::move(aggligator_); NULLPTR != aggligator) {
-                    aggligator_.reset();
                     aggligator->close();
                 }
 
                 // Close and release the forwarding.
                 if (IForwardingPtr forwarding = std::move(forwarding_); NULLPTR != forwarding) {
-                    forwarding_.reset();
                     forwarding->Dispose();
                 }
 
 #if defined(_WIN32)
                 // On Windows platforms, you need to try to turn off the [PaperAirplane NSP/LSP] server-side controller.
                 if (PaperAirplaneControllerPtr controller = std::move(paper_airplane_ctrl_);  NULLPTR != controller) {
-                    paper_airplane_ctrl_.reset();
                     controller->Dispose();
                 }
 #endif
@@ -1953,8 +1946,6 @@ namespace ppp {
 #if defined(_LINUX)
                 // Release the network protector held by the current VPN local client switcher.
                 if (auto protector = std::move(protect_network_); NULLPTR != protector) {
-                    protect_network_.reset();
-
                     // In android platform you need to request the DetachJNI function of the network protector.
 #if defined(_ANDROID)
                     protector->DetachJNI();

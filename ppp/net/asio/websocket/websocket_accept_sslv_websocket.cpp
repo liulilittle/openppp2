@@ -14,8 +14,6 @@ namespace ppp {
 
             void AcceptSslvWebSocket::Dispose() noexcept {
                 std::shared_ptr<sslwebsocket> reference = std::move(reference_);
-                reference_.reset();
-
                 if (reference) {
                     reference->Dispose();
                 }

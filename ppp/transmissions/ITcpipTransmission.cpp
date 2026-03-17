@@ -36,6 +36,8 @@ namespace ppp {
  
         void ITcpipTransmission::Finalize() noexcept {
             std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::move(socket_);
+            disposed_ = true;
+
             if (socket) {
                 Socket::Closesocket(socket);
             }
@@ -43,9 +45,6 @@ namespace ppp {
 #if defined(_WIN32)
             qoss_.reset();
 #endif
-
-            socket_.reset();
-            disposed_ = true;
         }
 
         void ITcpipTransmission::Dispose() noexcept {

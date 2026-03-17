@@ -36,10 +36,7 @@ namespace ppp {
                     }
 
                     std::shared_ptr<ppp::threading::Timer> timeout = std::move(timeout_); 
-                    timeout_.reset();
-
                     std::shared_ptr<ppp::net::SocketAcceptor> acceptor = std::move(acceptor_); 
-                    acceptor_.reset();
 
                     if (NULLPTR != timeout) {
                         timeout->Dispose();

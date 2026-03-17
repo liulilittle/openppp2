@@ -173,6 +173,8 @@ namespace ppp {
                 }
                 void                                                        Finalize() noexcept {
                     std::shared_ptr<IWebsocket> socket = std::move(socket_); 
+                    disposed_ = true;
+
                     if (socket) {
                         socket->Dispose();
                     }
@@ -180,9 +182,6 @@ namespace ppp {
 #if defined(_WIN32)
                     qoss_.reset();
 #endif
-
-                    socket_.reset();
-                    disposed_ = true;
                 }
                 virtual bool                                                ShiftToScheduler() noexcept override {
                     std::shared_ptr<IWebsocket> socket = socket_;

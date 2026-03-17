@@ -63,7 +63,6 @@ namespace ppp {
         void VNetstack::TapTcpLink::Closing() noexcept {
             std::shared_ptr<TapTcpClient> c = std::move(this->socket); 
             this->closed = true;
-            this->socket.reset();
 
             if (NULLPTR != c) {
                 c->Dispose();
@@ -225,9 +224,7 @@ namespace ppp {
             
             for (;;) {
                 SynchronizedObjectScope scope(syncobj_);
-
                 acceptor = std::move(acceptor_);
-                acceptor_.reset();
 
                 wan2lan = std::move(wan2lan_);
                 wan2lan_.clear();
@@ -800,10 +797,7 @@ namespace ppp {
 
         void VNetstack::TapTcpClient::Finalize() noexcept {
             std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::move(socket_);
-            socket_.reset();
-
             std::shared_ptr<TapTcpLink> link = std::move(link_);
-            link_.reset();
 
             disposed_.exchange(TRUE);
             if (NULLPTR != socket) {
@@ -869,10 +863,7 @@ namespace ppp {
             }
 
             std::shared_ptr<Byte> packet = std::move(this->sync_ack_byte_array_);
-            this->sync_ack_byte_array_.reset();
-
             std::shared_ptr<ITap> tap = std::move(this->sync_ack_tap_driver_);
-            this->sync_ack_tap_driver_.reset();
 
             int packet_length = this->sync_ack_bytes_size_;
             if (packet_length < 1) {

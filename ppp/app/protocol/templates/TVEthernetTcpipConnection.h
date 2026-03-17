@@ -24,8 +24,6 @@ namespace ppp {
                 public:
                     virtual void                                                Dispose() noexcept override {
                         std::shared_ptr<TConnection> connection = std::move(connection_);
-                        connection_.reset();
-                        
                         if (NULLPTR != connection) {
                             connection->Dispose();
                         }

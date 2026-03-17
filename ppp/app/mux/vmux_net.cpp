@@ -75,9 +75,8 @@ namespace vmux {
             VirtualEthernetTcpipConnectionPtr& connection = linklayer->connection;
             connection->Dispose();
 
-            if (auto server = linklayer->server; NULLPTR != server) {
+            if (auto server = std::move(linklayer->server); NULLPTR != server) {
                 server->Dispose();
-                linklayer->server.reset();
             }
         }
 
