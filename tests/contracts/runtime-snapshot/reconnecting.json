@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "generation": 8,
+  "monotonic_ms": 65000,
+  "phase": "reconnecting",
+  "capabilities": ["mux.compat", "mux.flow", "mux.balance", "mux.stripe"],
+  "role": "client",
+  "requested_mux_mode": "balance",
+  "effective_mux_mode": "compat",
+  "mux_fallback_reason": "peer_missing_flow_v2",
+  "p2p_state": "relay",
+  "effective_path": "relay"
+}

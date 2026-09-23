@@ -47,7 +47,7 @@ func (my *ManagedServer) server_find_user_by_guid(guid string) (*tb_user, error)
 	var user *tb_user
 
 	DB := my.FetchDB(true).LoadDB()
-	result := DB.First(&user)
+	result := DB.First(&user, "guid = ?", guid)
 
 	err := result.Error
 	if err != nil {

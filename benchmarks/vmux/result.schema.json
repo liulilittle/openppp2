@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openppp2.example/schemas/vmux-benchmark-result-v1.json",
+  "title": "OpenPPP2 VMUX benchmark result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario",
+    "duration_seconds",
+    "environment",
+    "config",
+    "metrics",
+    "runtime_state"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "scenario": { "type": "string", "minLength": 1 },
+    "duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["architecture", "kernel", "cpu", "git_commit", "fingerprint"],
+      "properties": {
+        "architecture": { "type": "string", "minLength": 1 },
+        "kernel": { "type": "string", "minLength": 1 },
+        "cpu": { "type": "string", "minLength": 1 },
+        "git_commit": { "type": "string", "minLength": 1 },
+        "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mux_mode", "flows", "netem_profile", "fingerprint"],
+      "properties": {
+        "mux_mode": { "enum": ["off", "compat", "flow", "balance", "turbo"] },
+        "flows": { "type": "integer", "minimum": 1 },
+        "netem_profile": { "enum": ["none", "carrier-delay", "carrier-loss"] },
+        "fingerprint": { "type": "string", "minLength": 1 }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "throughput_mbps",
+        "p50_latency_ms",
+        "p99_latency_ms",
+        "reorder_depth",
+        "buffered_bytes",
+        "active_links",
+        "disconnects"
+      ],
+      "properties": {
+        "throughput_mbps": { "type": "number", "minimum": 0 },
+        "p50_latency_ms": { "type": "number", "minimum": 0 },
+        "p99_latency_ms": { "type": "number", "minimum": 0 },
+        "reorder_depth": { "type": "integer", "minimum": 0 },
+        "reorder_entries": { "type": "integer", "minimum": 0 },
+        "buffered_bytes": { "type": "integer", "minimum": 0 },
+        "active_links": { "type": "integer", "minimum": 0 },
+        "disconnects": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "runtime_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested_mode", "effective_mode", "fallback_reason"],
+      "properties": {
+        "requested_mode": { "type": "string" },
+        "effective_mode": { "type": "string" },
+        "fallback_reason": { "type": "string" }
+      }
+    },
+    "endpoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client", "server"],
+      "properties": {
+        "client": { "$ref": "#/$defs/endpoint" },
+        "server": { "$ref": "#/$defs/endpoint" }
+      }
+    },
+    "reorder_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bytes", "entries"],
+      "properties": {
+        "bytes": { "type": "integer", "minimum": 1 },
+        "entries": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "iperf": { "type": "object" }
+  },
+  "$defs": {
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "device_class", "device_id", "git_commit"],
+      "properties": {
+        "platform": { "enum": ["linux", "android", "ios"] },
+        "device_class": { "enum": ["physical", "virtual"] },
+        "device_id": { "type": "string", "minLength": 1 },
+        "git_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["config"],
+        "properties": {
+          "config": {
+            "required": ["mux_mode"],
+            "properties": { "mux_mode": { "const": "off" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "metrics": {
+            "properties": { "active_links": { "const": 0 } }
+          },
+          "runtime_state": {
+            "properties": {
+              "fallback_reason": { "enum": ["", "mux_inactive"] }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -5,20 +5,24 @@ import (
 	"errors"
 	"net/http"
 	"ppp/io"
+	"strings"
 	"sync"
 )
 
 type ManagedServer struct {
 	sync.Mutex
 	disposed      bool
+	managed       bool
 	ppp           *io.WebSocketServer
 	configuration *ManagedServerConfiguration
 	redis         *io.RedisClient
+	local         *LocalStore
 
 	servers map[int]*tb_server
 	nodes   map[int]*_vpn_server
 	users   map[string]*_vpn_user
 	dirty   map[string]bool
+	admin   http.Handler
 
 	db_master *io.DB
 	db_salves *list.List
@@ -63,34 +67,67 @@ func NewManagedServer() (*ManagedServer, error) {
 		return nil, errors.New("unable to find a valid configuration files, failed to instantiate the managed ppp")
 	}
 
-	// Link to redis nosql database nodes via redis v8 library (sentinel mode).
-	redis, err := server_connect_all_redis(cfg)
+	managed, err := cfg.ManagedMode()
 	if err != nil {
 		return nil, err
 	}
-
-	// Link to the mysql database nodes through the gorm framework.
-	master_db, salve_dbs, err := server_connect_all_databases(cfg)
-	if err != nil {
-		return nil, err
+	var redis *io.RedisClient
+	var masterDB *io.DB
+	var slaveDBs *list.List
+	var local *LocalStore
+	if managed {
+		redis, err = server_connect_all_redis(cfg)
+		if err != nil {
+			return nil, err
+		}
+		masterDB, slaveDBs, err = server_connect_all_databases(cfg)
+		if err != nil {
+			redis.Close()
+			return nil, err
+		}
+		if cfg.Admin.Token == "" {
+			cfg.Admin.Token, err = newSubscriptionToken()
+			if err != nil {
+				return nil, err
+			}
+			LOG_ERROR.Printf("generated ephemeral admin token: %s (set admin.token or OPENPPP2_ADMIN_TOKEN to persist it)", cfg.Admin.Token)
+		}
+	} else {
+		local, err = OpenLocalStore(cfg.Admin.DataPath, cfg.Admin.Token, cfg.Admin.PublicBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Admin.Token = local.AdminToken()
+		if cfg.Admin.PublicBaseURL == "" {
+			cfg.Admin.PublicBaseURL = local.PublicBaseURL()
+		}
+		LOG_ERROR.Printf("standalone subscription manager enabled; admin token: %s", cfg.Admin.Token)
 	}
 
 	// Instantiate one and construct the management ppp object instance.
 	ppp := &ManagedServer{
 		disposed:      false,
+		managed:       managed,
 		configuration: cfg,
-		db_master:     master_db,
-		db_salves:     salve_dbs,
+		db_master:     masterDB,
+		db_salves:     slaveDBs,
 		redis:         redis,
+		local:         local,
+		servers:       make(map[int]*tb_server),
 		nodes:         make(map[int]*_vpn_server),
 		users:         make(map[string]*_vpn_user),
 		dirty:         make(map[string]bool),
 	}
+	ppp.admin = ppp.newAdminHandler()
 
 	// Instantiate a WebSocket ppp, taking care to only instantiate WebSocket nodes
 	// That are based on the transparent HTTP protocol, not those that also support SSL.
 	wsserver, err := io.NewWebSocketServer(cfg.Prefixes, cfg.Path,
 		func(ws *io.WebSocket) bool {
+			if !ppp.managed {
+				ws.Close()
+				return false
+			}
 			ok := ppp.accept(ws)
 			if ok {
 				ppp.run(ws)
@@ -113,20 +150,17 @@ func (my *ManagedServer) ListenAndServe() error {
 		return errors.New("ppp is closed")
 	}
 
-	// Push all server list data to the redis distributed cache cluster.
-	_, err := my.server_load_all_servers()
-	if err != nil {
-		return err
+	if my.managed {
+		_, err := my.server_load_all_servers()
+		if err != nil {
+			return err
+		}
+		if err = my.server_load_all_users(); err != nil {
+			return err
+		}
+		go my.server_tick()
 	}
 
-	// Push all user data into the local cache if it needs to be loaded.
-	err = my.server_load_all_users()
-	if err != nil {
-		return err
-	}
-
-	// Run the server and always tick processing coroutines.
-	go my.server_tick()
 	return ppp.ListenAndServe()
 }
 
@@ -181,7 +215,12 @@ func (my *ManagedServer) run(ws *io.WebSocket) {
 }
 
 func (my *ManagedServer) request(w http.ResponseWriter, r *http.Request) {
-	if io.HttpIsInPath(my.configuration.Interfaces.ConsumerSet, r.RequestURI) {
+	adminRoot := strings.TrimSuffix(my.configuration.Admin.Path, "/")
+	if my.admin != nil && (strings.HasPrefix(r.URL.Path, "/api/v1/") || strings.HasPrefix(r.URL.Path, "/sub/") || r.URL.Path == adminRoot || strings.HasPrefix(r.URL.Path, my.configuration.Admin.Path)) {
+		my.admin.ServeHTTP(w, r)
+	} else if !my.managed {
+		http.NotFound(w, r)
+	} else if io.HttpIsInPath(my.configuration.Interfaces.ConsumerSet, r.RequestURI) {
 		my.http_api_consumer_set(w, r)
 	} else if io.HttpIsInPath(my.configuration.Interfaces.ConsumerNew, r.RequestURI) {
 		my.http_api_consumer_new(w, r)
@@ -226,7 +265,7 @@ func (my *ManagedServer) Dispose() {
 	my.server_close_all_nodes()
 
 	// If the object has not been released, the business logic that the server program needs to process is released.
-	if !disposed {
+	if !disposed && my.managed {
 		// Force all changed user base data to be archived immediately.
 		// If storage is not completed or fails, please solve the problem between distributed clusters as soon as possible
 		// Before restarting the server program to complete automatic archiving.

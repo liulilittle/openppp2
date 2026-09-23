@@ -23,6 +23,7 @@ on:
         default: false
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
@@ -30,16 +31,37 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout release tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
 
-      - name: Download artifacts from latest build runs
+      - name: Resolve release revision
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if ! git check-ref-format "refs/tags/${RELEASE_TAG}"; then
+            echo "::error::Invalid release tag: ${RELEASE_TAG}"
+            exit 1
+          fi
+
+          tag_sha=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")
+          echo "tag_sha=${tag_sha}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${RELEASE_TAG} at ${tag_sha}"
+
+      - name: Download artifacts built from release revision
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ steps.release.outputs.tag_sha }}
         run: |
+          set -euo pipefail
           mkdir -p artifacts
-          
-          # Get latest successful build run IDs
+
           workflows=(
             "build-android.yml"
             "build-linux-amd64.yml"
@@ -49,33 +71,57 @@ jobs:
             "build-windows-arm64.yml"
             "build-go-guardian.yml"
           )
-          
+
           for workflow in "${workflows[@]}"; do
-            echo "Downloading artifacts from $workflow..."
-            run_id=$(gh run list --workflow="$workflow" --branch=main --status=success --limit 1 --json databaseId --jq '.[0].databaseId')
-            
-            if [ -n "$run_id" ]; then
-              gh run download "$run_id" --dir artifacts 2>/dev/null || echo "No artifacts for $workflow"
+            echo "Locating successful $workflow run for ${RELEASE_SHA}..."
+            run_id=$(gh run list \
+              --workflow="$workflow" \
+              --commit="$RELEASE_SHA" \
+              --status=success \
+              --limit=1 \
+              --json databaseId \
+              --jq '.[0].databaseId // empty')
+
+            if [ -z "$run_id" ]; then
+              echo "::error::No successful $workflow run found for ${RELEASE_SHA}"
+              exit 1
             fi
+
+            run_sha=$(gh run view "$run_id" --json headSha --jq '.headSha')
+            if [ "$run_sha" != "$RELEASE_SHA" ]; then
+              echo "::error::$workflow run $run_id belongs to $run_sha, expected ${RELEASE_SHA}"
+              exit 1
+            fi
+
+            artifact_dir="artifacts/${workflow%.yml}"
+            mkdir -p "$artifact_dir"
+            gh run download "$run_id" --dir "$artifact_dir"
           done
 
-      - name: List artifacts
+      - name: Prepare release assets
         run: |
-          echo "Downloaded artifacts:"
-          if [ -d artifacts ]; then
-            ls -R artifacts
-          else
-            echo "No artifacts found"
+          mkdir -p release-assets
+          find artifacts -type f -size +0c \
+            \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.apk' \) \
+            -exec cp {} release-assets/ \;
+
+          if ! find release-assets -maxdepth 1 -type f -print -quit | grep -q .; then
+            echo "No non-empty release assets found"
+            exit 1
           fi
+
+          echo "Release assets:"
+          find release-assets -maxdepth 1 -type f -printf '%f\t%s bytes\n' | sort
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ steps.release.outputs.tag_sha }}
           name: ${{ inputs.title }}
           prerelease: ${{ inputs.prerelease }}
-          files: artifacts/**/*
+          files: release-assets/*
           generate_release_notes: true
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>OpenPPP2 · 连接</title>
+<style>
+  :root {
+    --bg: #0B0D10;
+    --card: #101318;
+    --border: rgba(255,255,255,.07);
+    --text: #E8EAED;
+    --text-2: #9AA3AD;
+    --text-3: #5F6872;
+    --green: #3FB950; --yellow: #D29922; --red: #F85149; --gray: #6E7681;
+    --status: var(--green);
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text); font-size:13px;
+    font-family:"Segoe UI Variable","SF Pro Display",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    height:100vh; overflow:hidden; -webkit-font-smoothing:antialiased;
+  }
+  .app { display:flex; height:100vh; }
+
+  /* sidebar */
+  .sidebar { width:196px; flex-shrink:0; border-right:1px solid var(--border); padding:16px 10px; display:flex; flex-direction:column; }
+  .brand { display:flex; align-items:center; gap:9px; padding:2px 10px 18px; font-weight:600; font-size:14px; }
+  .brand .dot { width:8px; height:8px; border-radius:50%; background:var(--status); transition:background .15s; }
+  .nav-group { font-size:11px; color:var(--text-3); letter-spacing:.12em; padding:14px 10px 5px; }
+  .nav-item { display:flex; align-items:center; gap:10px; padding:7px 10px; margin:1px 0; border-radius:7px; color:var(--text-2); cursor:pointer; font-weight:500; }
+  .nav-item svg { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+  .nav-item:hover { background:rgba(255,255,255,.04); color:var(--text); }
+  .nav-item.active { background:rgba(255,255,255,.07); color:var(--text); }
+  .sidebar .spacer { flex:1; }
+  .sidebar .ver { padding:4px 10px; font-size:11px; color:var(--text-3); font-family:var(--mono); }
+
+  /* main */
+  .main { flex:1; min-width:0; overflow-y:auto; }
+  .topbar { display:flex; align-items:center; gap:12px; padding:13px 24px 0; font-size:12px; color:var(--text-2); }
+  .topbar .grow { flex:1; }
+  .state-switch { display:flex; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
+  .state-switch button { background:transparent; border:none; color:var(--text-2); font-size:11.5px; padding:4px 11px; cursor:pointer; font-family:inherit; }
+  .state-switch button.on { background:rgba(255,255,255,.08); color:var(--text); }
+
+  .content { padding:16px 24px 24px; max-width:920px; display:flex; flex-direction:column; gap:12px; }
+
+  /* status hero */
+  .hero { border:1px solid var(--border); border-radius:10px; background:var(--card); padding:20px 22px; display:flex; align-items:center; gap:18px; }
+  .hero .left { flex:1; min-width:0; }
+  .state-line { display:flex; align-items:center; gap:9px; font-size:19px; font-weight:650; }
+  .state-line .dot { width:9px; height:9px; border-radius:50%; background:var(--status); transition:background .15s; }
+  .state-line .dot.pulse { animation:pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.35 } }
+  .node-line { margin-top:7px; font-size:13.5px; }
+  .node-line .addr { font-family:var(--mono); color:var(--text-2); font-size:12.5px; margin-left:8px; }
+  .meta-line { margin-top:5px; font-size:12px; color:var(--text-2); font-variant-numeric:tabular-nums; }
+  .meta-line .sep { color:var(--text-3); margin:0 7px; }
+  .err-line { margin-top:8px; font-family:var(--mono); font-size:12px; color:var(--red); display:none; }
+  .hero.error .err-line { display:block; }
+  .btn {
+    border:1px solid var(--border); border-radius:8px; padding:9px 22px; font-size:13px; font-weight:600;
+    cursor:pointer; font-family:inherit; background:transparent; color:var(--text); flex-shrink:0;
+  }
+  .btn:hover { background:rgba(255,255,255,.05); }
+  .btn.primary { background:#EDEFF2; color:#0B0D10; border-color:#EDEFF2; }
+  .btn.primary:hover { background:#fff; }
+
+  /* card */
+  .card { border:1px solid var(--border); border-radius:10px; background:var(--card); }
+  .card-head { display:flex; align-items:center; padding:12px 18px 0; font-size:12.5px; font-weight:600; }
+  .card-head .link { margin-left:auto; font-weight:500; font-size:12px; color:var(--text-2); cursor:pointer; }
+  .card-head .link:hover { color:var(--text); }
+
+  /* metrics (本机) */
+  .metrics { padding:10px 18px 14px; font-family:var(--mono); font-size:12.5px; display:flex; flex-direction:column; gap:6px; }
+  .metrics .mrow { display:flex; gap:26px; flex-wrap:wrap; color:var(--text-2); font-variant-numeric:tabular-nums; }
+  .metrics .mrow b { color:var(--text); font-weight:600; }
+  .metrics .lbl { color:var(--text-3); margin-right:6px; }
+  .card-head .hint { margin-left:8px; font-weight:400; font-size:11px; color:var(--text-3); }
+
+  /* events */
+  .events { padding:8px 0 10px; font-family:var(--mono); font-size:12px; }
+  .ev { display:flex; gap:14px; padding:4px 18px; color:var(--text-2); }
+  .ev .t { color:var(--text-3); flex-shrink:0; }
+  .ev.ok .m { color:var(--text); }
+  .ev.bad .m { color:var(--red); }
+  .ev.new { animation:fadein .3s; }
+  @keyframes fadein { from { opacity:0 } }
+
+  /* node table */
+  table { width:100%; border-collapse:collapse; margin:6px 0 8px; }
+  th { text-align:left; font-size:11px; font-weight:500; color:var(--text-3); letter-spacing:.06em; padding:8px 18px 6px; }
+  td { padding:9px 18px; border-top:1px solid var(--border); font-size:13px; }
+  tr.row { cursor:pointer; }
+  tr.row:hover td { background:rgba(255,255,255,.025); }
+  tr.current td { background:rgba(255,255,255,.03); }
+  tr.current td:first-child { box-shadow:inset 2px 0 0 var(--status); }
+  td.addr, td.lat { font-family:var(--mono); font-size:12px; color:var(--text-2); font-variant-numeric:tabular-nums; }
+  td.lat span.good { color:var(--green); } td.lat span.mid { color:var(--yellow); } td.lat span.bad { color:var(--red); }
+  td.sub { color:var(--text-2); font-size:12px; }
+  .row-btn { border:1px solid var(--border); background:transparent; color:var(--text); border-radius:6px; padding:4px 14px; font-size:12px; cursor:pointer; font-family:inherit; }
+  .row-btn:hover { background:rgba(255,255,255,.06); }
+  .cur-tag { font-size:11px; color:var(--text-2); }
+  .foot { display:flex; justify-content:space-between; padding:0 24px 14px; font-size:11px; color:var(--text-3); }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span class="dot" id="brandDot"></span>OpenPPP2</div>
+    <div class="nav-item active">
+      <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>连接
+    </div>
+    <div class="nav-item">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14 0 18M12 3c-3 3.5-3 14 0 18"/></svg>节点
+    </div>
+    <div class="nav-item">
+      <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 9v11"/></svg>订阅
+    </div>
+    <div class="nav-item">
+      <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>日志
+    </div>
+    <div class="nav-group">高级</div>
+    <div class="nav-item">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 9h6M7 13h10"/></svg>配置
+    </div>
+    <div class="nav-item">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>设置
+    </div>
+    <div class="spacer"></div>
+    <div class="ver">ppp 2.1.0 · windows</div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <span id="syncText">订阅已同步 · updatedAt 2026-07-19 11:58:04</span>
+      <span class="grow"></span>
+      <div class="state-switch" title="演示：切换连接状态">
+        <button data-s="connected" class="on">已连接</button>
+        <button data-s="connecting">连接中</button>
+        <button data-s="disconnected">未连接</button>
+        <button data-s="error">异常</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- status -->
+      <section class="hero" id="hero">
+        <div class="left">
+          <div class="state-line"><span class="dot" id="stateDot"></span><span id="stateWord">已连接</span></div>
+          <div class="node-line"><span id="nodeName">东京 01</span><span class="addr" id="nodeAddr">47.102.41.18:32000</span></div>
+          <div class="meta-line" id="metaLine">延迟 32 ms(直连参考)<span class="sep">·</span>已连接 02:14:36</div>
+          <div class="err-line">[error] authentication failed / server rejected (exit -1)</div>
+        </div>
+        <button class="btn primary" id="mainBtn">断开</button>
+      </section>
+
+      <!-- 本机指标(stats 导出,模拟数据) -->
+      <section class="card" id="statsCard">
+        <div class="card-head">本机<span class="hint">stats 导出 · 1s 刷新</span></div>
+        <div class="metrics">
+          <div class="mrow">
+            <span><span class="lbl">↓</span><b id="mDown">12.4 Mbps</b></span>
+            <span><span class="lbl">↑</span><b id="mUp">2.1 Mbps</b></span>
+            <span><span class="lbl">链路质量</span><b id="mQuality">99.2% 优</b></span>
+          </div>
+          <div class="mrow">
+            <span><span class="lbl">累计 ↓</span><b id="mRx">1.80 GB</b></span>
+            <span><span class="lbl">累计 ↑</span><b id="mTx">214.6 MB</b></span>
+            <span><span class="lbl">活动链路</span><b id="mMux">4/4 · 直连</b></span>
+          </div>
+          <div class="mrow">
+            <span><span class="lbl">TUN</span><b>10.8.0.2/24</b></span>
+            <span><span class="lbl">gw</span><b>10.8.0.1</b></span>
+            <span><span class="lbl">http</span><b>127.0.0.1:1080</b></span>
+            <span><span class="lbl">socks</span><b>127.0.0.1:1081</b></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- session events -->
+      <section class="card">
+        <div class="card-head">会话事件<span class="link">全部日志 →</span></div>
+        <div class="events" id="events"></div>
+      </section>
+
+      <!-- nodes -->
+      <section class="card">
+        <div class="card-head">常用节点<span class="link">全部节点 →</span></div>
+        <table>
+          <thead><tr><th>名称</th><th>副标题</th><th>地址</th><th>延迟</th><th></th></tr></thead>
+          <tbody id="nodeRows"></tbody>
+        </table>
+      </section>
+    </div>
+
+    <div class="foot"><span>Ctrl+K 命令面板</span><span>Ctrl+D 断开 / 连接</span></div>
+  </main>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+/* ── 数据:字段与订阅 JSON 一致(name/subtitle/server),延迟为 wrapper 自测 ── */
+const NODES = [
+  { name:'东京 01',   sub:'jp-tokyo-eq',   addr:'47.102.41.18:32000',  lat:32,  cur:true },
+  { name:'大阪 02',   sub:'jp-osaka-xt',   addr:'103.85.24.196:24000', lat:48 },
+  { name:'新加坡 01', sub:'sg-sin-eq',     addr:'156.234.110.8:20000', lat:86 },
+  { name:'洛杉矶 03', sub:'us-lax-tx',     addr:'45.88.190.66:28000',  lat:138 },
+];
+const EVENTS = {
+  connected: [
+    ['19:03:07','tcp connected 47.102.41.18:32000',''],
+    ['19:03:09','exchanger connected','ok'],
+    ['19:03:11','session established role=main','ok'],
+  ],
+  connecting: [
+    ['19:21:44','tcp connected 47.102.41.18:32000',''],
+    ['19:21:44','exchanger connecting …',''],
+  ],
+  disconnected: [],
+  error: [
+    ['19:34:02','tcp connected 47.102.41.18:32000',''],
+    ['19:34:04','exchanger handshake failed error=1009','bad'],
+    ['19:34:04','process exited code=-1','bad'],
+  ],
+};
+const STATES = {
+  connected:    { color:'var(--green)',  word:'已连接',  btn:'断开',     primary:true,
+                  meta:'延迟 32 ms(直连参考)<span class="sep">·</span>已连接 <span id="dur">02:14:36</span>' },
+  connecting:   { color:'var(--yellow)', word:'连接中',  btn:'取消',     primary:false, pulse:true,
+                  meta:'东京 01<span class="sep">·</span>正在握手' },
+  disconnected: { color:'var(--gray)',   word:'未连接',  btn:'连接',     primary:true,
+                  meta:'延迟 32 ms(直连参考)<span class="sep">·</span>上次连接 2 小时前' },
+  error:        { color:'var(--red)',    word:'已断开',  btn:'重新连接', primary:true,
+                  meta:'进程异常退出<span class="sep">·</span>退出码 -1' },
+};
+let state = 'connected', dur = 2*3600 + 14*60 + 36;
+
+function setState(s) {
+  state = s;
+  const t = STATES[s];
+  document.documentElement.style.setProperty('--status', t.color);
+  $('stateWord').textContent = t.word;
+  $('stateDot').classList.toggle('pulse', !!t.pulse);
+  $('metaLine').innerHTML = t.meta;
+  $('mainBtn').textContent = t.btn;
+  $('mainBtn').classList.toggle('primary', t.primary);
+  $('hero').classList.toggle('error', s === 'error');
+  $('statsCard').style.display = s === 'connected' ? '' : 'none';
+  $('events').innerHTML = EVENTS[s].map(e =>
+    `<div class="ev ${e[2]} new"><span class="t">${e[0]}</span><span class="m">${e[1]}</span></div>`).join('')
+    || '<div class="ev"><span class="m" style="color:var(--text-3)">暂无事件</span></div>';
+  document.querySelectorAll('.state-switch button').forEach(b => b.classList.toggle('on', b.dataset.s === s));
+  renderRows();
+}
+document.querySelectorAll('.state-switch button').forEach(b => b.onclick = () => setState(b.dataset.s));
+$('mainBtn').onclick = () => {
+  if (state === 'connected') setState('disconnected');
+  else { setState('connecting'); setTimeout(() => setState('connected'), 1800); }
+};
+
+function latHtml(l) {
+  const c = l < 50 ? 'good' : l < 120 ? 'mid' : 'bad';
+  return `<span class="${c}">${l} ms</span>`;
+}
+function renderRows() {
+  $('nodeRows').innerHTML = NODES.map((n, i) => `
+    <tr class="row ${n.cur ? 'current' : ''}" data-i="${i}">
+      <td>${n.name}</td><td class="sub">${n.sub}</td><td class="addr">${n.addr}</td><td class="lat">${latHtml(n.lat)}</td>
+      <td style="text-align:right">${n.cur ? '<span class="cur-tag">当前</span>' : '<button class="row-btn">连接</button>'}</td>
+    </tr>`).join('');
+  document.querySelectorAll('tr.row').forEach(tr => tr.onclick = () => {
+    NODES.forEach(n => n.cur = false);
+    const n = NODES[+tr.dataset.i]; n.cur = true;
+    $('nodeName').textContent = n.name;
+    $('nodeAddr').textContent = n.addr;
+    if (state === 'disconnected' || state === 'error') setState('connecting'), setTimeout(() => setState('connected'), 1800);
+    else renderRows();
+  });
+}
+
+/* duration tick (本地计时,wrapper 侧能力) */
+setInterval(() => {
+  if (state !== 'connected') return;
+  dur++;
+  const el = $('dur'); if (!el) return;
+  const h = String(Math.floor(dur/3600)).padStart(2,'0'),
+        m = String(Math.floor(dur/60)%60).padStart(2,'0'),
+        s = String(dur%60).padStart(2,'0');
+  el.textContent = `${h}:${m}:${s}`;
+}, 1000);
+
+/* stats tick:模拟 §6.1 --stats-json 的 NDJSON 行,速度=累计字节差分 */
+let rxBytes = 1.8 * 1024 ** 3, txBytes = 214.6 * 1024 ** 2, downMbps = 12.4;
+function fmtBytes(b) {
+  return b >= 1024 ** 3 ? (b / 1024 ** 3).toFixed(2) + ' GB' : (b / 1024 ** 2).toFixed(1) + ' MB';
+}
+setInterval(() => {
+  if (state !== 'connected') return;
+  downMbps = Math.max(.3, downMbps + (Math.random() - .48) * 1.8);
+  const upMbps = downMbps * (.12 + Math.random() * .08);
+  rxBytes += downMbps * 1e6 / 8;
+  txBytes += upMbps * 1e6 / 8;
+  $('mDown').textContent = downMbps.toFixed(1) + ' Mbps';
+  $('mUp').textContent = upMbps.toFixed(1) + ' Mbps';
+  $('mRx').textContent = fmtBytes(rxBytes);
+  $('mTx').textContent = fmtBytes(txBytes);
+}, 1000);
+
+const initial = location.hash.slice(1);
+setState(STATES[initial] ? initial : 'connected');
+</script>
+</body>
+</html>

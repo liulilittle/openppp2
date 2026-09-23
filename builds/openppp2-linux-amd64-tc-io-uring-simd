@@ -85,7 +85,7 @@ CHECK_CXX_COMPILER_FLAG("-std=c++1z" COMPILER_SUPPORTS_CXX1Z)
 SET(__SIMD__ TRUE)
 IF(__SIMD__)
     # Add in the compiler flag section.
-    ADD_COMPILE_OPTIONS(-maes -msse2 -mpclmul)
+    ADD_COMPILE_OPTIONS(-maes -msse2 -mpclmul -mssse3 -msse4.1 -msse4.2 -mpopcnt -mavx -mavx2)
 
     # Add the AES_NI compiler macro.
     ADD_DEFINITIONS(-D__SIMD__)

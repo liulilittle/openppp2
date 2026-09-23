@@ -1,0 +1,39 @@
+{
+  "concurrent": 1,
+  "telemetry": {
+    "enabled": false
+  },
+  "key": {
+    "kf": 154543927,
+    "protocol": "aes-128-cfb",
+    "protocol-key": "N6HMzdUs7IUnYHwq",
+    "transport": "aes-256-cfb",
+    "transport-key": "HWFweXu2g5RVMEpy"
+  },
+  "tcp": {
+    "listen": {
+      "port": 20001
+    }
+  },
+  "udp": {
+    "listen": {
+      "port": 20001
+    },
+    "static": {
+      "quic": false
+    }
+  },
+  "mux": {
+    "mode": "compat",
+    "turbo": false
+  },
+  "server": {
+    "subnet": true,
+    "mapping": true,
+    "log": "",
+    "ipv4-pool": {
+      "network": "10.254.0.0",
+      "mask": "255.255.0.0"
+    }
+  }
+}

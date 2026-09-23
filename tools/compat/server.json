@@ -1,0 +1,47 @@
+{
+  "concurrent": 1,
+  "telemetry": {
+    "enabled": false
+  },
+  "key": {
+    "kf": 154543927,
+    "kx": 128,
+    "kl": 10,
+    "kh": 12,
+    "protocol": "aes-128-cfb",
+    "protocol-key": "N6HMzdUs7IUnYHwq",
+    "transport": "aes-256-cfb",
+    "transport-key": "HWFweXu2g5RVMEpy",
+    "masked": false,
+    "plaintext": false,
+    "delta-encode": false,
+    "shuffle-data": false,
+    "simd-auto": true
+  },
+  "tcp": {
+    "listen": {
+      "port": 20000
+    }
+  },
+  "udp": {
+    "listen": {
+      "port": 20000
+    },
+    "static": {
+      "quic": false
+    }
+  },
+  "mux": {
+    "mode": "compat",
+    "turbo": false
+  },
+  "server": {
+    "subnet": true,
+    "mapping": true,
+    "log": "",
+    "ipv4-pool": {
+      "network": "10.254.0.0",
+      "mask": "255.255.0.0"
+    }
+  }
+}

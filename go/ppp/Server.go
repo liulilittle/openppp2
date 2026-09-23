@@ -145,6 +145,12 @@ func server_auto_migrate_all_tables(db *io.DB) error {
 		return err
 	}
 
+	var subscription tb_subscription
+	err = db.AutoMigrate(&subscription)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -168,10 +174,10 @@ func server_connect_all_databases(cfg *ManagedServerConfiguration) (*io.DB, *lis
 
 	var master_db *io.DB
 	var dbs *list.List
-	var any = false
+	var ready = false
 
 	finalize := func() bool {
-		if any {
+		if ready {
 			return false
 		}
 
@@ -219,20 +225,19 @@ func server_connect_all_databases(cfg *ManagedServerConfiguration) (*io.DB, *lis
 
 	dbs = list.New()
 	for _, v := range root.Slaves {
+		if v == nil {
+			continue
+		}
 		db, err := io.ConnectDB(v.Host, v.Port, v.User, v.Password, v.DbName, root.MaxOpenConns, root.MaxIdleConns, root.ConnMaxLifetime)
 		if err != nil {
 			return nil, nil, err
 		}
 
-		any = true
 		dbs.PushBack(db)
 	}
 
-	if any {
-		return master_db, dbs, nil
-	}
-
-	return nil, nil, errors.New("no configuration items are configured to open a database link")
+	ready = true
+	return master_db, dbs, nil
 }
 
 func (my *ManagedServer) server_tick() {

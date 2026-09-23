@@ -1,0 +1,18 @@
+{
+  "name": "openppp2-client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "node --test --test-isolation=none test/*.test.js",
+    "desktop": "cargo run --no-default-features --manifest-path src-tauri/Cargo.toml --bin openppp2-client-app"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^3.0.2",
+    "lucide-svelte": "^0.468.0",
+    "svelte": "^4.2.19",
+    "vite": "^5.4.0"
+  }
+}

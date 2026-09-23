@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "generation": 7,
+  "monotonic_ms": 42000,
+  "phase": "connected",
+  "role": "client",
+  "server": "vpn.example.com:20000",
+  "transport": "wss",
+  "capabilities": ["mux.compat", "mux.flow", "mux.balance", "mux.stripe"],
+  "requested_mux_mode": "flow",
+  "effective_mux_mode": "flow",
+  "mux_receiver_ordering": "flow_v2",
+  "mux_active_links": 2,
+  "mux_fallback_reason": "",
+  "p2p_state": "relay",
+  "effective_path": "relay",
+  "traffic": {
+    "rx_bytes": 10485760,
+    "tx_bytes": 2097152
+  },
+  "connected_monotonic_ms": 30000,
+  "last_error": {
+    "code": 0,
+    "severity": "",
+    "retryable": false,
+    "user_message_key": "",
+    "diagnostic_detail": ""
+  },
+  "future_optional_field": "ignored-by-v1-readers"
+}

@@ -19,6 +19,7 @@
 # Fortran module files
 *.mod
 *.smod
+!go/go.mod
 
 # Compiled Static libraries
 *.lai
@@ -131,6 +132,23 @@ ios/App/.build/
 
 # Superpowers planning docs (local agent workflow only)
 docs/superpowers/
+.superpowers/
+
+# Local feature worktrees
+.worktrees/
+
+# Desktop client generated dependencies and build output
+/desktop/**/node_modules/
+/desktop/**/.vite/
+/desktop/**/dist/
+/desktop/**/target/
+/desktop/**/gen/
+
+# Python tooling caches
+__pycache__/
+work/
+work/
+.gitnexus/
 
 # Local crash-analysis report and agent workflow state (not for version control)
 docs/CRASH_ANALYSIS_CN.md

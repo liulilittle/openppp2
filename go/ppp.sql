@@ -54,4 +54,24 @@ CREATE TABLE `tb_users`  (
   PRIMARY KEY (`guid`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8 COLLATE = utf8_general_ci ROW_FORMAT = Dynamic;
 
+-- ----------------------------
+-- Table structure for tb_subscriptions
+-- ----------------------------
+DROP TABLE IF EXISTS `tb_subscriptions`;
+CREATE TABLE `tb_subscriptions`  (
+  `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `token` varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `user_guid` varchar(36) CHARACTER SET utf8 COLLATE utf8_general_ci NOT NULL,
+  `profile_prefix` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+  `server_ids` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `options_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+  `enabled` tinyint(1) NOT NULL DEFAULT 1,
+  `created_at` datetime(3) NULL,
+  `updated_at` datetime(3) NULL,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE KEY `idx_tb_subscriptions_token` (`token`) USING BTREE,
+  KEY `idx_tb_subscriptions_user_guid` (`user_guid`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
+
 SET FOREIGN_KEY_CHECKS = 1;

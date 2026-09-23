@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenPPP2 Manager</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand">
+        <span class="mark">OP</span>
+        <div><strong>OpenPPP2</strong><small>Managed Server</small></div>
+      </div>
+      <nav>
+        <button data-page="overview" class="active">总览</button>
+        <button id="usersNav" data-page="users">用户</button>
+        <button id="serversNav" data-page="servers">PPP 节点</button>
+        <button data-page="subscriptions">订阅</button>
+      </nav>
+      <div class="session">
+        <span id="connectionDot"></span>
+        <span id="connectionText">未连接</span>
+        <button id="logoutButton" class="text-button">退出</button>
+      </div>
+    </aside>
+
+    <main>
+      <header>
+        <div><h1 id="pageTitle">总览</h1><span id="lastUpdated"></span></div>
+        <button id="refreshButton">刷新</button>
+      </header>
+      <section id="content"></section>
+    </main>
+  </div>
+
+  <dialog id="editorDialog">
+    <form method="dialog" id="editorForm">
+      <div class="dialog-head"><h2 id="dialogTitle"></h2><button type="button" data-dialog-close class="icon-button" aria-label="关闭">×</button></div>
+      <div id="dialogBody"></div>
+      <div class="dialog-actions"><button type="button" data-dialog-close class="secondary">取消</button><button type="submit" value="default">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="loginDialog" class="login-dialog">
+    <form id="loginForm">
+      <h2>管理认证</h2>
+      <label><span>Admin Token</span><input id="tokenInput" type="password" autocomplete="current-password" required></label>
+      <p id="loginError" class="error"></p>
+      <button type="submit">进入管理面</button>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>

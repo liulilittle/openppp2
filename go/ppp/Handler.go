@@ -112,7 +112,22 @@ func (my *ManagedServer) http_api_send_response(w http.ResponseWriter, code int,
 	w.Write([]byte(json))
 }
 
+// The server interfaces return node records carrying protocol and transport
+// keys, so they require the same shared key the consumer interfaces do.
+func (my *ManagedServer) http_api_require_key(w http.ResponseWriter, r *http.Request) bool {
+	if io.HttpQuery(r.URL.Query(), "key") == my.configuration.Key {
+		return true
+	}
+
+	my.http_api_send_response(w, _ERROR_ARG_KEY, "", "")
+	return false
+}
+
 func (my *ManagedServer) http_api_server_get(w http.ResponseWriter, r *http.Request) bool {
+	if !my.http_api_require_key(w, r) {
+		return false
+	}
+
 	q := r.URL.Query()
 	node := 0
 	node_i64, err := strconv.ParseInt(io.HttpQuery(q, "node"), 10, 64)
@@ -135,6 +150,10 @@ func (my *ManagedServer) http_api_server_get(w http.ResponseWriter, r *http.Requ
 }
 
 func (my *ManagedServer) http_api_server_all(w http.ResponseWriter, r *http.Request) bool {
+	if !my.http_api_require_key(w, r) {
+		return false
+	}
+
 	type server_all_json_array struct {
 		List []*tb_server `json:"List"`
 	}
@@ -154,6 +173,12 @@ func (my *ManagedServer) http_api_server_all(w http.ResponseWriter, r *http.Requ
 }
 
 func (my *ManagedServer) http_api_server_load(w http.ResponseWriter, r *http.Request) bool {
+	// Checked before the reload: the database read must not be reachable
+	// without the key either.
+	if !my.http_api_require_key(w, r) {
+		return false
+	}
+
 	code, err := my.server_load_all_servers()
 	if err != nil {
 		my.http_api_send_response_ex(w, code, "", err)

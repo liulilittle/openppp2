@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openppp2.local/schemas/runtime-snapshot-v1.schema.json",
+  "title": "OPENPPP2 Runtime Snapshot v1",
+  "type": "object",
+  "required": ["schema_version", "generation", "monotonic_ms", "phase"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "generation": { "type": "integer", "minimum": 0 },
+    "monotonic_ms": { "type": "integer", "minimum": 0 },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "starting",
+        "preparing_host",
+        "connecting",
+        "handshaking",
+        "applying_policy",
+        "connected",
+        "reconnecting",
+        "stopping",
+        "failed",
+        "unknown"
+      ]
+    },
+    "role": { "type": "string" },
+    "server": { "type": "string" },
+    "transport": { "type": "string" },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "requested_mux_mode": { "type": "string" },
+    "effective_mux_mode": { "type": "string" },
+    "mux_receiver_ordering": { "type": "string" },
+    "mux_active_links": { "type": "integer", "minimum": 0 },
+    "mux_fallback_reason": { "type": "string" },
+    "p2p_state": { "type": "string" },
+    "effective_path": { "type": "string" },
+    "traffic": {
+      "type": "object",
+      "properties": {
+        "rx_bytes": { "type": "integer", "minimum": 0 },
+        "tx_bytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "connected_monotonic_ms": { "type": "integer", "minimum": 0 },
+    "last_error": {
+      "type": "object",
+      "properties": {
+        "code": { "type": "integer", "minimum": 0 },
+        "severity": { "type": "string" },
+        "retryable": { "type": "boolean" },
+        "user_message_key": { "type": "string" },
+        "diagnostic_detail": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "generation": 0,
+  "monotonic_ms": 0,
+  "phase": "idle",
+  "role": "",
+  "requested_mux_mode": "compat",
+  "effective_mux_mode": "compat",
+  "p2p_state": "disabled",
+  "effective_path": "relay"
+}

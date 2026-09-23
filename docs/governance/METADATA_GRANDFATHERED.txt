@@ -1,0 +1,10 @@
+# Exact legacy documents allowed to omit governed metadata during migration.
+# Entries must use their current repository-relative path. Remove an entry once
+# the document has governed metadata.
+docs/architecture/DNS_MODULE_DESIGN.md
+docs/architecture/OTEL_DESIGN.md
+docs/architecture/OTEL_DESIGN_CN.md
+docs/architecture/TUI_DESIGN.md
+docs/architecture/TUI_DESIGN_CN.md
+docs/architecture/TUNNEL_DESIGN.md
+docs/architecture/TUNNEL_DESIGN_CN.md

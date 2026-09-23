@@ -1,0 +1,172 @@
+{
+  "bm_allocator": {
+    "aggregate_cycles_per_packet": null,
+    "benchmarks": {
+      "BM_AllocFree/1500/repeats:10/real_time/threads:1": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 266.33578717883154,
+        "pps": 3754661.9255041555
+      },
+      "BM_AllocFree/1500/repeats:10/real_time/threads:2": {
+        "allocations_per_op": 2.0,
+        "ns_per_op": 603.6313283718777,
+        "pps": 1656699.2025925019
+      },
+      "BM_AllocFree/1500/repeats:10/real_time/threads:4": {
+        "allocations_per_op": 4.0,
+        "ns_per_op": 634.4123487351343,
+        "pps": 1576282.6813928238
+      },
+      "BM_AllocFree/1500/repeats:10/real_time/threads:8": {
+        "allocations_per_op": 8.0,
+        "ns_per_op": 801.394419161252,
+        "pps": 1247840.9257441165
+      },
+      "BM_AllocFree/256/repeats:10/real_time/threads:1": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 281.00442084241797,
+        "pps": 3558664.244605488
+      },
+      "BM_AllocFree/256/repeats:10/real_time/threads:2": {
+        "allocations_per_op": 2.0,
+        "ns_per_op": 670.7039804308524,
+        "pps": 1491342.8619245775
+      },
+      "BM_AllocFree/256/repeats:10/real_time/threads:4": {
+        "allocations_per_op": 4.0,
+        "ns_per_op": 688.1362167745327,
+        "pps": 1453201.248662381
+      },
+      "BM_AllocFree/256/repeats:10/real_time/threads:8": {
+        "allocations_per_op": 8.0,
+        "ns_per_op": 841.6258270082249,
+        "pps": 1188214.8206831622
+      }
+    }
+  },
+  "bm_crypto": {
+    "aggregate_cycles_per_packet": null,
+    "benchmarks": {
+      "BM_Encrypt/aes128cfb_openssl/1400/repeats:15/real_time": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 2254.7124336000134,
+        "pps": 443515.5388766531
+      },
+      "BM_Encrypt/aes128cfb_openssl/512/repeats:15/real_time": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 1375.6764010494767,
+        "pps": 726915.1373368908
+      },
+      "BM_Encrypt/aes128cfb_openssl/64/repeats:15/real_time": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 834.8266826839707,
+        "pps": 1197853.423641176
+      },
+      "BM_Encrypt/aes128cfb_simd/1400/repeats:15/real_time": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 899.3950431575438,
+        "pps": 1111858.473768388
+      },
+      "BM_Encrypt/aes128cfb_simd/512/repeats:15/real_time": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 344.8108607557764,
+        "pps": 2900140.667866848
+      },
+      "BM_Encrypt/aes128cfb_simd/64/repeats:15/real_time": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 68.10635559452365,
+        "pps": 14682917.493832378
+      },
+      "BM_Encrypt/aes256cfb_openssl/1400/repeats:15/real_time": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 2722.210987736932,
+        "pps": 367348.45480560436
+      },
+      "BM_Encrypt/aes256cfb_openssl/512/repeats:15/real_time": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 1449.8675502642159,
+        "pps": 689718.1744758447
+      },
+      "BM_Encrypt/aes256cfb_openssl/64/repeats:15/real_time": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 863.5437857550215,
+        "pps": 1158018.87118633
+      },
+      "BM_Encrypt/aes256cfb_simd/1400/repeats:15/real_time": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 1226.9382733219102,
+        "pps": 815036.9270758182
+      },
+      "BM_Encrypt/aes256cfb_simd/512/repeats:15/real_time": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 472.1588220987957,
+        "pps": 2117931.4103565714
+      },
+      "BM_Encrypt/aes256cfb_simd/64/repeats:15/real_time": {
+        "allocations_per_op": 1.0,
+        "ns_per_op": 81.54482949716365,
+        "pps": 12263193.217355158
+      }
+    }
+  },
+  "bm_crypto_chain": {
+    "aggregate_cycles_per_packet": null,
+    "benchmarks": {
+      "BM_CryptoChain/openssl/1400": {
+        "allocations_per_op": 5.0,
+        "ns_per_op": 7044.500879968085,
+        "pps": 141956.13737030476
+      },
+      "BM_CryptoChain/openssl/64": {
+        "allocations_per_op": 5.0,
+        "ns_per_op": 2019.7781952990388,
+        "pps": 495133.771440888
+      },
+      "BM_CryptoChain/simd/1400": {
+        "allocations_per_op": 5.0,
+        "ns_per_op": 4856.627148959236,
+        "pps": 205906.16470661238
+      },
+      "BM_CryptoChain/simd/64": {
+        "allocations_per_op": 5.0,
+        "ns_per_op": 380.3324994880408,
+        "pps": 2629306.7020981284
+      }
+    }
+  },
+  "bm_endpoint_serialize": {
+    "aggregate_cycles_per_packet": null,
+    "benchmarks": {
+      "BM_EndpointRoundTrip/hostname": {
+        "allocations_per_op": 0.0,
+        "ns_per_op": 11.97809758987837,
+        "pps": 83486342.84934703
+      },
+      "BM_EndpointRoundTrip/ipv4": {
+        "allocations_per_op": 0.0,
+        "ns_per_op": 12.830618879465213,
+        "pps": 77939020.03383379
+      },
+      "BM_EndpointRoundTrip/ipv6": {
+        "allocations_per_op": 0.0,
+        "ns_per_op": 11.88239645779815,
+        "pps": 84158745.61132105
+      }
+    }
+  },
+  "bm_packet_codec": {
+    "aggregate_cycles_per_packet": null,
+    "benchmarks": {
+      "BM_PacketCodec/1400": {
+        "allocations_per_op": 9.0,
+        "ns_per_op": 489.6220183274949,
+        "pps": 2042410.382018218
+      },
+      "BM_PacketCodec/64": {
+        "allocations_per_op": 9.0,
+        "ns_per_op": 361.58888203378376,
+        "pps": 2765586.3979214593
+      }
+    }
+  }
+}

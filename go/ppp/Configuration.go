@@ -1,6 +1,7 @@
 package ppp
 
 import (
+	"errors"
 	"log"
 	"os"
 	"ppp/auxiliary"
@@ -49,6 +50,42 @@ type InterfacesConfiguration struct {
 	ServerLoad     string `json:"server-load"`
 }
 
+type AdminConfiguration struct {
+	Token         string `json:"token"`
+	Path          string `json:"path"`
+	PublicBaseURL string `json:"public-base-url"`
+	DataPath      string `json:"data"`
+}
+
+func defaultManagedServerConfiguration() *ManagedServerConfiguration {
+	return &ManagedServerConfiguration{
+		Prefixes: ":10000",
+		Path:     "/ppp/webhook",
+		Interfaces: &InterfacesConfiguration{
+			ConsumerReload: "/ppp/consumer/reload", ConsumerLoad: "/ppp/consumer/load",
+			ConsumerSet: "/ppp/consumer/set", ConsumerNew: "/ppp/consumer/new",
+			ServerGet: "/ppp/server/get", ServerAll: "/ppp/server/all", ServerLoad: "/ppp/server/load",
+		},
+		ConcurrencyControl: &ConcurrencyControlConfiguration{},
+		Admin:              &AdminConfiguration{Path: "/admin/", DataPath: "manager-data.json"},
+	}
+}
+
+func (cfg *ManagedServerConfiguration) ManagedMode() (bool, error) {
+	if cfg == nil {
+		return false, nil
+	}
+	hasDatabase := cfg.Database != nil
+	hasRedis := cfg.Redis != nil
+	if !hasDatabase && !hasRedis {
+		return false, nil
+	}
+	if !hasDatabase || cfg.Database.Master == nil || !hasRedis || len(cfg.Redis.Addresses) == 0 || cfg.Redis.MasterName == "" {
+		return false, errors.New("managed mode requires complete database.master and redis configuration")
+	}
+	return true, nil
+}
+
 type ManagedServerConfiguration struct {
 	Database           *DBRootConfiguration             `json:"database"`
 	Redis              *RedisConfiguration              `json:"redis"`
@@ -57,6 +94,7 @@ type ManagedServerConfiguration struct {
 	Prefixes           string                           `json:"prefixes"`
 	Interfaces         *InterfacesConfiguration         `json:"interfaces"`
 	ConcurrencyControl *ConcurrencyControlConfiguration `json:"concurrency-control"`
+	Admin              *AdminConfiguration              `json:"admin"`
 }
 
 var File io.File
@@ -79,26 +117,34 @@ func LoadManagedServerConfiguration(path string) *ManagedServerConfiguration {
 	json := File.ReadAllText(File.GetFullPath(path))
 	if json == "" {
 		json = File.ReadAllText(File.GetFullPath("appsettings.json"))
-		if json == "" {
-			return nil
-		}
 	}
 
-	var cfg ManagedServerConfiguration
-	if !JsonAuxiliary.Deserialize(json, &cfg) {
+	cfg := defaultManagedServerConfiguration()
+	if json != "" && !JsonAuxiliary.Deserialize(json, cfg) {
 		return nil
 	}
-
-	redis := cfg.Redis
-	database := cfg.Database
-
-	if cfg.ConcurrencyControl == nil || cfg.Interfaces == nil || cfg.Prefixes == "" {
+	if cfg.Admin == nil {
+		cfg.Admin = &AdminConfiguration{Path: "/admin/", DataPath: "manager-data.json"}
+	}
+	if token := os.Getenv("OPENPPP2_ADMIN_TOKEN"); token != "" {
+		cfg.Admin.Token = token
+	}
+	adminPath, err := normalizeAdminPath(cfg.Admin.Path)
+	if err != nil {
+		LOG_ERROR.Println(err)
 		return nil
-	} else if redis == nil || database == nil || database.Master == nil {
+	}
+	cfg.Admin.Path = adminPath
+	if cfg.Admin.DataPath == "" {
+		cfg.Admin.DataPath = "manager-data.json"
+	}
+
+	if cfg.ConcurrencyControl == nil || cfg.Interfaces == nil || cfg.Prefixes == "" || cfg.Path == "" {
 		return nil
-	} else if len(redis.Addresses) < 1 || redis.MasterName == "" {
+	} else if _, err := cfg.ManagedMode(); err != nil {
+		LOG_ERROR.Println(err)
 		return nil
 	} else {
-		return &cfg
+		return cfg
 	}
 }

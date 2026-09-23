@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "generation": 9,
+  "monotonic_ms": 91000,
+  "phase": "failed",
+  "role": "client",
+  "requested_mux_mode": "flow",
+  "effective_mux_mode": "compat",
+  "mux_fallback_reason": "startup_failed",
+  "p2p_state": "unavailable",
+  "effective_path": "relay",
+  "last_error": {
+    "code": 1001,
+    "severity": "error",
+    "retryable": true,
+    "user_message_key": "connection.tunnel_open_failed",
+    "diagnostic_detail": "TUNSETIFF returned EPERM"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OpenPPP2 Client",
+  "version": "0.1.0",
+  "identifier": "org.openppp2.client",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --host 127.0.0.1 --port 1420",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [{
+      "title": "OpenPPP2 Client",
+      "width": 1120,
+      "height": 760,
+      "minWidth": 720,
+      "minHeight": 540,
+      "resizable": true,
+      "center": true
+    }],
+    "security": { "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'" }
+  },
+  "bundle": { "active": false }
+}

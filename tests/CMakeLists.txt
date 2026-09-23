@@ -13,6 +13,7 @@ add_executable(openppp2_tests
     unit/test_firewall_domains.cpp
     unit/test_tap_stub.cpp
     unit/test_proxy_defaults.cpp
+    unit/test_socks_address_type.cpp
 )
 
 add_executable(openppp2_dns_cache_ttl_tests

@@ -1,0 +1,66 @@
+{
+  "concurrent": 1,
+  "cdn": [80, 443],
+  "key": {
+    "kf": 154543927,
+    "kx": 128,
+    "kl": 10,
+    "kh": 12,
+    "protocol": "aes-128-cfb",
+    "protocol-key": "",
+    "transport": "aes-256-cfb",
+    "transport-key": "",
+    "masked": false,
+    "plaintext": false,
+    "delta-encode": false,
+    "shuffle-data": false
+  },
+  "ip": { "public": "0.0.0.0", "interface": "0.0.0.0" },
+  "vmem": { "size": 0, "path": "./" },
+  "server": { "node": 1, "log": "./ppp.log", "subnet": true, "mapping": false, "backend": "", "backend-key": "" },
+  "tcp": {
+    "inactive": { "timeout": 300 },
+    "connect": { "timeout": 5 },
+    "listen": { "port": 20000 },
+    "turbo": true,
+    "backlog": 511,
+    "fast-open": true
+  },
+  "udp": {
+    "inactive": { "timeout": 72 },
+    "dns": { "timeout": 4, "ttl": 60, "cache": true, "turbo": false, "redirect": "8.8.8.8:53" },
+    "listen": { "port": 20000 },
+    "static": { "keep-alived": [1, 5], "dns": true, "quic": false, "icmp": true, "server": "127.0.0.1:20000" }
+  },
+  "dns": {
+    "servers": { "domestic": "doh.pub", "foreign": "cloudflare" },
+    "intercept-unmatched": true,
+    "ecs": { "enabled": true, "override-ip": "" },
+    "tls": { "verify-peer": true }
+  },
+  "websocket": {
+    "host": "",
+    "path": "/",
+    "listen": { "ws": 0, "wss": 0 },
+    "ssl": {
+      "certificate-file": "",
+      "certificate-chain-file": "",
+      "certificate-key-file": "",
+      "certificate-key-password": "",
+      "ciphersuites": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256"
+    },
+    "verify-peer": true,
+    "http": { "error": { "root": "wwwroot/" }, "request": {} }
+  },
+  "client": {
+    "guid": "",
+    "server": "",
+    "bandwidth": 0,
+    "reconnections": { "timeout": 5 },
+    "paper-airplane": { "tcp": true },
+    "http-proxy": { "bind": "127.0.0.1", "port": 8080 },
+    "socks-proxy": { "bind": "127.0.0.1", "port": 1080 },
+    "mappings": []
+  },
+  "telemetry": { "enabled": true, "level": 1, "console-log": true }
+}
