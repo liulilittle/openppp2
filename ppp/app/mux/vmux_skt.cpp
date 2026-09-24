@@ -1,6 +1,7 @@
 #include "vmux_skt.h"
 #include "vmux_net.h"
 #include <ppp/configurations/AppConfiguration.h>
+#include <ppp/diagnostics/DatapathPerfJson.h>
 #include <ppp/diagnostics/Error.h>
 
 /**
@@ -446,11 +447,28 @@ namespace vmux {
 
     /**
      * @brief Queue inbound peer payload and flush to local socket.
+     *
+     * Legacy 2-arg overload — delegates to the zero-copy 3-arg variant with a
+     * null owner, preserving the original alloc+memcpy behavior.
+     *
      * @param payload Payload bytes from vmux frame.
      * @param payload_size Payload size in bytes.
      * @return true when payload is accepted for forwarding.
      */
     bool vmux_skt::input(Byte* payload, int payload_size) noexcept {
+        return input(nullptr, payload, payload_size);
+    }
+
+    /**
+     * @brief Zero-copy variant of @ref input.
+     * @param owner Shared pointer that owns the memory region of @p payload.
+     *              When non-null, the payload is referenced via wrap_shared_pointer
+     *              instead of being copied into a freshly allocated buffer.
+     * @param payload Payload bytes from vmux frame.
+     * @param payload_size Payload size in bytes.
+     * @return true when payload is accepted for forwarding.
+     */
+    bool vmux_skt::input(const std::shared_ptr<Byte>& owner, Byte* payload, int payload_size) noexcept {
         if (status_.disposed_) {
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionDisposed);
             return false;
@@ -458,11 +476,18 @@ namespace vmux {
 
         std::shared_ptr<Byte> buffer;
         if (payload_size > 0) {
-            buffer = mux_->make_byte_array(payload_size);
-            if (NULLPTR != buffer) {
-                memcpy(buffer.get(), payload, payload_size);
+            if (NULLPTR != owner) {
+                // Zero-copy: alias the owner buffer to reference the payload region.
+                buffer = ppp::wrap_shared_pointer(payload, owner);
             }
             else {
+                buffer = mux_->make_byte_array(payload_size);
+                if (NULLPTR != buffer) {
+                    memcpy(buffer.get(), payload, payload_size);
+                }
+            }
+
+            if (NULLPTR == buffer) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VmuxSocketInputBufferAllocFailed);
                 return false;
             }
@@ -474,6 +499,9 @@ namespace vmux {
         }
 
         rx_queue_.emplace_back(packet{ buffer,  payload_size });
+        if (payload_size > 0) {
+            ppp::diagnostics::datapath_perf::RecordVmuxAccepted(payload_size);
+        }
         if (status_.sending_) {
             return true;
         }
@@ -496,6 +524,11 @@ namespace vmux {
      * @return true when frame posting starts successfully.
      */
     bool vmux_skt::send_to_peer(const void* packet, int packet_length, const SendAsynchronousCallback& ac) noexcept {
+        if (NULLPTR == mux_ || !mux_->is_strand_thread()) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeEventDispatchFailed);
+            return false;
+        }
+
         if (NULLPTR == packet || packet_length < 1) {
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VmuxSocketSendInvalidPayload);
             return false;
@@ -503,6 +536,12 @@ namespace vmux {
 
         if (status_.disposed_) {
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionDisposed);
+            return false;
+        }
+
+        // Open barrier: do not post PUSH until local open completes (syn_ok / connected_).
+        if (!status_.connected_) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VmuxSocketSendContextNotReady);
             return false;
         }
 
@@ -705,7 +744,7 @@ namespace vmux {
                 // Record log.
                 std::shared_ptr<ppp::app::protocol::VirtualEthernetLogger> logger = mux_->Logger;
                 if (NULLPTR != logger) {
-                    vmux_net::VirtualEthernetTcpipConnectionPtr connection = mux_->get_linklayer();
+                    vmux_net::IMuxTransportPtr connection = mux_->get_linklayer();
                     if (NULLPTR != connection) {
                         vmux_net::ITransmissionPtr transmission = connection->GetTransmission();
                         if (NULLPTR != transmission) {
@@ -842,6 +881,11 @@ namespace vmux {
                         }
 
                         if (ec == boost::system::errc::success) {
+                            // Open barrier: no data until connected_ (syn_ok observed).
+                            if (!status_.connected_) {
+                                close();
+                                return false;
+                            }
                             bool forwarding = 
                                 mux_->post(vmux_net::cmd_push, tx_buffer_.get(), bytes_transferred, connection_id_, status_.tx_acceleration_,
                                     [self, this](bool successed) noexcept {
@@ -937,8 +981,12 @@ namespace vmux {
         std::shared_ptr<vmux_skt> self = shared_from_this();
         active();
 
+        ppp::diagnostics::datapath_perf::Scope socket_write_scope;
         auto writing_cb =
-            [self, this, tx_socket, payload, payload_size](const boost::system::error_code& ec, std::size_t bytes_transferred) noexcept {
+            [self, this, tx_socket, payload, payload_size, socket_write_scope](const boost::system::error_code& ec, std::size_t bytes_transferred) noexcept {
+                if (!ec && bytes_transferred == static_cast<std::size_t>(payload_size)) {
+                    ppp::diagnostics::datapath_perf::RecordVmuxSocketWriteCompleted(payload_size, socket_write_scope.Elapsed());
+                }
                 vmux_post_exec(mux_->context_, mux_->strand_, 
                     [self, this, ec, payload, payload_size, bytes_transferred]() noexcept {
                         if (ec == boost::system::errc::success && rx_congestions(-static_cast<int>(bytes_transferred))) {

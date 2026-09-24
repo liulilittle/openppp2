@@ -58,6 +58,10 @@ namespace ppp {
              * @return True when supported.
              */
             static bool                                         Support(const ppp::string& method) noexcept;
+            /** @brief Global switch: transparently run aes-*-cfb via AES-NI when the CPU supports it (default on). */
+            static void                                         SetSimdAuto(bool enabled) noexcept;
+            /** @brief Whether this instance is using the AES-NI hardware path. */
+            bool                                                IsHardwareAccelerated() const noexcept;
 
         private:
             /**
@@ -91,32 +95,32 @@ namespace ppp {
          * @brief Computes the MD5 hex string for a text input.
          * @param s Input text.
          * @param toupper True for uppercase hex output.
-         * @return MD5 hex string.
+         * @return MD5 digest text.
          */
         ppp::string                                             ComputeMD5(const ppp::string& s, bool toupper) noexcept;
         /**
-         * @brief Computes raw MD5 bytes for a text input.
+         * @brief Computes raw MD5 bytes into the provided output buffer.
          * @param s Input text.
-         * @param md5 Output buffer pointer.
-         * @param md5len In/out size and produced size.
-         * @return True on success.
+         * @param md5 Output buffer for MD5 bytes.
+         * @param md5len Input capacity and output length.
+         * @return True on success; otherwise false.
          */
         bool                                                    ComputeMD5(const ppp::string& s, const Byte* md5, int& md5len) noexcept;
         /**
-         * @brief Computes digest hex string for a selected algorithm.
+         * @brief Computes a digest string using the specified algorithm identifier.
          * @param s Input text.
          * @param algorithm Digest algorithm identifier.
-         * @param toupper True for uppercase hex output.
-         * @return Digest hex string.
+         * @param toupper True for uppercase hexadecimal output.
+         * @return Digest string on success, or an empty string on failure.
          */
         ppp::string                                             ComputeDigest(const ppp::string& s, int algorithm, bool toupper) noexcept;
         /**
-         * @brief Computes raw digest bytes for a selected algorithm.
+         * @brief Computes raw digest bytes using the specified algorithm identifier.
          * @param s Input text.
-         * @param digest Output buffer pointer.
-         * @param digestlen In/out size and produced size.
+         * @param digest Output buffer for raw digest bytes.
+         * @param digestlen Input capacity and output byte count.
          * @param algorithm Digest algorithm identifier.
-         * @return True on success.
+         * @return True on success; otherwise false.
          */
         bool                                                    ComputeDigest(const ppp::string& s, const Byte* digest, int& digestlen, int algorithm) noexcept;
     }

@@ -1,5 +1,6 @@
 #include <ppp/app/client/ClientBypassRouteLoader.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/route/RouteCoordinator.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
 #include <ppp/io/File.h>
@@ -112,33 +113,84 @@ namespace ppp {
 
 #if defined(_LINUX)
                 if (ngw != IPEndPoint::AnyAddress) {
-                    owner_->nics_.emplace(std::make_pair(ngw, nic));
+                    owner_->route_coordinator_->AddNic(
+                        ngw,
+                        std::string(nic.begin(), nic.end()));
                 }
 #endif
 
                 ribs->emplace_back(std::make_pair(fullpath, ngw));
+                source_order_.emplace_back(SourceOrder{ false, ribs->size() - 1 });
+                return true;
+            }
+
+            bool ClientBypassRouteLoader::AddLoadIPListText(
+                const ppp::string& text,
+#if defined(_LINUX)
+                const ppp::string& nic,
+#endif
+                const boost::asio::ip::address& gw) noexcept {
+                if (text.empty()) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FilePathInvalid);
+                }
+
+                uint32_t ngw = IPEndPoint::AnyAddress;
+                if (
+#if defined(_LINUX)
+                    !nic.empty() &&
+#endif
+                    gw.is_v4() && !IPEndPoint::IsInvalid(gw)) {
+                    ngw = htonl(gw.to_v4().to_uint());
+                }
+
+#if defined(_LINUX)
+                if (ngw != IPEndPoint::AnyAddress) {
+                    owner_->route_coordinator_->AddNic(
+                        ngw,
+                        std::string(nic.begin(), nic.end()));
+                }
+#endif
+
+                text_sources_.emplace_back(TextSource{ text, ngw });
+                source_order_.emplace_back(SourceOrder{ true, text_sources_.size() - 1 });
                 return true;
             }
 
             bool ClientBypassRouteLoader::LoadAllIPListWithFilePaths(const boost::asio::ip::address& gw) noexcept {
-                owner_->rib_ = NULLPTR;
-                owner_->fib_ = NULLPTR;
+                owner_->route_coordinator_->ReplaceRib(NULLPTR);
+                owner_->route_coordinator_->ReplaceFib(NULLPTR);
 
+                auto ribs = std::move(owner_->ribs_);
+                auto text_sources = std::move(text_sources_);
+                auto source_order = std::move(source_order_);
                 bool any = false;
                 if (gw.is_v4()) {
                     boost::asio::ip::address_v4 in = gw.to_v4();
                     if (uint32_t next_hop = htonl(in.to_uint()); !IPEndPoint::IsInvalid(in)) {
-                        if (auto ribs = std::move(owner_->ribs_); NULLPTR != ribs) {
+                        if (NULLPTR != ribs || !text_sources.empty()) {
                             auto rib = make_shared_object<VEthernetNetworkSwitcher::RouteInformationTable>();
                             if (NULLPTR != rib) {
-                                for (auto&& kv : *ribs) {
-                                    const ppp::string& path = kv.first;
-                                    const uint32_t ngw = kv.second != IPEndPoint::AnyAddress ? kv.second : next_hop;
-                                    any |= rib->AddAllRoutesByIPList(path, ngw);
+                                for (const SourceOrder& source : source_order) {
+                                    if (source.text) {
+                                        if (source.index >= text_sources.size()) {
+                                            continue;
+                                        }
+                                        const TextSource& text = text_sources[source.index];
+                                        const uint32_t ngw = text.ngw != IPEndPoint::AnyAddress ? text.ngw : next_hop;
+                                        any |= rib->AddAllRoutes(text.text, ngw);
+                                    }
+                                    else {
+                                        if (NULLPTR == ribs || source.index >= ribs->size()) {
+                                            continue;
+                                        }
+                                        const auto& file = (*ribs)[source.index];
+                                        const uint32_t ngw = file.second != IPEndPoint::AnyAddress ? file.second : next_hop;
+                                        any |= rib->AddAllRoutesByIPList(file.first, ngw);
+                                    }
                                 }
 
                                 if (any) {
-                                    owner_->rib_ = rib;
+                                    owner_->route_coordinator_->ReplaceRib(rib);
                                     ppp::telemetry::Log(Level::kDebug, "client", "bypass list updated");
                                 }
                             }
@@ -147,6 +199,8 @@ namespace ppp {
                 }
 
                 owner_->ribs_.reset();
+                text_sources_.clear();
+                source_order_.clear();
                 return any;
             }
 #endif
@@ -166,10 +220,20 @@ namespace ppp {
                 }
 
                 uint32_t nip = htonl(ip.to_v4().to_uint());
+                if (owner_->ProxyOnly(NULLPTR)) {
+                    auto fib = owner_->GetFib();
+                    if (NULLPTR == fib) {
+                        return false;
+                    }
+
+                    const uint32_t ngw = fib->GetNextHop(nip);
+                    return ngw != IPEndPoint::NoneAddress && ngw != tap->GatewayServer;
+                }
+
 #if defined(_ANDROID) || defined(_IPHONE)
-                if (auto fib = owner_->fib_; NULLPTR != fib) {
+                if (auto fib = owner_->GetFib(); NULLPTR != fib) {
                     uint32_t ngw = fib->GetNextHop(nip);
-                    return ngw != tap->GatewayServer;
+                    return ngw != IPEndPoint::NoneAddress && ngw != tap->GatewayServer;
                 }
 
                 return false;

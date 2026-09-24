@@ -1,5 +1,6 @@
 #include <ppp/cryptography/ssea.h>
 #include <ppp/diagnostics/Error.h>
+#include "ssea_simd/sse_dispatch.h"
 
 /**
  * @file ssea.cpp
@@ -39,17 +40,7 @@ namespace ppp
         // -----------------------------------------------------------------------------
         void ssea::shuffle_data(char* encoded_data, int data_size, uint32_t key) noexcept
         {
-            if (NULLPTR != encoded_data && data_size > 0)
-            {
-                // Iterate through the array; for each position i, swap with position j
-                for (int i = 0; i < data_size; i++)
-                {
-                    uint32_t p = (uint32_t)i;
-                    // Compute swap index: (i XOR key) modulo data_size
-                    uint32_t j = (uint32_t)((p ^ key) % data_size);
-                    std::swap(encoded_data[i], encoded_data[j]);
-                }
-            }
+            ::ssea::ssea_dispatch().shuffle_data(encoded_data, data_size, key);
         }
 
         /**
@@ -69,16 +60,7 @@ namespace ppp
         // -----------------------------------------------------------------------------
         void ssea::unshuffle_data(char* encoded_data, int data_size, uint32_t key) noexcept
         {
-            if (NULLPTR != encoded_data && data_size > 0)
-            {
-                // Iterate backwards to undo the swaps
-                for (int i = data_size - 1; i > -1; i--)
-                {
-                    uint32_t p = (uint32_t)i;
-                    uint32_t j = (uint32_t)((p ^ key) % data_size);
-                    std::swap(encoded_data[i], encoded_data[j]);
-                }
-            }
+            ::ssea::ssea_dispatch().unshuffle_data(encoded_data, data_size, key);
         }
 
         /**
@@ -110,6 +92,21 @@ namespace ppp
             {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SseaDeltaEncodeInvalidInput);
                 return 0;
+            }
+
+            // Try SIMD-accelerated path first; fall back to scalar on failure.
+            std::unique_ptr<uint8_t[]> simd_out;
+            int simd_len = ::ssea::ssea_dispatch().delta_encode(data, data_size, kf, simd_out);
+            if (simd_len > 0 && simd_out)
+            {
+                output = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, simd_len);
+                if (NULLPTR == output)
+                {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    return 0;
+                }
+                std::memcpy(output.get(), simd_out.get(), simd_len);
+                return simd_len;
             }
 
             // Allocate output buffer of same size as input
@@ -165,6 +162,21 @@ namespace ppp
             {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SseaDeltaDecodeInvalidInput);
                 return 0;
+            }
+
+            // Try SIMD-accelerated path first; fall back to scalar on failure.
+            std::unique_ptr<uint8_t[]> simd_out;
+            int simd_len = ::ssea::ssea_dispatch().delta_decode(data, data_size, kf, simd_out);
+            if (simd_len > 0 && simd_out)
+            {
+                output = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, simd_len);
+                if (NULLPTR == output)
+                {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    return 0;
+                }
+                std::memcpy(output.get(), simd_out.get(), simd_len);
+                return simd_len;
             }
 
             output = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, data_size);
@@ -231,15 +243,29 @@ namespace ppp
                 return NULLPTR;
             }
 
-            // First pass: compute the length of the encoded string.
-            // We avoid writing to output yet to keep CPU cache friendly (read‑only input).
+            // Try SIMD-accelerated path first; fall back to scalar on failure.
+            {
+                std::unique_ptr<uint8_t[]> simd_out;
+                int simd_len = ::ssea::ssea_dispatch().base94_encode(data, datalen, kf, simd_out);
+                if (simd_len > 0 && simd_out)
+                {
+                    std::shared_ptr<Byte> bucket_managed = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, simd_len);
+                    if (NULLPTR != bucket_managed)
+                    {
+                        std::memcpy(bucket_managed.get(), simd_out.get(), simd_len);
+                        outlen = simd_len;
+                    }
+                    return bucket_managed;
+                }
+            }
+
+            // Scalar fallback: First pass computes the length, second pass encodes.
             int bucket_length = 0;
             for (int i = 0; i < datalen; i++)
             {
                 Byte b = static_cast<Byte>(bytes[i] - kf);
                 if (b >= BASE93_RADIX)
                 {
-                    // Values >=93 require two characters
                     bucket_length += 2;
                 }
                 else
@@ -248,7 +274,6 @@ namespace ppp
                 }
             }
 
-            // Allocate buffer for the encoded string
             std::shared_ptr<Byte> bucket_managed = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, bucket_length);
             if (NULLPTR != bucket_managed)
             {
@@ -258,15 +283,11 @@ namespace ppp
                     Byte b = static_cast<Byte>(bytes[i] - kf);
                     if (b >= BASE93_RADIX)
                     {
-                        // Encode as two characters: first character = 0x20 + ((b/93)-1 + 93)
-                        // Note: b/93 is at least 1 (since b>=93), so subtract 1 to map to 0..? then add 93 to push into upper range.
                         *bucket++ = '\x20' + (((b / BASE93_RADIX) - 1) + BASE93_RADIX);
-                        // Second character = 0x20 + (b % 93)
                         *bucket++ = '\x20' + (b % BASE93_RADIX);
                     }
                     else
                     {
-                        // Single character = 0x20 + b
                         *bucket++ = '\x20' + b;
                     }
                 }
@@ -313,7 +334,25 @@ namespace ppp
                 return NULLPTR;
             }
 
-            // First pass: validate input and compute output length.
+            // Try SIMD-accelerated path first; fall back to scalar on failure.
+            // SIMD decode validates input internally and returns 0 on any error,
+            // so the scalar fallback below preserves the detailed error codes.
+            {
+                std::unique_ptr<uint8_t[]> simd_out;
+                int simd_len = ::ssea::ssea_dispatch().base94_decode(data, datalen, kf, simd_out);
+                if (simd_len > 0 && simd_out)
+                {
+                    std::shared_ptr<Byte> bucket_managed = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, simd_len);
+                    if (NULLPTR != bucket_managed)
+                    {
+                        std::memcpy(bucket_managed.get(), simd_out.get(), simd_len);
+                        outlen = simd_len;
+                    }
+                    return bucket_managed;
+                }
+            }
+
+            // Scalar fallback with detailed error codes: validate input and compute output length.
             int bucket_length = datalen;
             for (int i = 0; i < datalen; i++)
             {
@@ -333,7 +372,7 @@ namespace ppp
 
                 if (b >= BASE93_RADIX)
                 {
-                    // This is a two‑character escape; need to check next character exists.
+                    // This is a two-character escape; need to check next character exists.
                     if (++i < datalen)
                     {
                         b = bytes[i];
@@ -660,7 +699,12 @@ namespace ppp
         // -----------------------------------------------------------------------------
         bool ssea::masked_xor(const void* min, const void* max, int32_t kf) noexcept
         {
-            return masked_xor_implement<false>(min, max, kf);
+            if (::ssea::ssea_dispatch().masked_xor(min, max, kf))
+            {
+                return true;
+            }
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SseaMaskedXorInvalidRange);
+            return false;
         }
 
         /**
@@ -683,7 +727,12 @@ namespace ppp
         // -----------------------------------------------------------------------------
         bool ssea::masked_xor_random_next(const void* min, const void* max, int32_t kf) noexcept
         {
-            return masked_xor_implement<true>(min, max, kf);
+            if (::ssea::ssea_dispatch().masked_xor_random_next(min, max, kf))
+            {
+                return true;
+            }
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SseaMaskedXorInvalidRange);
+            return false;
         }
     }
 }

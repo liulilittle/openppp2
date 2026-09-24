@@ -6,9 +6,11 @@
  */
 
 #include <ppp/stdafx.h>
+#include <ppp/tap/ITap.h>
 #include <ppp/net/native/ip.h>
 #include <ppp/net/native/tcp.h>
 #include <ppp/net/native/checksum.h>
+#include <ppp/app/protocol/VirtualEthernetPathMtu.h>
 #include <ppp/app/protocol/VirtualEthernetIPv6.h>
 #include <ppp/ipv6/IPv6Packet.h>
 
@@ -27,20 +29,24 @@ namespace ppp {
             static constexpr int kVEthernetTunnelOverhead = 80;
 
             /**
-             * @brief Computes a dynamic TCP MSS value from tunnel overhead.
+             * @brief Computes a dynamic TCP MSS value from tunnel overhead and an optional learned PMTU.
              * @param ipv4 True to use IPv4 header sizing and clamp range; false for IPv6.
              * @param tunnel_overhead Extra encapsulation overhead in bytes.
+             * @param path_mtu Learned MTU for the inner IP path, or zero when unknown.
              * @return A bounded MSS value suitable for SYN option clamping.
              */
-            static inline unsigned short ComputeDynamicTcpMss(bool ipv4, int tunnel_overhead) noexcept {
-                int base_mtu = ppp::tap::ITap::Mtu;
+            static inline unsigned short ComputeDynamicTcpMss(bool ipv4, int tunnel_overhead, int path_mtu) noexcept {
                 tunnel_overhead = std::max<int>(0, tunnel_overhead);
+                int base_mtu = ppp::tap::ITap::Mtu - tunnel_overhead;
+                if (path_mtu > 0) {
+                    base_mtu = std::min<int>(base_mtu, path_mtu);
+                }
 
                 /** @brief IP header size: 20 bytes for IPv4 (ip_hdr::IP_HLEN), 40 bytes for IPv6 (IPv6_HEADER_MIN_SIZE). */
                 int ip_header = ipv4 ? ppp::net::native::ip_hdr::IP_HLEN : ppp::ipv6::IPv6_HEADER_MIN_SIZE;
                 /** @brief TCP header minimum size without options (tcp_hdr::TCP_HLEN = 20 bytes). */
                 int tcp_header = ppp::net::native::tcp_hdr::TCP_HLEN;
-                int mss = base_mtu - tunnel_overhead - ip_header - tcp_header;
+                int mss = base_mtu - ip_header - tcp_header;
 
                 if (ipv4) {
                     mss = std::max<int>(kTcpMssIPv4Min, std::min<int>(kTcpMssIPv4Max, mss));
@@ -49,6 +55,11 @@ namespace ppp {
                     mss = std::max<int>(kTcpMssIPv6Min, std::min<int>(kTcpMssIPv6Max, mss));
                 }
                 return (unsigned short)mss;
+            }
+
+            /** @brief Computes the static-safe TCP MSS when no PMTU observation is available. */
+            static inline unsigned short ComputeDynamicTcpMss(bool ipv4, int tunnel_overhead) noexcept {
+                return ComputeDynamicTcpMss(ipv4, tunnel_overhead, 0);
             }
 
             /**

@@ -387,7 +387,66 @@ namespace ppp {
 
         bool UnixAfx::AddShutdownApplicationEventHandler(ShutdownApplicationEventHandler e) noexcept {
             static ShutdownApplicationEventHandler eeh = NULLPTR;
+            /** @brief Guards eeh; only ever taken in normal thread context (registration/dispatcher). */
+            static std::mutex eeh_mutex;
             static std::atomic<bool> shutdown_requested = false;
+            /** @brief Self-pipe write end used by the signal handler (-1 when unavailable). */
+            static std::atomic<int> shutdown_pipe_write = -1;
+
+            /*
+             * Self-pipe + dispatcher thread.  The signal handler may only perform
+             * async-signal-safe operations (atomic stores, write(2)); copying or
+             * invoking the std::function handler from signal context is undefined
+             * behaviour (the handler chain takes mutexes and posts to asio, which
+             * may allocate).  A dedicated dispatcher thread performs the actual
+             * invocation in normal thread context.
+             */
+            static std::once_flag shutdown_pipe_once;
+            std::call_once(shutdown_pipe_once, []() noexcept {
+                int fds[2] = { -1, -1 };
+                if (::pipe(fds) != 0) {
+                    return;
+                }
+
+                set_fd_cloexec(fds[0]);
+                set_fd_cloexec(fds[1]);
+
+                int oflags = ::fcntl(fds[1], F_GETFL, 0);
+                if (oflags != -1) {
+                    ::fcntl(fds[1], F_SETFL, oflags | O_NONBLOCK);
+                }
+
+                shutdown_pipe_write.store(fds[1], std::memory_order_release);
+
+                std::thread([fd = fds[0]]() noexcept {
+                    int signo = 0;
+                    for (;;) {
+                        ssize_t n = ::read(fd, &signo, sizeof(signo));
+                        if (n == (ssize_t)sizeof(signo)) {
+                            break;
+                        }
+                        if (n < 0 && errno == EINTR) {
+                            continue;
+                        }
+                        return; /* pipe broken: give up quietly */
+                    }
+
+                    ShutdownApplicationEventHandler handler;
+                    {
+                        std::lock_guard<std::mutex> scope(eeh_mutex);
+                        handler = std::move(eeh);
+                        eeh = NULLPTR;
+                    }
+
+                    if (NULLPTR != handler) {
+                        handler();
+                    }
+                    else {
+                        ::signal(signo, SIG_DFL);
+                        ::raise(signo);
+                    }
+                }).detach();
+            });
 
             auto SIG_EEH =
                 [](int signo) noexcept {
@@ -453,14 +512,27 @@ namespace ppp {
 
                     shutdown_requested.store(true, std::memory_order_release);
 
-                    ShutdownApplicationEventHandler handler = eeh;
-                    if (NULLPTR != handler) {
-                        eeh = NULLPTR;
-                        handler();
+                    /*
+                     * Async-signal-safe wakeup only: hand the signal number to the
+                     * dispatcher thread, which invokes the shutdown handler in
+                     * normal thread context.  If the self-pipe is unavailable,
+                     * fall back to the legacy direct invocation.
+                     */
+                    int pw = shutdown_pipe_write.load(std::memory_order_acquire);
+                    if (pw != -1) {
+                        ssize_t ignored = ::write(pw, &signo, sizeof(signo));
+                        (void)ignored;
                     }
                     else {
-                        signal(signo, SIG_DFL);
-                        raise(signo);
+                        ShutdownApplicationEventHandler handler = eeh;
+                        if (NULLPTR != handler) {
+                            eeh = NULLPTR;
+                            handler();
+                        }
+                        else {
+                            signal(signo, SIG_DFL);
+                            raise(signo);
+                        }
                     }
 
                     /*
@@ -483,11 +555,12 @@ namespace ppp {
             __sa_handler_unix__ SIG_IGN_V = SIG_IGN;
             __sa_handler_unix__ SIG_EEH_V = SIG_EEH;
 
-            if (NULLPTR != e) {
+            {
+                std::lock_guard<std::mutex> scope(eeh_mutex);
                 eeh = e;
             }
-            else {
-                eeh = NULLPTR;
+
+            if (NULLPTR == e) {
                 SIG_EEH_V = SIG_DFL;
                 SIG_IGN_V = SIG_DFL;
             }

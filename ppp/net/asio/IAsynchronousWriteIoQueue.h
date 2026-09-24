@@ -33,8 +33,8 @@
  *
  * Thread safety
  * -------------
- * - The queue state (@ref disposed_, @ref sending_, @ref queues_) is protected
- *   by @ref syncobj_.
+ * - Dispatch ownership and accounting transitions (@ref in_flight_, @ref sending_,
+ *   @ref queues_, and pending counters) are protected by @ref syncobj_.
  * - @ref disposed_ is `std::atomic_bool` to allow lock-free early-exit reads
  *   in @ref WriteBytes / @ref DoTryWriteBytesUnsafe without acquiring @ref syncobj_.
  *   One-shot finalization uses `exchange(acq_rel)`; reads use `load(acquire)` to establish
@@ -139,6 +139,15 @@ namespace ppp {
                 static std::shared_ptr<Byte>                            Copy(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const void* data, int datalen) noexcept;
 
                 /**
+                 * @brief Returns a shared_ptr view of @p data backed by @p owner (zero-copy).
+                 *
+                 * When @p owner is non-null the function returns a wrap_shared_pointer slice
+                 * into the owner buffer without copying.  When @p owner is null it falls back
+                 * to the copy-based Copy(allocator, data, datalen) overload.
+                 */
+                static std::shared_ptr<Byte>                            Copy(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<Byte>& owner, const void* data, int datalen) noexcept;
+
+                /**
                  * @brief Returns the number of write contexts currently accepted but not yet completed.
                  * @return  Pending item count (queued + in-flight).
                  */
@@ -208,102 +217,56 @@ namespace ppp {
                     std::shared_ptr<Byte>                               packet;
                     /** @brief Number of bytes to write from @ref packet offset 0. */
                     int                                                 packet_length = 0;
-                    /** @brief Completion callback; invoked exactly once with true/false result. */
+                    /** @brief Completion callback and one-shot ownership token. */
                     AsynchronousWriteBytesCallback                      cb;
-                    /**
-                     * @brief Per-context mutex that serializes @ref Forward and @ref Clear.
-                     *
-                     * Ensures the callback is not invoked twice if @ref Forward races with
-                     * the destructor.
-                     */
-                    SynchronizedObject                                  lockobj;
-
-                public:
-                    /** @brief Constructs an empty write context with zero-initialized length. */
-                    AsynchronousWriteIoContext() noexcept
-                        : packet_length(0) {
-
-                    }
-                    /**
-                     * @brief Ensures completion is signaled on destruction.
-                     *
-                     * If @ref Forward has not yet been called, the destructor calls it with
-                     * `false` to prevent callback leaks.
-                     */
-                    ~AsynchronousWriteIoContext() noexcept {
-                        Forward(false);
-                    }
 
                 public:
                     /**
-                     * @brief Clears packet state and releases callback ownership.
+                     * @brief Claims all terminal ownership for this context exactly once.
                      *
-                     * Called when the context is cancelled (e.g. during @ref Finalize).
-                     * Acquires @ref lockobj before nulling @ref cb to avoid races.
+                     * The queue calls this while holding its synchronization object for an
+                     * active context, or after exclusively detaching a waiting context. The
+                     * winner receives callback and accounting length, then clears packet state
+                     * so late completions cannot callback or account again.
                      */
-                    void                                                Clear() noexcept {
-                        SynchronizedObjectScope scope(lockobj);
+                    bool                                                Claim(AsynchronousWriteBytesCallback& callback, int& length) noexcept {
+                        if (NULLPTR == cb) {
+                            return false;
+                        }
+
+                        callback = std::move(cb);
+                        length = packet_length;
                         cb = NULLPTR;
                         packet.reset();
                         packet_length = 0;
-                    }
-
-                    /**
-                     * @brief Invokes the stored callback once with result status.
-                     *
-                     * Atomically replaces @ref cb with NULLPTR under @ref lockobj, then
-                     * invokes the captured functor outside the lock.
-                     *
-                     * @param ok  true if the write succeeded; false on error or cancellation.
-                     */
-                    void                                                Forward(bool ok) noexcept {
-                        AsynchronousWriteBytesCallback fx;
-                        for (SynchronizedObjectScope scope(lockobj);;) {
-                            fx = std::move(cb);
-                            cb = NULLPTR;
-                            break;
-                        }
-
-                        if (NULLPTR != fx) {
-                            fx(ok);
-                        }
+                        return true;
                     }
                 };
 
                 /** @brief Shared pointer alias for write context objects. */
                 typedef std::shared_ptr<AsynchronousWriteIoContext>     AsynchronousWriteIoContextPtr;
                 /**
-                 * @brief FIFO queue containing pending write contexts.
+                 * @brief FIFO queue of contexts waiting behind @ref in_flight_.
                  *
-                 * Front element is the currently dispatched (or next-to-dispatch) context.
-                 * Back elements are waiting for the front to complete.
+                 * The front element is the next context selected after the current write
+                 * reaches a terminal state; no dispatched context remains in this list.
                  */
                 typedef ppp::list<AsynchronousWriteIoContextPtr>        AsynchronousWriteIoContextQueue;
 
             private:
                 /**
-                 * @brief Starts sending a context after queue state has been pre-armed.
+                 * @brief Starts one preselected in-flight context outside the queue lock.
                  *
-                 * The caller must set sending_ = true under syncobj_ before releasing the lock,
-                 * then call this function without holding syncobj_. Calling DoWriteBytes while
-                 * holding syncobj_ can deadlock if the completion path re-enters
-                 * DoTryWriteBytesNext().
+                 * A synchronous completion may claim the context before DoWriteBytes returns.
+                 * In that case a false start result is treated as already accepted. A genuine
+                 * first-item start failure is silent; a queued-item start failure reports false
+                 * and disposes the remaining queue.
                  *
-                 * @param context  Write context to dispatch (must not be NULLPTR).
-                 * @return         true if the async operation was accepted; false on error.
-                 * @warning        Must be called without holding @ref syncobj_.
+                 * @param context Context already installed in @ref in_flight_.
+                 * @param callback_on_start_failure Whether a start failure must callback false.
+                 * @return true if accepted or synchronously completed; false on start failure.
                  */
-                bool                                                    DoTryWriteBytesUnsafe(const AsynchronousWriteIoContextPtr& context) noexcept;
-
-                /**
-                 * @brief Advances queue processing after a write completion.
-                 *
-                 * Pops the front context, marks @ref sending_ = false, and dispatches
-                 * the next context if the queue is non-empty.
-                 *
-                 * @return  Number of contexts remaining in the queue after advancement.
-                 */
-                int                                                     DoTryWriteBytesNext() noexcept;
+                bool                                                    DoTryWriteBytesUnsafe(const AsynchronousWriteIoContextPtr& context, bool callback_on_start_failure) noexcept;
 
                 /**
                  * @brief One-shot finalization that fails all pending operations.
@@ -313,10 +276,9 @@ namespace ppp {
                  * backpressure counters; subsequent callers (Dispose, destructor,
                  * or concurrent threads) return immediately without touching state.
                  *
-                 * After the exchange succeeds, acquires @ref syncobj_ to reset
-                 * @ref sending_ and detach the pending queue, then releases the lock
-                 * before invoking @ref AsynchronousWriteIoContext::Forward(false) on
-                 * each drained context to avoid lock re-entrancy.
+                 * After the exchange succeeds, acquires @ref syncobj_ to detach the
+                 * explicit in-flight context and pending queue. Every detached context
+                 * is claimed and counters are reset before callbacks run outside the lock.
                  */
                 void                                                    Finalize() noexcept;
 
@@ -447,11 +409,13 @@ namespace ppp {
                  */
                 bool                                                    sending_  = false;
 
-                /** @brief Mutex guarding @ref sending_ and @ref queues_; also used for the
-                 *         lock-protected re-check of @ref disposed_ in WriteBytes(). */
+                /** @brief Mutex guarding in-flight, queued, sending, disposal, and accounting transitions. */
                 SynchronizedObject                                      syncobj_;
 
-                /** @brief FIFO list of pending write contexts waiting for @ref DoWriteBytes. */
+                /** @brief The single context currently dispatched to @ref DoWriteBytes. */
+                AsynchronousWriteIoContextPtr                           in_flight_;
+
+                /** @brief FIFO list of contexts waiting behind @ref in_flight_. */
                 AsynchronousWriteIoContextQueue                         queues_;
 
                 /** @brief Number of write contexts accepted but not yet completed (queued + in-flight). */

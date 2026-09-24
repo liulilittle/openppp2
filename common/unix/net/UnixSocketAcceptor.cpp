@@ -48,6 +48,8 @@ namespace ppp
 
         bool UnixSocketAcceptor::IsOpen() noexcept
         {
+            std::lock_guard<std::mutex> scope(syncobj_);
+
             std::shared_ptr<boost::asio::io_context> context = context_;
             if (NULLPTR == context)
             {
@@ -65,6 +67,8 @@ namespace ppp
 
         int UnixSocketAcceptor::GetHandle() noexcept
         {
+            std::lock_guard<std::mutex> scope(syncobj_);
+
             std::shared_ptr<boost::asio::ip::tcp::acceptor> server = server_;
             if (NULLPTR == server)
             {
@@ -92,9 +96,12 @@ namespace ppp
                 return false;
             }
 
-            if (NULLPTR != server_)
             {
-                return false;
+                std::lock_guard<std::mutex> scope(syncobj_);
+                if (NULLPTR != server_)
+                {
+                    return false;
+                }
             }
 
             if (backlog < 1)
@@ -109,7 +116,18 @@ namespace ppp
                 return false;
             }
 
-            server_ = make_shared_object<boost::asio::ip::tcp::acceptor>(*context);
+            {
+                std::lock_guard<std::mutex> scope(syncobj_);
+                if (NULLPTR == server_)
+                {
+                    server_ = make_shared_object<boost::asio::ip::tcp::acceptor>(*context);
+                }
+                else
+                {
+                    return false;
+                }
+            }
+
             if (NULLPTR == server_)
             {
                 return false;
@@ -174,7 +192,12 @@ namespace ppp
         {
             disposed_.store(true, std::memory_order_release);
 
-            std::shared_ptr<boost::asio::io_context> context = context_;
+            std::shared_ptr<boost::asio::io_context> context;
+            {
+                std::lock_guard<std::mutex> scope(syncobj_);
+                context = context_;
+            }
+
             if (NULLPTR != context)
             {
                 auto self = shared_from_this();
@@ -187,6 +210,12 @@ namespace ppp
         }
 
         bool UnixSocketAcceptor::Next() noexcept
+        {
+            std::lock_guard<std::mutex> scope(syncobj_);
+            return NextLocked();
+        }
+
+        bool UnixSocketAcceptor::NextLocked() noexcept
         {
             std::shared_ptr<boost::asio::ip::tcp::acceptor> server = server_;
             if (NULLPTR == server)
@@ -228,7 +257,11 @@ namespace ppp
             server->async_accept(*socket,
                 [self, this, server, socket](boost::system::error_code ec) noexcept
                 {
-                    std::shared_ptr<boost::asio::ip::tcp::acceptor> current_server = server_;
+                    std::shared_ptr<boost::asio::ip::tcp::acceptor> current_server;
+                    {
+                        std::lock_guard<std::mutex> scope(syncobj_);
+                        current_server = server_;
+                    }
                     if (server != current_server)
                     {
                         ppp::telemetry::Count("socket_acceptor.accept.stale", 1);
@@ -317,6 +350,15 @@ namespace ppp
         {
             disposed_.store(true, std::memory_order_release);
 
+            /**
+             * @brief All asio object operations (timer cancel, acceptor close) run
+             *        under syncobj_ so they serialise with Next()/ArmWatchdog(),
+             *        which issue operations on the same objects under the lock.
+             *        asio posts completions to the io_context; no handler runs
+             *        inline while the lock is held.
+             */
+            std::lock_guard<std::mutex> scope(syncobj_);
+
             std::shared_ptr<boost::asio::steady_timer> watchdog = std::move(watchdog_);
             if (NULLPTR != watchdog)
             {
@@ -344,6 +386,8 @@ namespace ppp
             {
                 return;
             }
+
+            std::lock_guard<std::mutex> scope(syncobj_);
 
             std::shared_ptr<boost::asio::io_context> context = context_;
             if (NULLPTR == context)
@@ -388,7 +432,12 @@ namespace ppp
                 return;
             }
 
-            std::shared_ptr<boost::asio::ip::tcp::acceptor> server = server_;
+            std::shared_ptr<boost::asio::ip::tcp::acceptor> server;
+            {
+                std::lock_guard<std::mutex> scope(syncobj_);
+                server = server_;
+            }
+
             if (NULLPTR == server || !server->is_open())
             {
                 if (!RebuildListener())
@@ -477,6 +526,8 @@ namespace ppp
 
         bool UnixSocketAcceptor::RebuildListener() noexcept
         {
+            std::lock_guard<std::mutex> scope(syncobj_);
+
             std::shared_ptr<boost::asio::io_context> context = context_;
             if (NULLPTR == context)
             {
@@ -544,8 +595,9 @@ namespace ppp
             /**
              * @brief Arm a fresh async_accept on the new listener. Without this the
              *        rebuilt acceptor never pumps the accept loop again.
+             *        (NextLocked: syncobj_ is already held by this function.)
              */
-            if (!Next())
+            if (!NextLocked())
             {
                 ppp::telemetry::Count("socket_acceptor.watchdog.next_after_rebuild_failed", 1);
                 return false;

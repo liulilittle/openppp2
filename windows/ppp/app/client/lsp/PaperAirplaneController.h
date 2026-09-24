@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/net/Ipep.h>
@@ -9,6 +9,10 @@
 #include <ppp/threading/Executors.h>
 #include <ppp/transmissions/ITransmission.h>
 #include <windows/ppp/app/client/lsp/PaperAirplaneRoot.h>
+
+#include <array>
+#include <mutex>
+#include <vector>
 
 namespace ppp
 {
@@ -100,11 +104,13 @@ namespace ppp
                     bool                                                            AcceptForwardClient(const ppp::net::Socket::AsioContext& context, const ppp::threading::Executors::StrandPtr& strand, const ppp::net::Socket::AsioTcpSocket& socket, const boost::asio::ip::tcp::endpoint& remoteEP) noexcept;
 
                 private:
+                    bool                                                            IsDisposed() noexcept;
                     bool                                                            UpdateAllForwardEntries(UInt64 now) noexcept;
                     bool                                                            ReleaseConnection(PaperAirplaneConnection* connection) noexcept;
                     bool                                                            Timeout(int milliseconds, const Timer::TimeoutEventHandler& handler) noexcept;
 
                 private:
+                    std::mutex                                                      state_mutex_;
                     bool                                                            disposed_     = false;
                     int                                                             forward_port_ = 0;
                     std::shared_ptr<VEthernetExchanger>                             exchanger_;
@@ -114,7 +120,7 @@ namespace ppp
                     PaperAirplaneControlBlockPortPtr                                block_port_;
                     PortForwardMappingEntriesTable                                  entries_;
                     PaperAirplaneConnectionTable                                    connections_;
-                    boost::asio::ip::tcp::acceptor                                  acceptors_[2];
+                    std::array<ppp::net::Socket::AsioTcpAcceptor, 2>                acceptors_;
                 };
             }
         }

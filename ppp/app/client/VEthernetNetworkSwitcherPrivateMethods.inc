@@ -1,6 +1,7 @@
 #if !defined(_ANDROID) && !defined(_IPHONE)
                 bool                                                                FixUnderlyingNgw() noexcept;
 #endif
+                route::RoutePlanInput                                               BuildRoutePlanInput() noexcept;
 
                 bool                                                                EmplaceTimeout(void* k, const std::shared_ptr<ppp::threading::Timer::TimeoutEventHandler>& timeout) noexcept;
                 bool                                                                DeleteTimeout(void* k) noexcept;
@@ -11,6 +12,7 @@
                 bool                                                                TryApplyHostedNetworkRoutes() noexcept { return true; }
 #endif
 
+                void                                                                DisposeAttempt(ppp::function<void(bool)> completion, int attempts_remaining) noexcept;
                 void                                                                ReleaseAllObjects() noexcept;
                 void                                                                ReleaseAllPackets() noexcept;
                 void                                                                ReleaseAllTimeouts() noexcept;
@@ -18,6 +20,15 @@
 #if !defined(_ANDROID) && !defined(_IPHONE)
 #if defined(_WIN32)
                 bool                                                                UsePaperAirplaneController() noexcept;
+                bool                                                                BindWindowsIPv6RouteOwner() noexcept;
+                bool                                                                StageWindowsIPv6Egress(const boost::asio::ip::tcp::endpoint& endpoint, bool proven_external) noexcept;
+                bool                                                                EnsureWindowsIPv6Sink() noexcept;
+                bool                                                                ActivateWindowsManagedIPv6(const boost::asio::ip::address& gateway, bool nat_mode) noexcept;
+                bool                                                                CommitWindowsIPv6Egress() noexcept;
+                bool                                                                RollbackWindowsIPv6Egress() noexcept;
+                bool                                                                StopWindowsIPv6Routes() noexcept;
+                bool                                                                HasActiveWindowsIPv6Takeover() const noexcept;
+                bool                                                                HasPendingWindowsIPv6Cleanup() const noexcept;
 #endif
                 bool                                                                LoadAllIPListWithFilePaths(const boost::asio::ip::address& gw) noexcept;
 #endif

@@ -1,0 +1,213 @@
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -884,6 +884,8 @@
+                 ack_count_ = 0;
+                 ack_deadline_ = 0;
+                 close_pending_ = false;
++                pending_frontier_.reset();
++                pending_frontier_bytes_ = 0;
+             }
+         }
+ 
+@@ -1760,16 +1762,29 @@
+                 // makes inside it (echo/reply) carries an ACK covering the
+                 // just-delivered bytes (RFC 793); roll back on backpressure.
+                 const UInt32 prev_in = rcv_nxt_;
+-                rcv_nxt_ += payload_len;
+-                if (recv_cb_ && !recv_cb_(payload, payload_len)) {
+-                    // Backpressure: the app could not accept the data. Roll
+-                    // back, do not ACK - the peer RTOs and retransmits, so
+-                    // nothing is silently lost. Advertise window 0 (RFC 1122
+-                    // s4.2.3.4) so the peer persists instead of burning RTOs
+-                    // on data it cannot push.
+-                    rcv_nxt_ = prev_in;
+-                    rcv_blocked_ = true;
+-                    return false;
++                if (recv_cb_) {
++                    if (pending_frontier_) {
++                        rcv_blocked_ = true;
++                        return false;
++                    }
++                    rcv_nxt_ += payload_len;
++                    if (!recv_cb_(payload, payload_len)) {
++                        const UInt32 capacity = OooCapacity(window_);
++                        const UInt32 occupied = ooo_bytes_ + pending_frontier_bytes_;
++                        if (occupied <= capacity && payload_len <= capacity - occupied) {
++                            auto retained = std::make_unique<OutSeg>();
++                            retained->data.assign(payload, payload + payload_len);
++                            retained->fin = has_fin;
++                            retained->ts_val = ts_val;
++                            pending_frontier_bytes_ = payload_len;
++                            pending_frontier_ = std::move(retained);
++                        }
++                        rcv_nxt_ = prev_in;
++                        rcv_blocked_ = true;
++                        return false;
++                    }
++                } else {
++                    rcv_nxt_ += payload_len;
+                 }
+                 if (rcv_blocked_) {
+                     ArmWindowUpdateAck(now);  // window reopens (RFC 1122 s4.2.3.4)
+@@ -3982,6 +3997,53 @@
+             ack_count_ = 0;
+             ack_deadline_ = 0;
+             const TimePoint now = NowUs();
++            if (pending_frontier_) {
++                std::unique_ptr<OutSeg> segment = std::move(pending_frontier_);
++                const UInt32 bytes = static_cast<UInt32>(segment->data.size());
++                const UInt32 previous_rcv_nxt = rcv_nxt_;
++                const TcpState previous_state = state_;
++                pending_frontier_bytes_ = 0;
++                rcv_nxt_ += bytes;
++                const bool accepted = !recv_cb_ || recv_cb_(segment->data.data(), bytes);
++                if (TcpState::kClosed == state_) {
++                    return ReceiveResumeResult::kConnectionMissing;
++                }
++                if (!accepted) {
++                    rcv_nxt_ = previous_rcv_nxt;
++                    rcv_blocked_ = true;
++                    pending_frontier_bytes_ = bytes;
++                    pending_frontier_ = std::move(segment);
++                    return ReceiveResumeResult::kReceiveWindowFull;
++                }
++                if (0 != segment->ts_val) {
++                    ts_recent_ = segment->ts_val;
++                    ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
++                }
++                if (segment->fin) {
++                    ++rcv_nxt_;
++                    if (TcpState::kEstablished == state_) {
++                        Transition(TcpState::kCloseWait);
++                    } else if (TcpState::kFinWait1 == state_) {
++                        Transition(TcpState::kClosing);
++                    } else if (TcpState::kFinWait2 == state_) {
++                        Transition(TcpState::kTimeWait);
++                        if (TcpState::kTimeWait == state_) EnterTimeWait(now);
++                    }
++                    SendAck();
++                    if (TcpState::kClosed == state_) {
++                        return ReceiveResumeResult::kConnectionMissing;
++                    }
++                    return ReceiveResumeResult::kResumed;
++                }
++                if (state_ != previous_state) {
++                    // Respect a close initiated by the receive callback.
++                    SendAck();
++                    if (TcpState::kClosed == state_) {
++                        return ReceiveResumeResult::kConnectionMissing;
++                    }
++                    return ReceiveResumeResult::kResumed;
++                }
++            }
+             // A full advertised window can itself be caused by these cached
+             // bytes. Try the application before deciding whether it can open.
+             while (!ooo_.empty()) {
+@@ -4758,20 +4820,37 @@
+                         // that gated one chunk per delayed-ACK (40ms) round
+                         // (the interop_latency regression).
+                         const UInt32 prev_rcv = rcv_nxt_;
+-                        rcv_nxt_ = seg_end;
+-                        if (0 < payload_len && recv_cb_ && !recv_cb_(payload, payload_len)) {
+-                            // Backpressure (Bug B): the app could not accept
+-                            // the data (e.g. the MIMT rx queue is full). Roll
+-                            // RCV.NXT back and do not ACK - otherwise the peer
+-                            // believes the bytes were delivered while the
+-                            // application silently lost them. The peer RTOs
+-                            // and retransmits instead. Advertise window 0
+-                            // (RFC 1122 s4.2.3.4) so the peer persists instead
+-                            // of retransmitting into an unusable window.
+-                            rcv_nxt_ = prev_rcv;
+-                            rcv_blocked_ = true;
+-                            ArmWindowUpdateAck(now);  // advertise window 0 NOW (RFC 1122 s4.2.3.4)
+-                            break;
++                        if (0 < payload_len && recv_cb_) {
++                            if (pending_frontier_) {
++                                // A rejected frontier segment must be resumed
++                                // before another in-order segment can replace it.
++                                rcv_blocked_ = true;
++                                ArmWindowUpdateAck(now);
++                                break;
++                            }
++                            rcv_nxt_ = seg_end;
++                            if (!recv_cb_(payload, payload_len)) {
++                                // Retain the rejected in-order gap. Resume will
++                                // redeliver it without waiting for peer RTO.
++                                const UInt32 capacity = OooCapacity(window_);
++                                const UInt32 occupied = ooo_bytes_ + pending_frontier_bytes_;
++                                if (occupied <= capacity && payload_len <= capacity - occupied) {
++                                    auto retained = std::make_unique<OutSeg>();
++                                    retained->data.assign(payload, payload + payload_len);
++                                    retained->fin = hdr.IsFin();
++                                    if (timestamps_ok_ && opts_parsed && opts.has_timestamp) {
++                                        retained->ts_val = opts.ts_val;
++                                    }
++                                    pending_frontier_bytes_ = payload_len;
++                                    pending_frontier_ = std::move(retained);
++                                }
++                                rcv_nxt_ = prev_rcv;
++                                rcv_blocked_ = true;
++                                ArmWindowUpdateAck(now);
++                                break;
++                            }
++                        } else {
++                            rcv_nxt_ = seg_end;
+                         }
+                         if (rcv_blocked_) {
+                             ArmWindowUpdateAck(now);  // window reopens (RFC 1122 s4.2.3.4)
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -259,6 +259,7 @@
+         struct ReceiveStateSnapshot final {
+             bool rcv_blocked = false;
+             UInt32 ooo_bytes = 0;
++            UInt32 pending_frontier_bytes = 0;
+             UInt32 window = 0;
+             UInt16 advertised_window = 0;
+         };
+@@ -392,7 +393,7 @@
+             }
+             ReceiveStateSnapshot ReceiveState() const noexcept {
+                 std::lock_guard<std::recursive_mutex> scope(syncobj_);
+-                return {rcv_blocked_, ooo_bytes_, window_, AdvertisedWindow()};
++                return {rcv_blocked_, ooo_bytes_, pending_frontier_bytes_, window_, AdvertisedWindow()};
+             }
+             /**
+              * @brief Sends the SYN segment (active-open path, SynSent).
+@@ -1058,10 +1059,10 @@
+              *        window_ - ooo_bytes_.
+              */
+             UInt16 AdvertisedWindow() const noexcept {
+-                if (rcv_blocked_ || ooo_bytes_ >= window_) {
++                if (rcv_blocked_ || ooo_bytes_ + pending_frontier_bytes_ >= window_) {
+                     return 0;
+                 }
+-                return static_cast<UInt16>((window_ - ooo_bytes_) >> rcv_wscale_);
++                return static_cast<UInt16>((window_ - ooo_bytes_ - pending_frontier_bytes_) >> rcv_wscale_);
+             }
+             /**
+              * @brief Configures our receive-buffer capacity (the advertised
+@@ -1186,6 +1187,14 @@
+             bool TrimOooToFrontier() noexcept;
+             std::map<UInt32, OutSeg> ooo_;       /**< Out-of-order reassembly buffer (seq -> segment) */
+             UInt32      ooo_bytes_ = 0;
++            /**
++             * The in-order segment at RCV.NXT rejected by recv_cb_. Retaining
++             * it lets ResumeReceiveDetailed redeliver the gap without waiting
++             * for a peer RTO. It shares the receive-window occupancy ledger
++             * with ooo_bytes_.
++             */
++            std::unique_ptr<OutSeg> pending_frontier_;
++            UInt32      pending_frontier_bytes_ = 0;
+             std::deque<SentSeg> retrans_queue_;
+ 
+             Byte        md5_key_[64];
+@@ -1356,8 +1365,3 @@
+     }
+ }
+ #include <chrono>
+-
+-
+-
+-
+-

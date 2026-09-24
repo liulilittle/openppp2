@@ -54,10 +54,33 @@ void main() {
       final ws = ServerEndpoint.parse('ppp://ws/vpn.example.com:20000/');
       expect(ws.host, 'vpn.example.com');
       expect(ws.port, 20000);
+      expect(ws.scheme, 'ws');
 
       final wss = ServerEndpoint.parse('ppp://wss/[2001:db8::1]:443/');
       expect(wss.host, '2001:db8::1');
       expect(wss.port, 443);
+      expect(wss.scheme, 'wss');
+    });
+
+    test('parses native ws URL with path and preserves it on toUrl', () {
+      final endpoint = ServerEndpoint.parse('ws://haruka-hk.581006.xyz:20080/tun');
+      expect(endpoint.scheme, 'ws');
+      expect(endpoint.host, 'haruka-hk.581006.xyz');
+      expect(endpoint.port, 20080);
+      expect(endpoint.path, '/tun');
+      expect(endpoint.toUrl(), 'ws://haruka-hk.581006.xyz:20080/tun');
+    });
+
+    test('form-style rebuild no longer forces ppp for ws endpoints', () {
+      final original = ServerEndpoint.parse('ws://vpn.example.com:20080/tun');
+      final rebuilt = ServerEndpoint(
+        scheme: original.scheme,
+        host: original.host,
+        port: original.port,
+        path: original.path,
+      );
+      expect(rebuilt.toUrl(), 'ws://vpn.example.com:20080/tun');
+      expect(rebuilt.toPppUrl(), 'ppp://vpn.example.com:20080/');
     });
   });
 

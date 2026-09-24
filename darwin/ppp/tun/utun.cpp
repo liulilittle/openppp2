@@ -291,7 +291,7 @@ namespace ppp
                 return fd;
             }
 
-            static bool utun_ctl_add_or_delete_route_sys_abi(int action, uint32_t dst, uint32_t mask, uint32_t nexthop) noexcept 
+            static RouteMutationResult utun_ctl_add_or_delete_route_sys_abi(int action, uint32_t dst, uint32_t mask, uint32_t nexthop) noexcept
             {
             #pragma pack(push, 1)
                 struct 
@@ -322,7 +322,7 @@ namespace ppp
                 if (route_fd < 0) 
                 {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketCreateFailed);
-                    return false;
+                    return RouteMutationResult::Failed;
                 }
 
                 int message_flags = 0;
@@ -341,23 +341,25 @@ namespace ppp
                     if (add_existing || delete_missing)
                     {
                         ppp::telemetry::Log(ppp::telemetry::Level::kDebug, "tap", "darwin route idempotent action=%d errno=%d dst=%u mask=%u gw=%u", action, route_errno, dst, mask, nexthop);
-                        return true;
+                        return RouteMutationResult::Unchanged;
                     }
 
                     ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tap", "darwin route failed action=%d errno=%d dst=%u mask=%u gw=%u", action, route_errno, dst, mask, nexthop);
                     ppp::diagnostics::SetLastErrorCode(action == RTM_ADD ? ppp::diagnostics::ErrorCode::RouteAddFailed : ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                    return RouteMutationResult::Failed;
                 }
 
-                return err != -1;
+                return RouteMutationResult::Changed;
             }
 
             static inline bool utun_ctl_add_or_delete_route2(UInt32 address, UInt32 mask, UInt32 gw, bool operate_add_or_delete) noexcept
             {
                 int action = operate_add_or_delete ? RTM_ADD : RTM_DELETE;
-                return utun_ctl_add_or_delete_route_sys_abi(action, address, mask, gw);
+                return utun_ctl_add_or_delete_route_sys_abi(action, address, mask, gw) !=
+                    RouteMutationResult::Failed;
             }
 
-            static bool utun_ctl_add_or_delete_route(UInt32 address, int prefix, UInt32 gw, bool operate_add_or_delete) noexcept
+            static RouteMutationResult utun_ctl_add_or_delete_route_status(UInt32 address, int prefix, UInt32 gw, bool operate_add_or_delete) noexcept
             {
                 if (prefix < 0 || prefix > 32)
                 {
@@ -365,17 +367,30 @@ namespace ppp
                 }
 
                 uint32_t mask = IPEndPoint::PrefixToNetmask(prefix);
-                return utun_ctl_add_or_delete_route2(address, mask, gw, operate_add_or_delete);
+                const int action = operate_add_or_delete ? RTM_ADD : RTM_DELETE;
+                return utun_ctl_add_or_delete_route_sys_abi(action, address, mask, gw);
             }
 
             bool utun_add_route(UInt32 address, int prefix, UInt32 gw) noexcept
             {
-                return utun_ctl_add_or_delete_route(address, prefix, gw, true);
+                return utun_add_route_status(address, prefix, gw) !=
+                    RouteMutationResult::Failed;
             }
 
             bool utun_del_route(UInt32 address, int prefix, UInt32 gw) noexcept
             {
-                return utun_ctl_add_or_delete_route(address, prefix, gw, false);
+                return utun_del_route_status(address, prefix, gw) !=
+                    RouteMutationResult::Failed;
+            }
+
+            RouteMutationResult utun_add_route_status(UInt32 address, int prefix, UInt32 gw) noexcept
+            {
+                return utun_ctl_add_or_delete_route_status(address, prefix, gw, true);
+            }
+
+            RouteMutationResult utun_del_route_status(UInt32 address, int prefix, UInt32 gw) noexcept
+            {
+                return utun_ctl_add_or_delete_route_status(address, prefix, gw, false);
             }
 
             bool utun_add_route2(UInt32 address, UInt32 mask, UInt32 gw) noexcept

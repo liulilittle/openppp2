@@ -169,7 +169,7 @@ namespace ppp {
                                 if (configuration_->udp.dns.cache) {
                                     int remotePort = remoteEP.port();
                                     if (remotePort == PPP_DNS_SYS_PORT) {
-                                        VirtualEthernetDatagramPort::NamespaceQuery(switcher_, buffer_.get(), bytes_transferred);
+                                        VirtualEthernetExchanger::NamespaceQueryCache(switcher_, buffer_.get(), bytes_transferred);
                                     }
                                 }
                             }
@@ -244,7 +244,7 @@ namespace ppp {
                     return false;
                 }
 
-                auto allocated_context = exchanger->static_allocated_context_;
+                auto allocated_context = exchanger->GetStaticAllocatedContext();
                 if (NULLPTR == allocated_context) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionNotFound);
                     return false;
@@ -259,7 +259,7 @@ namespace ppp {
                     allocator,
                     [&allocated_context](int) noexcept { return allocated_context->protocol; },
                     [&allocated_context](int) noexcept { return allocated_context->transport; },
-                    exchanger->static_echo_session_id_,
+                    exchanger->GetStaticEchoSessionId(),
                     destinationIP,
                     remoteEP.port(),
                     source_ip,
@@ -273,8 +273,8 @@ namespace ppp {
                 }
 
                 boost::system::error_code ec;
-                socket.send_to(boost::asio::buffer(packet_output.get(), packet_length), 
-                    exchanger->static_echo_source_ep_, boost::asio::socket_base::message_end_of_record, ec);
+                socket.send_to(boost::asio::buffer(packet_output.get(), packet_length),
+                    exchanger->GetStaticEchoSourceEndPoint(), boost::asio::socket_base::message_end_of_record, ec);
                 
                 if (ec) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::UdpSendFailed);

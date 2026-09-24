@@ -102,6 +102,14 @@ namespace lwip {
     static Ptr2Socket                                   p2ss_;
     static Nat2Socket                                   n2ss_;
     static SynchronizedObject                           lockobj_;
+    /* Guards close-completion state signaled to netstack::wait_closed(). */
+    static SynchronizedObject                           closelock_;
+    /* Serializes the one-shot transition that posts netstack teardown. */
+    static SynchronizedObject                           closepost_lock_;
+    static std::condition_variable                      closecv_;
+    static bool                                         close_posted_     = false;
+    static bool                                         close_completed_  = false;
+    static bool                                         worker_running_   = false;
 
     class NetstackInternal final {
     public:
@@ -128,6 +136,11 @@ namespace lwip {
     void NetstackInternal::run() noexcept {
         auto thread_start = 
             []() noexcept {
+                {
+                    SynchronizedObjectScope scope_(closelock_);
+                    worker_running_ = true;
+                }
+
                 boost::asio::io_context& context = *netstack::Executor;
                 if (ppp::RT) {
                     ppp::SetThreadPriorityToMaxLevel();
@@ -141,6 +154,12 @@ namespace lwip {
                     context.run();
                 }
                 catch (const std::exception&) {}
+
+                {
+                    SynchronizedObjectScope scope_(closelock_);
+                    worker_running_ = false;
+                }
+                closecv_.notify_all();
             };
 
         // The executor thread is intentionally detached because the netstack owns the context lifetime.
@@ -886,6 +905,15 @@ namespace lwip {
             return false;
         }
 
+        /* Reopen support: clear the one-shot close bookkeeping before the
+         * worker loop is (re)started so a later close() can post again. */
+        {
+            SynchronizedObjectScope post_scope_(closepost_lock_);
+            SynchronizedObjectScope scope_(closelock_);
+            close_posted_    = false;
+            close_completed_ = false;
+        }
+
         NetstackInternal::run();
         netstack_check_timeouts();
         return true;
@@ -896,50 +924,96 @@ namespace lwip {
         netstack::close(default_null_);
     }
 
+    /**
+     * @brief Runs netstack teardown exactly once; normally executes on the
+     * netstack worker, but may run synchronously when the worker is gone.
+     */
+    static void netstack_close_impl(const LIBTCPIP_CLOSED_EVENT& event) noexcept {
+        struct tcp_pcb* pcb = pcb_;
+        pcb_   = NULLPTR;
+        netif_ = NULLPTR;
+
+        boost::system::error_code ec;
+        std::shared_ptr<boost::asio::steady_timer> timeout = std::move(timeout_);
+        if (timeout) {
+            ppp::net::Socket::Cancel(*timeout);
+        }
+
+        Ptr2Socket sockets; 
+        for (;;) {
+            SynchronizedObjectScope scope_(lockobj_);
+            sockets = std::move(p2ss_);
+
+            p2ss_.clear();
+            break;
+        }
+
+        for (auto&& kv : sockets) {
+            NetstackSocket& socket = kv.second;
+            netstack_tcp_closesocket(socket);
+        }
+
+        sockets.clear();
+        if (pcb) {
+            tcp_close(pcb);
+        }
+
+        if (event)
+        {
+            event();
+        }
+
+        LIBTCPIP_CLOSED_EVENT closed_event = netstack::closed;
+        if (closed_event) {
+            closed_event();
+        }
+
+        NetstackInternal::stop();
+
+        {
+            SynchronizedObjectScope scope_(closelock_);
+            close_completed_ = true;
+        }
+        closecv_.notify_all();
+    }
+
     void netstack::close(const LIBTCPIP_CLOSED_EVENT& event) noexcept {
         boost::asio::io_context& context = *netstack::Executor;
-        boost::asio::post(context, 
-            [event]() noexcept {
-                struct tcp_pcb* pcb = pcb_;
-                pcb_   = NULLPTR;
-                netif_ = NULLPTR;
-
-                boost::system::error_code ec;
-                std::shared_ptr<boost::asio::steady_timer> timeout = std::move(timeout_);
-                if (timeout) {
-                    ppp::net::Socket::Cancel(*timeout);
-                }
-
-                Ptr2Socket sockets; 
-                for (;;) {
-                    SynchronizedObjectScope scope_(lockobj_);
-                    sockets = std::move(p2ss_);
-
-                    p2ss_.clear();
-                    break;
-                }
-
-                for (auto&& kv : sockets) {
-                    NetstackSocket& socket = kv.second;
-                    netstack_tcp_closesocket(socket);
-                }
-
-                sockets.clear();
-                if (pcb) {
-                    tcp_close(pcb);
-                }
-
-                if (event)
-                {
+        {
+            SynchronizedObjectScope scope_(closepost_lock_);
+            if (close_posted_) {
+                /* Teardown is already in flight or done; complete this
+                 * caller's callback inline so it can never be stranded. */
+                if (event) {
                     event();
                 }
+                return;
+            }
+            close_posted_ = true;
+        }
 
-                LIBTCPIP_CLOSED_EVENT closed_event = netstack::closed;
-                if (closed_event) {
-                    closed_event();
-                }
+        if (context.stopped()) {
+            /* The worker loop is not running (already closed or never opened),
+             * so a posted handler would never execute; run teardown inline and
+             * still fire the completion callback. */
+            netstack_close_impl(event);
+            return;
+        }
 
-                NetstackInternal::stop();
+        boost::asio::post(context, 
+            [event]() noexcept {
+                netstack_close_impl(event);
+            });
+    }
+
+    bool netstack::wait_closed() noexcept {
+        /* close() signals close_completed_ only after the worker context has
+         * been stopped; worker_running_ then flips false as the worker unwinds.
+         * The deadline keeps shutdown bounded even if that path were skipped. */
+        std::unique_lock<SynchronizedObject> scope_(closelock_);
+        return closecv_.wait_for(scope_, std::chrono::seconds(5), 
+            []() noexcept {
+                return close_completed_ && !worker_running_;
             });
     }
 

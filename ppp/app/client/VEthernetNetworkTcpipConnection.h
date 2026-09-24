@@ -9,18 +9,9 @@
  * VEthernetNetworkTcpipStack for each TCP flow accepted from the local TAP device.
  *
  * ### Connection strategy
- * For each accepted TCP flow the handler tries the following paths in order:
- *
- * 1. **Rinetd bypass**: If the destination IP is in the bypass IP list, the flow
- *    is relayed directly to the remote host via a real OS TCP connection, bypassing
- *    the VPN tunnel entirely.
- *
- * 2. **VMUX sub-channel**: If a vmux session is established and in the
- *    NetworkState_Established state, the flow is multiplexed over the existing VPN
- *    connection without opening a new TCP connection to the server.
- *
- * 3. **VPN transmission**: Falls back to the full VirtualEthernetTcpipConnection
- *    path that tunnels the TCP flow over the VPN ITransmission channel.
+ * The stack supplies one strict routing mode per flow. Direct forces the Rinetd
+ * path and fails without tunnel fallback; Proxy skips Rinetd entirely; Auto keeps
+ * the legacy bypass-first selection followed by VMUX or VPN transmission.
  *
  * ### Threading model
  * All virtual callbacks (BeginAccept, EndAccept, Establish) are invoked from the
@@ -29,8 +20,9 @@
  *
  * ### Lifecycle
  * 1. Constructed by VEthernetNetworkTcpipStack::BeginAcceptClient().
- * 2. BeginAccept() → ConnectToPeer() selects and establishes the forwarding path.
- * 3. Establish() drives the selected path's data loop until closed.
+ * 2. Non-candidates connect before AckAccept; sniff candidates AckAccept immediately.
+ * 3. After EndAccept stores the socket, candidates sniff, connect, then forward;
+ *    non-candidates enter their already-connected forwarding loop unchanged.
  * 4. Dispose() tears down all forwarding channels.
  *
  * @license GPL-3.0
@@ -45,6 +37,8 @@
 #include <ppp/diagnostics/Error.h>
 
 #include <ppp/app/client/VEthernetExchanger.h>
+#include <ppp/app/client/xtcp/XtcpFirstLegHooks.h>
+#include <ppp/app/client/routing/TcpRoutingSelector.h>
 
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/app/protocol/VirtualEthernetTcpipConnection.h>
@@ -53,7 +47,6 @@
 #include <ppp/app/mux/vmux_skt.h>
 
 namespace ppp::configurations { class AppConfiguration; }
-
 namespace ppp {
     namespace app {
         namespace client {
@@ -78,7 +71,9 @@ namespace ppp {
              * One instance is created per accepted TCP flow. Instances are short-lived and
              * self-dispose when the forwarding path closes.
              */
-            class VEthernetNetworkTcpipConnection : public ppp::ethernet::VNetstack::TapTcpClient {
+            class VEthernetNetworkTcpipConnection :
+                public ppp::ethernet::VNetstack::TapTcpClient,
+                public xtcp::XtcpSecondLegHooks {
             public:
                 /** @brief VPN TCP/IP connection type alias. */
                 typedef ppp::app::protocol::VirtualEthernetTcpipConnection  VirtualEthernetTcpipConnection;
@@ -94,8 +89,17 @@ namespace ppp {
                  * @param exchanger  Shared exchanger providing configuration, switcher, and mux.
                  * @param context    Boost.Asio io_context for all async operations.
                  * @param strand     Serialized execution strand for this connection.
+                 * @param routing_mode Per-flow IP/default fallback selection.
+                 * @param routing_rules Immutable rules used for optional domain refinement.
+                 * @param domain_sniff_candidate Whether accept must defer peer connection for sniffing.
                  */
-                VEthernetNetworkTcpipConnection(const std::shared_ptr<VEthernetExchanger>& exchanger, const std::shared_ptr<boost::asio::io_context>& context, const ppp::threading::Executors::StrandPtr& strand) noexcept;
+                VEthernetNetworkTcpipConnection(
+                    const std::shared_ptr<VEthernetExchanger>& exchanger,
+                    const std::shared_ptr<boost::asio::io_context>& context,
+                    const ppp::threading::Executors::StrandPtr& strand,
+                    routing::TcpRoutingMode routing_mode,
+                    const std::shared_ptr<const routing::HumanRoutingRules>& routing_rules,
+                    bool domain_sniff_candidate) noexcept;
 
                 /**
                  * @brief Releases all owned forwarding channel resources.
@@ -118,6 +122,18 @@ namespace ppp {
                  *       Delegates to all active forwarding channels' Dispose() methods.
                  */
                 virtual void                                                Dispose() noexcept override;
+                virtual xtcp::XtcpDirectResult                              SendToPeer(const std::uint8_t* data, std::uint32_t length,
+                    xtcp::XtcpUploadBudget::Reservation&& credit) noexcept override;
+                virtual void                                                OnDownloadComplete(
+                    const xtcp::XtcpDirectReadReservation& reservation,
+                    xtcp::XtcpDirectCompletion completion) noexcept override;
+                virtual void                                                SetDirectQueueTelemetry(
+                    const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>& telemetry) noexcept override;
+                virtual void                                                ClosePeerSend() noexcept override;
+                void                                                        SetExternalFirstLeg(
+                    uint64_t runtime_generation,
+                    uint64_t flow_generation,
+                    const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks) noexcept;
 
             public:
                 /**
@@ -137,6 +153,7 @@ namespace ppp {
                  * @param configuration  Application configuration snapshot.
                  * @param socket       Accepted local TCP socket from the TAP stack.
                  * @param remoteEP     Destination TCP endpoint to connect to directly.
+                 * @param force        Bypass the legacy bypass-list gate when true.
                  * @param out          Receives the created RinetdConnection on success.
                  * @param y            Coroutine yield context; blocks until connected.
                  * @return  0 on success (out is valid),
@@ -152,6 +169,7 @@ namespace ppp {
                     const std::shared_ptr<AppConfiguration>&                configuration,
                     const std::shared_ptr<boost::asio::ip::tcp::socket>&    socket,
                     const boost::asio::ip::tcp::endpoint&                   remoteEP,
+                    bool                                                    force,
                     std::shared_ptr<RinetdConnection>&                      out,
                     ppp::coroutines::YieldContext&                          y) noexcept;
 
@@ -176,20 +194,21 @@ namespace ppp {
 
             protected:
                 /**
-                 * @brief Starts the established-session data forwarding stage.
+                 * @brief Starts candidate sniff/connect/forward or the legacy forwarding loop.
                  *
-                 * @return true if the forwarding loop was launched; false on error.
+                 * @return true if the forwarding coroutine was launched; false on error.
                  * @note Called by the base TapTcpClient after EndAccept() succeeds.
                  */
                 virtual bool                                                Establish() noexcept override;
 
                 /**
-                 * @brief Starts peer connection setup before the TAP accept acknowledgment.
+                 * @brief Acknowledges candidates immediately; otherwise connects before acknowledgment.
                  *
-                 * @return true if the connection attempt was started; false on error.
-                 * @note Spawns a coroutine that calls ConnectToPeer().
+                 * @return true if acknowledgment or legacy peer setup was started; false on error.
+                 * @note The non-candidate coroutine preserves the original ConnectToPeer/AckAccept order.
                  */
                 virtual bool                                                BeginAccept() noexcept override;
+                virtual bool                                                AckAccept() noexcept override;
 
                 /**
                  * @brief Applies accepted-socket options before final accept handling.
@@ -228,13 +247,17 @@ namespace ppp {
                  * @brief Selects and builds the forwarding path to the peer.
                  *
                  * @details
-                 * Tries Rinetd bypass, then Mux sub-channel, then full VPN path.
+                 * ForceDirect uses only Rinetd, ForceProxy skips Rinetd, and LegacyAuto
+                 * tries the bypass-gated Rinetd path before Mux or the full VPN path.
                  * Sets connection_, connection_rinetd_, or connection_mux_ on success.
                  *
                  * @param y  Coroutine yield context.
-                 * @return true if a forwarding path was established; false on all failures.
+                 * @return true if the selected forwarding path was established; false otherwise.
                  */
                 bool                                                        ConnectToPeer(ppp::coroutines::YieldContext& y) noexcept;
+
+                /** @brief Peeks the accepted payload and refines this flow's route on a domain match. */
+                bool                                                        SniffDomainRouting(ppp::coroutines::YieldContext& y) noexcept;
 
                 /**
                  * @brief Schedules a coroutine on the configured executor or strand.
@@ -247,12 +270,25 @@ namespace ppp {
             private:
                 /** @brief Owning exchanger providing mux, switcher, and configuration. */
                 std::shared_ptr<VEthernetExchanger>                         exchanger_;
+                /** @brief IP/default fallback, optionally refined after accepted-payload sniffing. */
+                routing::TcpRoutingMode                                     routing_mode_;
+                /** @brief Immutable human rules snapshot used only by sniff candidates. */
+                std::shared_ptr<const routing::HumanRoutingRules>            routing_rules_;
+                /** @brief True when peer connection must wait for bounded domain sniffing. */
+                bool                                                        domain_sniff_candidate_ = false;
                 /** @brief Active VPN tunnel TCP connection; null if not using VPN path. */
                 std::shared_ptr<VirtualEthernetTcpipConnection>             connection_;
                 /** @brief Active rinetd bypass connection; null if not using bypass path. */
                 std::shared_ptr<RinetdConnection>                           connection_rinetd_;
                 /** @brief Active VMUX sub-channel socket; null if not using mux path. */
                 std::shared_ptr<vmux::vmux_skt>                             connection_mux_;
+                std::weak_ptr<xtcp::XtcpFirstLegHooks>                     external_first_leg_hooks_;
+                uint64_t                                                    external_runtime_generation_ = 0;
+                uint64_t                                                    external_flow_generation_ = 0;
+                std::atomic<bool>                                           external_ready_signaled_{false};
+                std::atomic<bool>                                           external_closed_signaled_{false};
+                std::mutex                                                  external_direct_sync_;
+                std::weak_ptr<VirtualEthernetTcpipConnection>               external_direct_connection_;
 #if defined(_IPHONE) || defined(IPHONE)
                 /** @brief Tracks iOS per-flow server TCP slot held for mux=0 VPN path. */
                 bool                                                        ios_child_transmission_slot_held_ = false;

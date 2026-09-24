@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/config_profile.dart';
+import '../models/launch_route_mode.dart';
 import '../models/remote_subscription.dart';
 import '../models/telemetry_settings.dart';
 import '../utils/server_endpoint.dart';
@@ -149,6 +150,7 @@ cdnst.net          /cloudflare/tun''';
     'mtu': 1400,
     'mark': 0,
     'mux': 0,
+    'muxMode': 'compat',
     'vnet': false,
     'blockQuic': false,
     'staticMode': true,
@@ -158,12 +160,10 @@ cdnst.net          /cloudflare/tun''';
     // When [perAppProxyEnabled] is true, the VpnService.Builder restricts
     // proxied traffic to the package list in [perAppProxyApps]. Mode picks
     // between Builder.addAllowedApplication (allow) and addDisallowedApplication
-    // (deny). [autoAppendApps] makes newly installed apps automatically join
-    // the proxy whitelist when the VPN is (re)started.
+    // (deny).
     'perAppProxyEnabled': false,
     'perAppProxyMode': 'allow', // 'allow' | 'deny'
     'perAppProxyApps': <String>[],
-    'autoAppendApps': false,
     // ---- LAN proxy ----
     // When true, the openppp2 local http/socks proxy listeners bind to
     // 0.0.0.0 so other LAN devices can use this device as a proxy. When
@@ -337,6 +337,81 @@ cdnst.net          /cloudflare/tun''';
       root['geo-rules'] = gr;
     }
 
+    // ---- canonical client routing block ----
+    // Keep IP/DNS policy in profile JSON so native clients can consume one
+    // authoritative bypass source list and DNS source list. The independent
+    // client.proxy-only flag controls runtime mode; legacy client.routes and
+    // client.peer-routes remain mirrored for older consumers.
+    {
+      List<String> splitLines(dynamic value) => (value ?? '')
+          .toString()
+          .split('\n')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+
+      final client = (root['client'] is Map)
+          ? Map<String, dynamic>.from(root['client'] as Map)
+          : <String, dynamic>{};
+      final routing = (client['routing'] is Map)
+          ? Map<String, dynamic>.from(client['routing'] as Map)
+          : <String, dynamic>{};
+      routing.remove('mode');
+      final ip = (routing['ip'] is Map)
+          ? Map<String, dynamic>.from(routing['ip'] as Map)
+          : <String, dynamic>{};
+      final dns = (routing['dns'] is Map)
+          ? Map<String, dynamic>.from(routing['dns'] as Map)
+          : <String, dynamic>{};
+
+      final routeMode = LaunchRouteMode.fromOptions(options);
+      final proxyOnly = options['proxyOnly'] == true;
+      // UI options are the user's active override and take precedence over the
+      // profile canonical value when they are non-empty.  An empty UI value
+      // means "not set by user"; in that case keep whatever the profile already
+      // has so that a profile with pre-populated canonical bypass/DNS is not
+      // silently discarded.  routeMode==global always forces an empty bypass
+      // regardless of UI or profile content.
+      final uiBypass = splitLines(options['bypassIpList']);
+      if (routeMode == LaunchRouteMode.global) {
+        ip['bypass'] = <String>[];
+      } else if (uiBypass.isNotEmpty) {
+        ip['bypass'] = uiBypass;
+      }
+      // ip['bypass'] left unchanged when uiBypass is empty and routeMode != global.
+      final uiDnsRules = splitLines(options['dnsRulesList']);
+      if (uiDnsRules.isNotEmpty) {
+        dns['rules'] = uiDnsRules;
+      }
+      // dns['rules'] left unchanged when uiDnsRules is empty.
+
+      // Do not discard route entries from profiles that predate the canonical
+      // block. Nested canonical values win; direct aliases are also retained.
+      if (!ip.containsKey('routes')) {
+        final routes = routing['routes'] ?? client['routes'];
+        if (routes != null) ip['routes'] = routes;
+      }
+      if (!ip.containsKey('peer-routes')) {
+        final peerRoutes = routing['peer-routes'] ?? client['peer-routes'];
+        if (peerRoutes != null) ip['peer-routes'] = peerRoutes;
+      }
+      // Canonical nested values are authoritative and remain mirrored for
+      // legacy native consumers that still read client.routes fields.
+      if (ip['routes'] != null) client['routes'] = ip['routes'];
+      if (ip['peer-routes'] != null) client['peer-routes'] = ip['peer-routes'];
+      routing['ip'] = ip;
+      routing['dns'] = dns;
+      client['routing'] = routing;
+      client['proxy-only'] = proxyOnly;
+      root['client'] = client;
+    }
+
+    final mux = (root['mux'] is Map)
+        ? Map<String, dynamic>.from(root['mux'] as Map)
+        : <String, dynamic>{};
+    mux['mode'] = (options['muxMode'] ?? 'compat').toString();
+    root['mux'] = mux;
+
     // ---- LAN proxy bind override ----
     // When [allowLan] is true, force the local http/socks proxy listeners to
     // bind on 0.0.0.0 so other devices on the same Wi-Fi can use this device
@@ -349,9 +424,6 @@ cdnst.net          /cloudflare/tun''';
       final client = (root['client'] is Map)
           ? Map<String, dynamic>.from(root['client'] as Map)
           : <String, dynamic>{};
-      if (proxyOnly) {
-        client['proxy-only'] = true;
-      }
       final hp = (client['http-proxy'] is Map)
           ? Map<String, dynamic>.from(client['http-proxy'] as Map)
           : <String, dynamic>{'port': 8080};

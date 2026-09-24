@@ -13,8 +13,7 @@
 #endif
 
 #if defined(_ANDROID)
-// Android JNI includes are guarded by the macro.
-// Actual JNI headers are expected to be available in the Android build environment.
+#include <android/OpenPPP2VpnProtectBridge.h>
 #endif
 
 namespace ppp {
@@ -39,29 +38,12 @@ namespace ppp {
         // -------------------------------------------------------------------------
 
 #if defined(_ANDROID)
-        void AndroidSocketProtector::Initialize(void* env, void* vpn_service) noexcept {
-            jni_env_ = env;
-            vpn_service_ = vpn_service;
-            // The protect_method_ lookup would happen here via JNI reflection.
-            // This is a guarded placeholder — the actual JNI method ID resolution
-            // requires the JNIEnv and VpnService class, which are only available
-            // at runtime on the Android JNI thread.
-            protect_method_ = nullptr;
+        bool AndroidSocketProtector::IsReady() const noexcept {
+            return ppp::android::IsProtectBridgeReady();
         }
 
         bool AndroidSocketProtector::Protect(int fd) noexcept {
-            if (!jni_env_ || !vpn_service_ || !protect_method_) {
-                // JNI not initialized — cannot protect. Fail closed by returning false.
-                return false;
-            }
-            // JNI call: vpn_service.protect(fd)
-            // This would be:
-            //   JNIEnv* env = static_cast<JNIEnv*>(jni_env_);
-            //   jobject service = static_cast<jobject>(vpn_service_);
-            //   jmethodID method = static_cast<jmethodID>(protect_method_);
-            //   jboolean result = env->CallBooleanMethod(service, method, fd);
-            //   return result == JNI_TRUE;
-            return false;  // Placeholder — JNI call not yet wired.
+            return ppp::android::ProtectSocketFd(fd);
         }
 #endif
 
@@ -100,13 +82,11 @@ namespace ppp {
             }
 
             int fd = static_cast<int>(socket->native_handle());
-            if (protector_) {
-                if (!protector_->Protect(fd)) {
-                    // H1: Protection failed — do not return an unprotected socket.
-                    boost::system::error_code ec;
-                    socket->close(ec);
-                    return nullptr;
-                }
+            if (!ProtectP2PSocket(protector_, fd)) {
+                // H1: Protection failed — do not return an unprotected socket.
+                boost::system::error_code ec;
+                socket->close(ec);
+                return nullptr;
             }
 
             return socket;

@@ -1,5 +1,8 @@
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/diagnostics/Error.h>
+#if defined(PPP_COROUTINES_TSAN_ENABLED)
+#include <sanitizer/tsan_interface.h>
+#endif
 
 namespace ppp
 {
@@ -18,6 +21,8 @@ namespace ppp
         static constexpr int STATUS_SUSPEND    = 2;
         /** @brief State: coroutine is entering resume transition. */
         static constexpr int STATUS_RESUMING   = -1;
+        /** @brief State: coroutine handler returned; the context is being reclaimed. */
+        static constexpr int STATUS_COMPLETED  = 3;
 
         /**
          * @brief Constructs a coroutine context and allocates stack memory.
@@ -39,12 +44,23 @@ namespace ppp
             }
 
             stack_ = ppp::threading::BufferswapAllocator::MakeByteArray(heap, stack_size);
+#if defined(PPP_COROUTINES_TSAN_ENABLED)
+            sanitizer_fiber_ = __tsan_create_fiber(0);
+#endif
         }
 
         /** @brief Releases references and owned state fields. */
         YieldContext::~YieldContext() noexcept
         {
             YieldContext* y = this;
+#if defined(PPP_COROUTINES_TSAN_ENABLED)
+            if (y->sanitizer_fiber_)
+            {
+                __tsan_destroy_fiber(y->sanitizer_fiber_);
+                y->sanitizer_fiber_ = NULLPTR;
+            }
+            y->sanitizer_caller_fiber_ = NULLPTR;
+#endif
             y->h_          = NULLPTR;
             y->stack_      = NULLPTR;
             y->stack_size_ = 0;
@@ -55,51 +71,83 @@ namespace ppp
         /** @brief Suspends execution and switches back to caller context. */
         bool YieldContext::Suspend() noexcept
         {
-            int L = STATUS_RESUMED;
-            if (s_.compare_exchange_strong(L, STATUS_SUSPENDING))
+            YieldContext* y = this;
             {
-                YieldContext* y = this;
-                y->caller_.exchange(
-                    boost::context::detail::jump_fcontext(
-                        y->caller_.exchange(NULLPTR), y).fctx);
+                std::lock_guard<std::mutex> scope(y->syncobj_);
+                if (y->wakeup_pending_)
+                {
+                    /**
+                     * @brief A completion was latched before this suspend could park
+                     *        (completion-before-suspend); consume it without blocking.
+                     */
+                    y->wakeup_pending_ = false;
+                    return true;
+                }
 
-                L = STATUS_RESUMING;
-                return y->s_.compare_exchange_strong(L, STATUS_RESUMED);
+                if (y->s_.load() != STATUS_RESUMED)
+                {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid);
+                    return false;
+                }
+
+                y->s_.store(STATUS_SUSPENDING);
             }
-            else
+
+            /** @brief The mutex is released before jumping; never hold it across fcontext switches. */
+#if defined(PPP_COROUTINES_TSAN_ENABLED)
+            __tsan_switch_to_fiber(y->sanitizer_caller_fiber_, 0);
+#endif
+            y->caller_.exchange(
+                boost::context::detail::jump_fcontext(
+                    y->caller_.exchange(NULLPTR), y).fctx);
+
             {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid);
-                return false;
+                /** @brief The resumer published STATUS_RESUMING before jumping back in. */
+                std::lock_guard<std::mutex> scope(y->syncobj_);
+                y->s_.store(STATUS_RESUMED);
             }
+
+            return true;
         }
 
         /** @brief Resumes execution from suspended coroutine context. */
         bool YieldContext::Resume() noexcept
         {
-            int L = STATUS_SUSPEND;
-            if (s_.compare_exchange_strong(L, STATUS_RESUMING))
+            YieldContext* y = this;
             {
-                YieldContext* y = this;
-                return Switch(
-                    boost::context::detail::jump_fcontext(
-                        y->callee_.exchange(NULLPTR), y), y);
-            }
-            else
-            {
-                /* Pairing window: the coroutine may still be entering its suspend
-                 * transition (STATUS_SUSPENDING) when this resume arrives, so the
-                 * CAS above fails and the wakeup would be lost forever. Record the
-                 * pending resume instead; Switch() consumes it right after the
-                 * suspend completes, preserving the 1:1 suspend/resume pairing. */
-                if (STATUS_SUSPENDING == s_.load(std::memory_order_acquire))
+                std::lock_guard<std::mutex> scope(y->syncobj_);
+                int status = y->s_.load();
+                if (status == STATUS_SUSPEND)
                 {
-                    pending_resume_.store(true, std::memory_order_release);
+                    y->s_.store(STATUS_RESUMING);
+                }
+                else if (status == STATUS_RESUMED || status == STATUS_SUSPENDING)
+                {
+                    /**
+                     * @brief The coroutine has not published its park point yet (it is
+                     *        still running, or is in the middle of the suspend handoff).
+                     *        Latch the wakeup so the pending Suspend() consumes it;
+                     *        dropping it here permanently hangs the coroutine when the
+                     *        io_context is driven by more than one run() thread.
+                     */
+                    y->wakeup_pending_ = true;
                     return true;
                 }
-
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid);
-                return false;
+                else
+                {
+                    /** @brief STATUS_RESUMING (duplicate wakeup) or STATUS_COMPLETED. */
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid);
+                    return false;
+                }
             }
+
+#if defined(PPP_COROUTINES_TSAN_ENABLED)
+            y->sanitizer_caller_fiber_ = __tsan_get_current_fiber();
+            __tsan_switch_to_fiber(y->sanitizer_fiber_, 0);
+#endif
+            return Switch(
+                boost::context::detail::jump_fcontext(
+                    y->callee_.exchange(NULLPTR), y), y);
         }
 
         /**
@@ -114,6 +162,10 @@ namespace ppp
             {
                 boost::context::detail::fcontext_t callee =
                     boost::context::detail::make_fcontext(stack + stack_size_, stack_size_, &YieldContext::Handle);
+#if defined(PPP_COROUTINES_TSAN_ENABLED)
+                y->sanitizer_caller_fiber_ = __tsan_get_current_fiber();
+                __tsan_switch_to_fiber(y->sanitizer_fiber_, 0);
+#endif
                 Switch(boost::context::detail::jump_fcontext(callee, y), y);
             }
             else
@@ -135,28 +187,35 @@ namespace ppp
         }
 
         /**
-         * @brief Finalizes suspend transition by atomically updating state.
-         * @throw std::runtime_error Thrown when state machine is corrupted.
+         * @brief Publishes the suspended state, or consumes a wakeup that raced the
+         *        suspend handoff and requests immediate re-entry.
          */
-        bool YieldContext::Switch() noexcept(false)
+        bool YieldContext::Switch() noexcept
         {
-            int L = STATUS_SUSPENDING;
-            if (s_.compare_exchange_strong(L, STATUS_SUSPEND))
-            {
-                /* A resume that arrived while the suspend transition was still in
-                 * flight is consumed here: the coroutine is now fully suspended, so
-                 * resume it immediately to honour the 1:1 suspend/resume pairing. */
-                if (pending_resume_.exchange(false, std::memory_order_acq_rel))
-                {
-                    Resume();
-                }
+            YieldContext* y = this;
+            std::lock_guard<std::mutex> scope(y->syncobj_);
 
+            if (y->s_.load() != STATUS_SUSPENDING)
+            {
+                /** @brief Defensive: the suspend handoff is single-threaded, so this is unreachable. */
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid);
                 return true;
             }
 
-            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid);
-            
-            throw std::runtime_error("The internal atomic state used for the yield_context switch was corrupted..");
+            if (y->wakeup_pending_)
+            {
+                /**
+                 * @brief A wakeup raced the suspend handoff; consume it and tell the
+                 *        caller to re-enter the coroutine immediately so the suspend
+                 *        never blocks.
+                 */
+                y->wakeup_pending_ = false;
+                y->s_.store(STATUS_RESUMING);
+                return false;
+            }
+
+            y->s_.store(STATUS_SUSPEND);
+            return true;
         }
 
         /**
@@ -164,16 +223,48 @@ namespace ppp
          */
         bool YieldContext::Switch(const boost::context::detail::transfer_t& t, YieldContext* y) noexcept
         {
-            if (t.data)
+            if (!t.data)
             {
-                y->callee_.exchange(t.fctx);
-                return y->Switch();
-            }
-            else
-            {
+                /** @brief Coroutine handler returned; mark completed and reclaim. */
+                {
+                    std::lock_guard<std::mutex> scope(y->syncobj_);
+                    y->s_.store(STATUS_COMPLETED);
+                }
+
                 YieldContext::Release(y);
                 return true;
             }
+
+            y->callee_.exchange(t.fctx);
+            while (!y->Switch())
+            {
+                /**
+                 * @brief A wakeup was latched while the coroutine was parking; re-enter
+                 *        it immediately so the suspend is never allowed to block.
+                 */
+#if defined(PPP_COROUTINES_TSAN_ENABLED)
+                y->sanitizer_caller_fiber_ = __tsan_get_current_fiber();
+                __tsan_switch_to_fiber(y->sanitizer_fiber_, 0);
+#endif
+                boost::context::detail::transfer_t r =
+                    boost::context::detail::jump_fcontext(
+                        y->callee_.exchange(NULLPTR), y);
+
+                if (!r.data)
+                {
+                    {
+                        std::lock_guard<std::mutex> scope(y->syncobj_);
+                        y->s_.store(STATUS_COMPLETED);
+                    }
+
+                    YieldContext::Release(y);
+                    return true;
+                }
+
+                y->callee_.exchange(r.fctx);
+            }
+
+            return true;
         }
 
         /**
@@ -209,8 +300,8 @@ namespace ppp
                 if (h)
                 {
                     try
-                    {
-                        h(*y);
+                {
+                    h(*y);
                     }
                     catch (const std::exception&)
                     {
@@ -228,6 +319,9 @@ namespace ppp
                     h = NULLPTR;
                 }
 
+#if defined(PPP_COROUTINES_TSAN_ENABLED)
+                __tsan_switch_to_fiber(y->sanitizer_caller_fiber_, 0);
+#endif
                 Jump(y->caller_.exchange(NULLPTR), NULLPTR);
 
                 // If execution reaches here the coroutine was resumed after completion.
@@ -253,6 +347,10 @@ namespace ppp
             }
 
             stack_size = std::max<int>(stack_size, PPP_MEMORY_ALIGNMENT_SIZE);
+#if defined(PPP_COROUTINES_TSAN_ENABLED)
+            /** @brief TSan instrumentation needs substantially more stack than production code. */
+            stack_size = std::max<int>(stack_size, 1 << 20);
+#endif
 
             /**
              * @brief Instantiates context object before posting execution.
@@ -287,10 +385,11 @@ namespace ppp
         }
 
         /**
-         * @brief Posts a resume request to the strand.
-         * @note Removed infinite retry loop - if Resume() fails, it indicates the coroutine
-         *       is not in SUSPEND state (already completed or corrupted), retrying will not help.
-         *       Caller must handle failure cases appropriately.
+         * @brief Posts a resume request to the strand or context.
+         * @note Resume() latches the wakeup when the coroutine has not finished parking
+         *       yet, so a completion racing Suspend() is consumed by that Suspend()
+         *       instead of being dropped.  Resume() only fails on a duplicate wakeup
+         *       (STATUS_RESUMING) or after the coroutine has completed.
          */
         bool YieldContext::R() noexcept
         {

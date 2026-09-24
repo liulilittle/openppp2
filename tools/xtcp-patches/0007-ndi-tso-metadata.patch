@@ -1,0 +1,181 @@
+--- a/include/xtcp/buf/bufref.h
++++ b/include/xtcp/buf/bufref.h
+@@ -31,7 +31,12 @@
+          */
+         constexpr UInt32 kMaxPoolPayload = 32768 - kHeaderBytes;
+         /**
+-         * @brief GSO segment metadata attached to a super-segment.
++         * @brief GSO segment metadata attached to a TSO super-segment.
++         * @note The contract is active only when `segs > 1`. In that case
++         *       `gso_size` is the exact TCP payload bytes per full segment,
++         *       `mss` is the peer MSS used for congestion accounting, and
++         *       `segs` is ceil(TCP payload / gso_size). Ordinary packets carry
++         *       an all-zero value.
+          */
+         struct SegMeta {
+             UInt32 gso_size = 0;  /**< Bytes per GSO segment */
+@@ -185,7 +190,7 @@
+              */
+             UInt32 UseCount() const noexcept;
+             /**
+-             * @brief GSO metadata (valid when segs > 0).
++             * @brief GSO metadata (valid only when segs > 1; otherwise zero).
+              */
+             SegMeta& Meta() noexcept { return meta_; }
+             /**
+--- a/include/xtcp/ndi.h
++++ b/include/xtcp/ndi.h
+@@ -29,8 +29,11 @@
+              *        super-MSS sends straight through when the retransmission
+              *        queue is empty, the window/cwnd fit, and the pool's
+              *        biggest class holds the super-segment (32KB). The RTO
+-             *        path re-emits it whole. Backends without the cap get
+-             *        MSS-sized segments as before.
++             *        path re-emits it whole. A TSO packet is identified only
++             *        by `packet.owned.Meta().segs > 1`; its metadata supplies
++             *        the exact segmentation size. Backends must not infer TSO
++             *        from packet length. Backends without the cap get MSS-sized
++             *        segments as before.
+              */
+             kCapTsoTx       = 0x0002,  /**< Hardware TSO offload on tx */
+             /**
+@@ -48,7 +51,10 @@
+          * @note Ownership is transferable. When `owned` is non-empty the
+          *       packet owns a pool buffer (zero-copy rx: the stack adopts it
+          *       without copying); otherwise `data` borrows a buffer and the
+-         *       stack must copy it into a pool block.
++         *       stack must copy it into a pool block. On tx, `owned.Meta()` is
++         *       all zero for an ordinary packet. For a TSO super-segment its
++         *       `segs` is greater than one and carries the segmentation
++         *       contract documented by buf::SegMeta.
+          */
+         struct Packet {
+             Byte*       data     = NULLPTR;  /**< Packet buffer (borrowed or owned.payload) */
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -2955,11 +2955,12 @@
+                 // bytes ahead of it, a clean send window, cwnd and pacing
+                 // clock, and the pool must hold the super-segment (its max
+                 // class is 32KB; anything bigger falls back to buffering).
+-                // TSO can retain a super-segment only when its hardware MSS
+-                // is already the safe queue payload cap; otherwise enqueue
+-                // ordinary capped segments so a later RTO rebuild is safe.
+-                const bool tso_direct = tso_tx_ && payload_cap == peer_mss_ &&
+-                    pending_send_.empty() && retrans_queue_.empty() && !fast_recovery_ &&
++                // The NDI metadata carries DataPayloadCap() as the exact GSO
++                // payload size. This remains safe when timestamps reduce the
++                // cap below PeerMss(): a later fresh-TS RTO rebuild uses the
++                // same cap and still fits the path MTU.
++                const bool tso_direct = tso_tx_ && pending_send_.empty() &&
++                    retrans_queue_.empty() && !fast_recovery_ &&
+                     inflight + len <= snd_wnd_ &&
+                     inflight + len <= cwnd_bytes &&
+                     (0 == cc_.pacing_rate || now >= pacing_deadline_) &&
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -499,6 +499,7 @@
+         }
+         const UInt16 eth_type = (6 == (packet.Data()[0] >> 4)) ? kIpv6 : kIpv4;
+         const UInt16 mss = (NULLPTR != conn->conn) ? conn->conn->PeerMss() : 1460;
++        const UInt16 payload_cap = (NULLPTR != conn->conn) ? conn->conn->DataPayloadCap() : mss;
+         // Defense in depth: a signed connection is never segmented at the tx
+         // boundary (GSO rebuilds headers and would strip the MD5 option).
+         // The send path already caps signed payloads, but an oversized signed
+@@ -522,6 +523,20 @@
+             // qdisc (no pacing, no fairness - the qdisc would be dead
+             // weight). Such packets fall through to software GSO + SendOne,
+             // which enqueue per segment (audit M1).
++            // Mark only a real TCP super-segment. The NDI contract forbids a
++            // backend from guessing offload state from packet length.
++            const UInt32 ip_hdr_len = (kIpv6 == eth_type) ? 40u :
++                static_cast<UInt32>(packet.Data()[0] & 0x0fu) * 4u;
++            const UInt32 tcp_hdr_len = packet.Len() >= ip_hdr_len + 20u
++                ? static_cast<UInt32>(packet.Data()[ip_hdr_len + 12] >> 4u) * 4u : 0u;
++            const UInt32 header_len = ip_hdr_len + tcp_hdr_len;
++            const UInt32 payload_len = packet.Len() >= header_len ? packet.Len() - header_len : 0u;
++            if (0u < payload_cap && payload_len > payload_cap) {
++                buf::SegMeta& meta = packet.Meta();
++                meta.gso_size = payload_cap;
++                meta.mss = mss;
++                meta.segs = static_cast<UInt16>((payload_len + payload_cap - 1u) / payload_cap);
++            }
+             ndi::Packet out;
+             out.data = packet.Data();
+             out.len = packet.Len();
+--- a/tests/test_tso_tx.cpp
++++ b/tests/test_tso_tx.cpp
+@@ -13,6 +13,7 @@
+ #include <xtcp/buf/bufref.h>
+ #include <xtcp/core/stack.h>
+ #include <xtcp/ndi/manual.h>
++#include <xtcp/options/options.h>
+ 
+ #include <atomic>
+ #include <chrono>
+@@ -42,6 +43,8 @@
+     std::atomic<UInt64> tx_calls{0};
+     std::atomic<UInt64> tx_bytes{0};
+     std::atomic<bool> reject{false};
++    xtcp::buf::SegMeta last_meta{};
++    xtcp::buf::SegMeta rejected_meta{};
+ 
+     void SetRxHandler(xtcp::ndi::RxHandler handler) noexcept override {
+         rx_ = std::move(handler);
+@@ -50,10 +53,12 @@
+ 
+     bool Tx(xtcp::ndi::Packet&& packet) noexcept override {
+         if (reject.load(std::memory_order_relaxed)) {
++            rejected_meta = packet.owned.Meta();
+             return false;  // ring full: the packet is NOT consumed
+         }
+         tx_calls.fetch_add(1, std::memory_order_relaxed);
+         tx_bytes.fetch_add(packet.len, std::memory_order_relaxed);
++        last_meta = packet.owned.Meta();
+         if (peer_) {
+             peer_(std::move(packet));
+         }
+@@ -125,6 +130,14 @@
+         }
+         CHECK(xtcp::core::TcpState::kEstablished == stack_a.ConnectionState(conn));
+ 
++        // Custom TCP_MAXSEG must drive the emitted GSO size; timestamps are
++        // negotiated, but the 1400-byte user ceiling is already below the
++        // timestamp-safe 1448-byte path cap.
++        Int32 custom_mss = 1400;
++        CHECK(stack_a.SetOption(conn, xtcp::options::kTcpMaxseg,
++                               &custom_mss, sizeof(custom_mss)));
++        CHECK(1400 == stack_a.ConnPeerMss(conn));
++
+         // Grow the congestion window first (slow start needs a few ACK
+         // rounds before the cwnd admits a super-segment), then send the
+         // pool's largest zero-copy super-segment (32712 = the 32KB class
+@@ -168,6 +181,9 @@
+         // itself is a single call, never the ~22 MSS-sized GSO segments).
+         const UInt64 tso_calls = backend_a.tx_calls.load() - calls_before;
+         CHECK(1 == tso_calls);
++        CHECK(1400 == backend_a.last_meta.gso_size);
++        CHECK(1400 == backend_a.last_meta.mss);
++        CHECK(24 == backend_a.last_meta.segs);
+         // Reap the super-segment's ACK (the delayed-ACK fires on a 40ms
+         // timer) so the next super-send finds an empty retransmission queue.
+         for (UInt32 i = 0; i < 500 && 0 < stack_a.ConnOutstandingSegments(conn); ++i) {
+@@ -206,6 +222,9 @@
+         }
+         CHECK(kTotal == sent);
+         CHECK(0 == backend_a.tx_calls.load() - calls_before2);  // nothing accepted while closed
++        CHECK(1400 == backend_a.rejected_meta.gso_size);
++        CHECK(1400 == backend_a.rejected_meta.mss);
++        CHECK(24 == backend_a.rejected_meta.segs);
+         backend_a.reject.store(false);
+         const UInt64 target = 2 * kTotal + 15 * 1024;
+         for (UInt32 i = 0; i < 500 && b_recv.load() < target; ++i) {
+@@ -215,6 +234,9 @@
+         // The drained super-segment was ONE deferred packet, re-emitted as
+         // one Tx call (the retry queue holds it whole).
+         CHECK(1 == backend_a.tx_calls.load() - calls_before2);
++        CHECK(1400 == backend_a.last_meta.gso_size);
++        CHECK(1400 == backend_a.last_meta.mss);
++        CHECK(24 == backend_a.last_meta.segs);
+         std::fprintf(stderr, "[tso] backpressure: recv=%llu drain_calls=%llu\n",
+                      (unsigned long long)b_recv.load(),
+                      (unsigned long long)(backend_a.tx_calls.load() - calls_before2));

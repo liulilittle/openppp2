@@ -36,8 +36,10 @@
  */
 
 namespace ppp::configurations { class AppConfiguration; }
+#include <atomic>
 #include <ppp/threading/Executors.h>
 #include <ppp/transmissions/ITransmission.h>
+#include <ppp/app/server/udp/ServerUdpRelayHost.h>
 
 namespace ppp {
     namespace app {
@@ -54,8 +56,6 @@ namespace ppp {
              *          `NamespaceQuery` static helpers.
              */
             class VirtualEthernetDatagramPort : public std::enable_shared_from_this<VirtualEthernetDatagramPort> {
-                friend class                                            VirtualEthernetExchanger;
-
             public:
                 typedef ppp::configurations::AppConfiguration           AppConfiguration;
                 typedef std::shared_ptr<AppConfiguration>               AppConfigurationPtr;
@@ -73,7 +73,7 @@ namespace ppp {
                  * @param transmission Transmission channel used to forward received packets back to the client.
                  * @param sourceEP    Client-side UDP source endpoint represented by this port.
                  */
-                VirtualEthernetDatagramPort(const VirtualEthernetExchangerPtr& exchanger, const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP) noexcept;
+                VirtualEthernetDatagramPort(const VirtualEthernetExchangerPtr& exchanger, ppp::app::server::udp::ServerUdpRelayHostPorts ports, const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP) noexcept;
 
                 /**
                  * @brief Finalizes resources and unregisters the port from the owner exchanger.
@@ -86,8 +86,6 @@ namespace ppp {
             public:
                 /** @brief Returns a shared self-reference via `shared_from_this()`. */
                 std::shared_ptr<VirtualEthernetDatagramPort>            GetReference() noexcept      { return shared_from_this(); }
-                /** @brief Returns the owner exchanger. */
-                VirtualEthernetExchangerPtr                             GetExchanger() noexcept      { return exchanger_; }
                 /** @brief Returns the io_context associated with this port. */
                 ContextPtr                                              GetContext() noexcept        { return context_; }
                 /** @brief Returns the application configuration snapshot. */
@@ -123,6 +121,9 @@ namespace ppp {
                  */
                 virtual bool                                            SendTo(const void* packet, int packet_length, const boost::asio::ip::udp::endpoint& destinationEP) noexcept;
 
+                /** @brief Rebinds replies to a replacement carrier, or null while suspended. */
+                virtual bool                                            RebindTransmission(const ITransmissionPtr& transmission) noexcept;
+
                 /**
                  * @brief Checks whether the port is disposed or has exceeded its activity timeout.
                  *
@@ -131,53 +132,20 @@ namespace ppp {
                  */
                 bool                                                    IsPortAging(UInt64 now) noexcept { return disposed_ || now >= timeout_; }
 
-            public:
                 /**
-                 * @brief Parses a DNS response packet and inserts it into the switcher's namespace cache.
+                 * @brief Marks this port as externally finalized before the owner releases it.
                  *
-                 * @param switcher       Switcher that provides access to the namespace cache.
-                 * @param packet         Raw DNS response packet buffer.
-                 * @param packet_length  Packet size in bytes.
-                 * @return True if the DNS response is successfully added to the cache.
+                 * @details Set by the owner (exchanger GC sweep / session manager) before it drops
+                 *          the shared_ptr.  Prevents a race between external release and a
+                 *          self-triggered `Dispose()`.  Public since P2-e so the session manager can
+                 *          signal it without friendship.
                  */
-                static bool                                             NamespaceQuery(
-                    const std::shared_ptr<VirtualEthernetSwitcher>&     switcher,
-                    const void*                                         packet,
-                    int                                                 packet_length) noexcept;
-
-                /**
-                 * @brief Tries to answer a DNS query from the cache and outputs the cached response.
-                 *
-                 * @details If a valid cache entry exists for the query key, the cached response is
-                 *          rewritten with the query transaction ID and forwarded to the client.
-                 *
-                 * @param switcher       Switcher providing access to the namespace cache.
-                 * @param exchanger      Exchanger used to select the output forwarding path.
-                 * @param sourceEP       Logical UDP source endpoint of the original query.
-                 * @param destinationEP  Logical UDP destination endpoint of the original query.
-                 * @param domain         Domain name string parsed from the DNS query.
-                 * @param packet         Original DNS query packet buffer.
-                 * @param packet_length  Query packet size in bytes.
-                 * @param queries_type   DNS query type (e.g. A, AAAA).
-                 * @param queries_clazz  DNS query class (e.g. IN).
-                 * @param static_transit True to use the static-echo transit output path.
-                 * @return  1 if answered from cache,
-                 *          0 if no cache hit,
-                 *         -1 if a cache hit exists but forwarding to the client fails.
-                 */
-                static int                                              NamespaceQuery(
-                    const std::shared_ptr<VirtualEthernetSwitcher>&     switcher,
-                    VirtualEthernetExchanger*                           exchanger,
-                    const boost::asio::ip::udp::endpoint&               sourceEP,
-                    const boost::asio::ip::udp::endpoint&               destinationEP,
-                    const ppp::string&                                  domain,
-                    const void*                                         packet,
-                    int                                                 packet_length,
-                    uint16_t                                            queries_type,
-                    uint16_t                                            queries_clazz,
-                    bool                                                static_transit) noexcept;
+                void                                                    MarkFinalize() noexcept { finalize_ = true; }
 
             private:
+                /** @brief Schedules one SENDTO frame on the transmission coroutine strand. */
+                bool                                                    SendToClient(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& destinationEP, const Byte* packet, int packet_length) noexcept;
+
                 /** @brief Closes the UDP socket and releases the transmission reference. */
                 void                                                    Finalize() noexcept;
 
@@ -198,38 +166,32 @@ namespace ppp {
                  */
                 void                                                    Update() noexcept;
 
-                /**
-                 * @brief Marks this port as externally finalized by the GC sweep.
-                 *
-                 * @details Called by the owner exchanger's GC sweep before it releases
-                 *          the shared_ptr.  Prevents a race between external GC and
-                 *          self-triggered `Dispose()`.
-                 */
-                void                                                    MarkFinalize() noexcept { finalize_ = true; }
-
             private:
                 /**
-                 * @brief Packed bitfield flags and timeout for this port.
+                 * @brief Lifecycle flags and timeout for this port.
                  *
                  * Fields:
-                 *   - disposed_ : 1  — True after Dispose() is called.
-                 *   - onlydns_  : 1  — True when all traffic through this port is DNS traffic.
-                 *   - sendto_   : 1  — True while a SendTo operation is in progress.
-                 *   - in_       : 1  — True when the port is in the inbound receive path.
-                 *   - finalize_ : 4  — Set by MarkFinalize() to signal external GC completion.
-                 *   - timeout_  : UInt64 — Absolute tick (ms) after which the port is considered aging.
+                 *   - disposed_ — True after Dispose() is called.
+                 *   - onlydns_  — True when all traffic through this port is DNS traffic.
+                 *   - sendto_   — True while a SendTo operation is in progress.
+                 *   - in_       — True when the port is in the inbound receive path.
+                 *   - finalize_ — Set by MarkFinalize() to signal external GC completion.
+                 *   - timeout_  — Absolute tick (ms) after which the port is considered aging.
+                 *
+                 * @details Every field is individually atomic because IsPortAging() is read by the
+                 *          manager GC thread while SendTo()/Finalize()/receive completions run on
+                 *          the owning io_context thread.
                  */
-                struct {
-                    bool                                                disposed_ : 1;  ///< True after Dispose() is called.
-                    bool                                                onlydns_  : 1;  ///< True when all datagrams are DNS traffic.
-                    bool                                                sendto_   : 1;  ///< True while a SendTo is in flight.
-                    bool                                                in_       : 1;  ///< True when port is in the inbound receive path.
-                    bool                                                finalize_ : 4;  ///< Set by MarkFinalize() from the GC sweep.
-                    UInt64                                              timeout_  = 0;  ///< Absolute expiry tick in milliseconds.
-                };
+                std::atomic<bool>                                       disposed_{false};  ///< True after Dispose() is called.
+                std::atomic<bool>                                       onlydns_{false};   ///< True when all datagrams are DNS traffic.
+                std::atomic<bool>                                       sendto_{false};    ///< True while a SendTo is in flight.
+                std::atomic<bool>                                       in_{false};        ///< True when port is in the inbound receive path.
+                std::atomic<bool>                                       finalize_{false};  ///< Set by MarkFinalize() from the GC sweep.
+                std::atomic<UInt64>                                     timeout_{0};       ///< Absolute expiry tick in milliseconds.
                 std::shared_ptr<boost::asio::io_context>                context_;           ///< io_context for async operations.
                 boost::asio::ip::udp::socket                            socket_;            ///< UDP socket for outbound/inbound traffic.
-                VirtualEthernetExchangerPtr                             exchanger_;         ///< Owner exchanger.
+                ppp::app::server::udp::ServerUdpRelayHostPorts          ports_;             ///< Injected exchanger/switcher capabilities (P2-e-2).
+                VirtualEthernetExchangerPtr                             exchanger_;         ///< Lifecycle anchor only; never dereferenced (P2-e-2).
                 ITransmissionPtr                                        transmission_;      ///< Session transmission channel.
                 AppConfigurationPtr                                     configuration_;     ///< Application configuration snapshot.
                 std::shared_ptr<Byte>                                   buffer_;            ///< Thread-local 64KB receive buffer.

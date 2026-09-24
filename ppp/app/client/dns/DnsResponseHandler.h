@@ -27,6 +27,7 @@ namespace ppp {
                     ppp::function<bool(
                         const boost::asio::ip::udp::endpoint& sourceEP,
                         const boost::asio::ip::udp::endpoint& destinationEP,
+                        const std::shared_ptr<Byte>& owner,
                         void* packet,
                         int packet_size,
                         bool caching)> datagram_output;

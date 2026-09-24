@@ -8,8 +8,15 @@ namespace ppp
 {
     namespace darwin 
     {
-        namespace tun 
+        namespace tun
         {
+            enum class RouteMutationResult
+            {
+                Failed,
+                Unchanged,
+                Changed,
+            };
+
             void                                                utun_close(int fd) noexcept;
             bool                                                utun_set_mac(int tun, const ppp::string& mac) noexcept;
             int                                                 utun_utunnum(const ppp::string& dev) noexcept;
@@ -23,6 +30,8 @@ namespace ppp
             bool                                                utun_del_route(UInt32 address, UInt32 gw) noexcept;
             bool                                                utun_add_route(UInt32 address, int prefix, UInt32 gw) noexcept;
             bool                                                utun_del_route(UInt32 address, int prefix, UInt32 gw) noexcept;
+            RouteMutationResult                                 utun_add_route_status(UInt32 address, int prefix, UInt32 gw) noexcept;
+            RouteMutationResult                                 utun_del_route_status(UInt32 address, int prefix, UInt32 gw) noexcept;
             bool                                                utun_add_route2(UInt32 address, UInt32 mask, UInt32 gw) noexcept;
             bool                                                utun_del_route2(UInt32 address, UInt32 mask, UInt32 gw) noexcept;
         }

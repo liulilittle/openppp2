@@ -1,0 +1,53 @@
+--- a/src/iperf_api.c
++++ b/src/iperf_api.c
+@@ -3402,21 +3402,29 @@
+     struct iperf_stream_result *rp = NULL;
+     struct iperf_interval_results *irp, temp;
+     struct iperf_time temp_time;
++    struct iperf_time now;
+     iperf_size_t total_interval_bytes_transferred = 0;
+ #if defined(HAVE_SCTP_H)
+     struct iperf_sctp_info sctp_info;
+ #endif /* HAVE_SCTP_H */
+ 
++#if !defined(HAVE_STDATOMIC_H)
++#error "iperf_stats_callback requires <stdatomic.h> support"
++#endif /* !defined(HAVE_STDATOMIC_H) */
++
+     temp.omitted = test->omitting;
+     temp.rtt = 0;
+     temp.rttvar = 0;
+     temp.pmtu = 0;
++    iperf_time_now(&now);
+     SLIST_FOREACH(sp, &test->streams, streams) {
+         rp = sp->result;
+-	temp.bytes_transferred = sp->sender ? rp->bytes_sent_this_interval : rp->bytes_received_this_interval;
++        iperf_size_t sent_snapshot = atomic_exchange(&rp->bytes_sent_this_interval, (iperf_size_t)0);
++        iperf_size_t received_snapshot = atomic_exchange(&rp->bytes_received_this_interval, (iperf_size_t)0);
++	temp.bytes_transferred = sp->sender ? sent_snapshot : received_snapshot;
+ 
+         // Total bytes transferred this interval
+-	total_interval_bytes_transferred += rp->bytes_sent_this_interval + rp->bytes_received_this_interval;
++	total_interval_bytes_transferred += sent_snapshot + received_snapshot;
+ 
+ 	irp = TAILQ_LAST(&rp->interval_results, irlisthead);
+         /* result->end_time contains timestamp of previous interval */
+@@ -3425,8 +3433,8 @@
+         else /* or use timestamp from beginning */
+             memcpy(&temp.interval_start_time, &rp->start_time, sizeof(struct iperf_time));
+         /* now save time of end of this interval */
+-        iperf_time_now(&rp->end_time);
+-        memcpy(&temp.interval_end_time, &rp->end_time, sizeof(struct iperf_time));
++        memcpy(&rp->end_time, &now, sizeof(struct iperf_time));
++        memcpy(&temp.interval_end_time, &now, sizeof(struct iperf_time));
+         iperf_time_diff(&temp.interval_start_time, &temp.interval_end_time, &temp_time);
+         temp.interval_duration = iperf_time_in_secs(&temp_time);
+ 	if (test->protocol->id == Ptcp) {
+@@ -3509,7 +3517,6 @@
+ #endif /* HAVE_SCTP_H */
+ 
+         add_to_interval_list(rp, &temp);
+-        rp->bytes_sent_this_interval = rp->bytes_received_this_interval = 0;
+     }
+ 
+     /* Verify that total server's throughput is not above specified limit */

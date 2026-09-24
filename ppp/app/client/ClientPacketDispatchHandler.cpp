@@ -4,7 +4,7 @@
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/AssignedAddressManager.h>
 #include <ppp/app/client/QuicRejectRateLimiter.h>
-#include <ppp/app/client/dns/DnsHost.h>
+#include <ppp/app/client/dns/DnsController.h>
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/collections/Dictionary.h>
 #include <ppp/diagnostics/Error.h>
@@ -101,6 +101,16 @@ namespace ppp {
                     }
                 }
 
+                // Clamp outbound TCP SYN MSS to the static tunnel budget and, when an
+                // authenticated ICMP Fragmentation Needed was received, the learned PMTU.
+                if (proto == ppp::net::native::ip_hdr::IP_PROTO_TCP) {
+                    const int path_mtu = app::protocol::GetVirtualEthernetPathMtuCache().Lookup(
+                        destination, Executors::GetTickCount());
+                    app::protocol::ClampTcpMssIPv4(reinterpret_cast<Byte*>(packet), packet_length,
+                        app::protocol::ComputeDynamicTcpMss(true,
+                            app::protocol::kVEthernetTunnelOverhead, path_mtu));
+                }
+
                 exchanger->Nat(packet, packet_length);
                 return true;
             }
@@ -122,7 +132,12 @@ namespace ppp {
                     return false;
                 }
 
-                app::protocol::ClampTcpMssIPv6(packet, packet_length, app::protocol::ComputeDynamicTcpMss(false, app::protocol::kVEthernetTunnelOverhead));
+                const app::protocol::VirtualEthernetIPv6PathMtuAddress path_mtu_destination =
+                    app::protocol::VirtualEthernetIPv6PathMtuAddress::Create(destination);
+                const int path_mtu = app::protocol::GetVirtualEthernetIPv6PathMtuCache().Lookup(
+                    path_mtu_destination, Executors::GetTickCount());
+                app::protocol::ClampTcpMssIPv6(packet, packet_length,
+                    app::protocol::ComputeDynamicTcpMss(false, app::protocol::kVEthernetTunnelOverhead, path_mtu));
 
                 std::shared_ptr<VEthernetExchanger> exchanger = owner_->exchanger_;
                 if (NULLPTR == exchanger) {
@@ -258,6 +273,7 @@ namespace ppp {
 
                 // Check whether dns resolution packets need to be redirected.
                 int destinationPort = frame->Destination.Port;
+                bool resolver_udp_flow = false;
                 if (destinationPort == PPP_DNS_SYS_PORT) {
 #if defined(_ANDROID)
 ANDROID_DNS_REDIRECT_TRACE(
@@ -267,22 +283,26 @@ ANDROID_DNS_REDIRECT_TRACE(
                         NULLPTR != messages ? (int)messages->Length : -1,
                         Ipep::ToAddress(packet->Destination).to_string().c_str());
 #endif
-                    if (owner_->RedirectDnsServer(exchanger, packet, frame, messages)) {
+                    const boost::asio::ip::udp::endpoint sourceEP =
+                        IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source);
+                    const boost::asio::ip::udp::endpoint destEP(
+                        Ipep::ToAddress(packet->Destination), PPP_DNS_SYS_PORT);
+                    resolver_udp_flow = NULLPTR != owner_->dns_controller_ &&
+                        owner_->dns_controller_->ConsumeUdpFlow(sourceEP.port(), destEP);
+                    if (!resolver_udp_flow) {
+                        if (NULLPTR != owner_->dns_controller_ &&
+                            owner_->dns_controller_->HandleQuery(owner_->dns_session_, packet, frame, messages)) {
 #if defined(_ANDROID)
     ANDROID_DNS_REDIRECT_TRACE( "dns_redirect udp53 handled");
 #endif
+                            return true;
+                        }
+                        if (NULLPTR != owner_->dns_controller_) {
+                            owner_->dns_controller_->HandleResolverResponse(
+                                owner_->dns_session_, messages, sourceEP, destEP, ppp::vector<Byte>{});
+                        }
                         return true;
                     }
-                    {
-                        const boost::asio::ip::udp::endpoint sourceEP =
-                            IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source);
-                        const boost::asio::ip::udp::endpoint destEP(
-                            Ipep::ToAddress(packet->Destination), PPP_DNS_SYS_PORT);
-                        const dns::DnsHostPorts dns_ports = owner_->DnsHostPortsFor(exchanger);
-                        dns_ports.handle_resolver_response(
-                            messages, sourceEP, destEP, ppp::vector<Byte>{});
-                    }
-                    return true;
                 }
 
                 if (owner_->block_quic_ && destinationPort == PPP_HTTPS_SYS_PORT) {
@@ -291,8 +311,28 @@ ANDROID_DNS_REDIRECT_TRACE(
                     return RejectBlockedQuic(packet, frame);
                 }
 
-                // If the VPN uses static transmission mode, ensure that the link is link ready.
-                if (owner_->static_mode_) {
+                routing::ResolvedDestination destination;
+                if (!owner_->ResolveDestination(frame->Destination, destination)) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::UdpRelayFailed);
+                }
+                if (destination.is_fake_ip && !destination.is_resolved) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                }
+
+                boost::asio::ip::udp::endpoint destinationEP =
+                    IPEndPoint::ToEndPoint<boost::asio::ip::udp>(destination.connect_endpoint);
+                if (destinationEP.address().is_unspecified()) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                }
+                if (destinationEP.port() <= IPEndPoint::MinPort ||
+                    destinationEP.port() > IPEndPoint::MaxPort) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkPortInvalid);
+                }
+                frame->Destination = destination.connect_endpoint;
+
+                // Direct policy must not enter the tunnel-only static echo path.
+                if (owner_->static_mode_ && !resolver_udp_flow &&
+                    destination.action != routing::RoutingAction::Direct) {
                     auto& static_ = owner_->configuration_->udp.static_;
                     if (static_.quic && destinationPort == PPP_HTTPS_SYS_PORT) {
                         if (exchanger->StaticEchoAllocated()) {
@@ -310,12 +350,8 @@ ANDROID_DNS_REDIRECT_TRACE(
                 }
 
                 boost::asio::ip::udp::endpoint sourceEP = IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source);
-                boost::asio::ip::udp::endpoint destinationEP = IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Destination);
-                const boost::asio::ip::address rewritten = owner_->RewriteFakeIpAddress(destinationEP.address());
-                if (rewritten != destinationEP.address()) {
-                    destinationEP = boost::asio::ip::udp::endpoint(rewritten, destinationEP.port());
-                }
-                bool ok = exchanger->SendTo(sourceEP, destinationEP, messages->Buffer.get(), messages->Length);
+                bool ok = exchanger->SendTo(
+                    sourceEP, destinationEP, messages->Buffer.get(), messages->Length, destination.action);
                 if (destinationEP.port() == PPP_DNS_SYS_PORT || !ok) {
                     ppp::telemetry::Log(Level::kInfo, "switcher", "UDP send source=%s:%u destination=%s:%u bytes=%d ok=%d error=%d",
                         sourceEP.address().to_string().c_str(),
@@ -415,19 +451,22 @@ ANDROID_DNS_REDIRECT_TRACE(
                     return false;
                 }
 
-                // The mobile TUN can feed locally generated ICMP errors such as
-                // destination-unreachable/port-unreachable for short-lived UDP
-                // sockets. The echo forwarding path only supports echo probes;
-                // forwarding ICMP errors through it can dereference stale timer
-                // state in the native exchanger and crash the VPN process.
+                // ICMP control errors cannot use the echo state machine. Preserve a
+                // validated raw error through PacketAction_NAT so its quoted packet and
+                // RFC 1191 next-hop MTU reach the peer that owns the original flow.
                 if (frame->Type != IcmpType::ICMP_ECHO && frame->Type != IcmpType::ICMP_ER) {
-#if defined(_ANDROID)
-ANDROID_DNS_REDIRECT_TRACE( "icmp_drop unsupported type=%d code=%d dst=%s",
-                        (int)frame->Type,
-                        (int)frame->Code,
-                        Ipep::ToAddress(packet->Destination).to_string().c_str());
-#endif
-                    return false;
+                    std::shared_ptr<BufferSegment> raw = IPFrame::ToArray(allocator, packet.get());
+                    app::protocol::IcmpPathMtuError error;
+                    if (NULLPTR == raw || NULLPTR == raw->Buffer ||
+                        !app::protocol::TryParseIcmpPathMtuError(raw->Buffer.get(), raw->Length, error) ||
+                        error.OuterSource != tap->IPAddress || error.QuotedDestination != tap->IPAddress ||
+                        error.OuterDestination == tap->IPAddress) {
+                        ppp::telemetry::Count("pmtu.error_rejected", 1);
+                        return false;
+                    }
+
+                    ppp::telemetry::Count("pmtu.error_forwarded", 1);
+                    return exchanger->Nat(raw->Buffer.get(), raw->Length);
                 }
 
                 elif(owner_->IPAddressIsGatewayServer(frame->Destination, tap->GatewayServer, tap->SubmaskAddress)) {

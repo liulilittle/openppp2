@@ -16,7 +16,7 @@
  *          - Proxies UDP datagrams through per-source `VirtualEthernetDatagramPort` objects.
  *          - Manages ICMP echo forwarding via `VirtualInternetControlMessageProtocol`.
  *          - Provides FRP inbound/outbound port-mapping via `VirtualEthernetMappingPort`.
- *          - Negotiates VMUX sub-channel multiplexing via `vmux::vmux_net`.
+ *          - Negotiates VMUX sub-channel multiplexing through a coordinator.
  *          - Handles static-echo allocation requests and forwards static-echo datagrams.
  *          - Uploads per-session traffic deltas to the managed server on each tick.
  *
@@ -41,8 +41,12 @@
 #include <ppp/app/protocol/VirtualEthernetLogger.h>
 #include <ppp/app/protocol/VirtualEthernetMappingPort.h>
 #include <ppp/app/protocol/VirtualEthernetPacket.h>
+#include <ppp/app/protocol/SessionResumeAuthenticator.h>
 #include <ppp/app/server/VirtualEthernetSwitcher.h>
-#include <ppp/app/mux/vmux_net.h>
+#include <ppp/app/server/SessionRecoveryState.h>
+#include <ppp/app/server/udp/ServerUdpRelayHost.h>
+#include <ppp/app/server/udp/StaticUdpRelayHost.h>
+#include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/LinkTelemetry.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/IPEndPoint.h>
@@ -50,6 +54,8 @@
 #include <ppp/threading/Timer.h>
 #include <ppp/transmissions/ITransmissionStatistics.h>
 #include <atomic>
+
+namespace ppp::app::mux { class MuxCoordinator; }
 
 namespace ppp {
     namespace app {
@@ -60,6 +66,11 @@ namespace ppp {
             class VirtualEthernetDatagramPortStatic;
             class VirtualInternetControlMessageProtocol;
             class VirtualInternetControlMessageProtocolStatic;
+
+            namespace udp {
+                class ServerDatagramPortManager;
+                class StaticDatagramPortManager;
+            }
 
             /**
              * @brief Handles one client session's L2/L3 forwarding, NAT, and control operations.
@@ -74,11 +85,8 @@ namespace ppp {
              *       and the static ICMP/datagram helper classes is required so that those
              *       classes can access internal state without exposing it via public API.
              */
-            class VirtualEthernetExchanger : public ppp::app::protocol::VirtualEthernetLinklayer {
-                friend class                                                                VirtualInternetControlMessageProtocolStatic;
+            class VirtualEthernetExchanger : public ppp::app::protocol::VirtualEthernetLinklayer, public udp::IServerUdpRelayHost, public udp::IStaticUdpRelayHost {
                 friend class                                                                VirtualEthernetSwitcher;
-                friend class                                                                VirtualEthernetDatagramPort;
-                friend class                                                                VirtualEthernetDatagramPortStatic;
 
             public:
                 /** @brief Base information packet type alias. */
@@ -95,6 +103,18 @@ namespace ppp {
                 typedef VirtualEthernetSwitcher::VirtualEthernetStaticEchoAllocatedContext  VirtualEthernetStaticEchoAllocatedContext;
                 /** @brief Shared pointer alias for the static-echo allocation context. */
                 typedef std::shared_ptr<VirtualEthernetStaticEchoAllocatedContext>          VirtualEthernetStaticEchoAllocatedContextPtr;
+
+                enum class CarrierStopResult : std::uint8_t {
+                    Suspended,
+                    Stale,
+                    Terminal,
+                };
+
+                enum class ResumeBeginStatus : std::uint8_t {
+                    Reserved,
+                    GenerationSync,
+                    Rejected,
+                };
 
             private:    
                 typedef std::mutex                                                          SynchronizedObject;
@@ -166,21 +186,47 @@ namespace ppp {
                  *          from any thread; the actual teardown happens on the IO thread.
                  */
                 virtual void                                                                Dispose() noexcept;
+                void                                                                        Dispose(ppp::function<void()> completion) noexcept;
 
                 /** @brief Returns true if this exchanger has been disposed (atomic load). */
                 bool                                                                        IsDisposed() noexcept       { return disposed_.load(std::memory_order_acquire); }
                 /** @brief Returns the parent switcher. */
                 VirtualEthernetSwitcherPtr                                                  GetSwitcher() noexcept      { return switcher_; }
-                /** @brief Returns the active transmission channel for this session. */
-                ITransmissionPtr                                                            GetTransmission() noexcept  { return transmission_; }
+                /** @brief Returns a locked snapshot of the active carrier. */
+                ITransmissionPtr                                                            GetTransmission() noexcept;
+                /** @brief Returns the generation that fences the current carrier. */
+                std::uint64_t                                                               GetCarrierGeneration() noexcept;
+                /** @brief Prepares an authenticated recovery offer for a fresh secure carrier. */
+                bool                                                                        PrepareFreshResumeOffer(const ITransmissionPtr& transmission, ppp::app::protocol::SessionResumeControl& offer) noexcept;
+                /** @brief Authenticates and reserves a suspended session for one candidate carrier. */
+                ResumeBeginStatus                                                           BeginResume(const ITransmissionPtr& transmission, const ppp::app::protocol::SessionResumeControl& request, const ppp::app::protocol::SessionResumeCandidateBinding& candidate, UInt64 now, std::uint64_t& reservation_token, ppp::app::protocol::SessionResumeControl& response) noexcept;
+                /** @brief Verifies confirmation and prepares the committed response without publishing data-plane state. */
+                bool                                                                        CommitResume(const ITransmissionPtr& transmission, const ppp::app::protocol::SessionResumeControl& confirm, const ppp::app::protocol::SessionResumeCandidateBinding& candidate, std::uint64_t reservation_token, UInt64 now, ppp::app::protocol::SessionResumeControl& committed) noexcept;
+                /** @brief Publishes the prepared replacement carrier after the committed response is sent. */
+                bool                                                                        PublishCommittedResume(const ITransmissionPtr& transmission, std::uint64_t reservation_token, UInt64 now) noexcept;
+                /** @brief Cancels only the matching candidate reservation without expiring the session. */
+                void                                                                        CancelResume(const ITransmissionPtr& transmission, std::uint64_t reservation_token) noexcept;
+                /** @brief Handles one carrier completion with pointer and generation fencing. */
+                CarrierStopResult                                                           OnCarrierStopped(const ITransmissionPtr& transmission, std::uint64_t generation, ppp::diagnostics::ErrorCode error, UInt64 now) noexcept;
+                /** @brief Returns true after a suspended recovery grace deadline expires. */
+                bool                                                                        IsRecoveryExpired(UInt64 now) noexcept;
+                /** @brief Returns true while this session is awaiting an eligible replacement carrier. */
+                bool                                                                        IsSuspended(UInt64 now) noexcept;
                 /** @brief Returns the Go managed-server bridge (may be null). */
                 VirtualEthernetManagedServerPtr                                             GetManagedServer() noexcept { return managed_server_; }
                 /** @brief Returns the traffic statistics object for this session. */
                 ITransmissionStatisticsPtr                                                  GetStatistics() noexcept    { return statistics_; }
+                /** @brief Static-echo allocation context shared with the static datagram/ICMP ports (P2-f). */
+                VirtualEthernetStaticEchoAllocatedContextPtr                                GetStaticAllocatedContext() noexcept { return static_allocated_context_; }
+                /** @brief Static-echo session slot index (P2-f). */
+                int                                                                         GetStaticEchoSessionId() noexcept { return static_echo_session_id_.load(); }
+                /** @brief Most-recent static-echo sender endpoint (P2-f). */
+                boost::asio::ip::udp::endpoint                                              GetStaticEchoSourceEndPoint() noexcept { return static_echo_source_ep_; }
+                /** @brief Releases a static-echo UDP source-port mapping when a port is freed (public since P2-f). */
+                bool                                                                        StaticEchoReleasePort(uint32_t source_ip, int source_port) noexcept;
                 /** @brief Returns the link telemetry object for this session. */
                 ppp::diagnostics::LinkTelemetry&                                             GetLinkTelemetry() noexcept { return link_telemetry_; }
-                /** @brief Returns the VMUX instance when sub-channel multiplexing is active. */
-                std::shared_ptr<vmux::vmux_net>                                             GetMux() noexcept           { return mux_; }
+                ppp::app::mux::MuxCoordinator*                                              GetMuxCoordinator() noexcept { return mux_coordinator_.get(); }
                 /**
                  * @brief Returns the preferred TUN file descriptor hint for the forwarding layer.
                  * @return TUN fd; -1 if none is set.
@@ -191,6 +237,16 @@ namespace ppp {
                  * @param fd TUN fd value; -1 to clear.
                  */
                 void                                                                        SetPreferredTunFd(int fd) noexcept;
+
+            public:
+                /** @brief IServerUdpRelayHost: hands the datagram manager the exchanger capabilities it needs (P2-e). */
+                udp::ServerUdpRelayHostPorts                                                 BuildServerUdpRelayHostPorts() noexcept override;
+
+                /** @brief IStaticUdpRelayHost: hands the static-echo manager the exchanger capabilities it needs (P2-f). */
+                udp::StaticUdpRelayHostPorts                                                 BuildStaticUdpRelayHostPorts() noexcept override;
+
+                /** @brief Parses a DNS response and stores it in the switcher namespace cache (moved off the port, P2-e-2). */
+                static bool                                                                 NamespaceQueryCache(const std::shared_ptr<VirtualEthernetSwitcher>& switcher, const void* packet, int packet_length) noexcept;
 
             protected:  
                 /**
@@ -281,7 +337,7 @@ namespace ppp {
                  * @param y             Coroutine yield context.
                  * @return True on success.
                  */
-                virtual bool                                                                OnEcho(const ITransmissionPtr& transmission, Byte* packet, int packet_length, YieldContext& y) noexcept override;
+                virtual bool                                                                OnEcho(const ITransmissionPtr& transmission, const std::shared_ptr<Byte>& owner, Byte* packet, int packet_length, YieldContext& y) noexcept override;
 
                 /**
                  * @brief Handles a UDP sendto command from the client.
@@ -297,7 +353,7 @@ namespace ppp {
                  * @param y             Coroutine yield context.
                  * @return True on success.
                  */
-                virtual bool                                                                OnSendTo(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length, YieldContext& y) noexcept override;
+                virtual bool                                                                OnSendTo(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const std::shared_ptr<Byte>& owner, Byte* packet, int packet_length, YieldContext& y) noexcept override;
 
                 /**
                  * @brief Handles a static-echo channel allocation request from the client.
@@ -395,6 +451,7 @@ namespace ppp {
                     const ITransmissionPtr&                                                 transmission, 
                     const boost::asio::ip::udp::endpoint&                                   sourceEP,
                     const boost::asio::ip::udp::endpoint&                                   destinationEP,
+                    const std::shared_ptr<Byte>&                                            owner,
                     Byte*                                                                   packet, 
                     int                                                                     packet_length,
                     bool                                                                    static_transit) noexcept;
@@ -435,6 +492,7 @@ namespace ppp {
                     const ITransmissionPtr&                                                 transmission, 
                     const boost::asio::ip::udp::endpoint&                                   sourceEP, 
                     const boost::asio::ip::udp::endpoint&                                   destinationEP, 
+                    const std::shared_ptr<Byte>&                                            owner,
                     Byte*                                                                   packet, 
                     int                                                                     packet_length,
                     bool                                                                    static_transit) noexcept;
@@ -444,6 +502,8 @@ namespace ppp {
                  * @brief Uploads per-session rx/tx traffic deltas to the managed server.
                  * @return True if the upload is queued or sent successfully.
                  */
+                int                                                                         NamespaceQueryReply(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const ppp::string& domain, const void* packet, int packet_length, uint16_t queries_type, uint16_t queries_clazz, bool static_transit) noexcept;
+
                 bool                                                                        UploadTrafficToManagedServer() noexcept;
 
                 /**
@@ -490,7 +550,7 @@ namespace ppp {
                  * @param packet_length Packet length in bytes.
                  * @return True if the packet is dispatched.
                  */
-                bool                                                                        SendEchoToDestination(const ITransmissionPtr& transmission, Byte* packet, int packet_length) noexcept;
+                bool                                                                        SendEchoToDestination(const ITransmissionPtr& transmission, const std::shared_ptr<Byte>& owner, Byte* packet, int packet_length) noexcept;
 
                 /**
                  * @brief Forwards a UDP payload to its destination via the per-source datagram port.
@@ -503,7 +563,7 @@ namespace ppp {
                  * @param y             Coroutine yield context.
                  * @return True on successful forwarding.
                  */
-                bool                                                                        SendPacketToDestination(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length, YieldContext& y) noexcept;
+                bool                                                                        SendPacketToDestination(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const std::shared_ptr<Byte>& owner, Byte* packet, int packet_length, YieldContext& y) noexcept;
     
             private:    
                 /**
@@ -515,14 +575,6 @@ namespace ppp {
                  */
                 bool                                                                        StaticEcho(const ITransmissionPtr& transmission, YieldContext& y) noexcept;
 
-                /**
-                 * @brief Releases a static-echo UDP source-port mapping when a port is freed.
-                 *
-                 * @param source_ip   Source IPv4 address (host-byte order).
-                 * @param source_port Source UDP port number.
-                 * @return True if the mapping is found and released.
-                 */
-                bool                                                                        StaticEchoReleasePort(uint32_t source_ip, int source_port) noexcept;
 
                 /**
                  * @brief Forwards a static-echo UDP packet to its network destination.
@@ -574,11 +626,11 @@ namespace ppp {
     
             private:    
                 /**
-                 * @brief Extends the base keepalive logic and disposes the session on timeout.
+                 * @brief Runs the base keepalive logic without deciding session recovery lifecycle.
                  *
                  * @param transmission Active transmission channel.
                  * @param now          Current tick count in milliseconds.
-                 * @return True if keepalive sent; false if the session timed out and is disposed.
+                 * @return True if keepalive sent; false when the carrier should stop.
                  */
                 virtual bool                                                                DoKeepAlived(const ITransmissionPtr& transmission, uint64_t now) noexcept override;
 
@@ -606,7 +658,7 @@ namespace ppp {
                  * @param y             Coroutine yield context.
                  * @return True on success.
                  */
-                virtual bool                                                                OnFrpSendTo(const ITransmissionPtr& transmission, bool in, int remote_port, const boost::asio::ip::udp::endpoint& sourceEP, Byte* packet, int packet_length, YieldContext& y) noexcept override;
+                virtual bool                                                                OnFrpSendTo(const ITransmissionPtr& transmission, bool in, int remote_port, const boost::asio::ip::udp::endpoint& sourceEP, const std::shared_ptr<Byte>& owner, Byte* packet, int packet_length, YieldContext& y) noexcept override;
 
                 /**
                  * @brief Handles an FRP TCP connect-acknowledgment from the client.
@@ -643,7 +695,7 @@ namespace ppp {
                  * @param packet_length Payload length in bytes.
                  * @return True on success.
                  */
-                virtual bool                                                                OnFrpPush(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, const void* packet, int packet_length) noexcept override;
+                virtual bool                                                                OnFrpPush(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, const std::shared_ptr<Byte>& owner, const void* packet, int packet_length) noexcept override;
     
             private:    
                 SynchronizedObject                                                          syncobj_;                   ///< Guards datagrams_, timeouts_, and mappings_.
@@ -655,21 +707,34 @@ namespace ppp {
                 FirewallPtr                                                                 firewall_;                  ///< Session-level firewall (may fall back to switcher-level).
                 TimeoutEventHandlerTable                                                    timeouts_;                  ///< Active DNS redirect timeout handlers.
                 VirtualInternetControlMessageProtocolPtr                                    echo_;                      ///< ICMP echo forwarding helper.
-                VirtualEthernetDatagramPortTable                                            datagrams_;                 ///< Active UDP relay ports keyed by source endpoint.
+                std::unique_ptr<udp::ServerDatagramPortManager>                             datagram_manager_;          ///< Owns the UDP relay session table (extracted P2-e).
+                std::unique_ptr<udp::StaticDatagramPortManager>                             static_datagram_manager_;   ///< Owns the static-echo relay session table (extracted P2-f).
+                mutable std::mutex                                                          carrier_mutex_;             ///< Guards carrier pointer, generation, and authenticated recovery state.
+                SessionRecoveryState                                                        recovery_state_;            ///< Same-process carrier recovery state machine.
+                ppp::app::protocol::SessionResumeId                                         recovery_session_id_{};      ///< Canonical binary session identifier.
+                ppp::app::protocol::SessionResumeSecret                                     retained_root_;             ///< Root retained only after authenticated fresh acceptance.
+                ppp::app::protocol::SessionResumeSecret                                     pending_fresh_root_;        ///< Temporary root awaiting fresh acceptance.
+                ppp::app::protocol::SessionResumeNonce                                      pending_fresh_server_nonce_{}; ///< Fresh offer nonce.
+                ITransmissionPtr                                                            pending_fresh_transmission_; ///< Carrier allowed to accept the fresh offer.
+                UInt64                                                                      pending_fresh_deadline_ = 0; ///< Monotonic deadline for unaccepted fresh offers.
+                bool                                                                        recovery_armed_ = false;      ///< True only after fresh proof verification.
+                ppp::app::protocol::SessionResumePendingAttempt                             resume_attempt_;            ///< Authenticated reserved resume transaction.
+                ITransmissionPtr                                                            resume_candidate_;          ///< Carrier owning the current reservation.
+                VirtualInternetControlMessageProtocolPtr                                    resume_replacement_echo_;   ///< Prepared echo helper, unpublished until committed INFO is sent.
+                ITransmissionStatisticsPtr                                                  resume_replacement_statistics_; ///< Prepared carrier statistics for publication.
+                std::uint64_t                                                               next_resume_token_ = 0;      ///< Monotonic nonzero local reservation token.
                 ITransmissionPtr                                                            transmission_;              ///< Active session transmission channel.
                 VirtualEthernetManagedServerPtr                                             managed_server_;            ///< Go managed-server bridge reference.
                 ITransmissionStatisticsPtr                                                  statistics_last_;           ///< Statistics snapshot from the previous upload tick.
                 VirtualEthernetMappingPortTable                                             mappings_;                  ///< Active FRP port-mapping objects.
                 ITransmissionStatisticsPtr                                                  statistics_;                ///< Current traffic statistics for this session.
                 ppp::diagnostics::LinkTelemetry                                             link_telemetry_;            ///< Per-session link fault telemetry.
-                std::shared_ptr<vmux::vmux_net>                                             mux_;                       ///< VMUX multiplexed sub-channel instance (may be null).
+                std::unique_ptr<ppp::app::mux::MuxCoordinator>                              mux_coordinator_;           ///< Owns the VMUX session and runtime projection.
 
-                SynchronizedObject                                                          static_echo_syncobj_;               ///< Guards all static_echo_* members below.
                 std::shared_ptr<VirtualInternetControlMessageProtocolStatic>                static_echo_;                       ///< Static-echo ICMP forwarding helper.
                 VirtualEthernetStaticEchoAllocatedContextPtr                                static_allocated_context_;          ///< Active static-echo allocation context.
                 boost::asio::ip::udp::endpoint                                              static_echo_source_ep_;             ///< Most-recent static-echo sender endpoint.
                 std::atomic<int>                                                            static_echo_session_id_ = 0;        ///< Atomic slot index for the static-echo session.
-                VirtualEthernetDatagramPortStaticTable                                      static_echo_datagram_ports_;        ///< Static-echo UDP relay ports (key = source_ip:port hash).
             };
         }
     }

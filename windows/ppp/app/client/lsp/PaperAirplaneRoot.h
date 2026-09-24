@@ -79,7 +79,7 @@ namespace ppp
                     PaperAirplaneBlockInformation               GetBlock() noexcept;
                     std::pair<int, uint32_t>                    GetForwardPort(void* s, const struct sockaddr* name, int namelen) noexcept;
                     bool                                        PacketInput(
-                        boost::asio::ip::tcp::socket&                                                                       socket, 
+                        const std::shared_ptr<boost::asio::ip::tcp::socket>&                                                   socket,
                         const std::function<int(boost::asio::ip::tcp::endpoint&, boost::asio::ip::tcp::endpoint&)>&         add_port_forward_handling);
                 }
             }

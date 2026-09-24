@@ -27,12 +27,12 @@ namespace ppp {
             public:
                 /** @brief Maximum QoS throughput in Kbps units; 0 means unlimited. */
                 Int64  BandwidthQoS    = 0; // Maximum Quality of Service (QoS) bandwidth throughput speed per second, 0 for unlimited, 1 for 1 Kbps.
-                /** @brief Remaining inbound traffic allowance; 0 means unlimited. */
-                UInt64 IncomingTraffic = 0; // The remaining network traffic allowance that can be allowed for incoming clients, 0 is unlimited.
-                /** @brief Remaining outbound traffic allowance; 0 means unlimited. */
-                UInt64 OutgoingTraffic = 0; // The remaining network traffic allowance that can be allowed for outgoing clients, 0 is unlimited.
-                /** @brief Expiration timestamp in seconds since epoch; 0 means no expiry. */
-                UInt32 ExpiredTime     = 0; // The time duration during which clients are expired time from using PPP (Point-to-Point Protocol) VPN services, 0 for no restrictions, measured in seconds.
+                /** @brief Remaining inbound traffic allowance; 0 means exhausted or invalid. */
+                UInt64 IncomingTraffic = 0; // The remaining network traffic allowance that can be allowed for incoming clients.
+                /** @brief Remaining outbound traffic allowance; 0 means exhausted or invalid. */
+                UInt64 OutgoingTraffic = 0; // The remaining network traffic allowance that can be allowed for outgoing clients.
+                /** @brief Expiration timestamp in seconds since epoch; 0 means unset or invalid. */
+                UInt32 ExpiredTime     = 0; // The time duration during which clients are expired time from using PPP (Point-to-Point Protocol) VPN services, measured in seconds.
 
             public:
                 /** @brief Constructs an information object with cleared defaults. */
@@ -65,13 +65,8 @@ namespace ppp {
                         return false;
                     }
 
-                    // Field docs: 0 traffic = unlimited; 0 ExpiredTime = no expiry.
-                    // Only reject when a non-zero expiry timestamp has passed.
-                    if (i->ExpiredTime != 0 && i->ExpiredTime <= now) {
-                        return false;
-                    }
-
-                    return true;
+                    return (i->IncomingTraffic > 0 && i->OutgoingTraffic > 0) &&
+                        (i->ExpiredTime != 0 && i->ExpiredTime > now);
                 }
 
             public:
@@ -203,6 +198,7 @@ namespace ppp {
                 uint32_t                                            virtual_ip = 0;      ///< Sender virtual IPv4 in network byte order.
                 uint32_t                                            peer_virtual_ip = 0; ///< Peer virtual IPv4 in network byte order.
                 ppp::string                                         token;               ///< Short-lived coordinator token.
+                ppp::string                                         authenticated_offer_v1; ///< Hex-encoded authenticated relay offer for this recipient.
                 ppp::string                                         reason;              ///< Rejection or status reason.
                 ppp::vector<P2PEndpointCandidate>                   candidates;          ///< Candidate endpoints for the peer.
 
@@ -211,6 +207,105 @@ namespace ppp {
                 void                                                ToJson(Json::Value& json) const noexcept;
                 ppp::string                                         ToJson() const noexcept;
                 static bool                                         FromJson(P2PControlMessage& value, const Json::Value& json) noexcept;
+            };
+
+            /** @brief Fixed v1 transport authentication control actions. */
+            enum class TransportAuthAction : std::uint8_t {
+                None = 0,
+                Advertise = 1,
+                Select = 2,
+                Success = 3,
+                Reject = 4,
+            };
+
+            /**
+             * @brief Strict v1 carrier-authentication negotiation carried as trailing INFO JSON.
+             *
+             * An advertisement always carries the ordered method set and may also carry the
+             * complete initiator message tuple. Selection carries the responder message tuple.
+             * A success with a proof is the proving form; omitting proof is the server
+             * acknowledgement form. Every non-reject action carries the same 16-byte attempt
+             * token, encoded as 32 canonical lowercase hexadecimal characters. A reject may
+             * omit the token when the attempt is not known.
+             */
+            struct TransportAuthControl {
+                static constexpr std::uint8_t                        ProtocolVersion = 1;
+                static constexpr std::size_t                         MaximumMethods = 4;
+                static constexpr std::size_t                         MaximumMethodLength = 32;
+                static constexpr std::size_t                         MaximumKeyIdLength = 63;
+                static constexpr std::size_t                         MaximumTokenSize = 255;
+                static constexpr std::size_t                         TokenHexLength = 32;
+                static constexpr std::size_t                         MaximumMessageBytes = 128;
+                static constexpr std::size_t                         MaximumReasonLength = 64;
+                using Action = TransportAuthAction;
+
+                std::uint8_t                                        version = ProtocolVersion;
+                Action                                              action = Action::None;
+                ppp::string                                         method;
+                ppp::vector<ppp::string>                            methods;
+                ppp::string                                         key_id;
+                ppp::string                                         token;
+                std::uint32_t                                       sequence = 0;
+                ppp::string                                         message;
+                ppp::string                                         proof;
+                ppp::string                                         reason;
+
+                void                                                Clear() noexcept;
+                bool                                                HasAny() const noexcept;
+                bool                                                Valid() const noexcept;
+                void                                                ToJson(Json::Value& json) const noexcept;
+                ppp::string                                         ToJson() const noexcept;
+                static const char*                                  ActionToString(Action action) noexcept;
+                static bool                                         ActionFromString(const ppp::string& text, Action& action) noexcept;
+                static bool                                         FromJson(TransportAuthControl& value, const ppp::string& json) noexcept;
+                static bool                                         FromJson(TransportAuthControl& value, const Json::Value& json) noexcept;
+            };
+
+            /** @brief Fixed v1 action codes used by JSON controls and authenticated transcripts. */
+            enum class SessionResumeAction : std::uint8_t {
+                None = 0,
+                Offer = 1,
+                Accepted = 2,
+                ResumeRequest = 3,
+                GenerationSync = 4,
+                ResumeAccept = 5,
+                ResumeConfirm = 6,
+                ResumeCommitted = 7,
+                Reject = 8,
+            };
+
+            /**
+             * @brief Strictly versioned L3 roaming control carried as trailing INFO JSON.
+             *
+             * Byte strings use canonical lowercase hexadecimal. Generation is stored as
+             * uint64_t in memory and serialized as a decimal string on the wire.
+             */
+            struct SessionResumeControl {
+                static constexpr std::uint8_t                        ProtocolVersion = 1;
+                static constexpr std::uint32_t                       CapabilityV1 = 1u << 0;
+                static constexpr std::size_t                         MaximumReasonLength = 64;
+                using Action = SessionResumeAction;
+
+                std::uint8_t                                        version = ProtocolVersion;
+                Action                                              action = Action::None;
+                std::uint32_t                                       capabilities = 0;
+                ppp::string                                         session_id;
+                std::uint64_t                                       generation = 0;
+                ppp::string                                         client_nonce;
+                ppp::string                                         server_nonce;
+                ppp::string                                         candidate_binding;
+                ppp::string                                         proof;
+                ppp::string                                         reason;
+
+                void                                                Clear() noexcept;
+                bool                                                HasAny() const noexcept;
+                bool                                                Valid() const noexcept;
+                void                                                ToJson(Json::Value& json) const noexcept;
+                ppp::string                                         ToJson() const noexcept;
+                static const char*                                  ActionToString(Action action) noexcept;
+                static bool                                         ActionFromString(const ppp::string& text, Action& action) noexcept;
+                static bool                                         FromJson(SessionResumeControl& value, const ppp::string& json) noexcept;
+                static bool                                         FromJson(SessionResumeControl& value, const Json::Value& json) noexcept;
             };
 
             /**
@@ -292,6 +387,12 @@ namespace ppp {
 
                 /** @brief Optional P2P control-plane message. */
                 P2PControlMessage                                   P2P;
+
+                /** @brief Optional carrier authentication negotiation control. */
+                TransportAuthControl                                TransportAuth;
+
+                /** @brief Optional authenticated L3 roaming control. */
+                SessionResumeControl                                SessionResume;
 
                 /** @brief Client prefix announcement for site-to-site gateway routing. */
                 PeerRouteAnnounceMessage                            PeerRouteAnnounce;

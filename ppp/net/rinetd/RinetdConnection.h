@@ -28,11 +28,21 @@ namespace ppp {
              */
             class RinetdConnection : public std::enable_shared_from_this<RinetdConnection> {
             public:
+                typedef boost::asio::ip::tcp::socket::native_handle_type                RemoteSocketHandle;
+                typedef ppp::function<bool(RemoteSocketHandle, ppp::coroutines::YieldContext&)>
+                                                                                        RemoteSocketProtector;
+
 #if defined(_LINUX)
                 /** @brief Shared pointer type for Linux network protection helper. */
                 typedef std::shared_ptr<ppp::net::ProtectorNetwork>                     ProtectorNetworkPtr;
+#endif
 
             public:
+                /** @brief Optional per-socket callback run after open and before connect. */
+                RemoteSocketProtector                                                   ProtectRemoteSocket;
+                /** @brief Fails Open when the per-socket callback is missing or fails. */
+                bool                                                                    RemoteSocketProtectorRequired = false;
+#if defined(_LINUX)
                 ProtectorNetworkPtr                                                     ProtectorNetwork;
 #endif
 

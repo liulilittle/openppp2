@@ -11,9 +11,12 @@ namespace ppp::configurations { class AppConfiguration; }
 
 #include <ppp/Int128.h>
 #include <ppp/net/Firewall.h>
+#include <ppp/net/Ipep.h>
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/transmissions/ITransmission.h>
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
+
+#include <cstring>
 
 namespace ppp {
     namespace app {
@@ -137,6 +140,62 @@ namespace ppp {
                  * @return `true` when at least one packet is processed successfully.
                  */
                 virtual bool                                                Run(const ITransmissionPtr& transmission, YieldContext& y) noexcept;
+                /**
+                 * @brief Strictly decodes one complete INFO frame without dispatching it.
+                 * @param packet Complete link-layer frame, including its action byte.
+                 * @param packet_length Complete frame length.
+                 * @param information Receives the base information and parsed extensions.
+                 * @return `true` only for a complete INFO frame with valid extension JSON.
+                 */
+                static bool                                                 DecodeInformation(const Byte* packet, int packet_length, InformationEnvelope& information) noexcept {
+                    InformationEnvelope decoded;
+                    const int fixed_length = 1 + static_cast<int>(sizeof(VirtualEthernetInformation));
+                    if (NULLPTR == packet || packet_length < fixed_length ||
+                        packet[0] != static_cast<Byte>(PacketAction_INFO)) {
+                        return false;
+                    }
+
+                    std::memcpy(&decoded.Base, packet + 1, sizeof(decoded.Base));
+                    decoded.Base.BandwidthQoS = ppp::net::Ipep::NetworkToHostOrder(decoded.Base.BandwidthQoS);
+                    decoded.Base.ExpiredTime = ntohl(decoded.Base.ExpiredTime);
+                    decoded.Base.IncomingTraffic = ppp::net::Ipep::NetworkToHostOrder(decoded.Base.IncomingTraffic);
+                    decoded.Base.OutgoingTraffic = ppp::net::Ipep::NetworkToHostOrder(decoded.Base.OutgoingTraffic);
+
+                    const int extension_length = packet_length - fixed_length;
+                    if (extension_length > 0) {
+                        decoded.ExtendedJson.assign(
+                            reinterpret_cast<const char*>(packet + fixed_length), extension_length);
+                        try {
+                            Json::CharReaderBuilder builder;
+                            Json::CharReaderBuilder::strictMode(&builder.settings_);
+                            builder["collectComments"] = false;
+                            std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+                            Json::Value json;
+                            Json::String errors;
+                            if (!reader || !reader->parse(
+                                    decoded.ExtendedJson.data(),
+                                    decoded.ExtendedJson.data() + decoded.ExtendedJson.size(),
+                                    &json, &errors) ||
+                                !json.isObject() ||
+                                !VirtualEthernetInformationExtensions::FromJson(decoded.Extensions, json)) {
+                                return false;
+                            }
+                        }
+                        catch (...) {
+                            return false;
+                        }
+                    }
+
+                    information = std::move(decoded);
+                    return true;
+                }
+                /**
+                 * @brief Reads and strictly decodes exactly one INFO frame without dispatch.
+                 * @param transmission Pre-data transport channel.
+                 * @param information Receives the decoded INFO envelope.
+                 * @param y Coroutine yield context.
+                 */
+                static bool                                                 ReadInformation(const ITransmissionPtr& transmission, InformationEnvelope& information, YieldContext& y) noexcept;
                 /** @brief Generates a protocol connection ID in 24-bit range. */
                 static int                                                  NewId() noexcept;
 
@@ -200,7 +259,7 @@ namespace ppp {
                 /** @brief Handles inbound FRP entry registration. */
                 virtual bool                                                OnFrpEntry(const ITransmissionPtr& transmission, bool tcp, bool in, int remote_port, YieldContext& y) noexcept { return true; }
                 /** @brief Handles inbound FRP UDP payload. */
-                virtual bool                                                OnFrpSendTo(const ITransmissionPtr& transmission, bool in, int remote_port, const boost::asio::ip::udp::endpoint& sourceEP, Byte* packet, int packet_length, YieldContext& y) noexcept { return true; }
+                virtual bool                                                OnFrpSendTo(const ITransmissionPtr& transmission, bool in, int remote_port, const boost::asio::ip::udp::endpoint& sourceEP, const std::shared_ptr<Byte>& owner, Byte* packet, int packet_length, YieldContext& y) noexcept { return true; }
                 /** @brief Handles inbound FRP connect request. */
                 virtual bool                                                OnFrpConnect(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, YieldContext& y) noexcept { return true; }
                 /** @brief Handles inbound FRP connect acknowledgment. */
@@ -208,7 +267,7 @@ namespace ppp {
                 /** @brief Handles inbound FRP disconnect notification. */
                 virtual bool                                                OnFrpDisconnect(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port) noexcept { return true; }
                 /** @brief Handles inbound FRP stream payload. */
-                virtual bool                                                OnFrpPush(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, const void* packet, int packet_length) noexcept { return true; }
+                virtual bool                                                OnFrpPush(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, const std::shared_ptr<Byte>& owner, const void* packet, int packet_length) noexcept { return true; }
 
             protected:
                 /** @brief Handles inbound LAN advertisement. */
@@ -230,9 +289,9 @@ namespace ppp {
                 /** @brief Handles inbound echo acknowledgment. */
                 virtual bool                                                OnEcho(const ITransmissionPtr& transmission, int ack_id, YieldContext& y) noexcept { return true; }
                 /** @brief Handles inbound echo payload. */
-                virtual bool                                                OnEcho(const ITransmissionPtr& transmission, Byte* packet, int packet_length, YieldContext& y) noexcept { return true; }
+                virtual bool                                                OnEcho(const ITransmissionPtr& transmission, const std::shared_ptr<Byte>& owner, Byte* packet, int packet_length, YieldContext& y) noexcept { return true; }
                 /** @brief Handles inbound UDP payload. */
-                virtual bool                                                OnSendTo(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length, YieldContext& y) noexcept { return true; }
+                virtual bool                                                OnSendTo(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const std::shared_ptr<Byte>& owner, Byte* packet, int packet_length, YieldContext& y) noexcept { return true; }
                 /** @brief Handles inbound static request. */
                 virtual bool                                                OnStatic(const ITransmissionPtr& transmission, YieldContext& y) noexcept { return true; }
                 /** @brief Handles inbound static acknowledgment. */
@@ -250,7 +309,7 @@ namespace ppp {
                 /** @brief Returns firewall used for endpoint filtering. */
                 virtual std::shared_ptr<ppp::net::Firewall>                 GetFirewall() noexcept;
                 /** @brief Decodes and dispatches one inbound protocol packet. */
-                virtual bool                                                PacketInput(const ITransmissionPtr& transmission, Byte* p, int packet_length, YieldContext& y) noexcept;
+                virtual bool                                                PacketInput(const ITransmissionPtr& transmission, const std::shared_ptr<Byte>& owner, Byte* p, int packet_length, YieldContext& y) noexcept;
 
             private:
                 /** @brief Associated IO context used for all async operations. */

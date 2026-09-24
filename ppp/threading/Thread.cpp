@@ -65,13 +65,13 @@ namespace ppp
 
         /**
          * @brief Detaches the underlying thread when possible.
-         * @note  Serialized against `Join()` through `_syncobj`; a concurrent
+         * @note  Serialized against `Join()` through `_lifecycle`; a concurrent
          *        `join()`/`detach()` on the same `std::thread` object is undefined
          *        behaviour. When a join is in progress this call is a no-op.
          */
         bool Thread::Detach() noexcept
         {
-            SynchronizedObjectScope scope(_syncobj);
+            SynchronizedObjectScope scope(_lifecycle);
             auto& t = _thread;
             if (_joining || !t.joinable())
             {
@@ -119,7 +119,7 @@ namespace ppp
 
         /**
          * @brief Joins the underlying thread when joinable.
-         * @note  The blocking `join()` runs without holding `_syncobj`: the worker
+         * @note  The blocking `join()` runs without holding `_lifecycle`: the worker
          *        thread's own `Detach()` needs that mutex to finish, so holding it
          *        across the join would deadlock. `_joining` is set under the lock to
          *        make `Detach()` back off, keeping `join()`/`detach()` serialized.
@@ -127,7 +127,7 @@ namespace ppp
         bool Thread::Join() noexcept
         {
             {
-                SynchronizedObjectScope scope(_syncobj);
+                SynchronizedObjectScope scope(_lifecycle);
                 if (!_thread.joinable())
                 {
                     return false;
@@ -148,7 +148,7 @@ namespace ppp
             }
 
             {
-                SynchronizedObjectScope scope(_syncobj);
+                SynchronizedObjectScope scope(_lifecycle);
                 _joining = false;
             }
 
@@ -160,26 +160,27 @@ namespace ppp
          */
         bool Thread::Start() noexcept
         {
-            SynchronizedObjectScope scope(_syncobj);
-            if (State != ThreadState::Stopped)
+            ThreadStart start;
             {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeThreadAlreadyStarted);
-                return false;
-            }
+                SynchronizedObjectScope scope(_lifecycle);
+                if (_started || State != ThreadState::Stopped || Id != 0)
+                {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeThreadAlreadyStarted);
+                    return false;
+                }
 
-            if (Id != 0)
-            {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeThreadAlreadyStarted);
-                return false;
-            }
+                start = std::move(_start);
+                _start = NULLPTR;
 
-            ThreadStart start = std::move(_start);
-            _start = NULLPTR;
+                if (NULLPTR == start)
+                {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeThreadEntryMissing);
+                    return false;
+                }
 
-            if (NULLPTR == start)
-            {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeThreadEntryMissing);
-                return false;
+                /* One-shot wrapper: reject any further Start() from here on,
+                 * even when std::thread construction below ends up throwing. */
+                _started = true;
             }
 
             auto self = shared_from_this();
@@ -202,8 +203,12 @@ namespace ppp
 
                     SetThreadName("fork");
                     start(this);
-                    Detach();
-                    
+
+                    /* The thread handle is reclaimed by an external Join()
+                     * or by ~Thread() -> Detach(); the worker must not detach
+                     * itself here, otherwise a Join() holding `_lifecycle`
+                     * while waiting for this worker would deadlock against
+                     * this trailing Detach() locking the same mutex. */
                     constantof(State) = ThreadState::Stopped;
                     {
                         SynchronizedObjectScope scope(Internal->Lock);
@@ -217,6 +222,7 @@ namespace ppp
                 };
 
             try {
+                SynchronizedObjectScope scope(_lifecycle);
                 _thread = std::thread(thread_start);
             }
             catch (const std::bad_alloc&)

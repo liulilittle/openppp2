@@ -1,0 +1,208 @@
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -1804,13 +1804,13 @@
+                             ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
+                     }
+                     if (recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
+-                        // Backpressure: drop this buffered segment (refund its
+-                        // bytes) and stop draining; the peer retransmits.
++                        if (TcpState::kClosed == state_) return false;
++                        // Backpressure: retain the SACKed segment and stop
++                        // draining; Resume will redeliver it without waiting
++                        // for the peer to retransmit.
+                         rcv_nxt_ = prev_drain;  // rollback
+                                 rcv_blocked_ = true;  // advertise window 0 (RFC 1122 s4.2.3.4)
+                                 ArmWindowUpdateAck(now);
+-                                ooo_bytes_ -= static_cast<UInt32>(seg.data.size());
+-                        ooo_.erase(it);
+                         break;
+                     }
+                     if (TcpState::kClosed == state_) {
+@@ -1871,14 +1871,12 @@
+                             const UInt32 prev_drain = rcv_nxt_;
+                             rcv_nxt_ += static_cast<UInt32>(seg.data.size());  // advance before callback
+                             if (recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
+-                                // Backpressure: drop this buffered segment
+-                                // (refund its bytes) and stop draining; the
+-                                // peer retransmits.
++                                if (TcpState::kClosed == state_) return false;
++                                // Backpressure: retain the SACKed segment and
++                                // stop draining; Resume can redeliver it.
+                                 rcv_nxt_ = prev_drain;  // rollback
+                                 rcv_blocked_ = true;  // advertise window 0 (RFC 1122 s4.2.3.4)
+                                 ArmWindowUpdateAck(now);
+-                                ooo_bytes_ -= static_cast<UInt32>(seg.data.size());
+-                                ooo_.erase(it);
+                                 break;
+                             }
+                             if (TcpState::kClosed == state_) {
+@@ -3973,6 +3971,9 @@
+ 
+         ReceiveResumeResult TcpConn::ResumeReceiveDetailed() noexcept {
+             std::lock_guard<std::recursive_mutex> scope(syncobj_);
++            if (TcpState::kClosed == state_) {
++                return ReceiveResumeResult::kConnectionMissing;
++            }
+             if (!rcv_blocked_) {
+                 return ReceiveResumeResult::kNotBlocked;
+             }
+@@ -3980,10 +3981,72 @@
+             ack_pending_ = false;
+             ack_count_ = 0;
+             ack_deadline_ = 0;
++            const TimePoint now = NowUs();
++            // A full advertised window can itself be caused by these cached
++            // bytes. Try the application before deciding whether it can open.
++            while (!ooo_.empty()) {
++                TrimOooToFrontier();
++                auto node = ooo_.extract(rcv_nxt_);
++                if (!node) {
++                    break;
++                }
++                // Keep the borrowed payload alive even if the callback aborts
++                // the connection. Extract/reinsert allocates no map node.
++                OutSeg& segment = node.mapped();
++                const bool fin = segment.fin;
++                const UInt32 bytes = static_cast<UInt32>(segment.data.size());
++                const UInt32 previous_rcv_nxt = rcv_nxt_;
++                const TcpState previous_state = state_;
++                ooo_bytes_ -= bytes;
++                rcv_nxt_ += bytes;
++                const bool accepted = bytes == 0 || !recv_cb_ ||
++                    recv_cb_(segment.data.data(), bytes);
++                if (TcpState::kClosed == state_) {
++                    return ReceiveResumeResult::kConnectionMissing;
++                }
++                if (!accepted) {
++                    rcv_nxt_ = previous_rcv_nxt;
++                    rcv_blocked_ = true;
++                    auto restored = ooo_.insert(std::move(node));
++                    if (!restored.inserted) {
++                        // A reentrant state replacement must not silently
++                        // lose the original bytes or corrupt their accounting.
++                        Abort();
++                        return ReceiveResumeResult::kConnectionMissing;
++                    }
++                    ooo_bytes_ += bytes;
++                    break;
++                }
++                if (0 != segment.ts_val) {
++                    ts_recent_ = segment.ts_val;
++                    ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
++                }
++                if (fin) {
++                    ++rcv_nxt_;
++                    if (TcpState::kEstablished == state_) {
++                        Transition(TcpState::kCloseWait);
++                    } else if (TcpState::kFinWait1 == state_) {
++                        Transition(TcpState::kClosing);
++                    } else if (TcpState::kFinWait2 == state_) {
++                        Transition(TcpState::kTimeWait);
++                        if (TcpState::kTimeWait == state_) EnterTimeWait(now);
++                    }
++                    break;
++                }
++                if (state_ != previous_state) {
++                    // Respect a close initiated by the receive callback.
++                    break;
++                }
++            }
++            if (TcpState::kClosed == state_) {
++                return ReceiveResumeResult::kConnectionMissing;
++            }
++            // Publish the post-delivery cumulative ACK, not only an old
++            // frontier window update that would still require peer retries.
+             SendAck();
++            if (TcpState::kClosed == state_) return ReceiveResumeResult::kConnectionMissing;
+             return AdvertisedWindow() == 0
+-                ? ReceiveResumeResult::kReceiveWindowFull
+-                : ReceiveResumeResult::kResumed;
++                ? ReceiveResumeResult::kReceiveWindowFull : ReceiveResumeResult::kResumed;
+         }
+ 
+         void TcpConn::SendSyn() noexcept {
+@@ -4746,15 +4809,12 @@
+                                 ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
+                             }
+                             if (!seg.data.empty() && recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
+-                                // Backpressure: drop this buffered segment
+-                                // (refund its bytes) and stop draining; the
+-                                // peer retransmits, keeping the data intact
+-                                // end-to-end.
++                                if (TcpState::kClosed == state_) return;
++                                // Backpressure: retain the SACKed segment and
++                                // stop draining; Resume can redeliver it.
+                                 rcv_nxt_ = prev_drain;  // rollback
+                                 rcv_blocked_ = true;  // advertise window 0 (RFC 1122 s4.2.3.4)
+                                 ArmWindowUpdateAck(now);
+-                                ooo_bytes_ -= static_cast<UInt32>(seg.data.size());
+-                                ooo_.erase(it);
+                                 break;
+                             }
+                             if (TcpState::kEstablished != state_) {
+@@ -4869,12 +4929,11 @@
+                                     const UInt32 prev_os = rcv_nxt_;
+                                     rcv_nxt_ += static_cast<UInt32>(os.data.size());  // advance before callback
+                                     if (!os.data.empty() && recv_cb_ && !recv_cb_(os.data.data(), static_cast<UInt32>(os.data.size()))) {
+-                                        // Backpressure: drop and stop draining.
++                                        if (TcpState::kClosed == state_) return;
++                                        // Backpressure: retain and stop draining.
+                                         rcv_nxt_ = prev_os;  // rollback
+                                         rcv_blocked_ = true;  // advertise window 0 (RFC 1122 s4.2.3.4)
+                                         ArmWindowUpdateAck(now);
+-                                        ooo_bytes_ -= static_cast<UInt32>(os.data.size());
+-                                        ooo_.erase(it);
+                                         break;
+                                     }
+                                     if (TcpState::kEstablished != state_) {
+@@ -5343,5 +5402,3 @@
+         }
+     }
+ }
+-
+-
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -1428,6 +1428,7 @@
+         UInt64 conn_id, core::ReceiveStateSnapshot* state) noexcept {
+         Shard* shard = ShardOf(conn_id);
+         std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
++        MarkSweep(*shard);
+         auto it = shard->conns_.find(conn_id);
+         if (it == shard->conns_.end() || NULLPTR == it->second->conn) {
+             if (NULLPTR != state) {
+@@ -1436,6 +1437,14 @@
+             return core::ReceiveResumeResult::kConnectionMissing;
+         }
+         const core::ReceiveResumeResult result = it->second->conn->ResumeReceiveDetailed();
++        it = shard->conns_.find(conn_id);
++        if (it == shard->conns_.end() || NULLPTR == it->second->conn ||
++            core::TcpState::kClosed == it->second->conn->State()) {
++            if (NULLPTR != state) {
++                *state = {};
++            }
++            return core::ReceiveResumeResult::kConnectionMissing;
++        }
+         if (NULLPTR != state) {
+             *state = it->second->conn->ReceiveState();
+         }
+@@ -2547,5 +2556,3 @@
+         return iss;
+     }
+ }
+-
+-
+--- a/tests/test_ooo_frontier.cpp
++++ b/tests/test_ooo_frontier.cpp
+@@ -71,9 +71,9 @@
+         inject(1000, 3000); inject(0, 2000);
+         CHECK(conn.RcvNxt() == irs + 1 + 2000);
+         CHECK(conn.ReceiveState().rcv_blocked);
+-        CHECK(conn.ReceiveState().ooo_bytes == 0);
+-        CHECK(conn.ResumeReceiveDetailed() == ReceiveResumeResult::kResumed);
++        CHECK(conn.ReceiveState().ooo_bytes == 2000);
+         reject_tail = false;
++        CHECK(conn.ResumeReceiveDetailed() == ReceiveResumeResult::kResumed);
+         inject(2000, 2000);
+         expected = 4000;
+         break;

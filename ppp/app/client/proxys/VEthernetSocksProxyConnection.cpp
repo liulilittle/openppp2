@@ -5,6 +5,7 @@
 #include <ppp/app/client/VEthernetNetworkTcpipConnection.h>
 #include <ppp/app/client/proxys/VEthernetSocksProxySwitcher.h>
 #include <ppp/app/client/proxys/VEthernetSocksProxyConnection.h>
+#include <ppp/app/client/proxys/SocksAddressType.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/net/Socket.h>
@@ -559,28 +560,20 @@ namespace ppp {
                             return SOCKS_ERR_CMD;
                         }
 
-                        int address_type = data[3];
+                        const int wire_address_type = data[3];
                         int address_length = 0;
-                        if (address_type == SOCKS_ATYPE_IPV4) {
-                            address_length = 4;
-                            address_type = ppp::app::protocol::AddressType::IPv4;
+                        if (!detail::TryParseSocksAddressType(wire_address_type, address_type, address_length)) {
+                            cmd = SOCKS_ERR_ATYPE;
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocksAddressTypeUnsupported);
+                            return SOCKS_ERR_ATYPE;
                         }
-                        elif(address_type == SOCKS_ATYPE_IPV6) {
-                            address_length = 16;
-                            address_type = ppp::app::protocol::AddressType::IPv6;
-                        }
-                        elif(address_type == SOCKS_ATYPE_DOMAIN) {
+
+                        if (wire_address_type == SOCKS_ATYPE_DOMAIN) {
                             if (!ppp::coroutines::asio::async_read(*socket, boost::asio::buffer(data, 1), y)) {
                                 return PublishSocketReadFailure(socket);
                             }
 
                             address_length = data[0];
-                            address_type = ppp::app::protocol::AddressType::Domain;
-                        }
-                        else {
-                            cmd = SOCKS_ERR_ATYPE;
-                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocksAddressTypeUnsupported);
-                            return SOCKS_ERR_ATYPE;
                         }
 
                         if (address_length < 1) {
@@ -592,7 +585,7 @@ namespace ppp {
                             return PublishSocketReadFailure(socket);
                         }
 
-                        switch (address_type) {
+                        switch (wire_address_type) {
                         case SOCKS_ATYPE_IPV4: {
                                 boost::asio::ip::address_v4::bytes_type bytes;
                                 memset(bytes.data(), 0, bytes.size());
@@ -609,7 +602,7 @@ namespace ppp {
                                 address = boost::asio::ip::address_v6(bytes).to_string();
                             }
                             break;
-                        default: {
+                        case SOCKS_ATYPE_DOMAIN: {
                                 data[address_length] = '\x0';
                                 address = reinterpret_cast<char*>(data);
                             }
@@ -703,7 +696,7 @@ namespace ppp {
                             bool disposing = false;
                             if (ec == boost::system::errc::success) {
                                 if (sz > 0) {
-                                    std::shared_ptr<Byte> packet = ppp::net::asio::IAsynchronousWriteIoQueue::Copy(allocator, udp_buffer.get(), (int)sz);
+                                    std::shared_ptr<Byte> packet = ppp::net::asio::IAsynchronousWriteIoQueue::Copy(allocator, udp_buffer, udp_buffer.get(), (int)sz);
                                     if (NULLPTR == packet) {
                                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                                     }

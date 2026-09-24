@@ -34,9 +34,13 @@
  * the GNU General Public License v3.0 (GPL-3.0).
  */
 
+#include <atomic>
+
 #include <ppp/threading/Executors.h>
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/transmissions/ITransmission.h>
+#include <ppp/app/client/udp/UdpRelayHost.h>
+#include <ppp/app/client/routing/UdpRoutingSelector.h>
 
 #if defined(_ANDROID)
 #include <linux/ppp/net/ProtectorNetwork.h>
@@ -48,7 +52,6 @@ namespace ppp {
     namespace app {
         namespace client {
             class VEthernetExchanger;
-            class VEthernetNetworkSwitcher;
 
             /**
              * @brief UDP datagram relay port bound to a single local source endpoint.
@@ -68,9 +71,6 @@ namespace ppp {
              * UDP traffic can bypass the VPN route protection without infinite recursion.
              */
             class VEthernetDatagramPort : public std::enable_shared_from_this<VEthernetDatagramPort> {
-                friend class                                            VEthernetExchanger;
-                friend class                                            VEthernetNetworkSwitcher;
-
             public:
                 /** @brief Application configuration type alias. */
                 typedef ppp::configurations::AppConfiguration           AppConfiguration;
@@ -90,8 +90,6 @@ namespace ppp {
                 typedef std::lock_guard<SynchronizedObject>             SynchronizedObjectScope;
                 /** @brief Shared pointer alias for owning exchanger. */
                 typedef std::shared_ptr<VEthernetExchanger>             VEthernetExchangerPtr;
-                /** @brief Shared pointer alias for owning network switcher. */
-                typedef std::shared_ptr<VEthernetNetworkSwitcher>       VEthernetNetworkSwitcherPtr;
 
 #if defined(_ANDROID)
             public:
@@ -109,6 +107,7 @@ namespace ppp {
                     std::shared_ptr<Byte>                               packet;        ///< Datagram payload buffer.
                     int                                                 packet_length = 0; ///< Payload length in bytes.
                     boost::asio::ip::udp::endpoint                      destinationEP; ///< Target UDP endpoint.
+                    routing::RoutingAction                              action = routing::RoutingAction::Auto; ///< Per-datagram routing policy.
                 }                                                       Message;
 
                 /** @brief Queue of pending outbound messages on Android. */
@@ -133,7 +132,7 @@ namespace ppp {
                  * @param transmission Active transport channel used for outbound forwarding.
                  * @param sourceEP     Local TAP-side UDP source endpoint this port represents.
                  */
-                VEthernetDatagramPort(const VEthernetExchangerPtr& exchanger, const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP) noexcept;
+                VEthernetDatagramPort(const VEthernetExchangerPtr& exchanger, udp::UdpRelayHostPorts ports, const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP) noexcept;
 
                 /**
                  * @brief Releases all resources owned by the port.
@@ -148,12 +147,6 @@ namespace ppp {
                  * @return shared_ptr to this instance.
                  */
                 std::shared_ptr<VEthernetDatagramPort>                  GetReference()     noexcept { return shared_from_this(); }
-
-                /**
-                 * @brief Returns the owning exchanger.
-                 * @return Shared VEthernetExchanger pointer.
-                 */
-                VEthernetExchangerPtr                                   GetExchanger()     noexcept { return exchanger_; }
 
                 /**
                  * @brief Returns the io_context used for async operations.
@@ -191,7 +184,7 @@ namespace ppp {
                 virtual void                                            Dispose() noexcept;
 
                 /**
-                 * @brief Sends a UDP payload to the destination endpoint via the remote exchanger.
+                 * @brief Sends a UDP payload using the legacy automatic routing policy.
                  *
                  * @param packet        Payload buffer pointer.
                  * @param packet_length Payload length in bytes.
@@ -201,14 +194,34 @@ namespace ppp {
                  */
                 virtual bool                                            SendTo(const void* packet, int packet_length, const boost::asio::ip::udp::endpoint& destinationEP) noexcept;
 
+                /**
+                 * @brief Sends a UDP payload using the supplied per-datagram routing action.
+                 *
+                 * @param packet        Payload buffer pointer.
+                 * @param packet_length Payload length in bytes.
+                 * @param destinationEP Target UDP endpoint on the remote network.
+                 * @param action        Routing action evaluated independently for this datagram.
+                 * @return true if the selected path accepted the datagram; false on error or
+                 *         when direct routing is unsupported and therefore rejected fail-closed.
+                 */
+                virtual bool                                            SendTo(const void* packet, int packet_length, const boost::asio::ip::udp::endpoint& destinationEP, routing::RoutingAction action) noexcept;
+
+                /**
+                 * @brief Replaces the tunnel carrier while retaining this logical UDP flow.
+                 * @param transmission New carrier, or null while the L3 session is suspended.
+                 * @return true when the replacement uses this port's io_context and was installed.
+                 */
+                bool                                                    RebindTransmission(const ITransmissionPtr& transmission) noexcept;
+
 #if defined(_ANDROID)
             public:
                 /**
                  * @brief Opens the Android protected UDP socket and starts the loopback receive loop.
                  *
                  * @param y  Coroutine yield context; blocks until the socket is ready.
-                 * @return true if the socket was opened and the receive loop started; false otherwise.
-                 * @note Must be called from a coroutine before any SendTo() calls on Android.
+                 * @return true if the socket was protected and the receive loop started; false otherwise.
+                 * @note ProtectorNetwork is mandatory: a missing protector or failed Protect() call
+                 *       fails closed before readiness, queued-message flush, or receive-loop startup.
                  */
                 bool                                                    Open(ppp::coroutines::YieldContext& y) noexcept;
 
@@ -222,7 +235,7 @@ namespace ppp {
                 bool                                                    Loopback() noexcept;
 #endif
 
-            protected:
+            public: // P2-c: manager routes inbound datagrams without exchanger friendship
                 /**
                  * @brief Handles a datagram received from the remote server for this source endpoint.
                  *
@@ -231,7 +244,7 @@ namespace ppp {
                  * @param destinationEP  Original source endpoint on the remote side (becomes local dest).
                  * @note Default implementation routes the datagram through the switcher's DatagramOutput.
                  */
-                virtual void                                            OnMessage(void*, int, const boost::asio::ip::udp::endpoint&) noexcept;
+                virtual void                                            OnMessage(const std::shared_ptr<Byte>& owner, void* packet, int packet_length, const boost::asio::ip::udp::endpoint& destinationEP) noexcept;
 
             private:
                 /**
@@ -261,23 +274,27 @@ namespace ppp {
                  * @brief Marks this port as finalized by an external caller (e.g. exchanger GC sweep).
                  * @note After this call the port will not re-enter the exchanger tables.
                  */
+            public: // P2-c: manager needs the finalize signal without exchanger friendship
                 void                                                    MarkFinalize() noexcept { finalize_ = true; }
 
             private:
-                struct {
-                    bool                                                disposed_ : 1; ///< True when Dispose() has been called.
-                    bool                                                onlydns_  : 1; ///< True when only DNS traffic has been seen.
-                    bool                                                sendto_   : 1; ///< True once the first SendTo() call succeeds.
-                    bool                                                finalize_ : 5; ///< Non-zero after MarkFinalize() is called.
-                    UInt64                                              timeout_  = 0; ///< Absolute tick-count expiry timestamp.
-                };
+
+            private:
+                // Lifecycle state is shared with the manager GC thread (IsPortAging) and the
+                // Dispose/Finalize path, so every field below is individually atomic.
+                std::atomic<bool>                                       disposed_{false}; ///< True when Dispose() has been called.
+                std::atomic<bool>                                       onlydns_{false};  ///< True when only DNS traffic has been seen.
+                std::atomic<bool>                                       sendto_{false};   ///< True once the first SendTo() call succeeds.
+                std::atomic<bool>                                       finalize_{false}; ///< Non-zero after MarkFinalize() is called.
+                std::atomic<UInt64>                                     timeout_{0};      ///< Absolute tick-count expiry timestamp.
                 /** @brief Guards disposal flag and Android message queue. */
                 SynchronizedObject                                      syncobj_;
                 /** @brief IO context for all async operations. */
                 ContextPtr                                              context_;
-                /** @brief Owning network switcher providing DatagramOutput path. */
-                VEthernetNetworkSwitcherPtr                             switcher_;
-                /** @brief Owning exchanger for deregistration on disposal. */
+                /** @brief Injected exchanger/switcher capabilities (no back-pointer coupling). */
+                udp::UdpRelayHostPorts                                  ports_;
+                /** @brief Lifecycle anchor only: keeps the owning exchanger alive across async
+                 *         finalize; never dereferenced, all capabilities go through ports_. */
                 VEthernetExchangerPtr                                   exchanger_;
                 /** @brief Active transport channel for outbound forwarding. */
                 ITransmissionPtr                                        transmission_;

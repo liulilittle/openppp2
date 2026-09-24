@@ -30,6 +30,9 @@ namespace ppp
         /** @brief Returns whether native calls into Java protect(int) are enabled. */
         bool                                                            IsProtectEnabled() noexcept;
 
+        /** @brief Returns whether the JNI bridge and active VpnService are ready. */
+        bool                                                            IsProtectBridgeReady() noexcept;
+
         /**
          * @brief Protects a native socket fd by calling the cached Java protect(int).
          *

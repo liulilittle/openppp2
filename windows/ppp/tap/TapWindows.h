@@ -3,6 +3,10 @@
 #include <ppp/stdafx.h>
 #include <ppp/tap/ITap.h>
 
+#include <mutex>
+
+class WintunAdapter;
+
 namespace ppp
 {
     namespace tap
@@ -30,6 +34,7 @@ namespace ppp
 
         public:
             static bool                             IsWintun() noexcept;
+            bool                                    IsWintunBackend() noexcept;
             static ppp::string                      FindComponentId() noexcept;
             static ppp::string                      FindComponentId(const ppp::string& key) noexcept;
             static bool                             FindAllComponentIds(ppp::unordered_set<ppp::string>& componentIds) noexcept;
@@ -48,7 +53,10 @@ namespace ppp
             static bool                             ConfigureDriver_SetDhcpOptionData(const void* handle, uint32_t ip, uint32_t gw, uint32_t mask, uint32_t dhcp, const ppp::vector<uint32_t>& dns_addresses) noexcept;
 
         private:
-            std::shared_ptr<void>                   wintun_;
+            // ITap retains a raw backend handle for compatibility. This typed owner
+            // keeps that handle valid until TapWindows itself is destroyed.
+            std::mutex                              wintun_mutex_;
+            std::shared_ptr<::WintunAdapter>        wintun_adapter_;
         };
     }
 }

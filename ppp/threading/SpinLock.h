@@ -81,7 +81,10 @@ namespace ppp
             explicit RecursiveSpinLock() noexcept;
             RecursiveSpinLock(const RecursiveSpinLock&) = delete;
             RecursiveSpinLock(RecursiveSpinLock&&) = delete;
-            ~RecursiveSpinLock() = default;
+            /**
+             * @brief Verifies the recursive lock is fully released before destruction.
+             */
+            ~RecursiveSpinLock() noexcept(false);
 
         public:
             RecursiveSpinLock&          operator=(const RecursiveSpinLock&) = delete;
@@ -108,10 +111,10 @@ namespace ppp
              */
             void                        Leave();
             /**
-             * @brief Checks whether the internal lock is currently held.
+             * @brief Checks whether the recursive lock is logically held.
              * @return true when held, otherwise false.
              */
-            bool                        IsLockTaken() noexcept { return lockobj_.IsLockTaken(); }
+            bool                        IsLockTaken() noexcept;
 
         public:
             /** @brief STL Lockable interface: acquires the recursive lock. */
@@ -120,12 +123,12 @@ namespace ppp
             void                        unlock() noexcept { Leave(); }
 
         private:
-            /** @brief Non-recursive spin lock providing the core mutual-exclusion primitive. */
+            /** @brief Serializes all owner and recursion-depth updates. */
             SpinLock                    lockobj_;
             /** @brief Thread ID of the current lock owner; 0 when unowned. */
-            volatile int64_t            tid_       = 0;
+            int64_t                     tid_       = 0;
             /** @brief Current recursion depth for the owning thread. */
-            std::atomic<int>            reentries_ = 0;
+            int                         reentries_ = 0;
         };
     }
 }

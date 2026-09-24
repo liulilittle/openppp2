@@ -33,18 +33,48 @@ namespace ppp {
             Finalize();
         }
 
-        /**
-         * @brief Resumes all suspended coroutine contexts.
-         * @param contexts Collection of coroutine handles awaiting resume.
-         * @return Number of resumed contexts.
-         */
-        static int ITransmissionQoS_ResumeAllContexts(ppp::list<YieldContext*>& contexts) noexcept {
-            int events = 0;
-            for (YieldContext* y : contexts) {
-                y->R();
-                events++;
+        /** @brief Completes this waiter once and wakes an active coroutine wait. */
+        bool ITransmissionQoS::ReadWaiter::Complete() noexcept {
+            std::lock_guard<std::mutex> scope(syncobj_);
+            if (completed_) {
+                return false;
             }
 
+            completed_ = true;
+            if (resume_) {
+                resume_();
+            }
+            return true;
+        }
+
+        /** @brief Suspends until completion, or consumes an already-latched completion. */
+        bool ITransmissionQoS::ReadWaiter::Await(YieldContext& y) noexcept {
+            std::unique_lock<std::mutex> scope(syncobj_);
+            if (completed_) {
+                return true;
+            }
+
+            resume_ = [&y]() noexcept { return y.R(); };
+            scope.unlock();
+            bool suspended = y.Suspend();
+            scope.lock();
+            resume_ = NULLPTR;
+            return suspended;
+        }
+
+        /** @brief Production wait path, virtual only to expose deterministic admission tests. */
+        bool ITransmissionQoS::AwaitRead(YieldContext& y, const ReadWaiterPtr& waiter) noexcept {
+            return NULLPTR != waiter && waiter->Await(y);
+        }
+
+        /** @brief Completes all shared coroutine waiters exactly once. */
+        int ITransmissionQoS::CompleteAllWaiters(ppp::list<ReadWaiterPtr>& waiters) noexcept {
+            int events = 0;
+            for (const ReadWaiterPtr& waiter : waiters) {
+                if (NULLPTR != waiter && waiter->Complete()) {
+                    events++;
+                }
+            }
             return events;
         }
 
@@ -75,58 +105,38 @@ namespace ppp {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::TransmissionQosReadBytesNullCallback, NULLPTR);
             }
 
-            YieldContext* co = y.GetPtr();
-            if (NULLPTR == co) {
-                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid, NULLPTR);
-            }
-
-            bool bawait = false; 
-            /**
-             * @brief Critical section deciding whether the coroutine must wait.
-             */
-            for (;;) { // co_await
+            ReadWaiterPtr waiter;
+            {
                 SynchronizedObjectScope scope(syncobj_);
                 if (disposed_) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionClosing, NULLPTR);
                 }
 
-                bawait = IsPeek();
-                if (bawait) {
-                    contexts_.emplace_back(co);
+                if (IsPeek()) {
+                    waiter = make_shared_object<ReadWaiter>();
+                    if (NULLPTR == waiter) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed, NULLPTR);
+                    }
+                    waiters_.emplace_back(waiter);
                 }
-
-                break;
             }
 
-            if (bawait) {
-                bool suspend = y.Suspend();
-                if (!suspend) {
-                    /* Suspend rejected: this coroutine never parked on the QoS
-                     * gate, so its raw entry in contexts_ must be removed. A stale
-                     * entry would otherwise be resumed later by Update()/Finalize()
-                     * after the coroutine has completed and been destroyed ->
-                     * use-after-free. */
-                    {
-                        SynchronizedObjectScope scope(syncobj_);
-                        for (ppp::list<YieldContext*>::iterator it = contexts_.begin();
-                             it != contexts_.end(); ++it)
-                        {
-                            if (co == *it) {
-                                contexts_.erase(it);
-                                break;
-                            }
-                        }
-                    }
+            if (NULLPTR != waiter && !AwaitRead(y, waiter)) {
+                SynchronizedObjectScope scope(syncobj_);
+                waiters_.remove(waiter);
+                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid, NULLPTR);
+            }
 
-                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid, NULLPTR);
+            {
+                SynchronizedObjectScope scope(syncobj_);
+                if (disposed_) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionClosing, NULLPTR);
                 }
             }
 
             std::shared_ptr<Byte> packet = cb(y, &length);
-            if (length > 0) {
-                if (packet) {
-                    traffic_ += length;
-                }
+            if (length > 0 && packet) {
+                traffic_ += length;
             }
 
             return packet;
@@ -189,7 +199,7 @@ namespace ppp {
          */
         void ITransmissionQoS::Finalize() noexcept {
             ppp::list<BeginReadAsynchronousCallback> reads;
-            ppp::list<YieldContext*> contexts; 
+            ppp::list<ReadWaiterPtr> waiters;
 
             /**
              * @brief Atomically switches to disposed state and drains wait queues.
@@ -203,13 +213,13 @@ namespace ppp {
                 reads     = std::move(reads_);
                 reads_.clear();
 
-                contexts  = std::move(contexts_);
-                contexts_.clear();
+                waiters   = std::move(waiters_);
+                waiters_.clear();
                 break;
             }
 
             ITransmissionQoS_ResumeAllReads(reads);
-            ITransmissionQoS_ResumeAllContexts(contexts);
+            CompleteAllWaiters(waiters);
         }
 
         /**
@@ -236,7 +246,7 @@ namespace ppp {
                 [self, this, context, tick]() noexcept {
 
                     ppp::list<BeginReadAsynchronousCallback> reads;
-                    ppp::list<YieldContext*> contexts; 
+                    ppp::list<ReadWaiterPtr> waiters;
 
                     /**
                      * @brief Releases deferred operations when a new second begins.
@@ -250,15 +260,15 @@ namespace ppp {
                             reads    = std::move(reads_);
                             reads_.clear();
 
-                            contexts = std::move(contexts_);
-                            contexts_.clear();
+                            waiters  = std::move(waiters_);
+                            waiters_.clear();
                         }
 
                         break;
                     }
 
                     ITransmissionQoS_ResumeAllReads(reads);
-                    ITransmissionQoS_ResumeAllContexts(contexts);
+                    CompleteAllWaiters(waiters);
                 });
         }
     }

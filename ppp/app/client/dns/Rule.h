@@ -37,8 +37,8 @@ namespace ppp
                  *          `Nic = true` means domestic/ECS-eligible semantics and
                  *          `Nic = false` means foreign/no-ECS semantics.
                  *
-                 *          Rule entries are normally created and owned by the three-tier
-                 *          lookup tables held in `VEthernetNetworkSwitcher::dns_ruless_`.
+                 *          Rule entries are normally created and owned by the DNS policy's
+                 *          three-tier lookup tables.
                  */
                 struct Rule final
                 {

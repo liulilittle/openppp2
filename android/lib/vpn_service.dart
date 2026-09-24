@@ -1,207 +1,149 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 
-enum VpnState {
-  disconnected,
-  connecting,
-  connected,
-  disconnecting,
-}
+import 'runtime/runtime_bridge.dart';
+import 'runtime/runtime_snapshot.dart';
+import 'runtime/runtime_store.dart';
+import 'runtime/runtime_traffic_rate.dart';
 
-class VpnStatistics {
-  final int txSpeedBytes;
-  final int rxSpeedBytes;
-  final int inBytes;
-  final int outBytes;
-
-  const VpnStatistics({
-    this.txSpeedBytes = 0,
-    this.rxSpeedBytes = 0,
-    this.inBytes = 0,
-    this.outBytes = 0,
-  });
-
-  factory VpnStatistics.fromJson(
-    Map<String, dynamic> json, {
-    VpnStatistics? previous,
-  }) {
-    int? value(List<String> keys) {
-      for (final key in keys) {
-        final raw = json[key];
-        if (raw != null) {
-          return int.tryParse(raw.toString());
-        }
-      }
-      return null;
-    }
-
-    final nativeTxSpeedBytes = value(['tx', 'txBytes', 'outgoing', 'outgoingTraffic']) ?? 0;
-    final nativeRxSpeedBytes = value(['rx', 'rxBytes', 'incoming', 'incomingTraffic']) ?? 0;
-    final nativeInBytes = value(['in', 'inBytes', 'incomingTotal', 'incomingTrafficTotal']);
-    final nativeOutBytes = value(['out', 'outBytes', 'outgoingTotal', 'outgoingTrafficTotal']);
-    final previousInBytes = previous?.inBytes ?? 0;
-    final previousOutBytes = previous?.outBytes ?? 0;
-    final hasPreviousTotals = previousInBytes > 0 || previousOutBytes > 0;
-    final inBytes = nativeInBytes == null
-        ? previousInBytes + nativeRxSpeedBytes
-        : nativeInBytes < previousInBytes
-            ? previousInBytes
-            : nativeInBytes;
-    final outBytes = nativeOutBytes == null
-        ? previousOutBytes + nativeTxSpeedBytes
-        : nativeOutBytes < previousOutBytes
-            ? previousOutBytes
-            : nativeOutBytes;
-    final rxSpeedBytes = nativeInBytes != null && hasPreviousTotals
-        ? inBytes - previousInBytes
-        : nativeRxSpeedBytes;
-    final txSpeedBytes = nativeOutBytes != null && hasPreviousTotals
-        ? outBytes - previousOutBytes
-        : nativeTxSpeedBytes;
-
-    return VpnStatistics(
-      txSpeedBytes: txSpeedBytes,
-      rxSpeedBytes: rxSpeedBytes,
-      inBytes: inBytes,
-      outBytes: outBytes,
-    );
-  }
-}
-
-class VpnService {
+class VpnService with WidgetsBindingObserver {
   static const _channel = MethodChannel('supersocksr.ppp/vpn');
-  static const _eventChannel = EventChannel('supersocksr.ppp/vpn_events');
 
   static final VpnService _instance = VpnService._internal();
   factory VpnService() => _instance;
   VpnService._internal();
 
-  final _stateController = StreamController<VpnState>.broadcast();
-  final _statsController = StreamController<VpnStatistics>.broadcast();
   final _errorController = StreamController<String>.broadcast();
-  final _linkStateController = StreamController<int>.broadcast();
-
-  Stream<VpnState> get stateStream => _stateController.stream;
-  Stream<VpnStatistics> get statsStream => _statsController.stream;
   Stream<String> get errorStream => _errorController.stream;
-  Stream<int> get linkStateStream => _linkStateController.stream;
 
-  VpnState _currentState = VpnState.disconnected;
-  VpnState get currentState => _currentState;
+  final RuntimeStore runtimeStore = RuntimeStore();
 
-  VpnStatistics _currentStats = const VpnStatistics();
-  VpnStatistics get currentStats => _currentStats;
-  String? _lastStatsRaw;
-
-  /// Native link state mirrored from `:vpn` via EventChannel.
-  /// 0=ESTABLISHED, 1=UNKNOWN, 2=CLIENT_UNINIT, 3=EXCHANGE_UNINIT,
-  /// 4=RECONNECTING, 5=CONNECTING, 6=APP_UNINIT.
-  int _currentLinkState = 6;
-  int get currentLinkState => _currentLinkState;
+  RuntimeTrafficRate _traffic = const RuntimeTrafficRate();
+  RuntimeTrafficRate get traffic => _traffic;
+  RuntimeSnapshot? _previousTrafficSample;
 
   bool _initialized = false;
-  StreamSubscription<dynamic>? _eventSubscription;
+  Timer? _runtimePollTimer;
+  String? _lastReportedError;
 
   void init() {
     if (_initialized) return;
     _initialized = true;
-    _channel.setMethodCallHandler(_handleMethodCall);
-    _eventSubscription = _eventChannel.receiveBroadcastStream().listen(_handleEvent);
+    WidgetsBinding.instance.addObserver(this);
+    _startRuntimePolling();
   }
 
-  Future<void> _handleMethodCall(MethodCall call) async {
-    switch (call.method) {
-      case 'onStateChanged':
-        final stateIndex = call.arguments as int;
-        _updateState(_stateFromIndex(stateIndex));
-        break;
-      case 'onStatistics':
-        _applyStatistics(call.arguments as String);
-        break;
+  /// Nothing reads the mirror while the app is not visible, and the files it
+  /// polls persist, so the timer is stopped in the background and resumed with
+  /// an immediate read.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startRuntimePolling();
+      return;
     }
+    stopPolling();
   }
 
-  void _handleEvent(dynamic event) {
-    if (event is Map) {
-      final type = event['type'] as String?;
-      if (type == 'state') {
-        final stateIndex = event['value'] as int;
-        _updateState(_stateFromIndex(stateIndex));
-      } else if (type == 'statistics') {
-        final value = event['value'];
-        _applyStatistics(
-          value is String ? value : jsonEncode(Map<String, dynamic>.from(value as Map)),
-        );
-      } else if (type == 'linkState') {
-        final value = event['value'];
-        if (value is int) {
-          _updateLinkState(value);
-        }
-      } else if (type == 'error') {
-        final value = event['value']?.toString() ?? 'Unknown VPN error';
-        _errorController.add(value);
-        // Keep connecting state when the service is still starting up; a
-        // duplicate ACTION_CONNECT must not knock the UI back to disconnected.
-        if (_currentState != VpnState.connecting) {
-          _updateState(VpnState.disconnected);
+  /// Stops reading the mirror. This service is an app-lifetime singleton, so a
+  /// widget test that builds the whole app must call this before it ends —
+  /// `flutter_test` checks for pending timers before it tears the tree down.
+  void stopPolling() {
+    _runtimePollTimer?.cancel();
+    _runtimePollTimer = null;
+  }
+
+  void _applyRuntimeSnapshot(String raw) {
+    try {
+      final snapshot = decodeRuntimeSnapshot(raw);
+      if (runtimeStore.apply(snapshot)) {
+        _traffic = RuntimeTrafficRate.between(_previousTrafficSample, snapshot);
+        if (RuntimeTrafficRate.advancesTrafficBaseline(
+          _previousTrafficSample,
+          snapshot,
+        )) {
+          _previousTrafficSample = snapshot;
         }
       }
+    } catch (error) {
+      try {
+        final ordering = decodeRuntimeOrdering(raw);
+        runtimeStore.applyUnknown(
+          generation: ordering.generation,
+          monotonicMs: ordering.monotonicMs,
+        );
+      } catch (_) {
+        // A payload without ordering metadata cannot mutate current UI state.
+      }
+      _errorController.add('Invalid runtime snapshot: $error');
     }
   }
 
-  void _updateLinkState(int value) {
-    if (_currentLinkState == value) return;
-    _currentLinkState = value;
-    _linkStateController.add(value);
+  /// The `:vpn` service runs in its own process and cannot reach the UI
+  /// process's method channel, so it mirrors every published snapshot to a
+  /// file. Polling that mirror is safe because snapshots carry their own
+  /// generation and timestamp ordering.
+  void _startRuntimePolling() {
+    _runtimePollTimer?.cancel();
+    _runtimePollTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => unawaited(_pollRuntime()),
+    );
+    unawaited(_pollRuntime());
   }
 
-  void _updateState(VpnState state) {
-    if (_currentState == state) return;
-    _currentState = state;
-    if (state == VpnState.disconnected) {
-      _resetStats();
-      _updateLinkState(6);
+  /// True while the UI has started a connect and is waiting for the first
+  /// non-idle runtime phase. Empty mirror polls must not mark unknown.
+  bool connecting = false;
+
+  Future<void> _pollRuntime() async {
+    applyRuntimeSnapshotPoll(
+      await getRuntimeSnapshot(),
+      connecting: connecting,
+    );
+    final error = await getLastError();
+    if (error.isEmpty) {
+      _lastReportedError = null;
+      return;
     }
-    _stateController.add(state);
+    if (error == _lastReportedError) return;
+    _lastReportedError = error;
+    _errorController.add(error);
   }
 
-  void _resetStats() {
-    _currentStats = const VpnStatistics();
-    _lastStatsRaw = null;
-    _statsController.add(_currentStats);
-  }
-
-  VpnStatistics _applyStatistics(String raw) {
-    final normalizedRaw = raw.trim();
-    if (normalizedRaw.isEmpty || normalizedRaw == '{}' || normalizedRaw == _lastStatsRaw) {
-      return _currentStats;
+  /// Applies one mirror read. A null payload means the service is not alive,
+  /// so the next payload is treated as a new session.
+  ///
+  /// During an in-flight connect the first polls often race the `:vpn`
+  /// heartbeat. Treat those empty reads as "not yet" rather than flipping the
+  /// UI to unknown and clearing the session baseline.
+  void applyRuntimeSnapshotPoll(
+    String? raw, {
+    bool connecting = false,
+  }) {
+    if (raw == null || raw.trim().isEmpty) {
+      if (connecting) {
+        return;
+      }
+      runtimeStore.endSession();
+      _resetTraffic();
+      _markRuntimeUnavailable();
+      return;
     }
-    final json = jsonDecode(normalizedRaw) as Map<String, dynamic>;
-    if (!json.containsKey('tx') &&
-        !json.containsKey('rx') &&
-        !json.containsKey('in') &&
-        !json.containsKey('out')) {
-      return _currentStats;
-    }
-    _lastStatsRaw = normalizedRaw;
-    _currentStats = VpnStatistics.fromJson(json, previous: _currentStats);
-    _statsController.add(_currentStats);
-    return _currentStats;
+    runtimeStore.beginSession();
+    _applyRuntimeSnapshot(raw);
   }
 
-  VpnState _stateFromIndex(int index) {
-    if (index < 0 || index >= VpnState.values.length) {
-      return VpnState.disconnected;
-    }
-    return VpnState.values[index];
+  void _markRuntimeUnavailable() {
+    final phase = runtimeStore.state.phase;
+    if (phase == RuntimePhase.idle || phase == RuntimePhase.failed) return;
+    runtimeStore.markUnknown();
   }
 
-  Future<VpnState> getState() async {
-    final stateIndex = await _channel.invokeMethod<int>('getState') ?? 0;
-    final state = _stateFromIndex(stateIndex);
-    _updateState(state);
-    return state;
+  void _resetTraffic() {
+    _traffic = const RuntimeTrafficRate();
+    _previousTrafficSample = null;
   }
 
   Future<bool> connect(
@@ -209,15 +151,13 @@ class VpnService {
     Map<String, dynamic>? vpnOptions,
   }) async {
     try {
-      _resetStats();
-      _updateState(VpnState.connecting);
+      _resetTraffic();
       final result = await _channel.invokeMethod<bool>('connect', {
         'configJson': jsonConfig,
         'vpnOptions': vpnOptions ?? <String, dynamic>{},
       });
       return result ?? false;
     } on PlatformException catch (e) {
-      _updateState(VpnState.disconnected);
       final details = e.details?.toString();
       throw Exception(
         details == null || details.isEmpty
@@ -229,18 +169,32 @@ class VpnService {
 
   Future<bool> disconnect() async {
     try {
-      _updateState(VpnState.disconnecting);
       final result = await _channel.invokeMethod<bool>('disconnect');
-      _resetStats();
       return result ?? false;
     } on PlatformException catch (e) {
       throw Exception('VPN disconnect failed: ${e.message}');
     }
   }
 
-  Future<VpnStatistics> getStatistics() async {
-    final value = await _channel.invokeMethod<String>('getStatistics') ?? '{}';
-    return _applyStatistics(value);
+  /// Runtime snapshot mirrored by the `:vpn` service, or null while that
+  /// process is not alive.
+  Future<String?> getRuntimeSnapshot() async {
+    try {
+      return await _channel.invokeMethod<String>('getRuntimeSnapshot');
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// Last failure reported by the `:vpn` service. Errors raised around the
+  /// native call never reach the runtime snapshot, so they are mirrored
+  /// separately.
+  Future<String> getLastError() async {
+    try {
+      return await _channel.invokeMethod<String>('getLastError') ?? '';
+    } on PlatformException {
+      return '';
+    }
   }
 
   Future<String> readLog() async {
@@ -271,27 +225,13 @@ class VpnService {
   /// heartbeat file. Returns -1 if no VPN session has started yet, or
   /// a large value when `:vpn` is dead/crashed. The UI uses this as a
   /// liveness signal during long native operations (e.g. geo-rules
-  /// parsing) where neither the log nor link state value progresses.
+  /// parsing) where the runtime phase does not progress.
   Future<int> getVpnHeartbeatAgeMs() async {
     try {
       final v = await _channel.invokeMethod<int>('getVpnHeartbeatAgeMs');
       return v ?? -1;
     } on PlatformException {
       return -1;
-    }
-  }
-
-  /// Native link state from `libopenppp2.get_link_state()`.
-  /// 0=ESTABLISHED, 1=UNKNOWN, 2=CLIENT_UNINIT, 3=EXCHANGE_UNINIT,
-  /// 4=RECONNECTING, 5=CONNECTING, 6=APP_UNINIT.
-  Future<int> getLinkState() async {
-    try {
-      final v = await _channel.invokeMethod<int>('getLinkState');
-      final linkState = v ?? 1;
-      _updateLinkState(linkState);
-      return linkState;
-    } on PlatformException {
-      return _currentLinkState;
     }
   }
 
@@ -339,10 +279,8 @@ class VpnService {
   }
 
   void dispose() {
-    _eventSubscription?.cancel();
-    _stateController.close();
-    _statsController.close();
+    WidgetsBinding.instance.removeObserver(this);
+    _runtimePollTimer?.cancel();
     _errorController.close();
-    _linkStateController.close();
   }
 }

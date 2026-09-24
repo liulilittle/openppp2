@@ -11,7 +11,6 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
-import android.net.ProxyInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
@@ -37,6 +36,7 @@ class PppVpnService : VpnService() {
         const val EXTRA_VPN_OPTIONS = "vpn_options_json"
         private const val IPV6_BLOCK_ADDRESS = "fd00:6f70:656e:7070::2"
 
+        @Volatile
         var instance: PppVpnService? = null
             private set
 
@@ -59,8 +59,13 @@ class PppVpnService : VpnService() {
 
     private var linkStateThread: HandlerThread? = null
     private var linkStateHandler: Handler? = null
+    private var heartbeatThread: HandlerThread? = null
+    private var heartbeatHandler: Handler? = null
     private var connectStartedAtMs: Long = 0L
-    private var lastReportedLinkState: Int = 6
+    private var lastNotificationText: String? = null
+    private val snapshotOrdering = Any()
+    private var lastSnapshotGeneration = -1L
+    private var lastSnapshotMonotonicMs = -1L
     private var activeConfigJson: String? = null
     private var activeVpnOptionsJson: String? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -79,20 +84,104 @@ class PppVpnService : VpnService() {
                 6
             }
             publishLinkState(ls)
+            // The heartbeat above is this poller's real job now that snapshots
+            // are pushed from native; the read below is only a safety net.
+            val runtimeSnapshot = try {
+                libopenppp2.get_runtime_snapshot()
+            } catch (e: Throwable) {
+                PppLog.write(this@PppVpnService, "get_runtime_snapshot poller failed", e)
+                null
+            }
+            if (runtimeSnapshot != null) {
+                onRuntimeSnapshot(runtimeSnapshot)
+            }
             linkStateHandler?.postDelayed(this, 1000L)
         }
     }
+    private val heartbeatPoller = object : Runnable {
+        override fun run() {
+            if (!isRunning) return
+            PppStateStore.touchHeartbeat(this@PppVpnService)
+            heartbeatHandler?.postDelayed(this, 1000L)
+        }
+    }
 
-    private fun publishLinkState(value: Int, forceEvent: Boolean = false) {
+    /**
+     * Entry point for every snapshot, whether it was pushed from native or
+     * read by the poller. Native pushes arrive on whichever thread produced
+     * the transition and carry no cross-thread ordering guarantee, so they are
+     * ordered here by the snapshot's own generation and timestamp. Routing the
+     * poller through the same gate means a missed push is still picked up
+     * within a second, and a duplicate costs nothing.
+     */
+    fun onRuntimeSnapshot(json: String) {
+        if (json.isBlank()) return
+
+        val root = try {
+            JSONObject(json)
+        } catch (_: Throwable) {
+            return
+        }
+
+        val generation = root.optLong("generation", -1L)
+        val monotonicMs = root.optLong("monotonic_ms", -1L)
+        if (generation < 0L || monotonicMs < 0L) return
+        // Ordering check and disk/notification publish must be one critical
+        // section: a second thread can otherwise pass the gate after we bump
+        // the watermark but before we finish writing, then land an older
+        // payload on top of a newer one (idle/failed lost to stale connected).
+        synchronized(snapshotOrdering) {
+            if (generation < lastSnapshotGeneration) return
+            if (generation == lastSnapshotGeneration && monotonicMs <= lastSnapshotMonotonicMs) {
+                return
+            }
+            lastSnapshotGeneration = generation
+            lastSnapshotMonotonicMs = monotonicMs
+            publishRuntimeSnapshot(json)
+        }
+    }
+
+    private fun publishRuntimeSnapshot(value: String) {
+        PppStateStore.setRuntimeSnapshot(this, value)
+        // Snapshot callbacks can run on the native executor. Calling
+        // get_link_state() here would post back to that executor and wait,
+        // deadlocking both the callback and the link-state poller.
+        PppStateStore.touchHeartbeat(this)
+        updateNotificationForSnapshot(value)
+    }
+
+    private fun publishLinkState(value: Int) {
         PppStateStore.setLinkState(this, value)
-        if (!forceEvent && value == lastReportedLinkState) return
-        lastReportedLinkState = value
-        MainActivity.sendEvent(mapOf("type" to "linkState", "value" to value))
+    }
+
+    /**
+     * The notification is a second state surface. Its text mirrors the status
+     * labels the app derives from the same phase (see runtime_controls.dart),
+     * so the two cannot disagree.
+     */
+    private fun updateNotificationForSnapshot(json: String) {
+        val phase = try {
+            JSONObject(json).optString("phase")
+        } catch (_: Throwable) {
+            return
+        }
+        if (phase.isEmpty() || phase == "idle") return
+        val text = when (phase) {
+            "connected" -> "已连接"
+            "reconnecting" -> "重连中..."
+            "stopping" -> "断开中..."
+            "failed" -> "连接失败"
+            "unknown" -> "未知状态"
+            else -> "连接中..."
+        }
+        if (text == lastNotificationText) return
+        lastNotificationText = text
+        updateNotification(text)
     }
 
     private fun startLinkStatePoller() {
         if (linkStateThread != null) return
-        lastReportedLinkState = 6
+        lastNotificationText = null
         val t = HandlerThread("openppp2-linkstate").also { it.start() }
         linkStateThread = t
         val h = Handler(t.looper)
@@ -100,13 +189,35 @@ class PppVpnService : VpnService() {
         h.post(linkStatePoller)
     }
 
+    private fun startHeartbeatPoller() {
+        if (heartbeatThread != null) return
+        val t = HandlerThread("openppp2-heartbeat").also { it.start() }
+        heartbeatThread = t
+        val h = Handler(t.looper)
+        heartbeatHandler = h
+        h.post(heartbeatPoller)
+    }
+
+    private fun stopHeartbeatPoller() {
+        heartbeatHandler?.removeCallbacksAndMessages(null)
+        heartbeatHandler = null
+        heartbeatThread?.quitSafely()
+        heartbeatThread = null
+        PppStateStore.clearHeartbeat(this)
+    }
+
     private fun stopLinkStatePoller() {
+        try {
+            libopenppp2.get_runtime_snapshot()?.let { onRuntimeSnapshot(it) }
+        } catch (e: Throwable) {
+            PppLog.write(this, "final get_runtime_snapshot failed", e)
+        }
         linkStateHandler?.removeCallbacksAndMessages(null)
         linkStateHandler = null
         linkStateThread?.quitSafely()
         linkStateThread = null
         PppStateStore.clearLinkState(this)
-        publishLinkState(6, forceEvent = true)
+        publishLinkState(6)
     }
 
     override fun onCreate() {
@@ -119,6 +230,9 @@ class PppVpnService : VpnService() {
         // the UI sit on "Initializing" forever. Reset them so the user
         // sees a clean disconnected state.
         PppStateStore.clearLinkState(this)
+        PppStateStore.clearHeartbeat(this)
+        PppStateStore.clearRuntimeSnapshot(this)
+        PppStateStore.clearLastError(this)
         PppStateStore.set(this, 0)
         currentState = 0
         isRunning = false
@@ -223,6 +337,7 @@ class PppVpnService : VpnService() {
         currentState = 0
         PppStateStore.set(this, 0)
         stopLinkStatePoller()
+        stopHeartbeatPoller()
         stopNetworkMonitor()
         releaseWakeLock()
         activeConfigJson = null
@@ -239,6 +354,11 @@ class PppVpnService : VpnService() {
     }
 
     private fun startVpn(configJson: String, vpnOptionsJson: String) {
+        // A new attempt owns the mirrored state: the previous session's error
+        // and snapshot carry a stale generation and must not be presented.
+        PppStateStore.clearLastError(this)
+        PppStateStore.clearRuntimeSnapshot(this)
+        PppStateStore.clearHeartbeat(this)
         if (isRunning) {
             // A previous session is still live or wedged (common after the UI
             // process is killed while :vpn keeps running). Queue the new config
@@ -329,12 +449,12 @@ class PppVpnService : VpnService() {
                 }
             }
 
-            // Set bypass IP list and DNS rules if provided
-            if (!proxyOnly && bypassIpList.isNotBlank()) {
+            // Native bypass and DNS policy applies in both TUN and proxy-only modes.
+            if (bypassIpList.isNotBlank()) {
                 val bypassResult = libopenppp2.set_bypass_ip_list(bypassIpList)
                 PppLog.write(this, "set_bypass_ip_list result=$bypassResult")
             }
-            if (!proxyOnly && dnsRulesList.isNotBlank()) {
+            if (dnsRulesList.isNotBlank()) {
                 val dnsResult = libopenppp2.set_dns_rules_list(dnsRulesList)
                 PppLog.write(this, "set_dns_rules_list result=$dnsResult")
             }
@@ -352,26 +472,32 @@ class PppVpnService : VpnService() {
                 builder.addRoute(route, routePrefix)
             }
 
-            try {
-                builder.addAddress(IPV6_BLOCK_ADDRESS, 128)
-                builder.addRoute("::", 0)
-                builder.allowFamily(OsConstants.AF_INET6)
-                PppLog.write(this, "IPv6 leak protection active (capturing ::/0)")
-            } catch (e: Throwable) {
-                val reason = "IPv6 leak protection setup failed: ${e.message ?: e.javaClass.name}"
-                PppLog.write(this, reason, e)
-                notifyError(reason)
-                notifyStateChanged(0)
-                stopForeground(true)
-                stopSelf()
-                return
+            if (!proxyOnly) {
+                try {
+                    builder.addAddress(IPV6_BLOCK_ADDRESS, 128)
+                    builder.addRoute("::", 0)
+                    builder.allowFamily(OsConstants.AF_INET6)
+                    PppLog.write(this, "IPv6 leak protection active (capturing ::/0)")
+                } catch (e: Throwable) {
+                    val reason = "IPv6 leak protection setup failed: ${e.message ?: e.javaClass.name}"
+                    PppLog.write(this, reason, e)
+                    notifyError(reason)
+                    notifyStateChanged(0)
+                    stopForeground(true)
+                    stopSelf()
+                    return
+                }
+            } else {
+                PppLog.write(this, "IPv6 capture and leak protection disabled in proxy-only mode")
             }
 
-            if (dns1.isNotBlank()) {
-                builder.addDnsServer(dns1)
-            }
-            if (dns2.isNotBlank()) {
-                builder.addDnsServer(dns2)
+            if (!proxyOnly) {
+                if (dns1.isNotBlank()) {
+                    builder.addDnsServer(dns1)
+                }
+                if (dns2.isNotBlank()) {
+                    builder.addDnsServer(dns2)
+                }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && mark != 0) {
                 builder.setConfigureIntent(buildConfigureIntent())
@@ -437,26 +563,16 @@ class PppVpnService : VpnService() {
             }
 
             // ---- System HTTP proxy ----
-            // When `autoAppendApps` (UI label: 系统 HTTP 代理) is on, publish
-            // the local HTTP proxy as the system-wide proxy so well-behaved
-            // apps under the VPN automatically use it. Requires API 29+.
-            // The proxy is reachable at 127.0.0.1:<client.http-proxy.port>;
-            // the port is parsed from the AppConfiguration JSON we just sent
-            // to the native engine so it always matches what's actually
-            // listening.
+            // Do not publish the native proxy through VpnService.Builder. The
+            // native listener cannot own its port until after establish() has
+            // supplied the TUN descriptor and run() has started, so publishing
+            // it here would let another local app win the bind race.
             val systemHttpProxy = options.optBoolean("autoAppendApps", false) || proxyOnly
             if (systemHttpProxy) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val port = parseHttpProxyPort(configJson)
-                    try {
-                        builder.setHttpProxy(ProxyInfo.buildDirectProxy("127.0.0.1", port))
-                        PppLog.write(this, "system http proxy set 127.0.0.1:$port")
-                    } catch (e: Throwable) {
-                        PppLog.write(this, "setHttpProxy failed", e)
-                    }
-                } else {
-                    PppLog.write(this, "system http proxy skipped (requires API 29+)")
-                }
+                PppLog.write(
+                    this,
+                    "system http proxy disabled: native listener ownership is unavailable before VPN setup"
+                )
             }
 
             vpnInterface = builder.establish()
@@ -500,6 +616,7 @@ class PppVpnService : VpnService() {
             // Start VPN in background thread (run() is blocking)
             PppLog.write(this, "before libopenppp2.run(0)")
             isRunning = true
+            startHeartbeatPoller()
             // Begin polling native link state across processes (PppStateStore
             // file-backed) so the UI process can read the real handshake state.
             startLinkStatePoller()
@@ -528,6 +645,7 @@ class PppVpnService : VpnService() {
                 } finally {
                     isRunning = false
                     stopLinkStatePoller()
+                    stopHeartbeatPoller()
                     stopNetworkMonitor()
                     releaseWakeLock()
                     vpnInterface?.close()
@@ -571,6 +689,7 @@ class PppVpnService : VpnService() {
             resetNativeSession("stopVpn_idle")
             PppStateStore.set(this, 0)
             stopLinkStatePoller()
+            stopHeartbeatPoller()
             currentState = 0
             return
         }
@@ -596,57 +715,19 @@ class PppVpnService : VpnService() {
         Log.i(TAG, "perf connect_established_ms=$connectElapsedMs")
         PppLog.write(this, "onStarted key=$key")
         PppLog.write(this, "VPN started with key=$key")
-        publishLinkState(0, forceEvent = true)
+        publishLinkState(0)
         notifyStateChanged(2) // connected
-        updateNotification("已连接")
-    }
-
-    @Volatile
-    private var lastStatisticsJson: String? = null
-    private var statsPerfLogTicks: Int = 0
-
-    fun onStatistics(json: String) {
-        if (json == lastStatisticsJson) return
-        lastStatisticsJson = json
-        PppStateStore.setStatistics(this, json)
-        MainActivity.sendEvent(mapOf("type" to "statistics", "value" to json))
-        statsPerfLogTicks += 1
-        if (statsPerfLogTicks % 10 == 0) {
-            PppLog.write(this, "perf statistics=$json")
-        }
     }
 
     private fun notifyStateChanged(state: Int) {
         currentState = state
-        if (state == 0) {
-            lastStatisticsJson = null
-            statsPerfLogTicks = 0
-        }
         PppStateStore.set(this, state)
-        MainActivity.sendEvent(mapOf("type" to "state", "value" to state))
-    }
-
-    /**
-     * Pulls `client.http-proxy.port` out of the AppConfiguration JSON; falls
-     * back to 8080 when the field is missing/invalid. We do not assume the
-     * default config because users may rebind the HTTP proxy port.
-     */
-    private fun parseHttpProxyPort(configJson: String): Int {
-        return try {
-            val root = JSONObject(configJson)
-            val client = root.optJSONObject("client") ?: return 8080
-            val hp = client.optJSONObject("http-proxy") ?: return 8080
-            val port = hp.optInt("port", 8080)
-            if (port in 1..65535) port else 8080
-        } catch (_: Throwable) {
-            8080
-        }
     }
 
     private fun notifyError(message: String) {
         Log.e(TAG, message)
         PppLog.write(this, message)
-        MainActivity.sendEvent(mapOf("type" to "error", "value" to message))
+        PppStateStore.setLastError(this, message)
     }
 
     private fun buildConfigureIntent(): PendingIntent {

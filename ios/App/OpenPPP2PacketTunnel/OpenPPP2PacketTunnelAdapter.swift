@@ -9,15 +9,17 @@ final class OpenPPP2PacketTunnelAdapter {
     private let packetFlowDiagnostics: PacketFlowDiagnostics
     private let outputQueue: PacketFlowOutputQueue
     private let packetFlowConsoleLoggingEnabled: Bool
+    private let p2pDatagramProvider: ProviderOwnedP2PDatagramTransport
     private var tap: OpaquePointer?
     private var isRunning = false
     private let statsQueue = DispatchQueue(label: "io.github.openppp2.packet-tunnel.stats")
-    private var latestStatisticsJson = "{}"
+    private var latestRuntimeSnapshotJson = "{}"
     private var heartbeatTimer: DispatchSourceTimer?
     private var dataplane = "ctcp"
 
-    init(flow: NEPacketTunnelFlow, telemetry: TelemetrySettings = .disabled, debug: DebugSettings = DebugSettings()) {
+    init(provider: NEPacketTunnelProvider, flow: NEPacketTunnelFlow, telemetry: TelemetrySettings = .disabled, debug: DebugSettings = DebugSettings()) {
         self.flow = flow
+        p2pDatagramProvider = ProviderOwnedP2PDatagramTransport(provider: provider)
         packetFlowConsoleLoggingEnabled = debug.packetFlowConsoleLoggingEnabled
         packetFlowDiagnostics = PacketFlowDiagnostics(telemetry: telemetry, debug: debug)
         outputQueue = PacketFlowOutputQueue(flow: flow, consoleLoggingEnabled: debug.packetFlowConsoleLoggingEnabled)
@@ -39,7 +41,13 @@ final class OpenPPP2PacketTunnelAdapter {
             return false
         }
 
+        guard p2pDatagramProvider.install(on: createdTap) else {
+            openppp2_ios_tap_destroy(createdTap)
+            return false
+        }
+
         guard startNativeTap(createdTap, configJson: configJson, options: options, userData: userData) else {
+            p2pDatagramProvider.uninstall(from: createdTap)
             openppp2_ios_tap_destroy(createdTap)
             return false
         }
@@ -61,6 +69,10 @@ final class OpenPPP2PacketTunnelAdapter {
 
         if let tap {
             openppp2_ios_tap_stop(tap, stopReason)
+            if let snapshot = readNativeRuntimeSnapshot() {
+                TunnelSharedState.writeRuntimeSnapshotJson(snapshot)
+            }
+            p2pDatagramProvider.uninstall(from: tap)
             openppp2_ios_tap_destroy(tap)
             self.tap = nil
         }
@@ -78,14 +90,16 @@ final class OpenPPP2PacketTunnelAdapter {
         ]
     }
 
-    func statisticsJson() -> String {
-        if let text = readNativeStatisticsJson() {
+    /// Diagnostics carry the runtime snapshot rather than a separate traffic
+    /// payload: it already holds the totals plus the phase, mux and P2P state.
+    func runtimeSnapshotJson() -> String {
+        if let text = readNativeRuntimeSnapshot() {
             statsQueue.sync {
-                latestStatisticsJson = text
+                latestRuntimeSnapshotJson = text
             }
             return text
         }
-        return statsQueue.sync { latestStatisticsJson }
+        return statsQueue.sync { latestRuntimeSnapshotJson }
     }
 
     func linkState() -> Int32 {
@@ -102,25 +116,8 @@ final class OpenPPP2PacketTunnelAdapter {
             lastError: openPPP2LastErrorText(),
             outputDroppedCount: outputQueue.droppedCountSnapshot(),
             pendingOutputDepth: outputQueue.pendingDepthSnapshot(),
-            statisticsJson: statisticsJson()
+            runtimeSnapshotJson: runtimeSnapshotJson()
         )
-    }
-
-    func updateStatistics(_ json: UnsafePointer<CChar>?) {
-        guard let json else { return }
-        let text = String(cString: json)
-        statsQueue.async { [weak self] in
-            guard let self else { return }
-            self.latestStatisticsJson = text
-            self.packetFlowDiagnostics.onStatisticsUpdated(
-                linkState: Int(self.linkState()),
-                startStage: self.startStage(),
-                lastError: openPPP2LastErrorText(),
-                outputDroppedCount: self.outputQueue.droppedCountSnapshot(),
-                pendingOutputDepth: self.outputQueue.pendingDepthSnapshot(),
-                statisticsJson: text
-            )
-        }
     }
 
     func writePacket(
@@ -171,9 +168,7 @@ final class OpenPPP2PacketTunnelAdapter {
                                         let code = openppp2_ios_tap_start(
                                             tap,
                                             configPtr,
-                                            &nativeOptions,
-                                            openPPP2StatisticsWriter,
-                                            userData
+                                            &nativeOptions
                                         )
                                         return code == 0
                                     }
@@ -203,17 +198,26 @@ final class OpenPPP2PacketTunnelAdapter {
         dataplane
     }
 
-    private func readNativeStatisticsJson() -> String? {
+    private func readNativeRuntimeSnapshot() -> String? {
         guard let tap else {
             return nil
         }
 
-        var buffer = [CChar](repeating: 0, count: 512)
-        let count = openppp2_ios_tap_get_statistics(tap, &buffer, Int32(buffer.count))
-        guard count > 0 else {
-            return nil
+        // The bridge truncates silently but returns the full length, so grow
+        // and retry rather than decoding a cut-off payload.
+        var capacity = 4_096
+        for _ in 0..<2 {
+            var buffer = [CChar](repeating: 0, count: capacity)
+            let count = openppp2_ios_tap_get_runtime_snapshot(tap, &buffer, Int32(buffer.count))
+            guard count > 0 else {
+                return nil
+            }
+            if count < buffer.count {
+                return String(cString: buffer)
+            }
+            capacity = Int(count) + 1
         }
-        return String(cString: buffer)
+        return nil
     }
 
     private func readPackets() {
@@ -260,8 +264,8 @@ final class OpenPPP2PacketTunnelAdapter {
     }
 
     private func writeDiagnosticsSnapshotLocked() {
-        if let statistics = readNativeStatisticsJson() {
-            latestStatisticsJson = statistics
+        if let snapshot = readNativeRuntimeSnapshot() {
+            latestRuntimeSnapshotJson = snapshot
         }
         packetFlowDiagnostics.persistSnapshot(
             linkState: Int(linkState()),
@@ -269,7 +273,7 @@ final class OpenPPP2PacketTunnelAdapter {
             lastError: openPPP2LastErrorText(),
             outputDroppedCount: outputQueue.droppedCountSnapshot(),
             pendingOutputDepth: outputQueue.pendingDepthSnapshot(),
-            statisticsJson: latestStatisticsJson
+            runtimeSnapshotJson: latestRuntimeSnapshotJson
         )
     }
 
@@ -279,8 +283,9 @@ final class OpenPPP2PacketTunnelAdapter {
         timer.schedule(deadline: .now(), repeating: 1.0)
         timer.setEventHandler { [weak self] in
             guard let self, self.isRunning else { return }
-            if let statistics = self.readNativeStatisticsJson() {
-                self.latestStatisticsJson = statistics
+            if let snapshot = self.readNativeRuntimeSnapshot() {
+                self.latestRuntimeSnapshotJson = snapshot
+                TunnelSharedState.writeRuntimeSnapshotJson(snapshot)
             }
             self.packetFlowDiagnostics.heartbeatTick(
                 linkState: Int(self.linkState()),
@@ -288,7 +293,7 @@ final class OpenPPP2PacketTunnelAdapter {
                 lastError: openPPP2LastErrorText(),
                 outputDroppedCount: self.outputQueue.droppedCountSnapshot(),
                 pendingOutputDepth: self.outputQueue.pendingDepthSnapshot(),
-                statisticsJson: self.latestStatisticsJson
+                runtimeSnapshotJson: self.latestRuntimeSnapshotJson
             )
         }
         timer.resume()

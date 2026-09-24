@@ -7,6 +7,7 @@ import UIKit
 final class HomeViewController: UIViewController {
     private let store = ProfileStore.shared
     private let vpn = VPNController.shared
+    private let runtimeStore = RuntimeStore()
     private let documentPicker = ProfileDocumentPicker()
     private var temporaryShareURL: URL?
     private let scrollView = UIScrollView()
@@ -17,11 +18,16 @@ final class HomeViewController: UIViewController {
     private let errorLabel = PaddingLabel()
     private var timer: Timer?
     private var pollTimer: Timer?
-    private var connectedAt: Date?
     private var linkState = 6
-    private var statistics = VpnStatistics.empty
+    private var traffic = RuntimeTrafficRate.empty
+    private var previousTrafficSample: RuntimeSnapshot?
     private var connectStartedAt: Date?
     private var connectWatchdogTimer: Timer?
+    private var stopPresentationTimer: Timer?
+    private var stopStartedAt: Date?
+    private var pendingStartGeneration: UInt64?
+    private var pendingStopGeneration: UInt64?
+    private var runtimeDecodeError: String?
     private var elapsedText = ""
 
     override func viewDidLoad() {
@@ -39,6 +45,7 @@ final class HomeViewController: UIViewController {
         timer?.invalidate()
         pollTimer?.invalidate()
         connectWatchdogTimer?.invalidate()
+        stopPresentationTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -111,90 +118,128 @@ final class HomeViewController: UIViewController {
     }
 
     @objc private func refreshUI() {
-        let status = vpn.status
+        if let json = TunnelSharedState.readRuntimeSnapshotJsonIfAlive() {
+            do {
+                let snapshot = try TunnelRuntimeBridge.decodeSnapshot(json)
+                if runtimeStore.apply(snapshot) {
+                    traffic = RuntimeTrafficRate.between(previousTrafficSample, snapshot)
+                    if RuntimeTrafficRate.advancesTrafficBaseline(
+                        previousTrafficSample,
+                        snapshot
+                    ) {
+                        previousTrafficSample = snapshot
+                    }
+                }
+                runtimeDecodeError = nil
+            } catch {
+                runtimeDecodeError = error.localizedDescription
+                if let ordering = try? TunnelRuntimeBridge.decodeOrdering(json) {
+                    runtimeStore.applyUnknown(
+                        generation: ordering.generation,
+                        monotonicMs: ordering.monotonicMs
+                    )
+                }
+            }
+        } else {
+            traffic = .empty
+            previousTrafficSample = nil
+            if runtimeStore.state.phase != .idle {
+                runtimeStore.markUnknown()
+            }
+        }
+        if let generation = pendingStartGeneration,
+           runtimeStore.state.generation > generation ||
+           runtimeStore.state.phase == .unknown ||
+           runtimeStore.state.phase == .failed {
+            pendingStartGeneration = nil
+        }
+        if let generation = pendingStopGeneration,
+           runtimeStore.state.generation > generation ||
+           runtimeStore.state.phase == .idle ||
+           runtimeStore.state.phase == .failed ||
+           vpn.status == .disconnected ||
+           vpn.status == .invalid {
+            pendingStopGeneration = nil
+        }
         let debugPanelEnabled = store.debugPanelEnabled()
         let profile = store.activeProfile()
         let launchOptions = store.launchOptions()
-        var statusText = L10n.tr("home.notConnected")
-        var statusDetail = L10n.tr("home.ready")
-        var isConnected = false
-        var isBusy = false
+        updateStopPresentationTimer()
+        let stopTakingTooLong = stopStartedAt.map {
+            Date().timeIntervalSince($0) >= 15
+        } ?? false
+        var controls = controlsFor(
+            runtimeStore.state.phase,
+            stopTakingTooLong: stopTakingTooLong
+        )
+        if pendingStartGeneration != nil || pendingStopGeneration != nil {
+            controls.buttonEnabled = false
+            controls.configEditable = false
+        }
+        let statusText = L10n.tr(controls.statusTitleKey)
+        var statusDetail = controls.detailKey.isEmpty ? "" : L10n.tr(controls.detailKey)
 
-        switch status {
-        case .connected:
-            statusText = L10n.tr("home.connected")
-            connectedAt = connectedAt ?? Date()
+        if controls.isConnected {
             updateElapsedText()
-            statusDetail = linkState == 0
-                ? elapsedText
-                : (debugPanelEnabled ? connectingText(for: linkState, debugPanelEnabled: true) : elapsedText)
-            isConnected = true
+            statusDetail = elapsedText
+            if !runtimeStore.state.effectiveMuxMode.isEmpty {
+                statusDetail += " · VMUX: \(runtimeStore.state.effectiveMuxDisplayName)"
+            }
+            statusDetail += " · Path: \(runtimeStore.state.effectivePathDisplayName)"
             stopConnectWatchdog()
             startTimer()
-            if linkState != 0 {
-                startPolling()
-            }
-        case .connecting:
-            statusText = connectingText(for: linkState, debugPanelEnabled: debugPanelEnabled)
-            statusDetail = L10n.tr("home.vpnStarting")
-            isBusy = true
+        } else {
+            timer?.invalidate()
+            timer = nil
+        }
+
+        switch controls.action {
+        case .cancel, .stop:
             startPolling()
-            if connectStartedAt == nil {
-                startConnectWatchdog()
-            }
-        case .disconnecting:
-            statusText = L10n.tr("home.disconnecting")
-            statusDetail = L10n.tr("home.stopping")
-            isBusy = true
-        case .reasserting:
-            statusText = L10n.tr("home.reconnecting")
-            statusDetail = L10n.tr("home.networkChanged")
-            isBusy = true
-            startPolling()
-            if connectStartedAt == nil {
+            if controls.action == .cancel && connectStartedAt == nil {
                 startConnectWatchdog()
             }
         default:
-            statusText = L10n.tr("home.notConnected")
-            statusDetail = L10n.tr("home.ready")
-            connectedAt = nil
-            timer?.invalidate()
-            timer = nil
             pollTimer?.invalidate()
             pollTimer = nil
             stopConnectWatchdog()
-            elapsedText = ""
-            linkState = 6
-            statistics = .empty
         }
 
-        let isActiveStatus = status == .connected || status == .connecting || status == .reasserting || status == .disconnecting
         statusCard.apply(
             status: statusText,
             detail: statusDetail,
-            isConnected: isConnected,
-            isBusy: isBusy,
-            buttonTitle: isActiveStatus ? L10n.tr("home.stop") : L10n.tr("home.connect"),
-            buttonEnabled: status != .disconnecting,
-            upload: "\(formatBytes(statistics.txSpeedBytes))/s",
-            download: "\(formatBytes(statistics.rxSpeedBytes))/s",
+            isConnected: controls.isConnected,
+            isBusy: controls.isBusy,
+            buttonTitle: L10n.tr(controls.buttonTitleKey),
+            buttonEnabled: controls.buttonEnabled,
+            configEditable: controls.configEditable,
+            upload: "\(formatBytes(Int(traffic.txBytesPerSecond)))/s",
+            download: "\(formatBytes(Int(traffic.rxBytesPerSecond)))/s",
             options: launchOptions
         )
-        profileListView.apply(profiles: store.profiles(), activeId: profile?.id)
+        profileListView.apply(
+            profiles: store.profiles(),
+            activeId: profile?.id,
+            configEditable: controls.configEditable
+        )
 
         if debugPanelEnabled {
             let diagnosticText = vpn.diagnostics.summaryText(
                 fallbackLinkState: linkState,
                 fallbackNetworkPath: vpn.networkPath
             )
-            diagnosticLabel.text = diagnosticText
-            diagnosticLabel.isHidden = diagnosticText == nil
+            let muxText = runtimeStore.state.muxDiagnosticLines.joined(separator: "\n")
+            let p2pText = runtimeStore.state.p2pDiagnosticLines.joined(separator: "\n")
+            diagnosticLabel.text = [diagnosticText, muxText.isEmpty ? nil : muxText, p2pText]
+                .compactMap { $0 }
+                .joined(separator: "\n")
+            diagnosticLabel.isHidden = diagnosticLabel.text?.isEmpty != false
         } else {
             diagnosticLabel.text = nil
             diagnosticLabel.isHidden = true
         }
-        errorLabel.text = vpn.lastError
-        errorLabel.isHidden = vpn.lastError == nil
+        errorLabel.text = runtimeDecodeError ?? vpn.lastError
+        errorLabel.isHidden = errorLabel.text == nil
     }
 
     private func startTimer() {
@@ -204,26 +249,33 @@ final class HomeViewController: UIViewController {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.updateElapsedText()
-            self.statusCard.apply(
-                status: L10n.tr("home.connected"),
-                detail: self.elapsedText,
-                isConnected: true,
-                isBusy: false,
-                buttonTitle: L10n.tr("home.stop"),
-                buttonEnabled: true,
-                upload: "\(self.formatBytes(self.statistics.txSpeedBytes))/s",
-                download: "\(self.formatBytes(self.statistics.rxSpeedBytes))/s",
-                options: self.store.launchOptions()
-            )
+            self.refreshUI()
         }
     }
 
+    private func updateStopPresentationTimer() {
+        guard runtimeStore.state.phase == .stopping else {
+            stopStartedAt = nil
+            stopPresentationTimer?.invalidate()
+            stopPresentationTimer = nil
+            return
+        }
+        stopStartedAt = stopStartedAt ?? Date()
+        guard stopPresentationTimer == nil else { return }
+        stopPresentationTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) {
+            [weak self] _ in self?.refreshUI()
+        }
+    }
+
+    /// Elapsed connect time comes from the runtime snapshot's own clock, so it
+    /// stays correct after the app process is recreated while the tunnel keeps
+    /// running.
     private func updateElapsedText() {
-        guard let connectedAt else {
+        guard runtimeStore.state.connectedMonotonicMs != 0 else {
             elapsedText = ""
             return
         }
-        let duration = Int(Date().timeIntervalSince(connectedAt))
+        let duration = Int(connectedElapsedMs(runtimeStore.state) / 1000)
         let h = duration / 3600
         let m = (duration / 60) % 60
         let s = duration % 60
@@ -241,7 +293,8 @@ final class HomeViewController: UIViewController {
     private func pollTunnel() {
         let status = vpn.status
         guard status == .connected || status == .connecting || status == .reasserting else {
-            statistics = .empty
+            traffic = .empty
+            previousTrafficSample = nil
             linkState = 6
             pollTimer?.invalidate()
             pollTimer = nil
@@ -252,9 +305,6 @@ final class HomeViewController: UIViewController {
         vpn.fetchLinkState { [weak self] state in
             guard let self else { return }
             self.linkState = state
-            if state == 0 {
-                self.connectedAt = self.connectedAt ?? Date()
-            }
             self.refreshUI()
         }
 
@@ -265,11 +315,6 @@ final class HomeViewController: UIViewController {
             }
         }
 
-        vpn.fetchStatistics(previous: statistics) { [weak self] stats in
-            guard let self else { return }
-            self.statistics = stats
-            self.refreshUI()
-        }
     }
 
     private func startConnectWatchdog() {
@@ -289,8 +334,8 @@ final class HomeViewController: UIViewController {
     private func evaluateConnectWatchdog() {
         guard let startedAt = connectStartedAt else { return }
 
-        let status = vpn.status
-        let stillConnecting = status == .connecting || status == .reasserting
+        let stillConnecting = pendingStartGeneration != nil ||
+            controlsFor(runtimeStore.state.phase).action == .cancel
         guard stillConnecting else {
             stopConnectWatchdog()
             return
@@ -298,6 +343,7 @@ final class HomeViewController: UIViewController {
 
         let totalSeconds = Int(Date().timeIntervalSince(startedAt))
         if totalSeconds >= TunnelSharedState.connectWatchdogMaxSeconds {
+            pendingStartGeneration = nil
             stopConnectWatchdog()
             vpn.disconnect()
             presentError(L10n.format("home.timeout", TunnelSharedState.connectWatchdogMaxSeconds))
@@ -308,6 +354,7 @@ final class HomeViewController: UIViewController {
         if TunnelSharedState.shouldUseSharedHeartbeat {
             let heartbeatAge = TunnelSharedState.heartbeatAgeMs()
             if heartbeatAge >= 0 && heartbeatAge > TunnelSharedState.heartbeatStaleMilliseconds {
+                pendingStartGeneration = nil
                 stopConnectWatchdog()
                 vpn.disconnect()
                 presentError(L10n.format("home.heartbeatTimeout", Double(heartbeatAge) / 1000))
@@ -317,9 +364,20 @@ final class HomeViewController: UIViewController {
     }
 
     @objc private func toggleConnection() {
-        if vpn.status == .connected || vpn.status == .connecting || vpn.status == .reasserting {
+        switch controlsFor(runtimeStore.state.phase).action {
+        case .cancel, .stop, .forceStop:
+            let generation = runtimeStore.state.generation
+            guard pendingStopGeneration != generation else { return }
+            pendingStartGeneration = nil
+            pendingStopGeneration = generation
             vpn.disconnect()
+            refreshUI()
             return
+        case .none:
+            return
+        case .start, .retry:
+            guard pendingStartGeneration == nil else { return }
+            break
         }
 
         guard let profile = store.activeProfile(), !profile.json.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -327,20 +385,12 @@ final class HomeViewController: UIViewController {
             return
         }
 
-        statusCard.apply(
-            status: L10n.tr("home.connecting"),
-            detail: L10n.tr("home.vpnStarting"),
-            isConnected: false,
-            isBusy: true,
-            buttonTitle: L10n.tr("home.stop"),
-            buttonEnabled: true,
-            upload: "\(formatBytes(statistics.txSpeedBytes))/s",
-            download: "\(formatBytes(statistics.rxSpeedBytes))/s",
-            options: store.launchOptions()
-        )
+        pendingStartGeneration = runtimeStore.state.generation
+        refreshUI()
         vpn.connect(profile: profile) { [weak self] result in
             guard let self else { return }
             if case let .failure(error) = result {
+                self.pendingStartGeneration = nil
                 self.stopConnectWatchdog()
                 self.presentError(error.localizedDescription)
             } else {
@@ -476,10 +526,7 @@ final class HomeViewController: UIViewController {
     }
 
     private func fetchSubscription(_ urlText: String) {
-        guard let url = URL(string: urlText),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "https" || scheme == "http"
-        else {
+        guard let url = URL(string: urlText), isSecureSubscriptionURL(url) else {
             presentMessage(title: L10n.tr("profiles.invalidSubscription"), message: L10n.tr("profiles.invalidSubscription.message"))
             return
         }
@@ -491,7 +538,7 @@ final class HomeViewController: UIViewController {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("OpenPPP2/iOS", forHTTPHeaderField: "User-Agent")
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        secureSubscriptionSession.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 progress.dismiss(animated: true) {
                     guard let self else { return }
@@ -732,6 +779,7 @@ private final class HomeStatusCard: UIView {
         isBusy: Bool,
         buttonTitle: String,
         buttonEnabled: Bool,
+        configEditable: Bool,
         upload: String,
         download: String,
         options: LaunchOptions
@@ -746,6 +794,9 @@ private final class HomeStatusCard: UIView {
         dot.layer.shadowOffset = .zero
         actionButton.isEnabled = buttonEnabled
         actionButton.alpha = buttonEnabled ? 1 : 0.58
+        allowLanSwitch.isEnabled = configEditable
+        blockQuicSwitch.isEnabled = configEditable
+        routeModeControl.isEnabled = configEditable
 
         var configuration = UIButton.Configuration.filled()
         configuration.cornerStyle = .capsule
@@ -895,6 +946,7 @@ private final class HomeProfileListView: UIView {
     private var tableHeightConstraint: NSLayoutConstraint?
     private var groups: [ProfileGroup] = []
     private var activeId: String?
+    private var configEditable = true
     private var maxTableHeight: CGFloat {
         min(360, max(240, UIScreen.main.bounds.height * 0.38))
     }
@@ -962,8 +1014,10 @@ private final class HomeProfileListView: UIView {
         ])
     }
 
-    func apply(profiles: [ConfigProfile], activeId: String?) {
+    func apply(profiles: [ConfigProfile], activeId: String?, configEditable: Bool) {
         self.activeId = activeId
+        self.configEditable = configEditable
+        addButton.isEnabled = configEditable
         groups = Self.groupProfiles(profiles)
         tableView.reloadData()
         tableView.layoutIfNeeded()
@@ -1059,10 +1113,12 @@ extension HomeProfileListView: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        guard configEditable else { return }
         onApplyProfile?(profile(at: indexPath))
     }
 
     func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard configEditable else { return nil }
         let profile = profile(at: indexPath)
         let pinTitle = profile.favorite ? L10n.tr("profiles.unpin") : L10n.tr("profiles.pin")
         let pin = UIContextualAction(style: .normal, title: pinTitle) { [weak self] _, _, done in
@@ -1101,7 +1157,8 @@ extension HomeProfileListView: UITableViewDataSource, UITableViewDelegate {
         share.backgroundColor = .systemPurple
         share.image = UIImage(systemName: "square.and.arrow.up")
 
-        let configuration = UISwipeActionsConfiguration(actions: [share, edit])
+        let actions = configEditable ? [share, edit] : [share]
+        let configuration = UISwipeActionsConfiguration(actions: actions)
         configuration.performsFirstActionWithFullSwipe = false
         return configuration
     }

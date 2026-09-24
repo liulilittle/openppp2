@@ -11,6 +11,8 @@ using server::VirtualEthernetSwitcher;
 using client::VEthernetNetworkSwitcher;
 
 std::shared_ptr<PppApplication> DEFAULT_;
+/* Serializes every access to the process-wide DEFAULT_ application pointer. */
+static std::mutex DEFAULT_LOCK_;
 std::atomic<bool> GLOBAL_RESTART{false};
 std::atomic<bool> GLOBAL_VBGP{false};
 std::atomic<uint64_t> GLOBAL_VBGP_LAST{0};
@@ -20,8 +22,11 @@ ApplicationGlobals GLOBAL_;
 
 PppApplication& PppApplication::GetInstance() noexcept {
     static std::shared_ptr<PppApplication> instance = ppp::make_shared_object<PppApplication>();
-    if (DEFAULT_ != instance) {
-        DEFAULT_ = instance;
+    {
+        std::lock_guard<std::mutex> scope(DEFAULT_LOCK_);
+        if (DEFAULT_ != instance) {
+            DEFAULT_ = instance;
+        }
     }
     return *instance;
 }
@@ -39,14 +44,18 @@ int PppApplication::Run(int argc, char** argv) noexcept {
     }
 #endif
 
-    std::shared_ptr<PppApplication> app = DEFAULT_;
-    if (NULLPTR == app) {
-        app = ppp::make_shared_object<PppApplication>();
+    std::shared_ptr<PppApplication> app;
+    {
+        std::lock_guard<std::mutex> scope(DEFAULT_LOCK_);
+        app = DEFAULT_;
         if (NULLPTR == app) {
-            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
-            return -1;
+            app = ppp::make_shared_object<PppApplication>();
+            if (NULLPTR == app) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                return -1;
+            }
+            DEFAULT_ = app;
         }
-        DEFAULT_ = app;
     }
 
     int prepared_status = app->PreparedArgumentEnvironment(argc, const_cast<const char**>(argv));
@@ -101,11 +110,29 @@ std::shared_ptr<VEthernetNetworkSwitcher> PppApplication::GetClient() noexcept {
 }
 
 std::shared_ptr<PppApplication> PppApplication::GetDefault() noexcept {
+    std::lock_guard<std::mutex> scope(DEFAULT_LOCK_);
     return DEFAULT_;
 }
 
 std::shared_ptr<AppConfiguration> PppApplication::GetConfiguration() noexcept {
     return configuration_;
+}
+
+ppp::app::runtime::RuntimeSnapshot PppApplication::GetRuntimeSnapshot() const noexcept {
+    return runtime_lifecycle_.GetSnapshot();
+}
+
+std::string PppApplication::GetRuntimeSnapshotJson() const noexcept {
+    return ppp::app::runtime::SerializeRuntimeSnapshot(GetRuntimeSnapshot());
+}
+
+std::uint64_t PppApplication::SubscribeRuntimeSnapshots(
+    ppp::app::runtime::RuntimeLifecycle::Listener listener) noexcept {
+    return runtime_lifecycle_.Subscribe(std::move(listener));
+}
+
+void PppApplication::UnsubscribeRuntimeSnapshots(std::uint64_t token) noexcept {
+    runtime_lifecycle_.Unsubscribe(token);
 }
 
 bool PppApplication::OnShutdownApplication() noexcept {
@@ -121,7 +148,11 @@ bool PppApplication::ShutdownApplication(bool restart) noexcept {
 
     GLOBAL_RESTART.store(GLOBAL_RESTART.load(std::memory_order_relaxed) || restart, std::memory_order_relaxed);
     boost::asio::post(*context, [restart, context]() noexcept {
-        std::shared_ptr<PppApplication> app = std::move(DEFAULT_);
+        std::shared_ptr<PppApplication> app;
+        {
+            std::lock_guard<std::mutex> scope(DEFAULT_LOCK_);
+            app = std::move(DEFAULT_);
+        }
         if (NULLPTR == app) {
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::AppContextUnavailable);
             return false;
@@ -156,7 +187,11 @@ bool PppApplication::NextTickAlwaysTimeout(bool next) noexcept {
         return false;
     }
 
-    std::shared_ptr<PppApplication> app = DEFAULT_;
+    std::shared_ptr<PppApplication> app;
+    {
+        std::lock_guard<std::mutex> scope(DEFAULT_LOCK_);
+        app = DEFAULT_;
+    }
     if (NULLPTR == app) {
         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::AppContextUnavailable);
         return false;
@@ -170,7 +205,11 @@ bool PppApplication::NextTickAlwaysTimeout(bool next) noexcept {
     }
 
     std::shared_ptr<Timer> timeout = Timer::Timeout(context, 1000, [](Timer*) noexcept {
-        std::shared_ptr<PppApplication> inner = DEFAULT_;
+        std::shared_ptr<PppApplication> inner;
+        {
+            std::lock_guard<std::mutex> scope(DEFAULT_LOCK_);
+            inner = DEFAULT_;
+        }
         if (NULLPTR != inner) {
             inner->NextTickAlwaysTimeout(true);
         }

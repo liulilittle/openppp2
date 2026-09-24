@@ -166,6 +166,77 @@ namespace ppp {
                 return frame;
             }
 
+            std::shared_ptr<IPFrame> IPFrame::Parse(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<ppp::Byte>& owner, const void* packet, int size) noexcept {
+                // If no owning shared_ptr, fall back to the copy-based Parse.
+                if (NULLPTR == owner) {
+                    return IPFrame::Parse(allocator, packet, size);
+                }
+
+                struct ip_hdr* iphdr = ip_hdr::Parse(packet, size);
+                if (NULLPTR == iphdr) {
+                    if (ppp::diagnostics::ErrorCode::Success == ppp::diagnostics::GetLastErrorCode()) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkPacketMalformed);
+                    }
+                    return NULLPTR;
+                }
+
+                std::shared_ptr<IPFrame> frame = make_shared_object<IPFrame>();
+                if (NULLPTR == frame) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IpFrameParseFrameAllocFailed);
+                    return NULLPTR;
+                }
+
+                frame->Destination = iphdr->dest;
+                frame->Source = iphdr->src;
+                frame->Tos = ppp::net::Socket::IsDefaultFlashTypeOfService() ? std::max<Byte>(iphdr->tos, DefaultFlashTypeOfService()) : iphdr->tos;
+                frame->Ttl = iphdr->ttl;
+                frame->AddressesFamily = AddressFamily::InterNetwork;
+                frame->ProtocolType = iphdr->proto;
+                frame->Id = ntohs(iphdr->id);
+                frame->Flags = (IPFlags)ntohs(iphdr->flags);
+
+                int iphdr_hlen = ip_hdr::IPH_HL(iphdr) << 2;
+                int options_size = (iphdr_hlen - sizeof(struct ip_hdr));
+                if (options_size > 0) {
+                    std::shared_ptr<BufferSegment> options_ = make_shared_object<BufferSegment>();
+                    if (NULLPTR == options_) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IpFrameParseOptionsSegmentAllocFailed);
+                        return NULLPTR;
+                    }
+
+                    // Zero-copy: wrap the options region into a shared_ptr slice backed by owner.
+                    options_->Length = options_size;
+                    options_->Buffer = ppp::wrap_shared_pointer(reinterpret_cast<ppp::Byte*>(const_cast<void*>(packet)) + sizeof(struct ip_hdr), owner);
+                    if (NULLPTR == options_->Buffer) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IpFrameParseOptionsBufferAllocFailed);
+                        return NULLPTR;
+                    }
+
+                    frame->Options = options_;
+                }
+
+                int message_size_ = size - iphdr_hlen;
+                if (message_size_ > 0) {
+                    std::shared_ptr<BufferSegment> messages_ = make_shared_object<BufferSegment>();
+                    if (NULLPTR == messages_) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IpFrameParsePayloadSegmentAllocFailed);
+                        return NULLPTR;
+                    }
+
+                    // Zero-copy: wrap the payload region into a shared_ptr slice backed by owner.
+                    messages_->Length = message_size_;
+                    messages_->Buffer = ppp::wrap_shared_pointer(reinterpret_cast<ppp::Byte*>(const_cast<void*>(packet)) + iphdr_hlen, owner);
+                    if (NULLPTR == messages_->Buffer) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IpFrameParsePayloadBufferAllocFailed);
+                        return NULLPTR;
+                    }
+
+                    frame->Payload = messages_;
+                }
+
+                return frame;
+            }
+
             /**
              * @brief Splits an IPv4 packet into MTU-constrained fragments.
              * @param out Receives generated fragments.

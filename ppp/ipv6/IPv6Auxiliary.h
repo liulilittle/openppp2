@@ -7,6 +7,7 @@
 
 #include <ppp/stdafx.h>
 #include <ppp/tap/ITap.h>
+#include <ppp/ipv6/IPv6ClientPolicy.h>
 
 namespace ppp {
     namespace configurations {
@@ -28,10 +29,15 @@ namespace ppp {
              */
             struct ClientState {
                 bool                                                          AddressApplied = false;
+                bool                                                          AddressOwned = false;
                 bool                                                          DefaultRouteApplied = false;
+                bool                                                          GatewayNeighborOwned = false;
                 bool                                                          SubnetRouteApplied = false;
                 bool                                                          DnsApplied = false;
                 bool                                                          DefaultRouteWasPresent = false;
+                ppp::ipv6::client_policy::UnicastAddressIdentity              OwnedAddress;
+                std::uint64_t                                                 GatewayNeighborInterfaceLuid = 0;
+                int                                                           GatewayNeighborInterfaceIndex = -1;
                 int                                                           OriginalDefaultRouteInterfaceIndex = -1;
                 int                                                           OriginalDefaultRouteMetric = -1;
                 ppp::string                                                   Address;
@@ -51,10 +57,15 @@ namespace ppp {
                  */
                 inline void                                                   Clear() noexcept {
                     AddressApplied = false;
+                    AddressOwned = false;
                     DefaultRouteApplied = false;
+                    GatewayNeighborOwned = false;
                     SubnetRouteApplied = false;
                     DnsApplied = false;
                     DefaultRouteWasPresent = false;
+                    OwnedAddress = {};
+                    GatewayNeighborInterfaceLuid = 0;
+                    GatewayNeighborInterfaceIndex = -1;
                     OriginalDefaultRouteInterfaceIndex = -1;
                     OriginalDefaultRouteMetric = -1;
                     Address.clear();
@@ -68,6 +79,11 @@ namespace ppp {
                     OriginalDefaultRoutes.clear();
                     OriginalDnsConfiguration.clear();
                     OriginalDefaultRoute.clear();
+                }
+
+                /** @brief Returns whether exact-owned Windows mutations still require cleanup. */
+                inline bool                                                   HasPendingOwnedMutations() const noexcept {
+                    return AddressOwned || GatewayNeighborOwned;
                 }
             };
 

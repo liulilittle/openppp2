@@ -21,7 +21,6 @@ namespace ppp::configurations { class AppConfiguration; }
 #include <ppp/threading/BufferswapAllocator.h>
 #include <ppp/transmissions/ITransmission.h>
 #include <ppp/app/protocol/VirtualEthernetLogger.h>
-#include <ppp/app/protocol/VirtualEthernetTcpipConnection.h>
 
 #if defined(_WIN32)
 #include <windows/ppp/net/QoSS.h>
@@ -118,6 +117,12 @@ namespace vmux {
      * @return true if posting succeeds; otherwise false.
      */
     bool                                                                        vmux_post_exec(const TContextPtr& context, const TStrandPtr& strand, LegacyCompletionHandler&& handler) noexcept {
+        // A stopped io_context never runs a posted handler again; reporting
+        // success here would let callers Suspend() a coroutine that is never
+        // resumed, or queue cleanup work that silently never executes.
+        if (NULLPTR == context || context->stopped()) {
+            return false;
+        }
         return ppp::threading::Executors::Post(context, strand, std::move(handler));
     }
 

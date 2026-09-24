@@ -94,6 +94,7 @@ namespace ppp
             static bool STATIC_Unpack(
                 const std::shared_ptr<ppp::threading::BufferswapAllocator>&     allocator,
                 const std::shared_ptr<ppp::cryptography::Ciphertext>&           transport,
+                const std::shared_ptr<ppp::Byte>&                               buffer,
                 PACKET_HEADER*                                                  h,
                 int                                                             proto,
                 int                                                             session_id,
@@ -133,14 +134,12 @@ namespace ppp
                         return false;
                     }
                 } else {
-                    // No encryption: copy payload as-is.
-                    payload = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, payload_length);
+                    // No encryption: zero-copy slice of the decoded buffer.
+                    payload = ppp::wrap_shared_pointer(reinterpret_cast<ppp::Byte*>(h + 1), buffer);
                     if (NULLPTR == payload) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                         return false;
                     }
-
-                    memcpy(payload.get(), h + 1, payload_length);
                 }
 
                 // Fill output structure.
@@ -289,7 +288,7 @@ namespace ppp
                         h->header_length = (ppp::Byte)STATIC_header_length(configuration, sizeof(PACKET_HEADER), kf);
 
                         // Continue unpack with reconstructed packet.
-                        return STATIC_Unpack(allocator, transport_ciphertext, h, proto, session_id, packet_length, out);
+                        return STATIC_Unpack(allocator, transport_ciphertext, buf, h, proto, session_id, packet_length, out);
                     }
                 } else {
                     // No protocol encryption; fall through.
@@ -298,7 +297,7 @@ namespace ppp
                 }
 
                 // Final unpack with possibly modified header.
-                return STATIC_Unpack(allocator, transport_ciphertext, h, proto, session_id, packet_length, out);
+                return STATIC_Unpack(allocator, transport_ciphertext, output, h, proto, session_id, packet_length, out);
             }
 
             /**
@@ -547,7 +546,7 @@ namespace ppp
                 ms.Write(Payload.get(), 0, Length);
 
                 std::shared_ptr<ppp::Byte> buffer = ms.GetBuffer();
-                return ppp::net::packet::IPFrame::Parse(allocator, buffer.get(), ms.GetPosition());
+                return ppp::net::packet::IPFrame::Parse(allocator, buffer, buffer.get(), ms.GetPosition());
             }
 
             /**

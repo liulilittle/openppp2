@@ -5,6 +5,8 @@
 #include <ppp/threading/Executors.h>
 #include <ppp/coroutines/YieldContext.h>
 
+#include <mutex>
+
 #include <ppp/app/protocol/VirtualEthernetTcpipConnection.h>
 
 #include <ppp/app/mux/vmux_net.h>
@@ -46,8 +48,8 @@ namespace ppp
                     ContextPtr                                                          GetContext()         noexcept { return context_; }
                     ppp::threading::Executors::StrandPtr                                GetStrand()          noexcept { return strand_; }
                     AppConfigurationPtr                                                 GetConfiguration()   noexcept { return configuration_; }
-                    PaperAirplaneControllerPtr                                          GetController()      noexcept { return controller_; }
-                    std::shared_ptr<boost::asio::ip::tcp::socket>                       GetSocket()          noexcept { return socket_; }
+                    PaperAirplaneControllerPtr                                          GetController()      noexcept;
+                    std::shared_ptr<boost::asio::ip::tcp::socket>                       GetSocket()          noexcept;
                     std::shared_ptr<ppp::threading::BufferswapAllocator>                GetBufferAllocator() noexcept;
                     std::shared_ptr<PaperAirplaneConnection>                            GetReference()       noexcept { return shared_from_this(); }
 
@@ -55,13 +57,15 @@ namespace ppp
                     virtual void                                                        Dispose() noexcept;
                     virtual void                                                        Update() noexcept;
                     virtual bool                                                        Run(const boost::asio::ip::address& host, int port, YieldContext& y) noexcept;
-                    bool                                                                IsPortAging(uint64_t now) noexcept { return disposed_ || now >= timeout_; }
+                    bool                                                                IsPortAging(uint64_t now) noexcept;
 
                 private:
+                    bool                                                                IsDisposed() noexcept;
                     void                                                                Finalize() noexcept;
                     bool                                                                OnConnect(const boost::asio::ip::address& host, int port, YieldContext& y) noexcept;
 
                 private:
+                    std::mutex                                                          state_mutex_;
                     bool                                                                disposed_ = false;
                     UInt64                                                              timeout_  = 0;
                     PaperAirplaneControllerPtr                                          controller_;

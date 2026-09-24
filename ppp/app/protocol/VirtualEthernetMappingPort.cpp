@@ -8,6 +8,7 @@
 #include <ppp/app/protocol/VirtualEthernetLogger.h>
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/app/protocol/VirtualEthernetMappingPort.h>
+#include <ppp/app/protocol/MappingPortConnectReentrancy.h>
 #include <ppp/IDisposable.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/Socket.h>
@@ -119,14 +120,31 @@ namespace ppp {
                         // Close UDP and TCP sockets
                         ppp::net::Socket::Closesocket(server->socket_udp_);
                         ppp::net::Socket::Closesocket(server->socket_tcp_);
-                        // Release all connection objects
-                        ppp::collections::Dictionary::ReleaseAllObjects(server->socket_connections_);
+
+                        // Detach all connection objects under the table lock
+                        ppp::unordered_map<int, Server::ConnectionPtr> connections;
+                        {
+                            std::lock_guard<std::mutex> lock(socket_connections_mutex_);
+                            connections.swap(server->socket_connections_);
+                        }
+
+                        // Release all connection objects (outside the lock: disposal may run peer I/O)
+                        ppp::collections::Dictionary::ReleaseAllObjects(connections);
                     }
 
                     if (NULLPTR != client) {               // If client exists
-                        // Release all connection and datagram port objects
-                        ppp::collections::Dictionary::ReleaseAllObjects(client->socket_connections_);
-                        ppp::collections::Dictionary::ReleaseAllObjects(client->socket_datagram_ports_);
+                        // Detach all connection and datagram port objects under the table lock
+                        ppp::unordered_map<int, Client::ConnectionPtr> connections;
+                        ppp::unordered_map<boost::asio::ip::udp::endpoint, Client::DatagramPortPtr> datagram_ports;
+                        {
+                            std::lock_guard<std::mutex> lock(socket_connections_mutex_);
+                            connections.swap(client->socket_connections_);
+                            datagram_ports.swap(client->socket_datagram_ports_);
+                        }
+
+                        // Release all connection and datagram port objects (outside the lock)
+                        ppp::collections::Dictionary::ReleaseAllObjects(connections);
+                        ppp::collections::Dictionary::ReleaseAllObjects(datagram_ports);
                     }
                 }
             }
@@ -356,6 +374,45 @@ namespace ppp {
                 return true;
             }
 
+            /** @brief Removes aging entries from a connection table; the table lock is only held for map operations, never during disposal. */
+            template <typename TTable>
+            static inline void MAPPINGPORT_UpdateAllObjects(std::mutex& mutex_, TTable& table_, UInt64 now) noexcept {
+                typedef typename TTable::key_type                                       TKey;
+                typedef typename TTable::mapped_type                                    TValue;
+
+                ppp::vector<std::pair<TKey, TValue>> snapshot;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    for (auto&& kv : table_) {
+                        snapshot.emplace_back(kv.first, kv.second);
+                    }
+                }
+
+                for (auto&& kv : snapshot) {
+                    TValue& obj = kv.second;
+                    if (NULLPTR != obj && !obj->IsPortAging(now)) {
+                        continue;
+                    }
+
+                    TValue removed;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        auto tail = table_.find(kv.first);
+                        if (tail == table_.end() || tail->second != obj) {
+                            continue;
+                        }
+
+                        removed = std::move(tail->second);
+                        table_.erase(tail);
+                    }
+
+                    if (NULLPTR != removed) {
+                        // Dispose outside the lock: finalization may perform peer I/O.
+                        IDisposable::Dispose(*removed);
+                    }
+                }
+            }
+
             /** @brief Updates child connection/datagram timeout states. */
             bool VirtualEthernetMappingPort::Update(UInt64 now) noexcept {
                 int disposed = disposed_.load();
@@ -367,14 +424,14 @@ namespace ppp {
                 std::shared_ptr<Server> server = server_;
                 if (NULLPTR != server) {
                     // Update all server-side connections
-                    ppp::collections::Dictionary::UpdateAllObjects(server->socket_connections_, now);
+                    MAPPINGPORT_UpdateAllObjects(socket_connections_mutex_, server->socket_connections_, now);
                 }
 
                 std::shared_ptr<Client> client = client_;
                 if (NULLPTR != client) {
                     // Update all client-side connections and datagram ports
-                    ppp::collections::Dictionary::UpdateAllObjects(client->socket_connections_, now);
-                    ppp::collections::Dictionary::UpdateAllObjects(client->socket_datagram_ports_, now);
+                    MAPPINGPORT_UpdateAllObjects(socket_connections_mutex_, client->socket_connections_, now);
+                    MAPPINGPORT_UpdateAllObjects(socket_connections_mutex_, client->socket_datagram_ports_, now);
                 }
 
                 return true;
@@ -497,14 +554,14 @@ namespace ppp {
             }
 
             /** @brief Sends stream payload to local accepted TCP client. */
-            bool VirtualEthernetMappingPort::Server::Connection::SendToFrpUser(const void* packet, int packet_size) noexcept {
+            bool VirtualEthernetMappingPort::Server::Connection::SendToFrpUser(const std::shared_ptr<Byte>& owner, const void* packet, int packet_size) noexcept {
                 int connection_state = connection_stated_.load();
                 if (connection_state != 3) {               // Must be active
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MappingPortServerConnectionUserSendStateInvalid);
                 }
 
-                // Copy packet data to a shared buffer
-                std::shared_ptr<Byte> messages = Copy(mapping_port_->buffer_allocator_, packet, packet_size);
+                // Zero-copy when owner is available, otherwise fall back to memcpy.
+                std::shared_ptr<Byte> messages = Copy(mapping_port_->buffer_allocator_, owner, packet, packet_size);
                 if (NULLPTR == messages) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MappingPortServerConnectionUserSendBufferAllocFailed);
                 }
@@ -580,6 +637,7 @@ namespace ppp {
 
                     if (NULLPTR != server) {
                         // Remove connection from server's dictionary
+                        std::lock_guard<std::mutex> lock(mapping_port_->socket_connections_mutex_);
                         ppp::collections::Dictionary::TryRemove(server->socket_connections_, connection_id_);
                     }
                 }
@@ -692,7 +750,7 @@ namespace ppp {
 
             /** @brief Retrieves connection by ID from role table with disposal checks. */
             template <typename TConnectionPtr, typename TDisposed, typename TConnectionTable>
-            static inline TConnectionPtr MAPPINGPORT_GetConnection(TDisposed& disposed_, TConnectionTable& table_, int connection_id) noexcept {
+            static inline TConnectionPtr MAPPINGPORT_GetConnection(TDisposed& disposed_, TConnectionTable& table_, std::mutex& mutex_, int connection_id) noexcept {
                 int disposed = disposed_.load();
                 if (disposed != FALSE) {
                     return NULLPTR;
@@ -702,6 +760,8 @@ namespace ppp {
                 if (NULLPTR == table) {
                     return NULLPTR;
                 }
+
+                std::lock_guard<std::mutex> lock(mutex_);
 
                 TConnectionPtr connection;
                 if (!ppp::collections::Dictionary::TryGetValue(table->socket_connections_, connection_id, connection)) {
@@ -719,12 +779,12 @@ namespace ppp {
 
             /** @brief Retrieves server-side connection by connection ID. */
             VirtualEthernetMappingPort::Server::ConnectionPtr VirtualEthernetMappingPort::Server_GetConnection(int connection_id) noexcept {
-                return MAPPINGPORT_GetConnection<Server::ConnectionPtr>(disposed_, server_, connection_id);
+                return MAPPINGPORT_GetConnection<Server::ConnectionPtr>(disposed_, server_, socket_connections_mutex_, connection_id);
             }
 
             /** @brief Retrieves client-side connection by connection ID. */
             VirtualEthernetMappingPort::Client::ConnectionPtr VirtualEthernetMappingPort::Client_GetConnection(int connection_id) noexcept {
-                return MAPPINGPORT_GetConnection<Client::ConnectionPtr>(disposed_, client_, connection_id);
+                return MAPPINGPORT_GetConnection<Client::ConnectionPtr>(disposed_, client_, socket_connections_mutex_, connection_id);
             }
 
             /** @brief Retrieves client-side datagram port by NAT endpoint key. */
@@ -738,6 +798,8 @@ namespace ppp {
                 if (NULLPTR == client) {
                     return NULLPTR;
                 }
+
+                std::lock_guard<std::mutex> lock(socket_connections_mutex_);
 
                 Client::DatagramPortPtr datagram_port;
                 if (!ppp::collections::Dictionary::TryGetValue(client->socket_datagram_ports_, nat_key, datagram_port)) {
@@ -789,13 +851,13 @@ namespace ppp {
             }
 
             /** @brief Handles FRP stream payload in server role. */
-            bool VirtualEthernetMappingPort::Server_OnFrpPush(int connection_id, const void* packet, int packet_length) noexcept {
+            bool VirtualEthernetMappingPort::Server_OnFrpPush(int connection_id, const std::shared_ptr<Byte>& owner, const void* packet, int packet_length) noexcept {
                 Server::ConnectionPtr connection = Server_GetConnection(connection_id);
                 if (NULLPTR == connection) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionNotFound);
                 }
 
-                bool ok = connection->SendToFrpUser(packet, packet_length);
+                bool ok = connection->SendToFrpUser(owner, packet, packet_length);
                 if (!ok) {
                     connection->Dispose();
                 }
@@ -871,8 +933,11 @@ namespace ppp {
                 // Try to find a free connection ID
                 for (int i = ppp::net::IPEndPoint::MinPort; i < ppp::net::IPEndPoint::MaxPort; i++) {
                     int connection_id = NewId();
-                    if (ppp::collections::Dictionary::ContainsKey(connections, connection_id)) {
-                        continue;
+                    {
+                        std::lock_guard<std::mutex> lock(socket_connections_mutex_);
+                        if (ppp::collections::Dictionary::ContainsKey(connections, connection_id)) {
+                            continue;
+                        }
                     }
 
                     // Create a new connection object
@@ -883,7 +948,10 @@ namespace ppp {
 
                     bool ok = connection->ConnectToFrpClient();   // Initiate FRP connection
                     if (ok) {
-                        ok = ppp::collections::Dictionary::TryAdd(connections, connection_id, connection);
+                        {
+                            std::lock_guard<std::mutex> lock(socket_connections_mutex_);
+                            ok = ppp::collections::Dictionary::TryAdd(connections, connection_id, connection);
+                        }
                         while (ok) {
                             VirtualEthernetLoggerPtr logger = logger_;
                             if (NULLPTR == logger) {
@@ -1149,8 +1217,10 @@ namespace ppp {
                     }
 
                     if (NULLPTR != client) {
-                        // Remove connection from client's dictionary
-                        ppp::collections::Dictionary::TryRemove(client->socket_connections_, connection_id_);
+                        // A late finalizer must not erase a replacement using the same id.
+                        std::lock_guard<std::mutex> lock(mapping_port_->socket_connections_mutex_);
+                        MappingPortConnectReentrancy::EraseIfOwner(
+                            client->socket_connections_, connection_id_, this);
                     }
                 }
             }
@@ -1261,14 +1331,14 @@ namespace ppp {
             }
 
             /** @brief Sends FRP stream payload to local destination TCP service. */
-            bool VirtualEthernetMappingPort::Client::Connection::SendToDestinationServer(const void* packet, int packet_size) noexcept {
+            bool VirtualEthernetMappingPort::Client::Connection::SendToDestinationServer(const std::shared_ptr<Byte>& owner, const void* packet, int packet_size) noexcept {
                 int connection_state = connection_stated_.load();
                 if (connection_state != 3) {                    // Must be active
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MappingPortClientConnectionSendStateInvalid);
                 }
 
-                // Copy packet to shared buffer
-                std::shared_ptr<Byte> messages = Copy(mapping_port_->buffer_allocator_, packet, packet_size);
+                // Zero-copy when owner is available, otherwise fall back to memcpy.
+                std::shared_ptr<Byte> messages = Copy(mapping_port_->buffer_allocator_, owner, packet, packet_size);
                 if (NULLPTR == messages) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MappingPortClientConnectionSendBufferAllocFailed);
                 }
@@ -1334,16 +1404,30 @@ namespace ppp {
                     }
                 }
 
-                bool ok = connection->ConnectToDestinationServer();   // Connect to local destination
-                if (ok) {
-                    ok = ppp::collections::Dictionary::TryAdd(client->socket_connections_, connection_id, connection);
-                    if (!ok) {
-                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MappingEntryConflict);
-                    }
-                }
+                // Publish before starting async_connect because start may synchronously
+                // dispose/finalize and remove this exact owner from the table.
+                bool published = false;
+                bool ok = MappingPortConnectReentrancy::PublishThenStart(
+                    [this, &client, &connection, connection_id, &published]() noexcept {
+                        std::lock_guard<std::mutex> lock(socket_connections_mutex_);
+                        published = ppp::collections::Dictionary::TryAdd(
+                            client->socket_connections_, connection_id, connection);
+                        return published;
+                    },
+                    [&connection]() noexcept {
+                        return connection->ConnectToDestinationServer();
+                    },
+                    [this, &client, &connection, connection_id]() noexcept {
+                        std::lock_guard<std::mutex> lock(socket_connections_mutex_);
+                        return MappingPortConnectReentrancy::IsOwner(
+                            client->socket_connections_, connection_id, connection.get());
+                    },
+                    [&connection]() noexcept {
+                        connection->Dispose();
+                    });
 
-                if (!ok) {
-                    connection->Dispose();
+                if (!published) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MappingEntryConflict);
                 }
                 return ok;
             }
@@ -1361,13 +1445,13 @@ namespace ppp {
             }
 
             /** @brief Handles inbound FRP stream payload in client role. */
-            bool VirtualEthernetMappingPort::Client_OnFrpPush(int connection_id, const void* packet, int packet_length) noexcept {
+            bool VirtualEthernetMappingPort::Client_OnFrpPush(int connection_id, const std::shared_ptr<Byte>& owner, const void* packet, int packet_length) noexcept {
                 Client::ConnectionPtr connection = Client_GetConnection(connection_id);
                 if (NULLPTR == connection) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionNotFound);
                 }
 
-                bool ok = connection->SendToDestinationServer(packet, packet_length);
+                bool ok = connection->SendToDestinationServer(owner, packet, packet_length);
                 if (!ok) {
                     connection->Dispose();
                 }
@@ -1409,14 +1493,21 @@ namespace ppp {
                     }
                 }
 
-                bool ok = datagram_port->Open();             // Open UDP socket and start loopback
-                if (!ok) {
-                    datagram_port->Dispose();
-                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::UdpOpenFailed);
+                // Insert the placeholder before opening the socket: the receive loop started by
+                // Open() may dispose the port and remove it from the table first.
+                bool ok;
+                {
+                    std::lock_guard<std::mutex> lock(socket_connections_mutex_);
+                    ok = ppp::collections::Dictionary::TryAdd(client->socket_datagram_ports_, sourceEP, datagram_port);
                 }
 
-                ok = ppp::collections::Dictionary::TryAdd(client->socket_datagram_ports_, sourceEP, datagram_port);
                 if (ok) {
+                    ok = datagram_port->Open();             // Open UDP socket and start loopback
+                    if (!ok) {
+                        datagram_port->Dispose();
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::UdpOpenFailed);
+                    }
+
                     ok = datagram_port->SendTo(packet, packet_length, client->local_ep_);
                     if (ok) {
                         return true;
@@ -1466,6 +1557,7 @@ namespace ppp {
                     std::shared_ptr<Client> client = std::move(client_);
                     if (NULLPTR != client) {
                         // Remove from client's dictionary
+                        std::lock_guard<std::mutex> lock(mapping_port_->socket_connections_mutex_);
                         ppp::collections::Dictionary::TryRemove(client->socket_datagram_ports_, nat_ep_);
                     }
 

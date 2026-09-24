@@ -1,5 +1,8 @@
 #pragma once
 
+#include <deque>
+#include <mutex>
+
 /**
  * @file websocket.h
  * @brief Plain and TLS websocket session wrappers built on Boost.Beast.
@@ -124,6 +127,24 @@ namespace ppp {
                 AsioWebSocket                                                   websocket_;
                 IPEndPoint                                                      localEP_;
                 IPEndPoint                                                      remoteEP_;
+
+                /**
+                 * @brief One queued asynchronous write; the payload is owned by the queue
+                 *        until its completion fires.
+                 */
+                struct AsynchronousWriteContext {
+                    std::shared_ptr<Byte>                                       buffer;
+                    int                                                         length = 0;
+                    AsynchronousWriteCallback                                   cb;
+                };
+                /** @brief Serializes write queue state across IO worker threads. */
+                std::mutex                                                      write_mutex_;
+                /** @brief True while a Beast async_write is outstanding (at most one at a time). */
+                bool                                                            write_in_progress_ = false;
+                /** @brief FIFO of pending writes drained one-by-one after each completion. */
+                std::deque<AsynchronousWriteContext>                            write_queue_;
+                /** @brief Starts the next queued write; never overlaps a write already in flight. */
+                void                                                            DoWriteAsync() noexcept;
             };
 
             /**
@@ -177,6 +198,15 @@ namespace ppp {
                 virtual void                                                    Dispose() noexcept;
                 /** @brief Checks whether TLS websocket session is closed/disposed. */
                 virtual bool                                                    IsDisposed() noexcept;
+                /** @brief Reports whether the completed TLS session can export key material. */
+                bool                                                            HasSessionExporter() noexcept;
+                /** @brief Exports key material bound to the completed TLS session. */
+                bool                                                            ExportSessionKey(
+                    const char* label,
+                    const std::uint8_t* context,
+                    std::size_t context_length,
+                    std::uint8_t* output,
+                    std::size_t output_length) noexcept;
 
             public:
                 /** @brief Returns cached local endpoint. */
@@ -251,7 +281,27 @@ namespace ppp {
                 ppp::threading::Executors::ContextPtr                           context_;
                 ppp::threading::Executors::StrandPtr                            strand_;
                 std::shared_ptr<boost::asio::ssl::context>                      ssl_context_;
+                std::mutex                                                      exporter_mutex_;
+                std::atomic_bool                                                tls_handshake_complete_{false};
                 std::shared_ptr<SslvWebSocket>                                  ssl_websocket_;
+
+                /**
+                 * @brief One queued asynchronous write; the payload is owned by the queue
+                 *        until its completion fires.
+                 */
+                struct AsynchronousWriteContext {
+                    std::shared_ptr<Byte>                                       buffer;
+                    int                                                         length = 0;
+                    AsynchronousWriteCallback                                   cb;
+                };
+                /** @brief Serializes write queue state across IO worker threads. */
+                std::mutex                                                      write_mutex_;
+                /** @brief True while a Beast async_write is outstanding (at most one at a time). */
+                bool                                                            write_in_progress_ = false;
+                /** @brief FIFO of pending writes drained one-by-one after each completion. */
+                std::deque<AsynchronousWriteContext>                            write_queue_;
+                /** @brief Starts the next queued write; never overlaps a write already in flight. */
+                void                                                            DoWriteAsync() noexcept;
                 IPEndPoint                                                      localEP_;
                 IPEndPoint                                                      remoteEP_;
                 std::shared_ptr<boost::asio::ip::tcp::socket>                   socket_native_;

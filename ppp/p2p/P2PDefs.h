@@ -92,6 +92,17 @@ namespace ppp {
             Suspect     = 3,    ///< Heartbeat missed; probing to verify.
         };
 
+        inline constexpr bool CanProcessAuthenticatedP2PTier2(
+                P2PChannelState state) noexcept {
+            return state == P2PChannelState::Direct ||
+                   state == P2PChannelState::Suspect;
+        }
+
+        inline constexpr bool CanForwardP2PPayload(
+                P2PChannelState state) noexcept {
+            return state == P2PChannelState::Direct;
+        }
+
         /**
          * @brief Platform-adaptive cipher algorithm selection.
          */

@@ -1,10 +1,11 @@
 name: Test · Unit
 
 on:
+  workflow_dispatch:
   push:
     branches: [feat/unit-tests, main]
   pull_request:
-    branches: [main]
+    branches: [main, codex/runtime-ui-lifecycle-integration]
 
 concurrency:
   group: test-unit-${{ github.ref }}
@@ -14,6 +15,32 @@ permissions:
   contents: read
 
 jobs:
+  lifecycle-sanitizers:
+    name: Lifecycle ASan and UBSan
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang libboost-all-dev libssl-dev
+      - name: Run lifecycle sanitizers
+        run: bash scripts/run-lifecycle-sanitizers.sh
+
+  cpp-tsan:
+    name: C++ ThreadSanitizer
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang libboost-all-dev libssl-dev libstdc++-14-dev
+      - name: Run standalone C++ suite with TSan
+        run: TSAN_OPTIONS='halt_on_error=1:second_deadlock_stack=1' CXX=clang++ bash scripts/run-cpp-tsan-tests.sh
+
   cpp-linux:
     name: C++ unit tests (Linux)
     runs-on: ubuntu-latest
@@ -23,10 +50,37 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build clang llvm libboost-all-dev libssl-dev ripgrep
+          sudo apt-get install -y cmake ninja-build clang llvm libboost-all-dev libssl-dev ripgrep iproute2
 
       - name: Include boundary checks
         run: bash tools/check_include_boundaries.sh
+
+      - name: Repository architecture checks
+        run: |
+          python3 -m unittest tests.tooling.test_repository_layout -v
+          python3 -m unittest tests.tooling.test_ci_workspace_permissions -v
+          python3 -m unittest tests.tooling.test_vmux_transport_boundary -v
+          python3 -m unittest tests.tooling.test_vmux_receive_semantics_ci -v
+          python3 -m unittest tests.tooling.test_proxy_only_static_wiring -v
+          PYTHONDONTWRITEBYTECODE=1 python3 tests/tooling/test_datapath_acceptance.py
+          python3 tools/check_repository_layout.py
+
+      - name: Documentation governance checks
+        run: |
+          python3 -m unittest tests.tooling.test_check_docs -v
+          python3 tools/check_docs.py
+
+      - name: Linux namespace Route/DNS rollback
+        run: |
+          mkdir -p "$PWD/build/route-dns-rollback"
+          sudo OPENPPP2_NAMESPACE_ARTIFACT_DIR="$PWD/build/route-dns-rollback" bash tests/integration/linux/route_dns_rollback.sh
+
+      - name: Upload Route/DNS rollback snapshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: route-dns-rollback-snapshots
+          path: build/route-dns-rollback
+          retention-days: 7
 
       - name: MSVC project source parity
         run: bash tools/check_vcxproj_sources.sh
@@ -41,6 +95,9 @@ jobs:
 
       - name: Build
         run: cmake --build build/test
+
+      - name: Runtime contract (C++)
+        run: bash scripts/test-runtime-contract.sh cpp
 
       - name: Run tests
         run: |
@@ -86,6 +143,11 @@ jobs:
           mkdir -p build/coverage
           go test ./... -coverprofile=build/coverage/go.out -covermode=atomic
           go tool cover -func=build/coverage/go.out | tee build/coverage/go-summary.txt
+      - name: Vet and test the manager backend
+        working-directory: go
+        run: |
+          go vet ./ppp/...
+          go test ./ppp/...
       - name: Upload Go coverage
         uses: actions/upload-artifact@v4
         with:
@@ -108,6 +170,7 @@ jobs:
       - name: Test
         run: |
           flutter pub get
+          bash ../scripts/test-runtime-contract.sh dart
           flutter test --coverage
           echo "Flutter tests completed" | tee coverage/flutter-summary.txt
       - name: Upload Flutter coverage
@@ -125,7 +188,16 @@ jobs:
         working-directory: ios/App
     steps:
       - uses: actions/checkout@v4
+      - name: Typecheck PacketTunnel P2P provider transport
+        run: |
+          sdk_root="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          swiftc -typecheck \
+            -sdk "$sdk_root" \
+            -target "$(uname -m)-apple-ios15.0-simulator" \
+            -I .. \
+            OpenPPP2PacketTunnel/ProviderOwnedP2PDatagramTransport.swift
       - name: Run XCTest
         run: |
           chmod +x run-tests.sh
+          bash ../../scripts/test-runtime-contract.sh swift
           ./run-tests.sh

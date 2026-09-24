@@ -73,19 +73,32 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
         }
 
+        let proxyOnly: Bool = {
+            guard let data = preparedConfigJson.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  let root = object as? [String: Any],
+                  let client = root["client"] as? [String: Any]
+            else {
+                return false
+            }
+
+            return client["proxy-only"] as? Bool ?? false
+        }()
+
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: serverHost ?? launchOptions.gateway)
 
         let ipv4 = NEIPv4Settings(
             addresses: [launchOptions.tunIp],
             subnetMasks: [launchOptions.tunMask]
         )
-        ipv4.includedRoutes = [
-            NEIPv4Route(destinationAddress: launchOptions.route, subnetMask: Self.mask(prefix: launchOptions.routePrefix))
-        ]
+        let includedRoute = proxyOnly
+            ? NEIPv4Route(destinationAddress: launchOptions.tunIp, subnetMask: launchOptions.tunMask)
+            : NEIPv4Route(destinationAddress: launchOptions.route, subnetMask: Self.mask(prefix: launchOptions.routePrefix))
+        ipv4.includedRoutes = [includedRoute]
         let serverIPv4Addresses = Self.resolveIPv4Addresses(for: serverHost)
         let telemetryIPv4Addresses = Self.resolveIPv4Addresses(for: telemetryHost)
         ipv4.excludedRoutes = Self.excludedRoutes(
-            from: launchOptions.effectiveBypassIpList,
+            from: proxyOnly ? "" : launchOptions.effectiveBypassIpList,
             serverHost: serverHost,
             resolvedServerIPv4Addresses: serverIPv4Addresses,
             extraHosts: [telemetryHost].compactMap { $0 },
@@ -94,14 +107,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         settings.ipv4Settings = ipv4
         settings.mtu = NSNumber(value: launchOptions.mtu)
 
-        let dnsServers: [String] = [launchOptions.dns1, launchOptions.dns2]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        if !dnsServers.isEmpty {
-            let dnsSettings = NEDNSSettings(servers: dnsServers)
-            // Match all domains so DNS for full-tunnel traffic also uses tunnel DNS.
-            dnsSettings.matchDomains = [""]
-            settings.dnsSettings = dnsSettings
+        if !proxyOnly {
+            let dnsServers: [String] = [launchOptions.dns1, launchOptions.dns2]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !dnsServers.isEmpty {
+                let dnsSettings = NEDNSSettings(servers: dnsServers)
+                // Match all domains so DNS for full-tunnel traffic also uses tunnel DNS.
+                dnsSettings.matchDomains = [""]
+                settings.dnsSettings = dnsSettings
+            }
         }
         settings.proxySettings = Self.disabledProxySettings()
 
@@ -118,7 +133,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 return
             }
 
-            let adapter = OpenPPP2PacketTunnelAdapter(flow: self.packetFlow, telemetry: telemetry, debug: debug)
+            let adapter = OpenPPP2PacketTunnelAdapter(provider: self, flow: self.packetFlow, telemetry: telemetry, debug: debug)
             guard adapter.start(configJson: preparedConfigJson, options: launchOptions) else {
                 let lastError = openPPP2LastErrorText()
                 self.stopNetworkPathMonitor()
@@ -183,8 +198,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         switch command {
-        case "stats":
-            completionHandler?(adapter?.statisticsJson().data(using: .utf8))
         case "linkState":
             let state = adapter?.linkState() ?? 2
             completionHandler?("\(state)".data(using: .utf8))

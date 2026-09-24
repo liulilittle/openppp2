@@ -21,6 +21,16 @@ namespace client {
 class VEthernetNetworkSwitcher;
 }
 
+/** Proxy-only startup must not enable the static transport. */
+inline bool NormalizeClientStaticMode(bool requested_static_mode, bool proxy_only_runtime) noexcept {
+    return requested_static_mode && !proxy_only_runtime;
+}
+
+/** CLI proxy mode and client.proxy-only both select proxy-only runtime. */
+inline bool NormalizeClientProxyOnlyRuntime(bool proxy_mode, bool configured_proxy_only) noexcept {
+    return proxy_mode || configured_proxy_only;
+}
+
 /** @brief Prepares client TAP, routes, and VEthernetNetworkSwitcher. */
 bool PrepareClientLoopbackEnvironment(
     const std::shared_ptr<NetworkInterface>& network_interface,

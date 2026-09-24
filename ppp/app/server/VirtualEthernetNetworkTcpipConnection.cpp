@@ -3,6 +3,8 @@
 #include <ppp/app/server/VirtualEthernetSwitcher.h>
 #include <ppp/app/server/VirtualEthernetExchanger.h>
 #include <ppp/app/protocol/VirtualEthernetTcpipConnection.h>
+#include <ppp/app/mux/MuxTransportAdapter.h>
+#include <ppp/app/mux/MuxCoordinator.h>
 #include <ppp/app/protocol/templates/TVEthernetTcpipConnection.h>
 #include <ppp/diagnostics/Error.h>
 
@@ -48,13 +50,21 @@ namespace ppp {
              * @brief Schedules cleanup on the connection strand/context.
              */
             void VirtualEthernetNetworkTcpipConnection::Dispose() noexcept {
+                Dispose(ppp::function<void()>());
+            }
+
+            void VirtualEthernetNetworkTcpipConnection::Dispose(
+                ppp::function<void()> completion) noexcept {
                 auto self = shared_from_this();
                 ppp::threading::Executors::ContextPtr context = context_;
                 ppp::threading::Executors::StrandPtr strand = strand_;
 
                 ppp::threading::Executors::Post(context, strand,
-                    [self, this, context, strand]() noexcept {
+                    [self, this, context, strand, completion = std::move(completion)]() noexcept {
                         Finalize();
+                        if (completion) {
+                            completion();
+                        }
                     });
             }
 
@@ -204,7 +214,8 @@ namespace ppp {
                     return false;
                 }
 
-                std::shared_ptr<vmux::vmux_net> mux = exchanger->GetMux();
+                std::shared_ptr<vmux::vmux_net> mux =
+                    exchanger->GetMuxCoordinator()->Session();
                 if (NULLPTR == mux) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolMuxFailed);
                     return false;
@@ -230,8 +241,9 @@ namespace ppp {
                                 ppp::coroutines::YieldContext& y_null = nullof<ppp::coroutines::YieldContext>();
                                 return exchanger->DoMuxON(connection->GetTransmission(), vlan, seq, ack, y_null);
                             };
-                        if (mux->add_linklayer(connection, linklayer, handling)) {
-                            linklayer->server = self;
+                        auto transport = ppp::app::mux::MakeMuxTransport(
+                            connection, [self]() noexcept { self->Dispose(); });
+                        if (mux->add_linklayer(transport, linklayer, handling)) {
                             return true;
                         }
 

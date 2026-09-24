@@ -4,6 +4,7 @@
  */
 
 #include <ppp/configurations/AppConfiguration.h>
+#include <ppp/app/ApplicationClientBootstrap.h>
 #include <ppp/app/PppApplicationInternal.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
@@ -31,6 +32,17 @@ std::shared_ptr<BufferswapAllocator> PppApplication::GetBufferAllocator() noexce
  */
 int PppApplication::PreparedArgumentEnvironment(int argc, const char* argv[]) noexcept {
     Socket::SetDefaultFlashTypeOfService(ppp::ToBoolean(ppp::GetCommandArgument("--tun-flash", argc, argv).data()));
+
+    stats_json_path_ = ppp::GetCommandArgument("--stats-json", argc, argv);
+    if (!stats_json_path_.empty() && stats_json_path_ != "stdout") {
+        std::FILE* output = std::fopen(stats_json_path_.c_str(), "wb");
+        if (NULLPTR != output) {
+            std::fclose(output);
+        } else {
+            stats_json_path_.clear();
+        }
+    }
+    acceptance_boundary_.ConfigureFromEnvironment();
 
     if (ppp::IsInputHelpCommand(argc, argv)) {
         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::AppHelpRequested);
@@ -85,7 +97,7 @@ int PppApplication::PreparedArgumentEnvironment(int argc, const char* argv[]) no
     client_mode_ = IsClientRuntimeMode(application_mode_);
     proxy_mode_ = ApplicationMode::Proxy == application_mode_;
 
-    if (proxy_mode_ || configuration->client.proxy_only) {
+    if (NormalizeClientProxyOnlyRuntime(proxy_mode_, configuration->client.proxy_only)) {
         configuration->ApplyProxyModeDefaults();
     }
 
@@ -117,7 +129,9 @@ int PppApplication::PreparedArgumentEnvironment(int argc, const char* argv[]) no
 
     std::shared_ptr<NetworkInterface> network_interface = GetNetworkInterface(argc, argv);
     if (NULLPTR == network_interface) {
-        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+        if (ppp::diagnostics::GetLastErrorCode() == ppp::diagnostics::ErrorCode::Success) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+        }
         return -1;
     }
 
@@ -411,25 +425,55 @@ void PppApplication::GetDnsAddresses(ppp::vector<boost::asio::ip::address>& addr
  * @brief Builds and populates network interface options from command-line arguments.
  * @param argc Argument count.
  * @param argv Argument vector.
- * @return Constructed network interface object, or null on allocation failure.
+ * @return Constructed network interface object, or null on allocation, invalid input, or unsupported mode.
  */
 std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, const char* argv[]) noexcept {
     std::shared_ptr<NetworkInterface> ni = ppp::make_shared_object<NetworkInterface>();
     if (NULLPTR != ni) {
 #if defined(_WIN32)
-        ni->Lwip = ppp::ToBoolean(ppp::GetCommandArgument("--lwip", argc, argv, ppp::tap::TapWindows::IsWintun() ? ppp::string() : "y").data());
+        const bool platform_default_lwip = !ppp::tap::TapWindows::IsWintun();
 #else
-        ni->Lwip = ppp::ToBoolean(ppp::GetCommandArgument("--lwip", argc, argv).data());
+        const bool platform_default_lwip = false;
 #endif
+#if defined(PPP_ENABLE_XTCP) && defined(PPP_XTCP_RUNTIME_WIRED)
+        const bool xtcp_available = true;
+#else
+        const bool xtcp_available = false;
+#endif
+        const bool tcp_stack_specified = ppp::HasCommandArgument("--tcp-stack", argc, argv);
+        const bool legacy_lwip_specified = ppp::HasCommandArgument("--lwip", argc, argv);
+        const ppp::string tcp_stack_value = ppp::GetCommandArgument("--tcp-stack", argc, argv);
+        const ppp::string legacy_lwip_value = ppp::GetCommandArgument("--lwip", argc, argv);
+        const TcpStackModeResult tcp_stack = ResolveTcpStackMode({
+            platform_default_lwip,
+            tcp_stack_specified,
+            tcp_stack_value,
+            legacy_lwip_specified,
+            ppp::ToBoolean(legacy_lwip_value.data()),
+            xtcp_available,
+        });
+        if (tcp_stack.Status != TcpStackModeStatus::Success) {
+            const ppp::diagnostics::ErrorCode error = tcp_stack.Status == TcpStackModeStatus::XtcpUnavailable
+                ? ppp::diagnostics::ErrorCode::NetworkProtocolUnsupported
+                : ppp::diagnostics::ErrorCode::ConfigFieldInvalid;
+            ppp::diagnostics::SetLastErrorCode(error);
+            return NULLPTR;
+        }
+
+        ni->TcpStack = tcp_stack.Mode;
+        ni->Lwip = ni->TcpStack == TcpStackMode::Lwip;
         ni->Nic = ppp::RTrim(ppp::LTrim(ppp::GetCommandArgument("--nic", argc, argv)));
         ni->BlockQUIC = ppp::ToBoolean(ppp::GetCommandArgument("--block-quic", argc, argv).data());
 
         GetDnsAddresses(ni->DnsAddresses, &ni->DnsLabels, argc, argv);
         if (!ni->DnsAddresses.empty()) {
-            auto dns_servers = ppp::net::asio::vdns::servers;
-            dns_servers->clear();
-            for (const boost::asio::ip::address& dns_server : ni->DnsAddresses) {
-                dns_servers->emplace_back(boost::asio::ip::udp::endpoint(dns_server, PPP_DNS_SYS_PORT));
+            // Publish a new immutable server list; in-place mutation would race with readers.
+            auto dns_servers = ppp::make_shared_object<ppp::net::asio::vdns::IPEndPointVector>();
+            if (NULLPTR != dns_servers) {
+                for (const boost::asio::ip::address& dns_server : ni->DnsAddresses) {
+                    dns_servers->emplace_back(boost::asio::ip::udp::endpoint(dns_server, PPP_DNS_SYS_PORT));
+                }
+                std::atomic_store(&ppp::net::asio::vdns::servers, dns_servers);
             }
         }
 

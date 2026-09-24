@@ -58,13 +58,19 @@ namespace ppp {
         void Timer::Finalize() noexcept {
             static thread_local int s_finalize_depth = 0;
             if (s_finalize_depth > 0) {
-                _disposed_ = true;
+                {
+                    std::lock_guard<std::mutex> scope(_syncobj);
+                    _disposed_ = true;
+                }
                 tick_event_guard_.store(false, std::memory_order_release);
                 return;
             }
 
             ++s_finalize_depth;
-            _disposed_ = true;
+            {
+                std::lock_guard<std::mutex> scope(_syncobj);
+                _disposed_ = true;
+            }
             Stop();
             tick_event_guard_.store(false, std::memory_order_release);
             TickEvent = NULLPTR;
@@ -91,29 +97,35 @@ namespace ppp {
          * @return true when scheduling is armed; otherwise false.
          */
         bool Timer::Start() noexcept {
-            if (_disposed_) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeObjectDisposed);
-                return false;
-            }
+            {
+                std::lock_guard<std::mutex> scope(_syncobj);
+                if (_disposed_) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeObjectDisposed);
+                    return false;
+                }
 
-            if (1 > _interval) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TimerResolutionInvalid);
-                return false;
-            }
-            else {
-                Stop();
-            }
+                if (1 > _interval) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TimerResolutionInvalid);
+                    return false;
+                }
+                else {
+                    StopLocked();
+                }
 
-            _last = 0;
-            _deadline_timer = make_shared_object<boost::asio::steady_timer>(*_context);
-            if (NULLPTR == _deadline_timer) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
-                return false;
+                _last = 0;
+                _deadline_timer = make_shared_object<boost::asio::steady_timer>(*_context);
+                if (NULLPTR == _deadline_timer) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    return false;
+                }
             }
 
             bool ok = Next();
             if (!ok) {
-                _deadline_timer.reset();  // Clean up timer on failure
+                {
+                    std::lock_guard<std::mutex> scope(_syncobj);
+                    _deadline_timer.reset();  // Clean up timer on failure
+                }
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeTimerStartFailed);
             }
 
@@ -125,33 +137,48 @@ namespace ppp {
          * @return true when scheduling succeeds; otherwise false.
          */
         bool Timer::Next() noexcept {
-            if (_disposed_) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeObjectDisposed);
-                return false;
-            }
+            std::shared_ptr<boost::asio::steady_timer> t;
+            int interval;
+            {
+                std::lock_guard<std::mutex> scope(_syncobj);
+                if (_disposed_) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeObjectDisposed);
+                    return false;
+                }
 
-            std::shared_ptr<boost::asio::steady_timer> t = _deadline_timer;
-            if (NULLPTR == t) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeObjectDisposed);
-                return false;
-            }
-            else {
-                _last = Executors::GetTickCount();
+                t = _deadline_timer;
+                if (NULLPTR == t) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeObjectDisposed);
+                    return false;
+                }
+                else {
+                    _last = Executors::GetTickCount();
+                }
+
+                interval = _interval;
             }
 
             std::shared_ptr<Timer> self = GetReference();
-            boost::asio::steady_timer::duration durationTime = Timer::DurationTime(_interval);
+            boost::asio::steady_timer::duration durationTime = Timer::DurationTime(interval);
             t->expires_after(durationTime);
             /**
              * @brief Wait callback that raises tick and chains subsequent scheduling.
+             * The callback snapshots state under `_syncobj` but raises OnTick
+             * outside the lock so user handlers may reenter Stop/Start/Dispose.
              */
             t->async_wait(
                 [self, this, t](const boost::system::error_code& ec) noexcept {
-                    if (ec) {
-                        _last = 0;
+                    UInt64 last;
+                    {
+                        std::lock_guard<std::mutex> scope(_syncobj);
+                        last = _last;
+                        if (ec) {
+                            _last = 0;
+                        }
                     }
-                    else {
-                        TickEventArgs e(Executors::GetTickCount() - _last);
+
+                    if (!ec) {
+                        TickEventArgs e(Executors::GetTickCount() - last);
                         OnTick(e);
                         Next();
                     }
@@ -164,6 +191,15 @@ namespace ppp {
          * @return true when a timer instance was active; otherwise false.
          */
         bool Timer::Stop() noexcept {
+            std::lock_guard<std::mutex> scope(_syncobj);
+            return StopLocked();
+        }
+
+        /**
+         * @brief Stops the active timer; caller must hold `_syncobj`.
+         * @return true when a timer instance was active; otherwise false.
+         */
+        bool Timer::StopLocked() noexcept {
             std::shared_ptr<boost::asio::steady_timer> t = std::move(_deadline_timer);
             if (t) {
                 ppp::net::Socket::Cancel(*t);
@@ -202,8 +238,9 @@ namespace ppp {
                 milliseconds = 0;
             }
 
+            std::lock_guard<std::mutex> scope(_syncobj);
             if (1 > milliseconds) {
-                Stop();
+                StopLocked();
             }
 
             _interval = milliseconds;
@@ -221,6 +258,7 @@ namespace ppp {
          * @brief Indicates whether a timer instance is currently scheduled.
          */
         bool Timer::IsEnabled() noexcept {
+            std::lock_guard<std::mutex> scope(_syncobj);
             return NULLPTR != _deadline_timer;
         }
 
@@ -237,6 +275,7 @@ namespace ppp {
          * @brief Gets current interval in milliseconds.
          */
         int Timer::GetInterval() noexcept {
+            std::lock_guard<std::mutex> scope(_syncobj);
             return _interval;
         }
 

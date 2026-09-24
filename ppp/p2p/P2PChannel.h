@@ -26,7 +26,9 @@
 #include <ppp/p2p/P2PReplayWindow.h>
 #include <ppp/p2p/P2PBufferPool.h>
 #include <ppp/p2p/P2PCrypto.h>
+#include <ppp/p2p/P2PDatagramTransport.h>
 #include <ppp/p2p/P2PSocketProtector.h>
+#include <ppp/p2p/P2PState.h>
 #include <ppp/Int128.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/threading/Timer.h>
@@ -58,7 +60,9 @@ namespace ppp {
                 const uint8_t base_session_key[SESSION_KEY_SIZE],
                 const uint8_t token_key[SESSION_KEY_SIZE],
                 const P2PConfig& config,
-                P2PCipher cipher) noexcept;
+                P2PCipher cipher,
+                const std::shared_ptr<IP2PDatagramTransportFactory>&
+                    transport_factory = nullptr) noexcept;
 
             ~P2PChannel() noexcept;
 
@@ -86,10 +90,14 @@ namespace ppp {
             void SetFrameCallback(const P2PFrameReceivedCallback& cb) noexcept { frame_callback_ = cb; }
             void SetStateChangedCallback(const P2PStateChangedCallback& cb) noexcept { state_callback_ = cb; }
             bool IsClosed() const noexcept { return closed_.load(std::memory_order_acquire); }
+            P2PFallbackReason GetFallbackReason() const noexcept {
+                return fallback_reason_.load(std::memory_order_acquire);
+            }
 
         private:
             void TransitionTo(P2PChannelState new_state) noexcept;
-            void StartReceive() noexcept;
+            void FallbackToRelay(P2PFallbackReason reason) noexcept;
+            void ResetAttemptState() noexcept;
             void OnReceive(const boost::asio::ip::udp::endpoint& sender,
                            const uint8_t* data, int data_len) noexcept;
 
@@ -98,7 +106,7 @@ namespace ppp {
             void HandleTier2(const uint8_t* data, int data_len,
                              const boost::asio::ip::udp::endpoint& sender) noexcept;
 
-            void SendProbe(const boost::asio::ip::udp::endpoint& ep) noexcept;
+            bool SendProbe(const boost::asio::ip::udp::endpoint& ep) noexcept;
             void SendProbeAck(const boost::asio::ip::udp::endpoint& ep) noexcept;
             void SendHeartbeat() noexcept;
             void OnProbeAck(const boost::asio::ip::udp::endpoint& sender) noexcept;
@@ -143,7 +151,8 @@ namespace ppp {
         private:
             boost::asio::io_context&                    io_ctx_;
             std::shared_ptr<ISocketProtector>           protector_;
-            std::unique_ptr<boost::asio::ip::udp::socket> socket_;
+            std::shared_ptr<IP2PDatagramTransportFactory> transport_factory_;
+            std::shared_ptr<IP2PDatagramTransport>      transport_;
 
             Int128                                      session_id_;
             Int128                                      peer_session_id_;
@@ -161,6 +170,7 @@ namespace ppp {
 
             std::atomic<P2PChannelState>                state_{P2PChannelState::Relay};
             std::atomic<bool>                           closed_{false};
+            std::atomic<P2PFallbackReason>              fallback_reason_{P2PFallbackReason::None};
             boost::asio::ip::udp::endpoint              peer_endpoint_;
             boost::asio::ip::udp::endpoint              local_endpoint_;
 
@@ -183,9 +193,6 @@ namespace ppp {
             std::shared_ptr<boost::asio::steady_timer>  probe_timer_;
             std::shared_ptr<boost::asio::steady_timer>  heartbeat_timer_;
             std::shared_ptr<boost::asio::steady_timer>  suspect_timer_;
-
-            uint8_t                                     recv_buf_[P2P_MAX_PACKET_SIZE];
-            boost::asio::ip::udp::endpoint              recv_sender_;
 
             std::pair<int, int>                         coalesced_frames_[MAX_COALESCED_FRAMES];
         };

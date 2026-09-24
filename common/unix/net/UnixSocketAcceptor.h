@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 
 #include <ppp/net/SocketAcceptor.h>
 
@@ -22,12 +23,20 @@ namespace ppp
 
         private:
             bool                                                                    Next() noexcept;
+            /** @brief Body of Next(); caller must hold syncobj_. */
+            bool                                                                    NextLocked() noexcept;
             void                                                                    Finalize() noexcept;
             void                                                                    ArmWatchdog() noexcept;
             void                                                                    OnWatchdogTick() noexcept;
             bool                                                                    RebuildListener() noexcept;
 
         private:
+            /**
+             * @brief Serialises every access to server_/watchdog_/context_ and every
+             *        operation issued on the underlying asio acceptor/timer (neither
+             *        is thread-safe).  Never call user callbacks while holding it.
+             */
+            std::mutex                                                              syncobj_;
             std::shared_ptr<boost::asio::ip::tcp::acceptor>                         server_;
             std::shared_ptr<boost::asio::io_context>                                context_ = NULLPTR;
             std::shared_ptr<boost::asio::steady_timer>                              watchdog_;

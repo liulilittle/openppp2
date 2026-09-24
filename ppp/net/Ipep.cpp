@@ -1111,7 +1111,7 @@ namespace ppp {
                 return true;
             }
             elif(ppp::net::asio::vdns::enabled) {
-                auto dns_servers = ppp::net::asio::vdns::servers;
+                auto dns_servers = std::atomic_load(&ppp::net::asio::vdns::servers);
                 if (NULLPTR != dns_servers && !dns_servers->empty()) {
                     return ppp::net::asio::vdns::ResolveAsync(context, hostname.data(), PPP_RESOLVE_DNS_TIMEOUT, *dns_servers,
                         [dns_servers, port, callback](const boost::asio::ip::address& ip) noexcept {

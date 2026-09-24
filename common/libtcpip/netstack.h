@@ -20,6 +20,11 @@ namespace lwip {
         static bool                                         open() noexcept;
         static void                                         close() noexcept;
         static void                                         close(const LIBTCPIP_CLOSED_EVENT& event) noexcept;
+        /**
+         * @brief Joins the completed netstack worker from a non-worker thread.
+         * @return True when no worker remains joinable after the close completes.
+         */
+        static bool                                         wait_closed() noexcept;
 
     public:
         static LIBTCPIP_IPV4_OUTPUT                         output;

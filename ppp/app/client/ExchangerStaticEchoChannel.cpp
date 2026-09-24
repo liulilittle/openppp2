@@ -32,7 +32,7 @@ namespace ppp {
             static constexpr int STATIC_ECHO_KEEP_ALIVED_ID = IPEndPoint::NoneAddress - 1;
 
             struct ExchangerStaticEchoDetail {
-                typedef VEthernetExchanger::StaticEchoDatagarmSocket            StaticEchoDatagarmSocket;
+                typedef ExchangerStaticEchoChannel::StaticEchoDatagarmSocket            StaticEchoDatagarmSocket;
                 static bool StaticEchoNextTimeout(VEthernetExchanger& owner) noexcept;
                 static bool StaticEchoOpenAsynchronousSocket(VEthernetExchanger& owner, ExchangerStaticEchoChannel& channel, StaticEchoDatagarmSocket& socket, ppp::coroutines::YieldContext& y) noexcept;
                 static bool StaticEchoLoopbackSocket(VEthernetExchanger& owner, ExchangerStaticEchoChannel& channel, const std::shared_ptr<StaticEchoDatagarmSocket>& socket) noexcept;
@@ -47,23 +47,49 @@ namespace ppp {
                 owner_ = owner;
             }
 
+            void ExchangerStaticEchoChannel::InitializeCiphers(
+                const std::shared_ptr<ppp::configurations::AppConfiguration>& configuration) noexcept {
+                if (configuration->key.protocol.size() > 0 && configuration->key.protocol_key.size() > 0 &&
+                    configuration->key.transport.size() > 0 && configuration->key.transport_key.size() > 0) {
+                    if (ppp::cryptography::Ciphertext::Support(configuration->key.protocol) &&
+                        ppp::cryptography::Ciphertext::Support(configuration->key.transport)) {
+                        static_echo_protocol_ = make_shared_object<ppp::cryptography::Ciphertext>(
+                            configuration->key.protocol, configuration->key.protocol_key);
+                        static_echo_transport_ = make_shared_object<ppp::cryptography::Ciphertext>(
+                            configuration->key.transport, configuration->key.transport_key);
+                    }
+                }
+            }
+
+            void ExchangerStaticEchoChannel::ConfigureSession(
+                const std::shared_ptr<ppp::configurations::AppConfiguration>& configuration,
+                const ppp::Int128& id,
+                const ppp::Int128& fsid,
+                int session_id,
+                int remote_port) noexcept {
+                static_echo_session_id_ = session_id;
+                static_echo_remote_port_ = remote_port;
+                VirtualEthernetPacket::Ciphertext(
+                    configuration, id, fsid, session_id, static_echo_protocol_, static_echo_transport_);
+            }
+
             /** @brief Closes static-echo sockets and resets static-session state. */
             void ExchangerStaticEchoChannel::StaticEchoClean() noexcept {
                 VEthernetExchanger& owner = *owner_;
-                for (int i = 0; i < arraysizeof(owner.static_echo_sockets_); i++) {
-                    std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket>& r = owner.static_echo_sockets_[i];
+                for (int i = 0; i < arraysizeof(owner.static_echo_.static_echo_sockets_); i++) {
+                    std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket>& r = owner.static_echo_.static_echo_sockets_[i];
                     std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket> socket = std::move(r);
 
                     Socket::Closesocket(socket);
                 }
 
-                owner.static_echo_input_       = false;
-                owner.static_echo_timeout_     = UINT64_MAX;
-                owner.static_echo_session_id_  = 0;
-                owner.static_echo_remote_port_ = IPEndPoint::MinPort;
+                owner.static_echo_.static_echo_input_       = false;
+                owner.static_echo_.static_echo_timeout_     = UINT64_MAX;
+                owner.static_echo_.static_echo_session_id_  = 0;
+                owner.static_echo_.static_echo_remote_port_ = IPEndPoint::MinPort;
 
-                owner.static_echo_protocol_    = NULLPTR;
-                owner.static_echo_transport_   = NULLPTR;
+                owner.static_echo_.static_echo_protocol_    = NULLPTR;
+                owner.static_echo_.static_echo_transport_   = NULLPTR;
             }
 
             /** @brief Returns whether static-echo data path is currently usable. */
@@ -73,12 +99,12 @@ namespace ppp {
                     return false;
                 }
 
-                std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket> socket = owner.static_echo_sockets_[0];
+                std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket> socket = owner.static_echo_.static_echo_sockets_[0];
                 if (NULLPTR == socket) {
                     return false;
                 }
 
-                return socket->is_open() && owner.static_echo_timeout_ != 0 && owner.static_echo_session_id_ != 0 && owner.static_echo_remote_port_ != 0;
+                return socket->is_open() && owner.static_echo_.static_echo_timeout_ != 0 && owner.static_echo_.static_echo_session_id_ != 0 && owner.static_echo_.static_echo_remote_port_ != 0;
             }
 
             /** @brief Rotates static-echo active socket when keepalive window expires. */
@@ -88,14 +114,14 @@ namespace ppp {
                     return false;
                 }
 
-                if (owner.static_echo_timeout_ != UINT64_MAX && owner.switcher_->StaticMode(NULLPTR)) {
+                if (owner.static_echo_.static_echo_timeout_ != UINT64_MAX && owner.switcher_->StaticMode(NULLPTR)) {
                     UInt64 now = ppp::threading::Executors::GetTickCount();
-                    if (now >= owner.static_echo_timeout_) {
-                        std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket> socket = std::move(owner.static_echo_sockets_[0]);
-                        owner.static_echo_sockets_[0] = std::move(owner.static_echo_sockets_[1]);
-                        owner.static_echo_sockets_[1] = NULLPTR;
+                    if (now >= owner.static_echo_.static_echo_timeout_) {
+                        std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket> socket = std::move(owner.static_echo_.static_echo_sockets_[0]);
+                        owner.static_echo_.static_echo_sockets_[0] = std::move(owner.static_echo_.static_echo_sockets_[1]);
+                        owner.static_echo_.static_echo_sockets_[1] = NULLPTR;
 
-                        owner.static_echo_input_ = false;
+                        owner.static_echo_.static_echo_input_ = false;
                         if (!ExchangerStaticEchoDetail::StaticEchoNextTimeout(owner)) {
                             return false;
                         }
@@ -104,7 +130,7 @@ namespace ppp {
                         auto notifiy_if_need =
                             [self, &owner, this]() noexcept {
                                 // Notifies the VPN server of domestic port changes for smoother dynamic switchover of virtual links.
-                                if (!owner.static_echo_input_ && owner.static_echo_sockets_[0]) {
+                                if (!owner.static_echo_.static_echo_input_ && owner.static_echo_.static_echo_sockets_[0]) {
                                     StaticEchoGatewayServer(STATIC_ECHO_KEEP_ALIVED_ID);
                                 }
                             };
@@ -143,7 +169,7 @@ namespace ppp {
 
                         auto configuration = owner.GetConfiguration();
                         auto allocator = configuration->GetBufferAllocator();
-                        owner.static_echo_sockets_[1] = socket;
+                        owner.static_echo_.static_echo_sockets_[1] = socket;
 
                         return YieldContext::Spawn(allocator.get(), *context,
                             [self, &owner, this, socket, context](YieldContext& y) noexcept {
@@ -202,8 +228,8 @@ namespace ppp {
                     return true;
                 }
 
-                for (int i = 0; i < arraysizeof(owner.static_echo_sockets_); i++) {
-                    std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket>& socket = owner.static_echo_sockets_[i];
+                for (int i = 0; i < arraysizeof(owner.static_echo_.static_echo_sockets_); i++) {
+                    std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket>& socket = owner.static_echo_.static_echo_sockets_[i];
                     if (NULLPTR == socket) {
                         socket = make_shared_object<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket>(*context);
                         if (NULLPTR == socket) {
@@ -246,7 +272,7 @@ namespace ppp {
                     return false;
                 }
 
-                int session_id = owner.static_echo_session_id_;
+                int session_id = owner.static_echo_.static_echo_session_id_;
                 if (session_id < 1) {
                     return false;
                 }
@@ -254,8 +280,8 @@ namespace ppp {
                 int message_length = -1;
                 std::shared_ptr<Byte> messages = VirtualEthernetPacket::Pack(configuration,
                     configuration->GetBufferAllocator(),
-                    VirtualEthernetPacket::SessionCiphertext([&owner](int) noexcept { return owner.static_echo_protocol_; }),
-                    VirtualEthernetPacket::SessionCiphertext([&owner](int) noexcept { return owner.static_echo_transport_; }),
+                    VirtualEthernetPacket::SessionCiphertext([&owner](int) noexcept { return owner.static_echo_.static_echo_protocol_; }),
+                    VirtualEthernetPacket::SessionCiphertext([&owner](int) noexcept { return owner.static_echo_.static_echo_transport_; }),
                     session_id,
                     packet,
                     message_length);
@@ -278,7 +304,7 @@ namespace ppp {
                     return false;
                 }
 
-                int session_id = owner.static_echo_session_id_;
+                int session_id = owner.static_echo_.static_echo_session_id_;
                 if (session_id < 1) {
                     return false;
                 }
@@ -293,8 +319,8 @@ namespace ppp {
                 uint32_t destination_ip = frame->Destination.GetAddress();
                 std::shared_ptr<Byte> packet = VirtualEthernetPacket::Pack(configuration,
                     configuration->GetBufferAllocator(),
-                    VirtualEthernetPacket::SessionCiphertext([&owner](int) noexcept { return owner.static_echo_protocol_; }),
-                    VirtualEthernetPacket::SessionCiphertext([&owner](int) noexcept { return owner.static_echo_transport_; }),
+                    VirtualEthernetPacket::SessionCiphertext([&owner](int) noexcept { return owner.static_echo_.static_echo_protocol_; }),
+                    VirtualEthernetPacket::SessionCiphertext([&owner](int) noexcept { return owner.static_echo_.static_echo_transport_; }),
                     session_id,
                     source_ip,
                     frame->Source.Port,
@@ -320,13 +346,13 @@ namespace ppp {
                 }
 
                 VEthernetExchanger& owner = *owner_;
-                VEthernetExchanger::SynchronizedObjectScope scope(owner.syncobj_);
-                auto r = owner.static_echo_server_ep_set_.emplace(destinationEP);
+                VEthernetExchanger::SynchronizedObjectScope scope(owner.static_echo_.syncobj_);
+                auto r = owner.static_echo_.static_echo_server_ep_set_.emplace(destinationEP);
                 if (!r.second) {
                     return false;
                 }
 
-                owner.static_echo_server_ep_balances_.emplace_back(destinationEP);
+                owner.static_echo_.static_echo_server_ep_balances_.emplace_back(destinationEP);
                 return true;
             }
 
@@ -336,7 +362,7 @@ namespace ppp {
                         return false;
                     }
 
-                    std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket> socket = owner.static_echo_sockets_[0];
+                    std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket> socket = owner.static_echo_.static_echo_sockets_[0];
                     if (NULLPTR == socket) {
                         return false;
                     }
@@ -366,11 +392,11 @@ namespace ppp {
                     max = std::max<int>(1, max) * 1000;
 
                     if (min == max) {
-                        owner.static_echo_timeout_ = tick + min;
+                        owner.static_echo_.static_echo_timeout_ = tick + min;
                     }
                     else {
                         uint64_t next = RandomNext(min, max + 1);
-                        owner.static_echo_timeout_ = tick + next;
+                        owner.static_echo_.static_echo_timeout_ = tick + next;
                     }
 
                     return true;
@@ -386,7 +412,7 @@ namespace ppp {
                         return false;
                     }
 
-                    std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket> socket = owner.static_echo_sockets_[0];
+                    std::shared_ptr<ExchangerStaticEchoDetail::StaticEchoDatagarmSocket> socket = owner.static_echo_.static_echo_sockets_[0];
                     if (NULLPTR == socket) {
                         return false;
                     }
@@ -435,8 +461,8 @@ namespace ppp {
                     std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = configuration->GetBufferAllocator();
                     return VirtualEthernetPacket::Unpack(configuration,
                         allocator,
-                        VirtualEthernetPacket::SessionCiphertext([&owner](int) noexcept { return owner.static_echo_protocol_; }),
-                        VirtualEthernetPacket::SessionCiphertext([&owner](int) noexcept { return owner.static_echo_transport_; }),
+                        VirtualEthernetPacket::SessionCiphertext([&owner](int) noexcept { return owner.static_echo_.static_echo_protocol_; }),
+                        VirtualEthernetPacket::SessionCiphertext([&owner](int) noexcept { return owner.static_echo_.static_echo_transport_; }),
                         packet,
                         packet_length);
                 }
@@ -453,7 +479,7 @@ namespace ppp {
                     }
 
                     std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = configuration->GetBufferAllocator();
-                    owner.static_echo_input_ = true;
+                    owner.static_echo_.static_echo_input_ = true;
 
                     if (packet->Protocol == ppp::net::native::ip_hdr::IP_PROTO_UDP) {
                         auto tap = owner.switcher_->GetTap();
@@ -530,15 +556,22 @@ namespace ppp {
                         return false;
                     }
 
+                    if (NULLPTR == socket->receive_buffer_) {
+                        socket->receive_buffer_ = ppp::make_shared_alloc<Byte>(PPP_BUFFER_SIZE);
+                        if (NULLPTR == socket->receive_buffer_) {
+                            return false;
+                        }
+                    }
+
                     auto self = owner.shared_from_this();
                     if (std::shared_ptr<ppp::transmissions::ITransmissionQoS> qos = owner.switcher_->GetQoS(); NULLPTR != qos) {
                         return qos->BeginRead(
                             [self, &owner, &channel, socket, qos]() noexcept {
-                                socket->async_receive_from(boost::asio::buffer(owner.buffer_.get(), PPP_BUFFER_SIZE), owner.static_echo_source_ep_,
+                                socket->async_receive_from(boost::asio::buffer(socket->receive_buffer_.get(), PPP_BUFFER_SIZE), socket->receive_source_ep_,
                                     [self, &owner, &channel, qos, socket](const boost::system::error_code& ec, std::size_t sz) noexcept {
                                         int bytes_transferred = std::max<int>(-1, ec ? -1 : (int)sz);
                                         if (bytes_transferred > 0) {
-                                            qos->EndRead(ExchangerStaticEchoDetail::StaticEchoYieldReceiveForm(owner, channel, owner.buffer_.get(), bytes_transferred));
+                                            qos->EndRead(ExchangerStaticEchoDetail::StaticEchoYieldReceiveForm(owner, channel, socket->receive_buffer_.get(), bytes_transferred));
                                         }
 
                                         ExchangerStaticEchoDetail::StaticEchoLoopbackSocket(owner, channel, socket);
@@ -546,11 +579,11 @@ namespace ppp {
                             });
                     }
                     else {
-                        socket->async_receive_from(boost::asio::buffer(owner.buffer_.get(), PPP_BUFFER_SIZE), owner.static_echo_source_ep_,
+                        socket->async_receive_from(boost::asio::buffer(socket->receive_buffer_.get(), PPP_BUFFER_SIZE), socket->receive_source_ep_,
                             [self, &owner, &channel, qos, socket](const boost::system::error_code& ec, std::size_t sz) noexcept {
                                 int bytes_transferred = std::max<int>(-1, ec ? -1 : (int)sz);
                                 if (bytes_transferred > 0) {
-                                    ExchangerStaticEchoDetail::StaticEchoYieldReceiveForm(owner, channel, owner.buffer_.get(), bytes_transferred);
+                                    ExchangerStaticEchoDetail::StaticEchoYieldReceiveForm(owner, channel, socket->receive_buffer_.get(), bytes_transferred);
                                 }
 
                                 ExchangerStaticEchoDetail::StaticEchoLoopbackSocket(owner, channel, socket);
@@ -574,22 +607,22 @@ namespace ppp {
                     }
 
                     boost::asio::ip::udp::endpoint destinationEP;
-                    for (VEthernetExchanger::SynchronizedObjectScope scope(owner.syncobj_);;) {
-                        auto tail = owner.static_echo_server_ep_balances_.begin();
-                        auto endl = owner.static_echo_server_ep_balances_.end();
+                    for (VEthernetExchanger::SynchronizedObjectScope scope(owner.static_echo_.syncobj_);;) {
+                        auto tail = owner.static_echo_.static_echo_server_ep_balances_.begin();
+                        auto endl = owner.static_echo_.static_echo_server_ep_balances_.end();
                         if (tail == endl) {
-                            destinationEP = boost::asio::ip::udp::endpoint(owner.server_url_.remoteEP.address(), owner.static_echo_remote_port_);
+                            destinationEP = boost::asio::ip::udp::endpoint(owner.server_url_.remoteEP.address(), owner.static_echo_.static_echo_remote_port_);
                             break;
                         }
 
-                        std::size_t server_addrsss_num = owner.static_echo_server_ep_set_.size();
+                        std::size_t server_addrsss_num = owner.static_echo_.static_echo_server_ep_set_.size();
                         if (server_addrsss_num == 1) {
-                            destinationEP = *owner.static_echo_server_ep_balances_.begin();
+                            destinationEP = *owner.static_echo_.static_echo_server_ep_balances_.begin();
                         }
                         else {
                             destinationEP = *tail;
-                            owner.static_echo_server_ep_balances_.erase(tail);
-                            owner.static_echo_server_ep_balances_.emplace_back(destinationEP);
+                            owner.static_echo_.static_echo_server_ep_balances_.erase(tail);
+                            owner.static_echo_.static_echo_server_ep_balances_.emplace_back(destinationEP);
                         }
 
                         break;

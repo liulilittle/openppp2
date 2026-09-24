@@ -37,9 +37,10 @@
  * Thread safety
  * -------------
  * All functions in this namespace acquire an internal cache mutex before
- * reading or writing shared cache state.  The global variables @ref servers,
- * @ref ttl, and @ref enabled are intended to be written once during
- * initialization and read-only thereafter.
+ * reading or writing shared cache state.  The global variables @ref ttl and
+ * @ref enabled are atomics and may be read or written from any thread; the
+ * @ref servers shared_ptr is published with std::atomic_store and read with
+ * std::atomic_load, so the server list can also be swapped at runtime.
  */
 
 #include <ppp/stdafx.h>
@@ -70,6 +71,10 @@ namespace ppp {
                  * Set once during application initialization.  @ref ResolveAsync and
                  * @ref ResolveAsync2 use this list when the cache does not contain an answer.
                  * An empty list disables upstream forwarding.
+                 *
+                 * @note Writers must publish a new vector with `std::atomic_store(&servers, p)`
+                 *       and readers must take a local snapshot with `std::atomic_load(&servers)`
+                 *       before dereferencing it; the pointed-to vector is treated as immutable.
                  */
                 extern IPEndPointVectorPtr                                                      servers;
 
@@ -78,17 +83,17 @@ namespace ppp {
                  *
                  * Cached entries are never retained longer than this value regardless of
                  * the TTL returned by the upstream DNS server.  Set to 0 to disable caching.
+                 * Atomic so runtime configuration updates are safe from any thread.
                  */
-                extern int                                                                      ttl;
+                extern std::atomic<int>                                                         ttl;
 
                 /**
                  * @brief Global switch for the virtual DNS feature.
                  *
                  * When false, callers should bypass vdns entirely and fall back to the
-                 * OS resolver.  Toggling this at runtime (after initialization) is
-                 * not recommended as it is not protected by a lock.
+                 * OS resolver.  Atomic so it may be toggled at runtime from any thread.
                  */
-                extern bool                                                                     enabled;
+                extern std::atomic<bool>                                                        enabled;
 
                 /**
                  * @brief DNS address record family selector.

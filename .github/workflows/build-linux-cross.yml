@@ -35,10 +35,25 @@ jobs:
 
       - name: Install cross-compiler
         run: |
-          sudo apt-get update -y || true
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake zip unzip \
-            gcc-${{ matrix.apt_pkg }} g++-${{ matrix.apt_pkg }}
+          if [[ "${{ matrix.debian_arch }}" != "mipsel" ]]; then
+            sudo sed -i '/^Types: deb$/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+            sudo dpkg --add-architecture ${{ matrix.debian_arch }}
+            for suite in noble noble-updates noble-backports noble-security; do
+              printf 'deb [arch=%s] https://ports.ubuntu.com/ubuntu-ports %s main universe\n' \
+                "${{ matrix.debian_arch }}" "$suite"
+            done | sudo tee /etc/apt/sources.list.d/ubuntu-ports.list
+          fi
+          sudo apt-get update -y
+          if [[ "${{ matrix.debian_arch }}" == "mipsel" ]]; then
+            sudo apt-get install -y --no-install-recommends \
+              build-essential cmake zip unzip \
+              gcc-${{ matrix.apt_pkg }} g++-${{ matrix.apt_pkg }}
+          else
+            sudo apt-get install -y --no-install-recommends \
+              build-essential cmake zip unzip \
+              gcc-${{ matrix.apt_pkg }} g++-${{ matrix.apt_pkg }} \
+              zlib1g-dev:${{ matrix.debian_arch }} libzstd-dev:${{ matrix.debian_arch }}
+          fi
 
       - name: Build libunwind for target
         run: |

@@ -25,6 +25,7 @@
 #include <ppp/threading/Executors.h>
 #include <ppp/threading/BufferswapAllocator.h>
 
+#include <ppp/app/ApplicationClientBootstrap.h>
 #include <ppp/app/server/VirtualEthernetSwitcher.h>
 #include <ppp/app/server/VirtualEthernetManagedServer.h>
 #include <ppp/app/client/VEthernetExchanger.h>
@@ -33,6 +34,8 @@
 #include <ppp/app/client/proxys/VEthernetSocksProxySwitcher.h>
 #include <common/aggligator/aggligator.h>
 #include <ppp/app/client/GeoRuleGenerator.h>
+#include <ppp/app/runtime/RuntimeLifecycle.h>
+#include <ppp/app/runtime/RuntimeSnapshotJson.h>
 
 #include <android/OpenPPP2VpnProtectBridge.h>
 #include <android/OpenPPP2TelemetryBridge.h>
@@ -78,6 +81,7 @@
 #include <jni.h>
 
 #include <iostream>
+#include <algorithm>
 #include <string>
 #include <memory>
 #include <exception>
@@ -103,6 +107,102 @@ FILE* stderr = &__sF[2];
 #endif
 #endif
 
+// Runtime snapshot push bridge.
+//
+// RuntimeLifecycle::Subscribe invokes listeners on whichever thread produced the
+// transition -- the JVM thread inside run(), the executor timer thread, or the
+// thread that completed Dispose() -- so the JVM is attached per call and JNIEnv*
+// is never cached. The class is resolved in JNI_OnLoad because FindClass on an
+// attached native thread uses the system class loader and cannot see
+// application classes.
+static JavaVM*                                                              libopenppp2_runtime_vm = NULLPTR;
+static jclass                                                               libopenppp2_runtime_clazz = NULLPTR;
+static jmethodID                                                            libopenppp2_runtime_method = NULLPTR;
+
+static bool                                                                 libopenppp2_cache_runtime_snapshot_method(JavaVM* vm, JNIEnv* env) noexcept {
+    if (NULLPTR == vm || NULLPTR == env) {
+        return false;
+    }
+
+    jclass clazz = env->FindClass(LIBOPENPPP2_CLASSNAME);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+
+    if (NULLPTR == clazz) {
+        return false;
+    }
+
+    jmethodID method = env->GetStaticMethodID(clazz, "runtime_snapshot", "(Ljava/lang/String;)V");
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+
+    if (NULLPTR == method) {
+        env->DeleteLocalRef(clazz);
+        return false;
+    }
+
+    jclass global_clazz = static_cast<jclass>(env->NewGlobalRef(clazz));
+    env->DeleteLocalRef(clazz);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+
+    if (NULLPTR == global_clazz) {
+        return false;
+    }
+
+    libopenppp2_runtime_vm = vm;
+    libopenppp2_runtime_clazz = global_clazz;
+    libopenppp2_runtime_method = method;
+    return true;
+}
+
+static void                                                                 libopenppp2_publish_runtime_snapshot(const std::string& json) noexcept {
+    JavaVM* vm = libopenppp2_runtime_vm;
+    if (NULLPTR == vm || NULLPTR == libopenppp2_runtime_clazz ||
+        NULLPTR == libopenppp2_runtime_method || json.empty()) {
+        return;
+    }
+
+    JNIEnv* env = NULLPTR;
+    bool attached = false;
+    jint status = vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    if (JNI_EDETACHED == status) {
+#if defined(__ANDROID__)
+        if (JNI_OK != vm->AttachCurrentThread(&env, NULLPTR)) {
+#else
+        if (JNI_OK != vm->AttachCurrentThread(reinterpret_cast<void**>(&env), NULLPTR)) {
+#endif
+            return;
+        }
+
+        attached = true;
+    }
+    else if (JNI_OK != status) {
+        return;
+    }
+
+    jstring json_string = env->NewStringUTF(json.data());
+    if (NULLPTR != json_string) {
+        env->CallStaticVoidMethod(libopenppp2_runtime_clazz, libopenppp2_runtime_method, json_string);
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+        }
+
+        env->DeleteLocalRef(json_string);
+    }
+    else if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+
+    if (attached) {
+        vm->DetachCurrentThread();
+    }
+}
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     if (NULLPTR == vm) {
         return JNI_ERR;
@@ -115,6 +215,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
 
     ppp::android::InitializeProtectBridge(vm, env);
     ppp::android::InitializeTelemetryBridge(vm, env);
+    libopenppp2_cache_runtime_snapshot_method(vm, env);
     return JNI_VERSION_1_6;
 }
 
@@ -308,6 +409,7 @@ public:
     static std::shared_ptr<libopenppp2_application>                         GetDefault() noexcept;
     void                                                                    DllMain() noexcept;
     bool                                                                    Release() noexcept;
+    bool                                                                    Release(bool success, ppp::app::runtime::RuntimeError error) noexcept;
     bool                                                                    OnTick(uint64_t now) noexcept;
     static bool                                                             Post(int sequence) noexcept;
     static int                                                              Invoke(const ppp::function<int()>& task) noexcept;
@@ -329,13 +431,13 @@ public:
         uint64_t                                                            out = UINT64_MAX;
     }                                                                       last_reported_statistics_;
     uint32_t                                                                stats_perf_log_ticks_ = 0;
+    ppp::app::runtime::RuntimeLifecycle                                     runtime_lifecycle_;
 
 private:
-    bool                                                                    ReportTransmissionStatistics() noexcept;
+    bool                                                                    ReportTransmissionStatistics(uint64_t now) noexcept;
     bool                                                                    GetTransmissionStatistics(uint64_t& incoming_traffic, uint64_t& outgoing_traffic, std::shared_ptr<ppp::transmissions::ITransmissionStatistics>& statistics_snapshot) noexcept;
 
 public:
-    bool                                                                    StatisticsJNI(JNIEnv* env, const char* json) noexcept;
     bool                                                                    PostExecJNI(JNIEnv* env, int sequence) noexcept;
     bool                                                                    StartJNI(JNIEnv* env, int key) noexcept;
     bool                                                                    ExecJNI(JNIEnv* env, const char* method_name, int param) noexcept;
@@ -427,44 +529,83 @@ bool                                                                        libo
 }
 
 bool                                                                        libopenppp2_application::OnTick(uint64_t now) noexcept {
-    ReportTransmissionStatistics();
+    const ppp::app::runtime::RuntimeSnapshot runtime = runtime_lifecycle_.GetSnapshot();
+    std::shared_ptr<VEthernetNetworkSwitcher> client = std::atomic_load(&client_);
+    if (runtime.generation != 0 &&
+        runtime.phase != ppp::app::runtime::RuntimePhase::Stopping &&
+        NULLPTR != client) {
+        std::shared_ptr<VEthernetExchanger> exchanger = client->GetExchanger();
+        if (NULLPTR == exchanger) {
+            runtime_lifecycle_.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Connecting,
+                now);
+        }
+        else {
+            runtime_lifecycle_.UpdateMuxState(
+                runtime.generation,
+                exchanger->GetMuxRuntimeState(),
+                now);
+        }
+        if (NULLPTR != exchanger && exchanger->GetNetworkState() == VEthernetExchanger::NetworkState_Reconnecting) {
+            runtime_lifecycle_.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Reconnecting,
+                now);
+        }
+        else if (NULLPTR != exchanger && exchanger->GetNetworkState() == VEthernetExchanger::NetworkState_Established) {
+            runtime_lifecycle_.UpdateReadiness(
+                runtime.generation,
+                client->GetRuntimeReadiness(),
+                now);
+            runtime_lifecycle_.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Connected,
+                now);
+        }
+        else if (NULLPTR != exchanger) {
+            runtime_lifecycle_.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Handshaking,
+                now);
+        }
+    }
+    ReportTransmissionStatistics(now);
     return true;
 }
 
-bool                                                                        libopenppp2_application::ReportTransmissionStatistics() noexcept {
+bool                                                                        libopenppp2_application::ReportTransmissionStatistics(uint64_t now) noexcept {
     // Get statistics on the physical network transport layer of the Virtual Ethernet switcher.
-    struct {
-        uint64_t                                                            incoming_traffic;
-        uint64_t                                                            outgoing_traffic;
-        std::shared_ptr<ppp::transmissions::ITransmissionStatistics>        statistics_snapshot;
-    } TransmissionStatistics;
-
-    if (!GetTransmissionStatistics(TransmissionStatistics.incoming_traffic, TransmissionStatistics.outgoing_traffic, TransmissionStatistics.statistics_snapshot)) {
-        TransmissionStatistics.incoming_traffic = 0;
-        TransmissionStatistics.outgoing_traffic = 0;
-        TransmissionStatistics.statistics_snapshot = NULLPTR;
+    uint64_t incoming_traffic = 0;
+    uint64_t outgoing_traffic = 0;
+    std::shared_ptr<ppp::transmissions::ITransmissionStatistics> statistics_snapshot;
+    if (!GetTransmissionStatistics(incoming_traffic, outgoing_traffic, statistics_snapshot)) {
+        incoming_traffic = 0;
+        outgoing_traffic = 0;
+        statistics_snapshot = NULLPTR;
     }
 
-    Json::Value json;
-    json["tx"] = stl::to_string<ppp::string>(TransmissionStatistics.outgoing_traffic);
-    json["rx"] = stl::to_string<ppp::string>(TransmissionStatistics.incoming_traffic);
+    const uint64_t in_total = NULLPTR != statistics_snapshot ? statistics_snapshot->IncomingTraffic.load() : 0;
+    const uint64_t out_total = NULLPTR != statistics_snapshot ? statistics_snapshot->OutgoingTraffic.load() : 0;
 
-    if (auto statistics = TransmissionStatistics.statistics_snapshot; statistics) {
-        json["in"] = stl::to_string<ppp::string>(statistics->IncomingTraffic.load());
-        json["out"] = stl::to_string<ppp::string>(statistics->OutgoingTraffic.load());
+    // The runtime snapshot is the only traffic surface; consumers derive rates
+    // from two snapshots instead of accumulating per-tick deltas.
+    if (const uint64_t generation = runtime_lifecycle_.GetSnapshot().generation; generation != 0) {
+        ppp::app::runtime::RuntimeTraffic traffic;
+        traffic.rx_bytes = in_total;
+        traffic.tx_bytes = out_total;
+        runtime_lifecycle_.UpdateTraffic(generation, traffic, now);
     }
 
-    const uint64_t in_total = json.isMember("in") ? JsonAuxiliary::AsUInt64(json["in"]) : 0;
-    const uint64_t out_total = json.isMember("out") ? JsonAuxiliary::AsUInt64(json["out"]) : 0;
-    if (last_reported_statistics_.tx == TransmissionStatistics.outgoing_traffic &&
-        last_reported_statistics_.rx == TransmissionStatistics.incoming_traffic &&
+    if (last_reported_statistics_.tx == outgoing_traffic &&
+        last_reported_statistics_.rx == incoming_traffic &&
         last_reported_statistics_.in == in_total &&
         last_reported_statistics_.out == out_total) {
         return true;
     }
 
-    last_reported_statistics_.tx = TransmissionStatistics.outgoing_traffic;
-    last_reported_statistics_.rx = TransmissionStatistics.incoming_traffic;
+    last_reported_statistics_.tx = outgoing_traffic;
+    last_reported_statistics_.rx = incoming_traffic;
     last_reported_statistics_.in = in_total;
     last_reported_statistics_.out = out_total;
 
@@ -472,21 +613,13 @@ bool                                                                        libo
     if ((stats_perf_log_ticks_ % 10) == 0) {
         __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
             "perf throughput tx=%llu rx=%llu in=%llu out=%llu",
-            static_cast<unsigned long long>(TransmissionStatistics.outgoing_traffic),
-            static_cast<unsigned long long>(TransmissionStatistics.incoming_traffic),
+            static_cast<unsigned long long>(outgoing_traffic),
+            static_cast<unsigned long long>(incoming_traffic),
             static_cast<unsigned long long>(in_total),
             static_cast<unsigned long long>(out_total));
     }
 
-    std::shared_ptr<ppp::string> json_string = ppp::make_shared_object<ppp::string>(JsonAuxiliary::ToString(json));
-    if (NULLPTR == json_string) {
-        return false;
-    }
-
-    return PostJNI(
-        [this, json_string](JNIEnv* env) noexcept {
-            StatisticsJNI(env, json_string->data());
-        });
+    return true;
 }
 
 bool                                                                        libopenppp2_application::PostJNI(const ppp::function<void(JNIEnv*)>& task) noexcept {
@@ -533,53 +666,6 @@ bool                                                                        libo
             task(env);
         });
     return true;
-}
-
-// package: supersocksr.ppp.android.c
-// public final class libopenpppp2
-// public static void statistics(string json)
-// param
-//  json: {
-//      tx:         string(int64),
-//      rx:         string(int64),
-//      in:         string(int64),
-//      out :       string(int64)
-//  }
-bool                                                                        libopenppp2_application::StatisticsJNI(JNIEnv* env, const char* json) noexcept {
-    jclass clazz = env->FindClass(LIBOPENPPP2_CLASSNAME);
-    if (NULLPTR != env->ExceptionOccurred()) {
-        env->ExceptionClear();
-    }
-
-    if (NULLPTR == clazz) {
-        return false;
-    }
-
-    jmethodID method = env->GetStaticMethodID(clazz, "statistics", "(Ljava/lang/String;)V");
-    if (NULLPTR != env->ExceptionOccurred()) {
-        env->ExceptionClear();
-    }
-
-    bool result = false;
-    if (NULLPTR != method) {
-        jstring json_string = JNIENV_NewStringUTF(env, json);
-        env->CallStaticVoidMethod(clazz, method, json_string);
-
-        if (env->ExceptionCheck()) {
-            env->ExceptionDescribe();
-            env->ExceptionClear();
-        }
-        else {
-            result = true;
-        }
-
-        if (NULLPTR != json_string) {
-            env->DeleteLocalRef(json_string);
-        }
-    }
-
-    env->DeleteLocalRef(clazz);
-    return result;
 }
 
 bool                                                                        libopenppp2_application::GetTransmissionStatistics(uint64_t& incoming_traffic, uint64_t& outgoing_traffic, std::shared_ptr<ppp::transmissions::ITransmissionStatistics>& statistics_snapshot) noexcept {
@@ -687,16 +773,19 @@ int                                                                         libo
 }
 
 bool                                                                        libopenppp2_application::Release() noexcept {
+    return Release(true, ppp::app::runtime::RuntimeError());
+}
+
+bool                                                                        libopenppp2_application::Release(
+    bool success,
+    ppp::app::runtime::RuntimeError error) noexcept {
     bool any = false;
+    const ppp::app::runtime::RuntimeSnapshot runtime = runtime_lifecycle_.GetSnapshot();
+    const bool stop_owner = runtime.generation != 0 &&
+        runtime_lifecycle_.TryBeginStop(runtime.generation, Executors::GetTickCount());
     std::shared_ptr<Timer> timeout = std::move(timeout_);
     if (NULLPTR != timeout) {
         timeout->Dispose();
-    }
-
-    std::shared_ptr<VEthernetNetworkSwitcher> client = std::atomic_exchange(&client_, std::shared_ptr<VEthernetNetworkSwitcher>());
-    if (NULLPTR != client) {
-        any = true;
-        client->Dispose();
     }
 
     configuration_.reset();
@@ -708,6 +797,37 @@ bool                                                                        libo
     transmission_statistics_.Clear();
     last_reported_statistics_ = {};
     stats_perf_log_ticks_ = 0;
+
+    auto complete_stop =
+        [self = shared_from_this(), runtime, success, error = std::move(error)](
+            bool cleanup_success) mutable noexcept {
+            if (!cleanup_success) {
+                error.code = static_cast<std::uint32_t>(
+                    ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                error.severity = "error";
+                error.retryable = true;
+                error.user_message_key = "CleanupFailed";
+            }
+            self->runtime_lifecycle_.CompleteStop(
+                runtime.generation,
+                success && cleanup_success,
+                std::move(error),
+                Executors::GetTickCount());
+        };
+
+    std::shared_ptr<VEthernetNetworkSwitcher> client = std::atomic_exchange(
+        &client_, std::shared_ptr<VEthernetNetworkSwitcher>());
+    if (NULLPTR != client) {
+        any = true;
+        ppp::function<void(bool)> completion;
+        if (stop_owner) {
+            completion = complete_stop;
+        }
+        client->Dispose(std::move(completion));
+    }
+    else if (stop_owner) {
+        complete_stop(true);
+    }
     return any;
 }
 
@@ -909,6 +1029,22 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_get_1link_1stat
     else {
         return LIBOPENPPP2_LINK_STATE_UNKNOWN;
     }
+}
+
+// package: supersocksr.ppp.android.c
+// public final class libopenpppp2
+// public native string get_runtime_snapshot()
+__LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1runtime_1snapshot(JNIEnv* env, jobject* this_) noexcept {
+    __LIBOPENPPP2_MAIN__;
+
+    std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
+    if (NULLPTR == app) {
+        return JNIENV_NewStringUTF(env, NULLPTR);
+    }
+
+    const std::string json = ppp::app::runtime::SerializeRuntimeSnapshot(
+        app->runtime_lifecycle_.GetSnapshot());
+    return JNIENV_NewStringUTF(env, json.c_str());
 }
 
 // package: supersocksr.ppp.android.c
@@ -1442,6 +1578,51 @@ static std::shared_ptr<ITap>                                                    
     return ppp::tap::TapLinux::From(context, dev, tun, ip, gw, mask, promisc, hosted_network);
 }
 
+static ppp::string                                                               libopenppp2_routing_source_without_file_uri(
+    const ppp::string& source) noexcept {
+    constexpr std::size_t file_uri_prefix_length = 7;
+    const bool has_file_uri_prefix = source.size() >= file_uri_prefix_length &&
+        (source[0] == 'f' || source[0] == 'F') &&
+        (source[1] == 'i' || source[1] == 'I') &&
+        (source[2] == 'l' || source[2] == 'L') &&
+        (source[3] == 'e' || source[3] == 'E') &&
+        source[4] == ':' && source[5] == '/' && source[6] == '/';
+    if (has_file_uri_prefix) {
+        return source.substr(file_uri_prefix_length);
+    }
+    return source;
+}
+
+static bool                                                                         libopenppp2_read_routing_source(
+    const ppp::string& source,
+    ppp::string& resolved_path,
+    ppp::string& inline_text) noexcept {
+    ppp::string candidate = libopenppp2_routing_source_without_file_uri(source);
+    ppp::string rewritten_path = ppp::io::File::RewritePath(candidate.data());
+    ppp::string full_path = ppp::io::File::GetFullPath(rewritten_path.data());
+    if (!full_path.empty() && ppp::io::File::Exists(full_path.data())) {
+        resolved_path = std::move(full_path);
+        inline_text = ppp::io::File::ReadAllText(resolved_path.data());
+        return true;
+    }
+
+    resolved_path.clear();
+    inline_text = std::move(candidate);
+    return false;
+}
+
+static void                                                                         libopenppp2_append_routing_text(
+    ppp::string& target,
+    const ppp::string& text) noexcept {
+    if (text.empty()) {
+        return;
+    }
+    if (!target.empty() && target.back() != '\n') {
+        target.push_back('\n');
+    }
+    target += text;
+}
+
 static int                                                                          libopenppp_try_open_ethernet_switcher_new(
     std::shared_ptr<boost::asio::io_context>                                        context,
     std::shared_ptr<libopenppp2_application>                                        app,
@@ -1453,6 +1634,8 @@ static int                                                                      
 
     bool lwip = false;
     int max_concurrent = ppp::GetProcesserCount();
+    const bool proxy_only_runtime = configuration->client.proxy_only;
+    const bool canonical_routing_configured = configuration->client.routing.configured;
 
     client = ppp::make_shared_object<VEthernetNetworkSwitcher>(context, lwip, network_interface->VNet, max_concurrent > 1, configuration);
     if (NULLPTR == client) {
@@ -1461,11 +1644,11 @@ static int                                                                      
     }
     else {
         client->Mux(&network_interface->VMux);
-        client->StaticMode(&network_interface->StaticMode);
+        bool static_mode = ppp::app::NormalizeClientStaticMode(network_interface->StaticMode, proxy_only_runtime);
+        client->StaticMode(&static_mode);
         client->BlockQUIC(network_interface->BlockQUIC);
     }
 
-    const bool proxy_only_runtime = configuration->client.proxy_only;
     if (proxy_only_runtime) {
         configuration->ApplyProxyModeDefaults();
         bool proxy_only_flag = true;
@@ -1473,28 +1656,46 @@ static int                                                                      
         __android_log_print(ANDROID_LOG_INFO, "libopenppp2", "open_switcher: proxy-only mode enabled");
     }
 
-    // Collect the user-provided bypass list text. We may merge GeoIP-generated
-    // CIDRs into it below so a single SetBypassIpList() call carries both
-    // sources to the client.
-    ppp::string user_bypass_text;
-    {
+    // Legacy JNI sources are used only when client.routing is absent.  When
+    // canonical routing is present, its source vectors are authoritative and
+    // stale platform-provided values are deliberately ignored.
+    ppp::string bypass_text;
+    ppp::string canonical_bypass_text;
+    if (canonical_routing_configured) {
+        for (const ppp::string& source : configuration->client.routing.bypass) {
+            ppp::string resolved_path;
+            ppp::string inline_text;
+            const bool source_is_file = libopenppp2_read_routing_source(
+                source, resolved_path, inline_text);
+            libopenppp2_append_routing_text(canonical_bypass_text, inline_text);
+            __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
+                "open_switcher: canonical bypass source type=%s len=%d path=%s",
+                source_is_file ? "file" : "inline",
+                (int)inline_text.size(),
+                source_is_file ? resolved_path.data() : "");
+        }
+    }
+    elif (!canonical_routing_configured) {
         std::shared_ptr<ppp::string> bypass_ip_list = std::move(app->bypass_ip_list_);
         if (NULLPTR != bypass_ip_list) {
-            user_bypass_text = std::move(*bypass_ip_list);
+            bypass_text = std::move(*bypass_ip_list);
             __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
-                "open_switcher: user bypass ip list captured len=%d",
-                (int)user_bypass_text.size());
+                "open_switcher: legacy bypass ip list captured len=%d",
+                (int)bypass_text.size());
         }
     }
 
-    // Apply user-provided DNS rule lines first; the GeoRuleGenerator output
-    // file (if any) is loaded afterwards via LoadAllDnsRules(path, true).
-    std::shared_ptr<ppp::string> dns_rules_list = std::move(app->dns_rules_list_);
-    if (!proxy_only_runtime && NULLPTR != dns_rules_list) {
-        bool dns_ok = client->LoadAllDnsRules(*dns_rules_list, false);
-        __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
-            "open_switcher: user dns rules applied len=%d ok=%d",
-            (int)dns_rules_list->size(), dns_ok ? 1 : 0);
+    // Legacy DNS is loaded before Geo for compatibility. Canonical DNS sources
+    // are loaded after Geo below, giving explicit canonical rules precedence.
+    std::shared_ptr<ppp::string> dns_rules_list;
+    if (!canonical_routing_configured) {
+        dns_rules_list = std::move(app->dns_rules_list_);
+        if (NULLPTR != dns_rules_list) {
+            bool dns_ok = client->LoadAllDnsRules(*dns_rules_list, false);
+            __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
+                "open_switcher: legacy dns rules applied len=%d ok=%d",
+                (int)dns_rules_list->size(), dns_ok ? 1 : 0);
+        }
     }
 
     // Phase G: GeoIP/GeoSite rule generation pipeline.
@@ -1507,7 +1708,7 @@ static int                                                                      
     //   - output_bypass:    newline-separated CIDR list
     //   - output_dns_rules: newline-separated DNS redirect rules
     // We then feed those files back into the client.
-    if (!proxy_only_runtime && configuration->geo_rules.enabled) {
+    if (configuration->geo_rules.enabled) {
         const auto geo_begin = std::chrono::steady_clock::now();
         __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
             "open_switcher: geo-rules enabled country=%s geoip_dat=%s geosite_dat=%s",
@@ -1515,8 +1716,26 @@ static int                                                                      
             configuration->geo_rules.geoip_dat.data(),
             configuration->geo_rules.geosite_dat.data());
 
+        // Build a bypass-file seed list from canonical sources, mirroring the
+        // desktop behaviour in ApplicationClientBootstrap.cpp.  When canonical
+        // routing is absent the generator runs without a seed (NULLPTR), which
+        // was the previous Android behaviour.
+        ppp::vector<ppp::string> bypass_seed_paths;
+        if (canonical_routing_configured) {
+            for (const ppp::string& source : configuration->client.routing.bypass) {
+                ppp::string resolved_path;
+                ppp::string inline_text;
+                if (libopenppp2_read_routing_source(source, resolved_path, inline_text) &&
+                    !resolved_path.empty()) {
+                    bypass_seed_paths.emplace_back(resolved_path);
+                }
+            }
+        }
+        const ppp::vector<ppp::string>* seed_ptr =
+            bypass_seed_paths.empty() ? NULLPTR : &bypass_seed_paths;
+
         ppp::app::client::GeoRuleGenerateResult geo_result =
-            ppp::app::client::GeoRuleGenerator::Generate(*configuration, NULLPTR);
+            ppp::app::client::GeoRuleGenerator::Generate(*configuration, seed_ptr);
 
         const auto geo_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - geo_begin).count();
@@ -1527,16 +1746,12 @@ static int                                                                      
             geo_result.output_dns_rules_path.data(), geo_result.dns_rule_line_count,
             static_cast<long long>(geo_elapsed_ms));
 
-        // Merge generated bypass CIDRs with any user-provided ones.
+        // Merge generated bypass CIDRs after legacy/default sources. Canonical
+        // sources are appended after Geo below so they remain explicit.
         if (!geo_result.output_bypass_path.empty()) {
             ppp::string geo_bypass_text =
                 ppp::io::File::ReadAllText(geo_result.output_bypass_path.data());
-            if (!geo_bypass_text.empty()) {
-                if (!user_bypass_text.empty() && user_bypass_text.back() != '\n') {
-                    user_bypass_text.push_back('\n');
-                }
-                user_bypass_text += geo_bypass_text;
-            }
+            libopenppp2_append_routing_text(bypass_text, geo_bypass_text);
         }
 
         // Load generated DNS redirect rules from file.
@@ -1548,11 +1763,32 @@ static int                                                                      
         }
     }
 
-    if (!proxy_only_runtime && !user_bypass_text.empty()) {
-        int bypass_len = (int)user_bypass_text.size();
-        client->SetBypassIpList(std::move(user_bypass_text));
+    if (canonical_routing_configured) {
+        for (const ppp::string& source : configuration->client.routing.dns_rules) {
+            ppp::string resolved_path;
+            ppp::string inline_text;
+            const bool source_is_file = libopenppp2_read_routing_source(
+                source, resolved_path, inline_text);
+            const ppp::string& rules = source_is_file ? resolved_path : inline_text;
+            if (rules.empty()) {
+                continue;
+            }
+            bool dns_ok = client->LoadAllDnsRules(rules, source_is_file);
+            __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
+                "open_switcher: canonical dns rules applied type=%s len=%d path=%s ok=%d",
+                source_is_file ? "file" : "inline",
+                (int)rules.size(),
+                source_is_file ? resolved_path.data() : "",
+                dns_ok ? 1 : 0);
+        }
+        libopenppp2_append_routing_text(bypass_text, canonical_bypass_text);
+    }
+
+    if (!bypass_text.empty()) {
+        int bypass_len = (int)bypass_text.size();
+        client->SetBypassIpList(std::move(bypass_text));
         __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
-            "open_switcher: bypass ip list applied (user+geo) len=%d", bypass_len);
+            "open_switcher: bypass ip list applied (legacy+geo+canonical) len=%d", bypass_len);
     }
 
     __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
@@ -1679,6 +1915,22 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_run(JNIEnv* env
 
     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::Success);
 
+    // Registered once for the process. The application object outlives every
+    // session, the listener captures nothing, and never unsubscribing means a
+    // publish racing teardown cannot reach a freed capture -- which also keeps
+    // the terminal Idle/Failed snapshot, published after the client is
+    // released, on its way to the service.
+    if (std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault(); NULLPTR != app) {
+        static std::once_flag s_runtime_snapshot_bridge_once;
+        std::call_once(s_runtime_snapshot_bridge_once, [&app]() noexcept {
+            app->runtime_lifecycle_.Subscribe(
+                [](const ppp::app::runtime::RuntimeSnapshot& snapshot) noexcept {
+                    libopenppp2_publish_runtime_snapshot(
+                        ppp::app::runtime::SerializeRuntimeSnapshot(snapshot));
+                });
+        });
+    }
+
     std::shared_ptr<boost::asio::io_context> context = ppp::make_shared_object<boost::asio::io_context>();
     if (NULLPTR == context) {
         __android_log_print(ANDROID_LOG_ERROR, "libopenppp2", "run() failed to create io_context");
@@ -1701,10 +1953,31 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_run(JNIEnv* env
                         }
                     }
 
+                    ppp::app::runtime::RuntimeSnapshot runtime_seed;
+                    runtime_seed.role = "client";
+                    runtime_seed.capabilities = {
+                        "mux.compat", "mux.flow", "mux.balance", "mux.stripe"};
+                    const std::uint64_t runtime_generation = app->runtime_lifecycle_.Begin(
+                        std::move(runtime_seed),
+                        Executors::GetTickCount());
+                    app->runtime_lifecycle_.Transition(
+                        runtime_generation,
+                        ppp::app::runtime::RuntimePhase::PreparingHost,
+                        Executors::GetTickCount());
+                    app->runtime_lifecycle_.Transition(
+                        runtime_generation,
+                        ppp::app::runtime::RuntimePhase::Connecting,
+                        Executors::GetTickCount());
+
                     int err = libopenppp2_try_open_ethernet_switcher(context, ethernet);
                     if (err != LIBOPENPPP2_ERROR_SUCCESS) {
                         return err;
                     }
+
+                    app->runtime_lifecycle_.Transition(
+                        runtime_generation,
+                        ppp::app::runtime::RuntimePhase::Handshaking,
+                        Executors::GetTickCount());
 
                     auto protector = ethernet->GetProtectorNetwork();
                     if (NULLPTR == protector) {
@@ -1730,7 +2003,11 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_run(JNIEnv* env
                         });
                 }
                 else if (err != LIBOPENPPP2_ERROR_IT_IS_RUNING) {
-                    app->Release();
+                    ppp::app::runtime::RuntimeError error;
+                    error.code = static_cast<std::uint32_t>(std::max(0, err));
+                    error.severity = "error";
+                    error.user_message_key = "RuntimeFailed";
+                    app->Release(false, std::move(error));
                     context->stop();
                 }
             }

@@ -7,6 +7,7 @@
 
 #include <ppp/app/PppApplication.h>
 #include <ppp/app/ConsoleUI.h>
+#include <ppp/app/TcpStackMode.h>
 #include <ppp/Int128.h>
 #include <ppp/io/File.h>
 #include <ppp/tap/ITap.h>
@@ -114,6 +115,8 @@ struct NetworkInterface final {
 #endif
 
     bool StaticMode = false;
+    TcpStackMode TcpStack = TcpStackMode::Native;
+    // Legacy compatibility mirror; TcpStack remains the authoritative value.
     bool Lwip = false;
     bool VNet = false;
     bool HostedNetwork = false;

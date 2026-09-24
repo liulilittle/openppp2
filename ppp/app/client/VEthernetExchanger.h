@@ -22,8 +22,9 @@
  * All state transitions and protocol callbacks are executed on the
  * Boost.Asio `io_context` owned by the parent VEthernetNetworkSwitcher.
  * The internal `syncobj_` mutex guards only the datagram port table and
- * the deadline-timer table; all other state is accessed exclusively from
- * the IO thread.
+ * the deadline-timer table. `runtime_state_mutex_` commits the network/P2P
+ * projection consumed outside the exchanger strand; remaining mutable state
+ * is accessed exclusively from the IO thread.
  *
  * ### Lifecycle
  * 1. Construct with switcher, configuration, context, and session id.
@@ -37,11 +38,13 @@
 #include <atomic>
 #include <mutex>
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
+#include <ppp/app/protocol/SessionResumeAuthenticator.h>
+#include <ppp/app/client/routing/HumanRoutingRules.h>
 #include <ppp/configurations/AppConfigurationFwd.h>
 #include <ppp/configurations/MappingConfiguration.h>
 #include <ppp/app/protocol/VirtualEthernetMappingPort.h>
 #include <ppp/app/protocol/VirtualEthernetPacket.h>
-#include <ppp/app/mux/vmux_net.h>
+#include <ppp/app/mux/MuxRuntimeState.h>
 #include <ppp/cryptography/Ciphertext.h>
 #include <ppp/diagnostics/LinkTelemetry.h>
 #include <ppp/Int128.h>
@@ -51,16 +54,60 @@
 #include <ppp/net/packet/UdpFrame.h>
 #include <ppp/net/packet/IPFrame.h>
 #include <ppp/net/packet/IcmpFrame.h>
+#include <ppp/p2p/P2PClientOfferSession.h>
+#include <ppp/p2p/P2PDatagramTransport.h>
+#include <ppp/p2p/P2PDirectDataPath.h>
+#include <ppp/p2p/P2PState.h>
+#include <ppp/p2p/P2PZeroRTTCache.h>
 #include <ppp/threading/Timer.h>
 #include <ppp/auxiliary/UriAuxiliary.h>
 #include <ppp/transmissions/ITcpipTransmission.h>
 #include <ppp/app/client/ExchangerStaticEchoChannel.h>
+#include <ppp/app/client/ClientKeepAlivePolicy.h>
+#include <ppp/app/client/ClientReconnectionPolicy.h>
+#include <ppp/app/client/udp/UdpRelayHost.h>
+#include <ppp/app/client/dns/IDnsTunnelTransport.h>
+
+namespace ppp::app::mux { class MuxCoordinator; }
 
 namespace ppp {
     namespace app {
         namespace client {
             class VEthernetNetworkSwitcher;
             class VEthernetDatagramPort;
+            class ClientFrpRegistry;
+
+            inline bool ShouldRunClientTransportAuth(
+                ppp::transmissions::AuthenticatedCarrierKind kind,
+                bool policy_enabled,
+                bool peer_supports_v1,
+                bool peer_enables_v1) noexcept {
+                return policy_enabled && peer_supports_v1 && peer_enables_v1 &&
+                    (kind == ppp::transmissions::AuthenticatedCarrierKind::Tcp ||
+                     kind == ppp::transmissions::AuthenticatedCarrierKind::WebSocket);
+            }
+
+            inline bool IsClientSessionRecoveryCarrierEligible(
+                ppp::transmissions::AuthenticatedCarrierKind kind,
+                ppp::transmissions::AuthenticatedCarrierMethod method,
+                bool binding_active,
+                bool has_exporter) noexcept {
+                if (!binding_active || !has_exporter) {
+                    return false;
+                }
+                if (kind == ppp::transmissions::AuthenticatedCarrierKind::TlsWebSocket) {
+                    return method == ppp::transmissions::AuthenticatedCarrierMethod::TlsExporterV1;
+                }
+                if (kind == ppp::transmissions::AuthenticatedCarrierKind::Tcp ||
+                    kind == ppp::transmissions::AuthenticatedCarrierKind::WebSocket) {
+                    return method == ppp::transmissions::AuthenticatedCarrierMethod::NoisePskV1;
+                }
+                return false;
+            }
+
+            namespace udp {
+                class ClientDatagramPortManager;
+            }
 
             /**
              * @brief Core client exchanger that manages the transport session with the remote server.
@@ -76,7 +123,7 @@ namespace ppp {
              * The exchanger owns:
              *  - One primary ITransmission channel (TCP / WebSocket / WebSocket-SSL / PPP).
              *  - A table of VEthernetDatagramPort objects for UDP relay.
-             *  - Optional vmux_net for multiplexed sub-links.
+             *  - Optional coordinated VMUX session for multiplexed sub-links.
              *  - A static-echo UDP channel for low-latency bypass.
              *  - FRP port-mapping registrations from AppConfiguration.
              *
@@ -89,8 +136,7 @@ namespace ppp {
              * Accessing any mutable member from a different thread without the mutex
              * is undefined behavior.
              */
-            class VEthernetExchanger : public ppp::app::protocol::VirtualEthernetLinklayer {
-                friend class                                                            VEthernetDatagramPort;
+            class VEthernetExchanger : public ppp::app::protocol::VirtualEthernetLinklayer, public udp::IUdpRelayHost, public dns::IDnsTunnelTransport {
                 friend class                                                            VEthernetNetworkSwitcher;
                 friend class                                                            ExchangerStaticEchoChannel;
                 friend struct                                                           ExchangerStaticEchoDetail;
@@ -135,8 +181,6 @@ namespace ppp {
                 typedef ppp::app::protocol::VirtualEthernetMappingPort                  VirtualEthernetMappingPort;
                 /** @brief Shared pointer alias for mapping port. */
                 typedef std::shared_ptr<VirtualEthernetMappingPort>                     VirtualEthernetMappingPortPtr;
-                /** @brief Map from composite port key to mapping port object. */
-                typedef ppp::unordered_map<uint32_t, VirtualEthernetMappingPortPtr>     VirtualEthernetMappingPortTable;
                 /** @brief Ciphertext algorithm alias. */
                 typedef ppp::cryptography::Ciphertext                                   Ciphertext;
                 /** @brief Shared pointer alias for ciphertext objects. */
@@ -185,6 +229,11 @@ namespace ppp {
                     NetworkState_Reconnecting,  ///< Link lost; waiting before next reconnect attempt.
                 }                                                                       NetworkState;
 
+                struct RuntimeStateSnapshot final {
+                    NetworkState network_state = NetworkState_Connecting;
+                    ppp::p2p::P2PState p2p_state = ppp::p2p::P2PState::Disabled;
+                };
+
             public:
                 /**
                  * @brief Gets the current logical network state.
@@ -192,6 +241,7 @@ namespace ppp {
                  * @note Thread-safe due to std::atomic<NetworkState>.
                  */
                 NetworkState                                                            GetNetworkState()       noexcept { return network_state_.load(); }
+                RuntimeStateSnapshot                                                    GetRuntimeState() const noexcept;
 
                 /**
                  * @brief Gets the shared receive buffer used by async IO paths.
@@ -199,11 +249,7 @@ namespace ppp {
                  */
                 std::shared_ptr<Byte>                                                   GetBuffer()             noexcept { return buffer_; }
 
-                /**
-                 * @brief Gets the current VMUX instance, if multiplexing is active.
-                 * @return Shared vmux_net pointer, or null if mux is not negotiated.
-                 */
-                std::shared_ptr<vmux::vmux_net>                                         GetMux()                noexcept { return mux_; }
+                ppp::app::mux::MuxCoordinator*                                          GetMuxCoordinator()     noexcept { return mux_coordinator_.get(); }
 
                 /**
                  * @brief Gets the owning network switcher.
@@ -238,10 +284,11 @@ namespace ppp {
                 ppp::diagnostics::LinkTelemetry&                                           GetLinkTelemetry()      noexcept { return link_telemetry_; }
 
                 /**
-                 * @brief Gets the VMUX network state derived from the vmux_net lifecycle.
+                 * @brief Gets the VMUX network state derived from the coordinated session lifecycle.
                  * @return NetworkState based on vmux connectivity; NetworkState_Connecting if mux is null.
                  */
                 NetworkState                                                            GetMuxNetworkState()    noexcept;
+                ppp::app::mux::MuxRuntimeState                                           GetMuxRuntimeState()    noexcept;
 
                 /**
                  * @brief Starts the asynchronous connect-handshake-reconnect coroutine loop.
@@ -359,7 +406,12 @@ namespace ppp {
                  * @param packet_size    Payload length in bytes.
                  * @return true if the datagram was forwarded; false on error.
                  */
+                /** @brief IUdpRelayHost: hands the datagram manager the exchanger capabilities it needs. */
+                udp::UdpRelayHostPorts                                                   BuildUdpRelayHostPorts() noexcept override;
+
                 virtual bool                                                            SendTo(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const void* packet, int packet_size) noexcept;
+                virtual bool                                                            SendTo(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const void* packet, int packet_size, routing::RoutingAction action) noexcept;
+                bool                                                                    SendDnsDatagram(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const void* packet, int packet_size) noexcept override;
 
                 /**
                  * @brief Registers an optional local handler for inbound UDP replies keyed by source endpoint.
@@ -517,7 +569,7 @@ namespace ppp {
                  * @param y              Coroutine yield context.
                  * @return true if handled; false to close the session.
                  */
-                virtual bool                                                            OnEcho(const ITransmissionPtr& transmission, Byte* packet, int packet_length, YieldContext& y) noexcept override;
+                virtual bool                                                            OnEcho(const ITransmissionPtr& transmission, const std::shared_ptr<Byte>& owner, Byte* packet, int packet_length, YieldContext& y) noexcept override;
 
                 /**
                  * @brief Handles a UDP send-to callback received through the remote transport.
@@ -530,7 +582,7 @@ namespace ppp {
                  * @param y              Coroutine yield context.
                  * @return true if handled; false to close the session.
                  */
-                virtual bool                                                            OnSendTo(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length, YieldContext& y) noexcept override;
+                virtual bool                                                            OnSendTo(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const std::shared_ptr<Byte>& owner, Byte* packet, int packet_length, YieldContext& y) noexcept override;
 
                 /**
                  * @brief Handles a static-echo negotiation callback with no session payload.
@@ -593,6 +645,7 @@ namespace ppp {
                  * @note Acquires syncobj_ internally. Port disposal is the caller's responsibility.
                  */
                 virtual VEthernetDatagramPortPtr                                        ReleaseDatagramPort(const boost::asio::ip::udp::endpoint& sourceEP) noexcept;
+                virtual VEthernetDatagramPortPtr                                        ReleaseDatagramPortIf(const boost::asio::ip::udp::endpoint& sourceEP, const VEthernetDatagramPort* expected) noexcept;
 
             protected:
                 /**
@@ -642,11 +695,12 @@ namespace ppp {
                  * @brief Executes the main connect → handshake → data-loop → reconnect coroutine.
                  *
                  * @param context  IO context that drives the coroutine.
+                 * @param strand   Serial executor shared by the main carrier and negotiation timer.
                  * @param y        Coroutine yield context.
                  * @return true if the loop ran to completion normally; false on unrecoverable error.
                  * @note This is the entry point spawned by Open(). It loops until disposed_.
                  */
-                virtual bool                                                            Loopback(const ContextPtr& context, YieldContext& y) noexcept;
+                virtual bool                                                            Loopback(const ContextPtr& context, const StrandPtr& strand, YieldContext& y) noexcept;
 
                 /**
                  * @brief Handles a fully decoded inbound packet from the base linklayer.
@@ -657,7 +711,7 @@ namespace ppp {
                  * @param y              Coroutine yield context.
                  * @return true if handled; false to close the session.
                  */
-                virtual bool                                                            PacketInput(const ITransmissionPtr& transmission, Byte* p, int packet_length, YieldContext& y) noexcept;
+                virtual bool                                                            PacketInput(const ITransmissionPtr& transmission, const std::shared_ptr<Byte>& owner, Byte* p, int packet_length, YieldContext& y) noexcept;
 
             private:
                 /**
@@ -671,6 +725,19 @@ namespace ppp {
                     StrandPtr strand;
                     return OpenTransmission(context, strand, y, role);
                 }
+
+                enum class SessionResumeNegotiationResult : std::uint8_t {
+                    Failed,
+                    Fresh,
+                    Resumed,
+                };
+
+                bool                                                                    AuthenticatePlainTransport(const ITransmissionPtr& transmission, YieldContext& y) noexcept;
+                void                                                                    ClearSessionResumeState() noexcept;
+                bool                                                                    SendSessionResumeControl(const ITransmissionPtr& transmission, const ppp::app::protocol::SessionResumeTranscriptFields& fields, const ppp::app::protocol::SessionResumeProof& proof, YieldContext& y) noexcept;
+                bool                                                                    AcceptFreshSessionResumeOffer(const ITransmissionPtr& transmission, const InformationEnvelope& offer, YieldContext& y) noexcept;
+                SessionResumeNegotiationResult                                          NegotiateSessionResume(const ITransmissionPtr& transmission, InformationEnvelope& initial_information, bool& has_initial_information, YieldContext& y) noexcept;
+                bool                                                                    ApplyPreDataInformation(const ITransmissionPtr& transmission, const InformationEnvelope& information, YieldContext& y) noexcept;
 
                 /** @brief Releases all owned resources and marks the exchanger disposed. */
                 void                                                                    Finalize() noexcept;
@@ -832,65 +899,21 @@ namespace ppp {
                 bool                                                                    DoMuxEvents() noexcept;
 
                 /**
-                 * @brief Connects all VMUX sub-linklayers required by the negotiated vmux_net session.
+                 * @brief Connects all VMUX sub-linklayers required by the negotiated session.
                  *
                  * @param allocator  Buffer allocator for sub-link transmission buffers.
                  * @param mux        VMUX instance to populate with sub-links.
                  * @return true if all sub-links were connected; false if any failed.
                  */
-                bool                                                                    MuxConnectAllLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<vmux::vmux_net>& mux) noexcept;
+                bool                                                                    MuxConnectAllLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& mux) noexcept;
                 /**
                  * @brief Connect N extra carrier links at runtime and attach each via
                  *        add_linklayer's established-session path (turbo dynamic pool grow).
                  * @return true when the grow coroutine was spawned.
                  */
-                bool                                                                    MuxGrowLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<vmux::vmux_net>& mux, int count) noexcept;
+                bool                                                                    MuxGrowLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& mux, int count) noexcept;
 
             private:
-                /**
-                 * @brief UDP socket wrapper used by the static-echo bypass channel.
-                 *
-                 * @details
-                 * Extends boost::asio::ip::udp::socket to add a logical `opened` flag that
-                 * separates the protocol-level "allocated" state from the OS-level socket
-                 * open state. This allows the static-echo machinery to distinguish between
-                 * a socket that is physically open but not yet protocol-negotiated.
-                 */
-                class StaticEchoDatagarmSocket final : public boost::asio::ip::udp::socket {
-                public:
-                    /**
-                     * @brief Constructs the socket wrapper and resets the opened flag.
-                     * @param context  Boost.Asio io_context to bind the socket to.
-                     */
-                    StaticEchoDatagarmSocket(boost::asio::io_context& context) noexcept
-                        : basic_datagram_socket(context)
-                        , opened(false) {
-
-                    }
-
-                    /**
-                     * @brief Destructor — unregisters the native socket before release.
-                     */
-                    virtual ~StaticEchoDatagarmSocket() noexcept {
-                        boost::asio::ip::udp::socket* my = this;
-                        destructor_invoked(my);
-                    }
-
-                public:
-                    /**
-                     * @brief Queries whether the socket is open in native and/or logical sense.
-                     *
-                     * @param only_native  If true, checks only the OS-level open state.
-                     *                     If false (default), also checks the `opened` flag.
-                     * @return true if open according to the selected mode.
-                     */
-                    bool                                                                is_open(bool only_native = false) noexcept { return only_native ? basic_datagram_socket::is_open() : opened && basic_datagram_socket::is_open(); }
-
-                public:
-                    /** @brief Logical open flag set after protocol-level allocation succeeds. */
-                    bool                                                                opened = false;
-                };
-
                 /**
                  * @brief Adds a server-side remote UDP endpoint to the static-echo load-balance pool.
                  *
@@ -954,7 +977,7 @@ namespace ppp {
                  * @param y              Coroutine yield context.
                  * @return true if handled; false to close the session.
                  */
-                virtual bool                                                            OnFrpSendTo(const ITransmissionPtr& transmission, bool in, int remote_port, const boost::asio::ip::udp::endpoint& sourceEP, Byte* packet, int packet_length, YieldContext& y) noexcept override;
+                virtual bool                                                            OnFrpSendTo(const ITransmissionPtr& transmission, bool in, int remote_port, const boost::asio::ip::udp::endpoint& sourceEP, const std::shared_ptr<Byte>& owner, Byte* packet, int packet_length, YieldContext& y) noexcept override;
 
                 /**
                  * @brief Handles an FRP TCP connect request from the remote server.
@@ -990,44 +1013,87 @@ namespace ppp {
                  * @param packet_length  Payload length in bytes.
                  * @return true if handled; false to close the session.
                  */
-                virtual bool                                                            OnFrpPush(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, const void* packet, int packet_length) noexcept override;
+                virtual bool                                                            OnFrpPush(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, const std::shared_ptr<Byte>& owner, const void* packet, int packet_length) noexcept override;
 
             private:
+                void                                                                    HandleP2PRelayOffer(const ITransmissionPtr& transmission, const ppp::app::protocol::P2PControlMessage& message) noexcept;
+                void                                                                    HandleP2PDatagram(const ITransmissionPtr& transmission, uint64_t generation, uint64_t transport_registration, ppp::p2p::P2PDatagramReceiveStatus status, const boost::asio::ip::udp::endpoint& sender, const std::uint8_t* packet, int packet_size) noexcept;
+                void                                                                    ResetP2PCandidateTransport() noexcept;
+                void                                                                    StartP2PStunGatherAsync(
+                                                                                            const ITransmissionPtr& transmission,
+                                                                                            uint64_t generation,
+                                                                                            uint64_t transport_registration,
+                                                                                            uint32_t local_virtual_ip,
+                                                                                            ppp::vector<ppp::string> stun_servers) noexcept;
+                void                                                                    ApplyP2PStunMappedCandidate(
+                                                                                            const ITransmissionPtr& transmission,
+                                                                                            uint64_t generation,
+                                                                                            uint64_t transport_registration,
+                                                                                            uint32_t local_virtual_ip,
+                                                                                            const boost::asio::ip::udp::endpoint& mapped) noexcept;
                 /** @brief Guards datagrams_, datagram_handlers_, and deadline_timers_ tables. */
                 SynchronizedObject                                                      syncobj_;
+                /** @brief Commits network and P2P projection as one runtime snapshot. */
+                mutable std::mutex                                                      runtime_state_mutex_;
 
                 /** @brief Atomic one-shot disposed flag; safe for cross-strand reads. */
                 std::atomic_bool                                                        disposed_{false};
-                /** @brief Tracking flag for static-echo receive state. */
-                bool                                                                    static_echo_input_  = false;
-
                 /** @brief Shared receive buffer allocated once and reused across async reads. */
                 std::shared_ptr<Byte>                                                   buffer_;
 
-                /** @brief Tick count at which last static-echo keepalive packet was sent. */
-                UInt64                                                                  sekap_last_         = 0;
-                /** @brief Tick count at which next static-echo keepalive packet is due. */
-                UInt64                                                                  sekap_next_         = 0;
+                /** @brief Pure keepalive timing and stale-link decision state. */
+                ClientKeepAlivePolicy                                                   keepalive_policy_;
 
                 /** @brief Owning network switcher. */
                 VEthernetNetworkSwitcherPtr                                             switcher_;
                 /** @brief Cached server information received during session establishment. */
                 std::shared_ptr<VirtualEthernetInformation>                             information_;
-                /** @brief Active UDP datagram relay port table (guarded by syncobj_). */
-                VEthernetDatagramPortTable                                              datagrams_;
-                /** @brief Optional local proxy UDP reply handlers (guarded by syncobj_). */
-                DatagramPacketHandlerTable                                              datagram_handlers_;
+                /** @brief UDP datagram relay session manager (P2-c: owns the extracted session tables). */
+                std::unique_ptr<udp::ClientDatagramPortManager>                         datagram_manager_;
                 /** @brief Active transport channel; null when not established. */
                 ITransmissionPtr                                                        transmission_;
+                /** @brief Serial executor owning main carrier and resume state mutations. */
+                StrandPtr                                                               owner_strand_;
+                /** @brief Exporter-derived root retained across transient carrier loss. */
+                ppp::app::protocol::SessionResumeSecret                                 session_resume_root_;
+                ppp::app::protocol::SessionResumeId                                     session_resume_id_{};
+                std::uint64_t                                                           session_resume_generation_ = 0;
+                bool                                                                    session_resume_armed_ = false;
+                ppp::app::protocol::SessionResumePendingAttempt                         session_resume_pending_;
                 /** @brief Atomic network state for safe cross-thread reads. */
                 std::atomic<NetworkState>                                               network_state_      = NetworkState_Connecting;
-                /** @brief FRP port mapping table. */
-                VirtualEthernetMappingPortTable                                         mappings_;
+                /** @brief P2P state when no authenticated relay session is established. */
+                const ppp::p2p::P2PState                                                configured_p2p_state_;
+                /** @brief Fail-closed P2P capability state published to RuntimeSnapshot. */
+                std::atomic<ppp::p2p::P2PState>                                         p2p_state_{ppp::p2p::P2PState::Disabled};
+                /** @brief Authenticated offer and derived-key owner for the active relay generation. */
+                ppp::p2p::P2PClientOfferSession                                         p2p_offer_session_;
+                /** @brief Guards the exact candidate set sent in the current registration. */
+                mutable std::mutex                                                      p2p_offer_mutex_;
+                ppp::vector<ppp::app::protocol::P2PEndpointCandidate>                   p2p_registered_candidates_;
+                std::weak_ptr<ppp::transmissions::ITransmission>                       p2p_registered_transmission_;
+                std::shared_ptr<ppp::p2p::IP2PDatagramTransport>                       p2p_candidate_transport_;
+                boost::asio::ip::udp::endpoint                                          p2p_local_candidate_;
+                boost::asio::ip::udp::endpoint                                          p2p_peer_candidate_;
+                ppp::p2p::P2PDirectDataPath                                             p2p_direct_data_path_;
+                ppp::p2p::P2PZeroRTTCache                                               p2p_zero_rtt_cache_;
+                uint64_t                                                                p2p_transport_registration_id_ = 0;
+                uint32_t                                                                p2p_registered_virtual_ip_ = 0;
+                uint32_t                                                                p2p_peer_virtual_ip_ = 0;
+                uint64_t                                                                p2p_last_heartbeat_tx_ms_ = 0;
+                int                                                                     p2p_heartbeat_misses_ = 0;
+                uint64_t                                                                p2p_suspect_since_ms_ = 0;
+                uint64_t                                                                p2p_migrate_started_ms_ = 0;
+                /** @brief Invalidates queued offer work across reconnect and teardown. */
+                std::atomic<uint64_t>                                                   p2p_offer_generation_{1};
+                std::atomic<uint64_t>                                                   p2p_transport_registration_sequence_{1};
+                /** @brief Owns FRP mapping storage, updates, and release ordering. */
+                std::unique_ptr<ClientFrpRegistry>                                      frp_registry_;
                 /** @brief Pending deadline timers (guarded by syncobj_). */
                 DeadlineTimerTable                                                      deadline_timers_;
 
-                /** @brief Active VMUX session, if multiplexing was negotiated. */
-                std::shared_ptr<vmux::vmux_net>                                         mux_;
+                /** @brief Owns the active VMUX session and its runtime projection. */
+                std::unique_ptr<ppp::app::mux::MuxCoordinator>                          mux_coordinator_;
                 /** @brief VLAN identifier assigned during VMUX negotiation. */
                 uint16_t                                                                mux_vlan_           = 0;
 
@@ -1048,25 +1114,6 @@ namespace ppp {
                     ProtocolType                                                        protocol_type       = ProtocolType::ProtocolType_PPP;
                 }                                                                       server_url_;
 
-                /** @brief Protocol ciphertext for static-echo packet authentication. */
-                CiphertextPtr                                                           static_echo_protocol_;
-                /** @brief Transport ciphertext for static-echo packet encryption. */
-                CiphertextPtr                                                           static_echo_transport_;
-                /** @brief Dual-socket pair used for static-echo rotation (active/standby). */
-                std::shared_ptr<StaticEchoDatagarmSocket>                               static_echo_sockets_[2];
-                /** @brief Local UDP endpoint bound for static-echo receives. */
-                boost::asio::ip::udp::endpoint                                          static_echo_source_ep_;
-                /** @brief Round-robin list of server-side static-echo endpoints. */
-                ppp::list<boost::asio::ip::udp::endpoint>                               static_echo_server_ep_balances_;
-                /** @brief Set for deduplication of static-echo server endpoints. */
-                ppp::unordered_set<boost::asio::ip::udp::endpoint>                      static_echo_server_ep_set_;
-
-                /** @brief Tick count at which static-echo socket rotation is due. */
-                uint64_t                                                                static_echo_timeout_     = 0;
-                /** @brief Session identifier assigned by the server for static-echo. */
-                int                                                                     static_echo_session_id_  = 0;
-                /** @brief UDP port on the server used for static-echo traffic. */
-                int                                                                     static_echo_remote_port_ = 0;
                 /** @brief Static-echo UDP channel extracted from exchanger core. */
                 ExchangerStaticEchoChannel                                              static_echo_;
 

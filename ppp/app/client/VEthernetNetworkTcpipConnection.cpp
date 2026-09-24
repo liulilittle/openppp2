@@ -1,15 +1,17 @@
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/client/VEthernetNetworkTcpipConnection.h>
+#include <ppp/app/client/xtcp/XtcpFirstLegHooks.h>
 #include <ppp/app/client/VEthernetNetworkTcpipForwarding.inl>
-#include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/routing/ProtocolSniffer.h>
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/app/protocol/VirtualEthernetTcpipConnection.h>
 #include <ppp/app/protocol/templates/TVEthernetTcpipConnection.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
 
+#include <array>
 #include <vector>
 
 #include <ppp/net/Socket.h>
@@ -33,20 +35,55 @@
 namespace ppp {
     namespace app {
         namespace client {
+            namespace {
+                bool XtcpMemoryBridgeEnabled() noexcept {
+                    const char* env = ::getenv("OPENPPP2_XTCP_MEMORY_BRIDGE");
+                    return env != nullptr && env[0] == '1' && env[1] == '\0';
+                }
+            }
+
             /** @brief Initializes session state and marks it active. */
-            VEthernetNetworkTcpipConnection::VEthernetNetworkTcpipConnection(const std::shared_ptr<VEthernetExchanger>& exchanger, const std::shared_ptr<boost::asio::io_context>& context, const ppp::threading::Executors::StrandPtr& strand) noexcept
+            VEthernetNetworkTcpipConnection::VEthernetNetworkTcpipConnection(
+                const std::shared_ptr<VEthernetExchanger>& exchanger,
+                const std::shared_ptr<boost::asio::io_context>& context,
+                const ppp::threading::Executors::StrandPtr& strand,
+                routing::TcpRoutingMode routing_mode,
+                const std::shared_ptr<const routing::HumanRoutingRules>& routing_rules,
+                bool domain_sniff_candidate) noexcept
                 : TapTcpClient(context, strand)
-                , exchanger_(exchanger) {
+                , exchanger_(exchanger)
+                , routing_mode_(routing_mode)
+                , routing_rules_(routing_rules)
+                , domain_sniff_candidate_(domain_sniff_candidate) {
                 Update();
+            }
+
+            void VEthernetNetworkTcpipConnection::SetExternalFirstLeg(
+                uint64_t runtime_generation,
+                uint64_t flow_generation,
+                const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks) noexcept {
+                external_runtime_generation_ = runtime_generation;
+                external_flow_generation_ = flow_generation;
+                external_first_leg_hooks_ = hooks;
             }
 
             /** @brief Finalizes owned forwarding channels. */
             VEthernetNetworkTcpipConnection::~VEthernetNetworkTcpipConnection() noexcept {
+                if (!external_closed_signaled_.exchange(true, std::memory_order_acq_rel)) {
+                    if (std::shared_ptr<xtcp::XtcpFirstLegHooks> hooks = external_first_leg_hooks_.lock()) {
+                        hooks->OnFirstLegClosed(
+                            external_runtime_generation_, external_flow_generation_);
+                    }
+                }
                 Finalize();
             }
 
             /** @brief Disposes any active VPN/rinetd/vmux connection objects. */
             void VEthernetNetworkTcpipConnection::Finalize() noexcept {
+                {
+                    std::lock_guard<std::mutex> lock(external_direct_sync_);
+                    external_direct_connection_.reset();
+                }
                 std::shared_ptr<VirtualEthernetTcpipConnection> connection = std::move(connection_);
                 std::shared_ptr<RinetdConnection> connection_rinetd = std::move(connection_rinetd_);
                 std::shared_ptr<vmux::vmux_skt> connection_mux = std::move(connection_mux_);
@@ -68,12 +105,76 @@ namespace ppp {
                 }
             }
 
+            xtcp::XtcpDirectResult VEthernetNetworkTcpipConnection::SendToPeer(
+                const std::uint8_t* data, std::uint32_t length,
+                xtcp::XtcpUploadBudget::Reservation&& credit) noexcept {
+                std::shared_ptr<VirtualEthernetTcpipConnection> connection;
+                {
+                    std::lock_guard<std::mutex> lock(external_direct_sync_);
+                    connection = external_direct_connection_.lock();
+                }
+                if (!connection) {
+                    return xtcp::XtcpDirectResult::Closed;
+                }
+                switch (connection->SendDirectToPeer(data, length, std::move(credit))) {
+                case VirtualEthernetTcpipConnection::DirectIoResult::Accepted:
+                    return xtcp::XtcpDirectResult::Accepted;
+                case VirtualEthernetTcpipConnection::DirectIoResult::Backpressured:
+                    return xtcp::XtcpDirectResult::Backpressured;
+                default:
+                    return xtcp::XtcpDirectResult::Closed;
+                }
+            }
+
+            void VEthernetNetworkTcpipConnection::OnDownloadComplete(
+                const xtcp::XtcpDirectReadReservation& reservation,
+                xtcp::XtcpDirectCompletion completion) noexcept {
+                std::shared_ptr<VirtualEthernetTcpipConnection> connection;
+                {
+                    std::lock_guard<std::mutex> lock(external_direct_sync_);
+                    connection = external_direct_connection_.lock();
+                }
+                if (connection) {
+                    connection->CompleteDirectDownload(reservation, completion);
+                }
+            }
+
+            void VEthernetNetworkTcpipConnection::SetDirectQueueTelemetry(
+                const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>& telemetry) noexcept {
+                std::shared_ptr<VirtualEthernetTcpipConnection> connection;
+                {
+                    std::lock_guard<std::mutex> lock(external_direct_sync_);
+                    connection = external_direct_connection_.lock();
+                }
+                if (connection) {
+                    connection->SetDirectQueueTelemetry(telemetry);
+                }
+            }
+
+            void VEthernetNetworkTcpipConnection::ClosePeerSend() noexcept {
+                std::shared_ptr<VirtualEthernetTcpipConnection> connection;
+                {
+                    std::lock_guard<std::mutex> lock(external_direct_sync_);
+                    connection = external_direct_connection_.lock();
+                }
+                if (connection) {
+                    connection->CloseDirectSend();
+                }
+            }
+
             /**
              * @brief Schedules cleanup on the proper executor and disposes the base client.
              */
             void VEthernetNetworkTcpipConnection::Dispose() noexcept {
                 if (IsDisposed()) {
                     return;
+                }
+
+                if (!external_closed_signaled_.exchange(true, std::memory_order_acq_rel)) {
+                    if (std::shared_ptr<xtcp::XtcpFirstLegHooks> hooks = external_first_leg_hooks_.lock()) {
+                        hooks->OnFirstLegClosed(
+                            external_runtime_generation_, external_flow_generation_);
+                    }
                 }
 
                 auto self = shared_from_this();
@@ -200,18 +301,42 @@ namespace ppp {
                     auto strand = GetStrand();
                     boost::asio::ip::tcp::endpoint remoteEP = GetRemoteEndPoint();
 
-#if defined(_IPHONE)
-                    int rinetd_status = 1;
-#else
-                    int rinetd_status = Rinetd(self, exchanger, context, strand, configuration, socket, remoteEP, connection_rinetd_, y);
-                    if (rinetd_status == 0) {
-                        break;
+#if defined(_IPHONE) || defined(IPHONE)
+                    if (routing_mode_ == routing::TcpRoutingMode::ForceDirect) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpConnectFailed);
+                        return false;
                     }
+#else
+                    if (routing_mode_ != routing::TcpRoutingMode::ForceProxy) {
+                        const bool force_direct =
+                            routing_mode_ == routing::TcpRoutingMode::ForceDirect;
+                        const int rinetd_status = Rinetd(
+                            self, exchanger, context, strand, configuration, socket,
+                            remoteEP, force_direct, connection_rinetd_, y);
+                        if (rinetd_status == 0) {
+                            break;
+                        }
 
-                    if (rinetd_status < 0) {
-                        ppp::telemetry::Count("tcpip.peer_connect.fail.rinetd", 1);
-                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip", "peer connect failed: stage=rinetd remote=%s:%u error=%d fallback=vpn", remoteEP.address().to_string().c_str(), remoteEP.port(), (int)ppp::diagnostics::GetLastErrorCode());
-                        connection_rinetd_.reset();
+                        if (rinetd_status < 0) {
+                            ppp::telemetry::Count("tcpip.peer_connect.fail.rinetd", 1);
+                            ppp::telemetry::Log(
+                                ppp::telemetry::Level::kInfo,
+                                "tcpip",
+                                force_direct
+                                    ? "peer connect failed: stage=rinetd remote=%s:%u error=%d fallback=none"
+                                    : "peer connect failed: stage=rinetd remote=%s:%u error=%d fallback=vpn",
+                                remoteEP.address().to_string().c_str(),
+                                remoteEP.port(),
+                                (int)ppp::diagnostics::GetLastErrorCode());
+                            connection_rinetd_.reset();
+                        }
+                        if (force_direct) {
+                            if (rinetd_status > 0) {
+                                ppp::diagnostics::SetLastErrorCode(
+                                    ppp::diagnostics::ErrorCode::TcpConnectFailed);
+                            }
+                            return false;
+                        }
                     }
 #endif
 
@@ -287,6 +412,123 @@ namespace ppp {
                 return true;
             }
 
+            /** @brief Performs bounded, non-consuming initial-payload domain inspection. */
+            bool VEthernetNetworkTcpipConnection::SniffDomainRouting(
+                ppp::coroutines::YieldContext& y) noexcept {
+                constexpr uint64_t kSniffTimeoutMilliseconds = 250;
+                constexpr uint64_t kSniffPollMilliseconds = 5;
+
+                std::shared_ptr<boost::asio::ip::tcp::socket> socket = GetSocket();
+                std::shared_ptr<const routing::HumanRoutingRules> rules = routing_rules_;
+                if (NULLPTR == socket || !socket->is_open() || NULLPTR == rules) {
+                    return false;
+                }
+
+                routing::ProtocolSniffer sniffer;
+                routing::ProtocolSnifferResult result;
+                std::array<unsigned char, routing::ProtocolSniffer::MaxInputSize> peek_buffer{};
+                std::size_t fed_size = 0;
+                const uint64_t started_at = ppp::threading::Executors::GetTickCount();
+                const bool was_non_blocking = socket->non_blocking();
+                boost::system::error_code ec;
+                socket->non_blocking(true, ec);
+
+                const char* outcome = "timeout";
+                if (ec) {
+                    outcome = "io_error";
+                }
+                else {
+                    while (result.status == routing::ProtocolSnifferStatus::NeedMore) {
+                        if (IsDisposed() || !socket->is_open()) {
+                            outcome = "disposed";
+                            break;
+                        }
+                        if (ppp::threading::Executors::GetTickCount() - started_at >=
+                            kSniffTimeoutMilliseconds) {
+                            outcome = "timeout";
+                            break;
+                        }
+
+                        ec.clear();
+                        const std::size_t peeked = socket->receive(
+                            boost::asio::buffer(peek_buffer),
+                            boost::asio::socket_base::message_peek, ec);
+                        if (!ec) {
+                            if (peeked > fed_size) {
+                                result = sniffer.Feed(
+                                    peek_buffer.data() + fed_size, peeked - fed_size);
+                                fed_size = peeked;
+                            }
+                            if (peeked == peek_buffer.size() &&
+                                result.status == routing::ProtocolSnifferStatus::NeedMore) {
+                                result.status = routing::ProtocolSnifferStatus::LimitExceeded;
+                            }
+                        }
+                        else if (ec != boost::asio::error::would_block &&
+                            ec != boost::asio::error::try_again) {
+                            outcome = ec == boost::asio::error::eof ? "eof" : "io_error";
+                            break;
+                        }
+
+                        if (result.status == routing::ProtocolSnifferStatus::NeedMore) {
+                            ppp::coroutines::asio::async_sleep(y, kSniffPollMilliseconds);
+                        }
+                    }
+
+                    switch (result.status) {
+                    case routing::ProtocolSnifferStatus::Complete:
+                        outcome = "complete";
+                        break;
+                    case routing::ProtocolSnifferStatus::Unsupported:
+                        outcome = "unsupported";
+                        break;
+                    case routing::ProtocolSnifferStatus::Malformed:
+                        outcome = "malformed";
+                        break;
+                    case routing::ProtocolSnifferStatus::LimitExceeded:
+                        outcome = "limit_exceeded";
+                        break;
+                    default:
+                        break;
+                    }
+                }
+
+                boost::system::error_code restore_ec;
+                if (socket->is_open()) {
+                    socket->non_blocking(was_non_blocking, restore_ec);
+                }
+
+                const char* source = "ip_fallback";
+                const char* action = "ip_fallback";
+                if (restore_ec) {
+                    outcome = "restore_error";
+                }
+                else if (result.status == routing::ProtocolSnifferStatus::Complete) {
+                    source = result.source == routing::ProtocolSnifferSource::TlsSni
+                        ? "tls_sni" : "http_host";
+                    const routing::RoutingMatch match = rules->MatchDomainRule(result.domain);
+                    if (match.matched) {
+                        routing::TcpRoutingSelectorInput selector_input;
+                        selector_input.action = match.action;
+                        const routing::TcpRoutingMode selected_mode =
+                            routing::TcpRoutingSelector::Select(selector_input);
+                        if (selected_mode == routing::TcpRoutingMode::ForceDirect ||
+                            selected_mode == routing::TcpRoutingMode::ForceProxy) {
+                            routing_mode_ = selected_mode;
+                            action = selected_mode == routing::TcpRoutingMode::ForceDirect
+                                ? "direct" : "proxy";
+                        }
+                    }
+                    else {
+                        outcome = "no_match";
+                    }
+                }
+
+                ppp::telemetry::Log(ppp::telemetry::Level::kDebug, "tcpip_sniff",
+                    "source=%s outcome=%s action=%s", source, outcome, action);
+                return !restore_ec && !IsDisposed();
+            }
+
 #if defined(_WIN32)
 #pragma optimize("", off)
 #pragma optimize("gsyb2", on) /* /O1 = /Og /Os /Oy /Ob2 /GF /Gy */
@@ -311,14 +553,28 @@ namespace ppp {
 #endif
             /** @brief Starts established-stage forwarding coroutine execution. */
             bool VEthernetNetworkTcpipConnection::Establish() noexcept {
+                if (!domain_sniff_candidate_) {
+                    return Spawn(
+                        [this](ppp::coroutines::YieldContext& y) noexcept {
+                            return Loopback(y);
+                        });
+                }
+
                 return Spawn(
                     [this](ppp::coroutines::YieldContext& y) noexcept {
+                        if (!SniffDomainRouting(y) || !ConnectToPeer(y)) {
+                            return false;
+                        }
                         return Loopback(y);
                     });
             }
 
             /** @brief Starts peer setup coroutine before accept acknowledgement. */
             bool VEthernetNetworkTcpipConnection::BeginAccept() noexcept {
+                if (domain_sniff_candidate_) {
+                    return AckAccept();
+                }
+
                 ppp::telemetry::Log(ppp::telemetry::Level::kDebug, "tcpip", "begin accept coroutine post remote=%s:%u", GetRemoteEndPoint().address().to_string().c_str(), GetRemoteEndPoint().port());
                 // mux=0: let ConnectTransmission queue for an iOS child slot instead of
                 // rejecting SYN here (speed tests open 16+ parallel flows to CDN edges).
@@ -334,6 +590,92 @@ namespace ppp {
                         ppp::telemetry::Log(acked ? ppp::telemetry::Level::kDebug : ppp::telemetry::Level::kInfo, "tcpip", "ack accept result=%d remote=%s:%u", acked ? 1 : 0, GetRemoteEndPoint().address().to_string().c_str(), GetRemoteEndPoint().port());
                         return acked;
                     });
+            }
+
+            bool VEthernetNetworkTcpipConnection::AckAccept() noexcept {
+                if (!IsExternal()) {
+                    return TapTcpClient::AckAccept();
+                }
+                if (external_ready_signaled_.exchange(true, std::memory_order_acq_rel)) {
+                    return true;
+                }
+                std::shared_ptr<xtcp::XtcpFirstLegHooks> hooks = external_first_leg_hooks_.lock();
+                if (NULLPTR == hooks) {
+                    return false;
+                }
+                const bool direct_requested = XtcpMemoryBridgeEnabled();
+                const std::shared_ptr<VirtualEthernetTcpipConnection> direct_connection = connection_;
+                if (direct_requested && !domain_sniff_candidate_ && direct_connection &&
+                    direct_connection->IsLinked()) {
+                    const std::weak_ptr<xtcp::XtcpFirstLegHooks> weak_hooks = external_first_leg_hooks_;
+                    const std::uint64_t runtime_generation = external_runtime_generation_;
+                    const std::uint64_t flow_generation = external_flow_generation_;
+                    if (direct_connection->StartDirectBridge(
+                            [weak_hooks, runtime_generation, flow_generation](
+                                xtcp::XtcpDirectReadReservation& reservation,
+                                const std::shared_ptr<Byte>& payload) noexcept {
+                                if (!payload || reservation.length == 0) {
+                                    return VirtualEthernetTcpipConnection::DirectIoResult::Closed;
+                                }
+                                if (reservation.runtime_generation == 0) {
+                                    reservation.runtime_generation = runtime_generation;
+                                }
+                                else if (reservation.runtime_generation != runtime_generation) {
+                                    return VirtualEthernetTcpipConnection::DirectIoResult::Closed;
+                                }
+                                if (reservation.flow_generation == 0) {
+                                    reservation.flow_generation = flow_generation;
+                                }
+                                else if (reservation.flow_generation != flow_generation) {
+                                    return VirtualEthernetTcpipConnection::DirectIoResult::Closed;
+                                }
+                                const std::shared_ptr<xtcp::XtcpFirstLegHooks> active = weak_hooks.lock();
+                                if (!active) {
+                                    return VirtualEthernetTcpipConnection::DirectIoResult::Closed;
+                                }
+                                switch (active->OnSecondLegPayload(reservation, payload)) {
+                                case xtcp::XtcpDirectResult::Accepted:
+                                    return VirtualEthernetTcpipConnection::DirectIoResult::Accepted;
+                                case xtcp::XtcpDirectResult::Backpressured:
+                                    return VirtualEthernetTcpipConnection::DirectIoResult::Backpressured;
+                                default:
+                                    return VirtualEthernetTcpipConnection::DirectIoResult::Closed;
+                                }
+                            },
+                            [weak_hooks, runtime_generation, flow_generation](
+                                xtcp::XtcpDirectCloseReason reason) noexcept {
+                                if (const std::shared_ptr<xtcp::XtcpFirstLegHooks> active = weak_hooks.lock()) {
+                                    if (reason == xtcp::XtcpDirectCloseReason::PeerEof) {
+                                        active->OnSecondLegClosed(runtime_generation, flow_generation);
+                                    }
+                                    else {
+                                        active->OnFirstLegClosed(runtime_generation, flow_generation);
+                                    }
+                                }
+                            },
+                            [weak_hooks, runtime_generation, flow_generation]() noexcept {
+                                if (const std::shared_ptr<xtcp::XtcpFirstLegHooks> active = weak_hooks.lock()) {
+                                    active->OnSecondLegWritable(runtime_generation, flow_generation);
+                                }
+                            })) {
+                        {
+                            std::lock_guard<std::mutex> lock(external_direct_sync_);
+                            external_direct_connection_ = direct_connection;
+                        }
+                        const std::shared_ptr<VEthernetNetworkTcpipConnection> self =
+                            std::static_pointer_cast<VEthernetNetworkTcpipConnection>(shared_from_this());
+                        hooks->OnFirstLegDirectReady(
+                            runtime_generation, flow_generation, self);
+                        return true;
+                    }
+                }
+                if (direct_requested) {
+                    hooks->OnDirectBridgeFallback(
+                        external_runtime_generation_, external_flow_generation_);
+                }
+                hooks->OnFirstLegReady(
+                    external_runtime_generation_, external_flow_generation_);
+                return Establish();
             }
 
             /**

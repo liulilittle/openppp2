@@ -36,6 +36,24 @@ namespace ppp
                     Finalize();
                 }
 
+                PaperAirplaneConnection::PaperAirplaneControllerPtr PaperAirplaneConnection::GetController() noexcept
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    return controller_;
+                }
+
+                std::shared_ptr<boost::asio::ip::tcp::socket> PaperAirplaneConnection::GetSocket() noexcept
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    return socket_;
+                }
+
+                bool PaperAirplaneConnection::IsPortAging(uint64_t now) noexcept
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    return disposed_ || now >= timeout_;
+                }
+
                 void PaperAirplaneConnection::Finalize() noexcept
                 {
                     exchangeof(disposed_, true);

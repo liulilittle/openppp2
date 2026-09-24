@@ -1,11 +1,14 @@
 #include <ppp/app/protocol/VirtualEthernetTcpipConnection.h>
+#include <ppp/app/runtime/RuntimeXtcpStats.h>
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/protocol/templates/TVEthernetTcpipConnection.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/Socket.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/DatapathPerfJson.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
 
+#include <cstdlib>
 #include <deque>
 #include <vector>
 
@@ -23,8 +26,46 @@
 namespace ppp {
     namespace app {
         namespace protocol {
+            namespace {
+                void AddDirectUploadQueueTelemetry(
+                    const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>& telemetry,
+                    std::size_t bytes) noexcept {
+                    if (telemetry) {
+                        telemetry->Add(bytes);
+                    }
+                }
+
+                void RemoveDirectUploadQueueTelemetry(
+                    const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>& telemetry,
+                    std::size_t bytes, std::size_t items) noexcept {
+                    if (telemetry) {
+                        telemetry->Remove(bytes, items);
+                    }
+                }
+            }
+
             static constexpr int kTransmissionBinaryHeaderSize = 3;
             static constexpr int kPlaintextBase94MaxTcpReadSize = (PPP_BUFFER_SIZE / 2) - kTransmissionBinaryHeaderSize;
+            static constexpr std::size_t kDirectUploadGatherDefaultBytes = 32 * 1024;
+            static constexpr std::size_t kDirectUploadGatherCarrierMaxBytes = PPP_BUFFER_SIZE;
+
+            static std::size_t GetDirectUploadGatherBytes(bool plaintext) noexcept {
+                static const std::size_t requested = []() noexcept {
+                    const char* value = std::getenv("OPENPPP2_XTCP_DIRECT_UPLOAD_GATHER_BYTES");
+                    if (!value || !*value || *value == '-') {
+                        return kDirectUploadGatherDefaultBytes;
+                    }
+                    char* end = nullptr;
+                    const unsigned long long parsed = std::strtoull(value, &end, 10);
+                    return end && *end == '\0'
+                        ? static_cast<std::size_t>(std::min<unsigned long long>(
+                            parsed, kDirectUploadGatherCarrierMaxBytes))
+                        : kDirectUploadGatherDefaultBytes;
+                }();
+                return std::min(requested, plaintext
+                    ? static_cast<std::size_t>(kPlaintextBase94MaxTcpReadSize)
+                    : kDirectUploadGatherCarrierMaxBytes);
+            }
 
             /**
              * @brief Temporary linklayer helper used during connect/accept handshake.
@@ -310,7 +351,7 @@ namespace ppp {
                     return false;
                 }
 
-                if (!connector->PacketInput(transmission, packet.get(), packet_size, y)) {
+                if (!connector->PacketInput(transmission, packet, packet.get(), packet_size, y)) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
                     return false;
                 }
@@ -448,7 +489,7 @@ namespace ppp {
                     return false;
                 }
 
-                if (!connector->PacketInput(transmission, packet.get(), packet_size, y)) {
+                if (!connector->PacketInput(transmission, packet, packet.get(), packet_size, y)) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
                     return false;
                 }
@@ -553,17 +594,66 @@ namespace ppp {
              * @note Closes transmission and socket; resets connected/disposed flags.
              */
             void VirtualEthernetTcpipConnection::Finalize() noexcept {
+                if (disposed_.exchange(true)) {   // Publish disposal first; cleanup runs only once.
+                    return;
+                }
+
+                connected_ = false;
+
+                // Cancel in-flight I/O before closing, so read/write completions running on the
+                // socket executor observe the disposed state and stop the forwarding chain.
+                std::shared_ptr<boost::asio::ip::tcp::socket> socket = socket_;
+                if (NULLPTR != socket) {
+                    boost::system::error_code ec;
+                    socket->cancel(ec);
+                }
+
                 ITransmissionPtr transmission = std::move(transmission_);
                 if (NULLPTR != transmission) {
                     transmission->Dispose();
                 }
 
+                std::size_t abandoned_direct_bytes = 0;
+                std::size_t abandoned_direct_items = 0;
+                YieldContext* download_waiter = nullptr;
+                DirectCloseHandler close_handler;
+                std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry;
+                {
+                    std::lock_guard<std::mutex> lock(direct_sync_);
+                    abandoned_direct_bytes = direct_upload_bytes_;
+                    abandoned_direct_items = direct_upload_packets_;
+                    telemetry = std::move(direct_queue_telemetry_);
+                    direct_bridge_started_ = false;
+                    direct_upload_writer_started_ = false;
+                    direct_send_close_state_ = DirectSendCloseState::Disposed;
+                    if (direct_upload_backpressured_) {
+                        direct_upload_backpressured_ = false;
+                        if (telemetry) {
+                            telemetry->SetBackpressured(false);
+                        }
+                    }
+                    direct_upload_queue_.clear();
+                    direct_upload_bytes_ = 0;
+                    direct_upload_packets_ = 0;
+                    direct_read_handler_ = nullptr;
+                    close_handler = std::move(direct_close_handler_);
+                    direct_writable_handler_ = nullptr;
+                    download_waiter = direct_download_waiter_.Invalidate();
+                }
+                if (close_handler) {
+                    close_handler(client::xtcp::XtcpDirectCloseReason::Terminal);
+                }
+                if (download_waiter) {
+                    download_waiter->R();
+                }
+                if (abandoned_direct_bytes != 0 || abandoned_direct_items != 0) {
+                    RemoveDirectUploadQueueTelemetry(
+                        telemetry, abandoned_direct_bytes, abandoned_direct_items);
+                }
+
 #if defined(_WIN32)
                 qoss_.reset();
 #endif
-
-                disposed_ = true;
-                connected_ = false;
 
 #if defined(_IPHONE) || defined(IPHONE)
                 native_tap_relay_started_.store(false, std::memory_order_release);
@@ -689,10 +779,11 @@ namespace ppp {
              * @param buffer Shared receive buffer.
              * @param buffer_size Buffer capacity.
              * @param bytes_transferred Number of valid bytes.
+             * @param transmission_write_accepted_scope Read-to-write-completion timer.
              * @return True when async transmission write is accepted.
              * @note Completion callback decides whether to continue receive loop.
              */
-            bool VirtualEthernetTcpipConnection::ForwardSocketToTransmission(const std::shared_ptr<Byte>& buffer, int buffer_size, int bytes_transferred) noexcept {
+            bool VirtualEthernetTcpipConnection::ForwardSocketToTransmission(const std::shared_ptr<Byte>& buffer, int buffer_size, int bytes_transferred, ppp::diagnostics::datapath_perf::Scope transmission_write_accepted_scope) noexcept {
                 if (NULLPTR == buffer || buffer_size < 1 || bytes_transferred < 1) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpipConnectionForwardSocketInvalidArguments);
                     return false;
@@ -716,7 +807,7 @@ namespace ppp {
 
                 auto self = shared_from_this();
                 return transmission->Write(buffer.get(), bytes_transferred,
-                    [self, this, buffer, buffer_size, bytes_transferred](bool ok) noexcept {
+                    [self, this, buffer, buffer_size, bytes_transferred, transmission_write_accepted_scope](bool ok) noexcept {
                         if (!ok) {
                             ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
                                 "tcpip",
@@ -725,6 +816,10 @@ namespace ppp {
                                 (int)ppp::diagnostics::GetLastErrorCode(),
                                 disposed_ ? "yes" : "no",
                                 connected_ ? "yes" : "no");
+                        }
+                        else {
+                            ppp::diagnostics::datapath_perf::RecordTcpipBridgeTransmissionWriteAccepted(
+                                bytes_transferred, transmission_write_accepted_scope.Elapsed());
                         }
                         ForwardSocketToTransmissionOK(ok, buffer, buffer_size);
                     });
@@ -756,6 +851,10 @@ namespace ppp {
                 auto self = shared_from_this();
                 boost::asio::post(socket_->get_executor(),
                     [self, this, buffer, buffer_size]() noexcept {
+                        if (disposed_) {                // Never arm new reads after finalization.
+                            return;
+                        }
+
                         // Plaintext transport still wraps binary frames in base94; cap the raw
                         // TCP chunk so the encoded frame cannot exceed PPP_BUFFER_SIZE.
                         int read_size = buffer_size;
@@ -779,18 +878,22 @@ namespace ppp {
                                         connected_ ? "yes" : "no");
                                     Dispose();
                                 }
-                                elif(ForwardSocketToTransmission(buffer, buffer_size, bytes_transferred)) {
-                                    Update();
-                                }
                                 else {
-                                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
-                                        "tcpip",
-                                        "socket->transmission forward failed bytes=%d error=%d disposed=%s connected=%s",
-                                        bytes_transferred,
-                                        (int)ppp::diagnostics::GetLastErrorCode(),
-                                        disposed_ ? "yes" : "no",
-                                        connected_ ? "yes" : "no");
-                                    Dispose();
+                                    ppp::diagnostics::datapath_perf::RecordTcpipBridgeSocketRead(bytes_transferred);
+                                    ppp::diagnostics::datapath_perf::Scope transmission_write_accepted_scope;
+                                    if (ForwardSocketToTransmission(buffer, buffer_size, bytes_transferred, transmission_write_accepted_scope)) {
+                                        Update();
+                                    }
+                                    else {
+                                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                                            "tcpip",
+                                            "socket->transmission forward failed bytes=%d error=%d disposed=%s connected=%s",
+                                            bytes_transferred,
+                                            (int)ppp::diagnostics::GetLastErrorCode(),
+                                            disposed_ ? "yes" : "no",
+                                            connected_ ? "yes" : "no");
+                                        Dispose();
+                                    }
                                 }
                             });
                     });
@@ -873,10 +976,24 @@ namespace ppp {
                         break;
                     }
 
+                    ppp::diagnostics::datapath_perf::RecordTcpipBridgeTransmissionRead(packet_length);
                     any = true;
                     Update();
 
-                    bool ok = ppp::coroutines::asio::async_write(*socket_, boost::asio::buffer(packet.get(), packet_length), y);
+                    bool ok = false;
+                    boost::asio::post(socket_->get_executor(),
+                        [this, &y, &ok, packet, packet_length]() noexcept {
+                            ppp::diagnostics::datapath_perf::Scope socket_write_scope;
+                            boost::asio::async_write(*socket_, boost::asio::buffer(packet.get(), packet_length),
+                                [&y, &ok, packet_length, socket_write_scope](const boost::system::error_code& ec, std::size_t bytes_transferred) noexcept {
+                                    if (!ec && bytes_transferred == static_cast<std::size_t>(packet_length)) {
+                                        ppp::diagnostics::datapath_perf::RecordTcpipBridgeSocketWriteCompleted(packet_length, socket_write_scope.Elapsed());
+                                    }
+                                    ok = ec == boost::system::errc::success;
+                                    y.R();
+                                });
+                        });
+                    y.Suspend();
                     if (ok) {
                         packets_to_socket++;
                         bytes_to_socket += packet_length;
@@ -908,6 +1025,490 @@ namespace ppp {
 
                 Dispose();
                 return any;
+            }
+
+            bool VirtualEthernetTcpipConnection::StartDirectBridge(
+                const DirectReadHandler& on_data,
+                const DirectCloseHandler& on_close,
+                const DirectWritableHandler& on_writable) noexcept {
+                if (!on_data || disposed_ || !connected_ || !transmission_ ||
+                    !transmission_->SupportsSendHalfClose()) {
+                    return false;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(direct_sync_);
+                    if (disposed_ || !connected_ || !transmission_ || direct_bridge_started_) {
+                        return false;
+                    }
+                    direct_bridge_started_ = true;
+                    direct_send_close_state_ = DirectSendCloseState::Open;
+                    direct_upload_backpressured_ = false;
+                    direct_download_waiter_.Reset();
+                    direct_read_handler_ = on_data;
+                    direct_close_handler_ = on_close;
+                    direct_writable_handler_ = on_writable;
+                }
+                const std::shared_ptr<VirtualEthernetTcpipConnection> self = shared_from_this();
+                auto allocator = configuration_->GetBufferAllocator();
+                if (!YieldContext::Spawn(allocator.get(), *context_, strand_.get(),
+                        [self, this](YieldContext& y) noexcept {
+                            return RunDirectDownload(y);
+                        })) {
+                    YieldContext* download_waiter = nullptr;
+                    {
+                        std::lock_guard<std::mutex> lock(direct_sync_);
+                        direct_bridge_started_ = false;
+                        direct_read_handler_ = nullptr;
+                        direct_close_handler_ = nullptr;
+                        direct_writable_handler_ = nullptr;
+                        download_waiter = direct_download_waiter_.Invalidate();
+                    }
+                    if (download_waiter) {
+                        download_waiter->R();
+                    }
+                    return false;
+                }
+                return true;
+            }
+
+            VirtualEthernetTcpipConnection::DirectIoResult
+            VirtualEthernetTcpipConnection::SendDirectToPeer(
+                const Byte* data, std::uint32_t length,
+                client::xtcp::XtcpUploadBudget::Reservation&& credit) noexcept {
+                if (!data || length == 0 || !credit || credit.Bytes() != length ||
+                    credit.Items() != 1 || disposed_ || !connected_) {
+                    return DirectIoResult::Closed;
+                }
+                bool start_writer = false;
+                std::shared_ptr<client::xtcp::XtcpUploadChunk> payload;
+                {
+                    std::lock_guard<std::mutex> lock(direct_sync_);
+                    if (disposed_ || !connected_ || !transmission_ ||
+                        !direct_bridge_started_ ||
+                        direct_send_close_state_ != DirectSendCloseState::Open) {
+                        return DirectIoResult::Closed;
+                    }
+                    if (direct_upload_packets_ >= kDirectQueueMaxPackets ||
+                        length > kDirectQueueMaxBytes - direct_upload_bytes_) {
+                        if (!direct_upload_backpressured_) {
+                            direct_upload_backpressured_ = true;
+                            if (direct_queue_telemetry_) {
+                                direct_queue_telemetry_->SetBackpressured(true);
+                            }
+                        }
+                        return DirectIoResult::Backpressured;
+                    }
+                    try {
+                        // Both global credit and the per-flow queue cap are
+                        // secured before copying borrowed receive bytes.
+                        payload = std::make_shared<client::xtcp::XtcpUploadChunk>(data, length, std::move(credit));
+                        direct_upload_queue_.emplace_back(payload);
+                    }
+                    catch (...) {
+                        return DirectIoResult::Closed;
+                    }
+                    direct_upload_bytes_ += length;
+                    ++direct_upload_packets_;
+                    AddDirectUploadQueueTelemetry(direct_queue_telemetry_, length);
+                    if (!direct_upload_writer_started_) {
+                        direct_upload_writer_started_ = true;
+                        start_writer = true;
+                    }
+                }
+                if (!start_writer || StartDirectUploadWriter()) {
+                    return DirectIoResult::Accepted;
+                }
+                std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry;
+                {
+                    std::lock_guard<std::mutex> lock(direct_sync_);
+                    direct_upload_writer_started_ = false;
+                    if (!direct_upload_queue_.empty() && direct_upload_queue_.back() == payload) {
+                        direct_upload_bytes_ -= length;
+                        --direct_upload_packets_;
+                        direct_upload_queue_.pop_back();
+                        telemetry = direct_queue_telemetry_;
+                    }
+                }
+                if (telemetry) {
+                    RemoveDirectUploadQueueTelemetry(telemetry, length, 1);
+                }
+                return DirectIoResult::Closed;
+            }
+
+            void VirtualEthernetTcpipConnection::CompleteDirectDownload(
+                const client::xtcp::XtcpDirectReadReservation& reservation,
+                client::xtcp::XtcpDirectCompletion completion) noexcept {
+                YieldContext* waiter = nullptr;
+                {
+                    std::lock_guard<std::mutex> lock(direct_sync_);
+                    waiter = direct_download_waiter_.Complete(reservation, completion);
+                }
+                if (waiter) {
+                    waiter->R();
+                }
+            }
+
+            void VirtualEthernetTcpipConnection::SetDirectQueueTelemetry(
+                const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>& telemetry) noexcept {
+                std::lock_guard<std::mutex> lock(direct_sync_);
+                if (direct_bridge_started_) {
+                    direct_queue_telemetry_ = telemetry;
+                }
+            }
+
+            bool VirtualEthernetTcpipConnection::StartDirectUploadWriter() noexcept {
+                const std::shared_ptr<VirtualEthernetTcpipConnection> self = shared_from_this();
+                return ppp::threading::Executors::Post(context_, strand_, [self, this]() noexcept {
+                    auto allocator = configuration_->GetBufferAllocator();
+                    if (!YieldContext::Spawn(allocator.get(), *context_, strand_.get(),
+                            [self, this](YieldContext& y) noexcept {
+                                ppp::telemetry::Count("xtcp.direct.upload_writer_starts", 1);
+                                return RunDirectUpload(y);
+                            })) {
+                        Dispose();
+                    }
+                });
+            }
+
+            bool VirtualEthernetTcpipConnection::RunDirectUpload(YieldContext& y) noexcept {
+                std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry;
+                {
+                    std::lock_guard<std::mutex> lock(direct_sync_);
+                    telemetry = direct_queue_telemetry_;
+                }
+                struct WriterTelemetryScope final {
+                    explicit WriterTelemetryScope(
+                        const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>& value) noexcept
+                        : telemetry(value) {
+                        if (telemetry) {
+                            telemetry->WriterStarted();
+                        }
+                    }
+                    ~WriterTelemetryScope() noexcept {
+                        if (telemetry) {
+                            telemetry->WriterStopped();
+                        }
+                    }
+                    std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry;
+                } writer_telemetry_scope(telemetry);
+                const std::size_t gather_limit = GetDirectUploadGatherBytes(configuration_->key.plaintext);
+                for (;;) {
+                    std::shared_ptr<client::xtcp::XtcpUploadChunk> payload;
+                    std::size_t payload_items = 0;
+                    bool shutdown_send = false;
+                    {
+                        std::lock_guard<std::mutex> lock(direct_sync_);
+                        if (direct_upload_queue_.empty()) {
+                            if (direct_send_close_state_ == DirectSendCloseState::Draining) {
+                                direct_send_close_state_ = DirectSendCloseState::SendShutdown;
+                                shutdown_send = true;
+                            }
+                            else {
+                                direct_upload_writer_started_ = false;
+                            }
+                        }
+                        else {
+                            payload = direct_upload_queue_.front();
+                            payload_items = 1;
+                            if (gather_limit > 1 && payload->bytes.size() < gather_limit &&
+                                direct_upload_queue_.size() > 1) {
+                                std::size_t gathered_bytes = payload->bytes.size();
+                                std::size_t gathered_items = 1;
+                                for (; gathered_items < direct_upload_queue_.size(); ++gathered_items) {
+                                    const std::shared_ptr<client::xtcp::XtcpUploadChunk>& candidate =
+                                        direct_upload_queue_[gathered_items];
+                                    if (!candidate || candidate->bytes.empty() ||
+                                        !payload->credit.SameBudget(candidate->credit) ||
+                                        candidate->bytes.size() > gather_limit - gathered_bytes) {
+                                        break;
+                                    }
+                                    gathered_bytes += candidate->bytes.size();
+                                }
+                                if (gathered_items > 1) {
+                                    try {
+                                        auto combined = std::make_shared<client::xtcp::XtcpUploadChunk>();
+                                        combined->bytes.reserve(gathered_bytes);
+                                        for (std::size_t i = 0; i < gathered_items; ++i) {
+                                            const std::vector<Byte>& item =
+                                                direct_upload_queue_[i]->bytes;
+                                            combined->bytes.insert(combined->bytes.end(), item.begin(), item.end());
+                                        }
+                                        // All allocations/copies succeeded. Transfer the
+                                        // admitted credit before removing original chunks;
+                                        // keep it through Write(y), including on close.
+                                        for (std::size_t i = 0; i < gathered_items; ++i) {
+                                            const bool merged = combined->credit.Merge(
+                                                std::move(direct_upload_queue_[i]->credit));
+                                            assert(merged); // SameBudget was checked above under this lock.
+                                            (void)merged;
+                                        }
+                                        payload = std::move(combined);
+                                        payload_items = gathered_items;
+                                        for (std::size_t i = 0; i < gathered_items; ++i) {
+                                            direct_upload_queue_.pop_front();
+                                        }
+                                    }
+                                    catch (...) {
+                                        direct_upload_queue_.pop_front();
+                                    }
+                                }
+                                else {
+                                    direct_upload_queue_.pop_front();
+                                }
+                            }
+                            else {
+                                direct_upload_queue_.pop_front();
+                            }
+                        }
+                    }
+                    if (!payload) {
+                        if (!shutdown_send) {
+                            ppp::telemetry::Count("xtcp.direct.upload_writer_exits", 1);
+                            return true;
+                        }
+
+                        ITransmissionPtr transmission = transmission_;
+                        if (!transmission || disposed_ || !connected_) {
+                            ppp::telemetry::Count("xtcp.direct.close_shutdown_cancelled", 1);
+                            ppp::telemetry::Count("xtcp.direct.upload_writer_exits", 1);
+                            return false;
+                        }
+
+                        // Write(y) resumes after carrier write completion, so this is
+                        // normally already empty. Keep the explicit barrier for carriers
+                        // whose completion callback and coroutine resume are scheduled
+                        // separately.
+                        while (transmission->GetPendingItems() != 0 ||
+                               transmission->GetPendingBytes() != 0) {
+                            ppp::coroutines::asio::async_sleep(
+                                y, kDirectCloseDrainPollMilliseconds);
+                            bool cancelled = disposed_ || !connected_;
+                            {
+                                std::lock_guard<std::mutex> lock(direct_sync_);
+                                cancelled = cancelled || !direct_bridge_started_ ||
+                                    direct_send_close_state_ != DirectSendCloseState::SendShutdown;
+                            }
+                            if (cancelled) {
+                                ppp::telemetry::Count("xtcp.direct.close_shutdown_cancelled", 1);
+                                ppp::telemetry::Count("xtcp.direct.upload_writer_exits", 1);
+                                if (!disposed_) {
+                                    Dispose();
+                                }
+                                return false;
+                            }
+                        }
+
+                        if (!transmission->ShutdownSend()) {
+                            ppp::telemetry::Count("xtcp.direct.close_shutdown_failures", 1);
+                            ppp::telemetry::Count("xtcp.direct.upload_writer_exits", 1);
+                            Dispose();
+                            return false;
+                        }
+                        ppp::telemetry::Count("xtcp.direct.close_shutdown_completions", 1);
+                        ppp::telemetry::Count("xtcp.direct.upload_writer_exits", 1);
+                        return true;
+                    }
+                    const bool sent = SendBufferToPeer(
+                        y, payload->bytes.data(), static_cast<int>(payload->bytes.size()));
+                    DirectWritableHandler writable;
+                    std::size_t completed_bytes = 0;
+                    std::size_t completed_items = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(direct_sync_);
+                        completed_bytes = std::min(payload->bytes.size(), direct_upload_bytes_);
+                        direct_upload_bytes_ -= completed_bytes;
+                        completed_items = std::min(payload_items, direct_upload_packets_);
+                        direct_upload_packets_ -= completed_items;
+                        if (sent && direct_upload_backpressured_ &&
+                            direct_upload_bytes_ <= kDirectQueueLowBytes &&
+                            direct_upload_packets_ <= kDirectQueueLowPackets) {
+                            direct_upload_backpressured_ = false;
+                            if (telemetry) {
+                                telemetry->SetBackpressured(false);
+                            }
+                            writable = direct_writable_handler_;
+                        }
+                    }
+                    if (completed_bytes != 0 || completed_items != 0) {
+                        RemoveDirectUploadQueueTelemetry(telemetry, completed_bytes, completed_items);
+                    }
+                    // Write(y) completed. Free the payload/credit before
+                    // advertising local capacity to a resumed receiver.
+                    payload.reset();
+                    if (!sent) {
+                        ppp::telemetry::Count("xtcp.direct.upload_writer_exits", 1);
+                        Dispose();
+                        return false;
+                    }
+                    if (completed_items > 1) {
+                        ppp::telemetry::Count("xtcp.direct.upload_gathered_writes", 1);
+                        ppp::telemetry::Count("xtcp.direct.upload_gathered_items", completed_items);
+                        ppp::telemetry::Count("xtcp.direct.upload_gathered_bytes", completed_bytes);
+                    }
+                    ppp::telemetry::Count("xtcp.direct.upload_writes", 1);
+                    if (telemetry) {
+                        telemetry->WriterProgress();
+                    }
+                    if (writable) {
+                        writable();
+                    }
+                    Update();
+                }
+            }
+
+            bool VirtualEthernetTcpipConnection::RunDirectDownload(YieldContext& y) noexcept {
+                std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry;
+                {
+                    std::lock_guard<std::mutex> lock(direct_sync_);
+                    telemetry = direct_queue_telemetry_;
+                }
+                bool terminal = false;
+                for (;;) {
+                    ITransmissionPtr transmission = transmission_;
+                    if (!transmission || disposed_ || !connected_) {
+                        terminal = true;
+                        break;
+                    }
+                    int packet_length = 0;
+                    const std::shared_ptr<Byte> packet = transmission->Read(y, packet_length);
+                    if (!packet || packet_length < 1) {
+                        if (transmission->IsReceiveClosed()) {
+                            DirectCloseHandler close_handler;
+                            {
+                                std::lock_guard<std::mutex> lock(direct_sync_);
+                                close_handler = direct_close_handler_;
+                            }
+                            if (close_handler) {
+                                close_handler(client::xtcp::XtcpDirectCloseReason::PeerEof);
+                            }
+                            return true;
+                        }
+                        terminal = true;
+                        break;
+                    }
+                    for (int offset = 0; offset < packet_length;) {
+                        const int chunk_length = std::min<int>(
+                            static_cast<int>(kDirectDownloadChunkBytes), packet_length - offset);
+                        const std::shared_ptr<Byte> chunk(packet, packet.get() + offset);
+                        client::xtcp::XtcpDirectReadReservation reservation;
+                        reservation.length = static_cast<std::uint32_t>(chunk_length);
+                        for (;;) {
+                            DirectReadHandler handler;
+                            bool active = false;
+                            {
+                                std::lock_guard<std::mutex> lock(direct_sync_);
+                                active = !disposed_ && connected_ && direct_bridge_started_;
+                                handler = direct_read_handler_;
+                            }
+                            if (!active || !handler) {
+                                terminal = true;
+                                break;
+                            }
+                            const bool timing = telemetry && telemetry->TimingEnabled();
+                            const std::uint64_t handler_started_us = timing
+                                ? telemetry->Now() : 0;
+                            const DirectIoResult result = handler(reservation, chunk);
+                            if (timing) {
+                                const std::uint64_t now = telemetry->Now();
+                                telemetry->RecordSecondLegHandler(
+                                    now > handler_started_us ? now - handler_started_us : 0);
+                            }
+                            if (result == DirectIoResult::Backpressured) {
+                                ppp::coroutines::asio::async_sleep(y, 1);
+                                {
+                                    std::lock_guard<std::mutex> lock(direct_sync_);
+                                    active = !disposed_ && connected_ && direct_bridge_started_;
+                                }
+                                if (!active) {
+                                    terminal = true;
+                                    break;
+                                }
+                                continue;
+                            }
+                            if (result == DirectIoResult::Closed) {
+                                terminal = true;
+                                break;
+                            }
+
+                            DirectReadWaiterState::Outcome registered =
+                                DirectReadWaiterState::Outcome::Terminal;
+                            {
+                                std::lock_guard<std::mutex> lock(direct_sync_);
+                                if (!disposed_ && connected_ && direct_bridge_started_) {
+                                    registered = direct_download_waiter_.Register(reservation, &y);
+                                }
+                            }
+                            DirectReadWaiterState::Outcome completed =
+                                DirectReadWaiterState::Outcome::Terminal;
+                            if (registered == DirectReadWaiterState::Outcome::Pending) {
+                                const std::uint64_t suspend_started_us = timing
+                                    ? telemetry->Now() : 0;
+                                y.Suspend();
+                                if (timing) {
+                                    const std::uint64_t now = telemetry->Now();
+                                    telemetry->RecordSecondLegAcceptedWaitToResume(
+                                        now > suspend_started_us ? now - suspend_started_us : 0);
+                                }
+                                std::lock_guard<std::mutex> lock(direct_sync_);
+                                completed = direct_download_waiter_.Consume(reservation);
+                            }
+                            else if (registered == DirectReadWaiterState::Outcome::Accepted) {
+                                std::lock_guard<std::mutex> lock(direct_sync_);
+                                completed = direct_download_waiter_.Consume(reservation);
+                            }
+                            if (completed != DirectReadWaiterState::Outcome::Accepted) {
+                                terminal = true;
+                                break;
+                            }
+                            offset += chunk_length;
+                            break;
+                        }
+                        if (terminal) {
+                            break;
+                        }
+                    }
+                    if (terminal) {
+                        break;
+                    }
+                    Update();
+                }
+                DirectCloseHandler close_handler;
+                YieldContext* download_waiter = nullptr;
+                {
+                    std::lock_guard<std::mutex> lock(direct_sync_);
+                    close_handler = std::move(direct_close_handler_);
+                    direct_bridge_started_ = false;
+                    direct_read_handler_ = nullptr;
+                    direct_writable_handler_ = nullptr;
+                    download_waiter = direct_download_waiter_.Invalidate();
+                }
+                if (close_handler) {
+                    close_handler(client::xtcp::XtcpDirectCloseReason::Terminal);
+                }
+                if (download_waiter) {
+                    download_waiter->R();
+                }
+                Dispose();
+                return true;
+            }
+
+            void VirtualEthernetTcpipConnection::CloseDirectSend() noexcept {
+                bool start_writer = false;
+                {
+                    std::lock_guard<std::mutex> lock(direct_sync_);
+                    if (!direct_bridge_started_ ||
+                        direct_send_close_state_ != DirectSendCloseState::Open) {
+                        return;
+                    }
+                    direct_send_close_state_ = DirectSendCloseState::Draining;
+                    if (!direct_upload_writer_started_) {
+                        direct_upload_writer_started_ = true;
+                        start_writer = true;
+                    }
+                }
+                if (start_writer && !StartDirectUploadWriter()) {
+                    Dispose();
+                }
             }
 
 #if defined(_IPHONE) || defined(IPHONE)

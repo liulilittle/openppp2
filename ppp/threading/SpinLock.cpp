@@ -72,58 +72,6 @@ namespace ppp
         }
 
         /**
-         * @brief Shared recursive acquisition helper for recursive lock wrappers.
-         * @tparam LockObject Recursive lock wrapper type.
-         * @tparam LockInternalObject Internal non-recursive lock type.
-         * @tparam TryEnterArguments Argument pack forwarded to internal `TryEnter`.
-         * @param lock Recursive lock wrapper.
-         * @param lock_internal Internal lock object.
-         * @param tid Pointer to owner thread identifier storage.
-         * @param reentries Recursive depth counter.
-         * @param arguments Forwarded arguments for internal acquisition.
-         * @return true when acquisition or legal re-entry succeeds; otherwise false.
-         */
-        template <class LockObject, class LockInternalObject, typename... TryEnterArguments>
-        static constexpr bool RecursiveLock_TryEnter(LockObject&    lock, 
-            LockInternalObject&                                     lock_internal, 
-            volatile int64_t*                                       tid,
-            std::atomic<int>&                                       reentries, 
-            TryEnterArguments&&...                                  arguments)
-        {
-            int n = ++reentries;
-            assert(n > 0);
-
-            int64_t current_tid = GetCurrentThreadId(); /* std::hash<std::thread::id>{}(std::this_thread::get_id()); */
-            if (n == 1)
-            {
-                bool lockTaken = lock_internal.TryEnter(std::forward<TryEnterArguments>(arguments)...);
-                if (!lockTaken)
-                {
-                    reentries--;
-                    return false;
-                }
-
-                Thread::MemoryBarrier();
-                *tid = current_tid;
-                Thread::MemoryBarrier();
-            }
-            else
-            {
-                Thread::MemoryBarrier();
-                int lockTaken_tid = *tid;
-                Thread::MemoryBarrier();
-
-                if (lockTaken_tid != current_tid)
-                {
-                    reentries--;
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        /**
          * @brief Constructs an unlocked spin lock.
          */
         SpinLock::SpinLock() noexcept
@@ -194,11 +142,46 @@ namespace ppp
         }
 
         /**
+         * @brief Verifies the recursive lock is fully released before destruction.
+         * @throws std::runtime_error Thrown when the recursive lock is still held.
+         */
+        RecursiveSpinLock::~RecursiveSpinLock() noexcept(false)
+        {
+            lockobj_.Enter();
+            bool lockTaken = reentries_ != 0;
+            lockobj_.Leave();
+            if (lockTaken)
+            {
+                throw std::runtime_error("Failed to release the recursive lock.");
+            }
+        }
+
+        /**
          * @brief Attempts to acquire recursively once.
          */
         bool RecursiveSpinLock::TryEnter() noexcept
         {
-            return RecursiveLock_TryEnter(*this, lockobj_, &tid_, reentries_);
+            if (!lockobj_.TryEnter())
+            {
+                return false;
+            }
+
+            int64_t current_tid = GetCurrentThreadId();
+            bool lockTaken = false;
+            if (reentries_ == 0)
+            {
+                tid_ = current_tid;
+                reentries_ = 1;
+                lockTaken = true;
+            }
+            else if (tid_ == current_tid)
+            {
+                ++reentries_;
+                lockTaken = true;
+            }
+
+            lockobj_.Leave();
+            return lockTaken;
         }
 
         /**
@@ -206,7 +189,7 @@ namespace ppp
          */
         bool RecursiveSpinLock::TryEnter(int loop, int timeout) noexcept
         {
-            bool lockTaken = RecursiveLock_TryEnter(*this, lockobj_, &tid_, reentries_, loop, timeout);
+            bool lockTaken = Lock_TryEnter(*this, loop, timeout);
             if (!lockTaken)
             {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ThreadSyncConditionWaitFailed);
@@ -218,15 +201,33 @@ namespace ppp
         /**
          * @brief Releases one recursion level and unlocks on final release.
          */
-        void RecursiveSpinLock::Leave() 
+        void RecursiveSpinLock::Leave()
         {
-            int n = --reentries_;
-            assert(n >= 0);
-
-            if (n == 0)
+            lockobj_.Enter();
+            int64_t current_tid = GetCurrentThreadId();
+            if (reentries_ == 0 || tid_ != current_tid)
             {
                 lockobj_.Leave();
+                throw std::runtime_error("Failed to release a recursive lock from a non-owner thread.");
             }
+
+            --reentries_;
+            if (reentries_ == 0)
+            {
+                tid_ = 0;
+            }
+            lockobj_.Leave();
+        }
+
+        /**
+         * @brief Returns a state-gate-protected logical held snapshot.
+         */
+        bool RecursiveSpinLock::IsLockTaken() noexcept
+        {
+            lockobj_.Enter();
+            bool lockTaken = reentries_ != 0;
+            lockobj_.Leave();
+            return lockTaken;
         }
     }
 }

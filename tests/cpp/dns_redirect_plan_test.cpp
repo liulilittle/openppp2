@@ -163,3 +163,55 @@ BOOST_AUTO_TEST_CASE(is_gateway_dns_server_matches_gateway_and_network_plus_one)
     BOOST_TEST(client_dns::DnsRedirectPlan::IsGatewayDnsServer(network_plus_one, gateway, mask));
     BOOST_TEST(!client_dns::DnsRedirectPlan::IsGatewayDnsServer(htonl(0x08080808u), gateway, mask));
 }
+
+BOOST_AUTO_TEST_CASE(human_direct_action_uses_domestic_provider_before_legacy_rule) {
+    auto input = BaseInput();
+    input.has_human_action = true;
+    input.human_action = ppp::app::client::routing::RoutingAction::Direct;
+    input.human_provider = "doh.pub";
+    input.rule = std::make_shared<client_dns::Rule>();
+    input.rule->ProviderName = "cloudflare";
+    input.rule->Nic = false;
+
+    const auto result = client_dns::DnsRedirectPlan::Decide(input);
+    BOOST_TEST(static_cast<int>(result.action) ==
+        static_cast<int>(client_dns::DnsRouteAction::kResolveProvider));
+    BOOST_TEST(result.provider_name == "doh.pub");
+    BOOST_TEST(result.provider_domestic);
+}
+
+BOOST_AUTO_TEST_CASE(human_proxy_action_uses_foreign_provider) {
+    auto input = BaseInput();
+    input.has_human_action = true;
+    input.human_action = ppp::app::client::routing::RoutingAction::Proxy;
+    input.human_provider = "cloudflare";
+
+    const auto result = client_dns::DnsRedirectPlan::Decide(input);
+    BOOST_TEST(static_cast<int>(result.action) ==
+        static_cast<int>(client_dns::DnsRouteAction::kResolveProvider));
+    BOOST_TEST(result.provider_name == "cloudflare");
+    BOOST_TEST(!result.provider_domestic);
+}
+
+BOOST_AUTO_TEST_CASE(human_action_without_provider_fails_closed) {
+    auto input = BaseInput();
+    input.has_human_action = true;
+    input.human_action = ppp::app::client::routing::RoutingAction::Direct;
+    input.human_provider.clear();
+
+    const auto result = client_dns::DnsRedirectPlan::Decide(input);
+    BOOST_TEST(static_cast<int>(result.action) ==
+        static_cast<int>(client_dns::DnsRouteAction::kDrop));
+}
+
+BOOST_AUTO_TEST_CASE(human_action_blocks_aaaa_even_when_ipv6_is_allowed) {
+    auto input = BaseInput();
+    input.qtype = client_dns::DnsQueryType::kAAAA;
+    input.has_human_action = true;
+    input.human_action = ppp::app::client::routing::RoutingAction::Proxy;
+    input.human_provider = "cloudflare";
+
+    const auto result = client_dns::DnsRedirectPlan::Decide(input);
+    BOOST_TEST(static_cast<int>(result.action) ==
+        static_cast<int>(client_dns::DnsRouteAction::kBlockAAAA));
+}

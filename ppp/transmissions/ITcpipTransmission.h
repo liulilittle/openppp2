@@ -50,6 +50,18 @@ namespace ppp {
             virtual void                                                                        Dispose() noexcept override;
             /** @brief Returns the cached remote TCP endpoint. */
             virtual boost::asio::ip::tcp::endpoint                                              GetRemoteEndPoint() noexcept override;
+            /** @brief Main/server sockets are authenticated TCP carriers; child flows are not. */
+            AuthenticatedCarrierKind                                                            GetAuthenticatedCarrierKind() const noexcept override {
+                return role_ == TcpTransmissionRole::Child
+                    ? AuthenticatedCarrierKind::None
+                    : AuthenticatedCarrierKind::Tcp;
+            }
+            /** @brief Only raw per-flow TCP carriers can preserve receive after send shutdown. */
+            bool                                                                                SupportsSendHalfClose() const noexcept override;
+            /** @brief Sends TCP FIN after pending writes have drained on this transmission's strand. */
+            bool                                                                                ShutdownSend() noexcept override;
+            /** @brief Reports a clean TCP peer FIN observed by ReadBytes. */
+            bool                                                                                IsReceiveClosed() const noexcept override;
             /**
              * @brief Reads an exact number of bytes from the socket.
              * @param y Coroutine yield context.
@@ -89,6 +101,10 @@ namespace ppp {
 #endif
             /** @brief Atomic disposed flag to prevent data races per C++17. Uses exchange pattern for thread-safe state transitions. */
             std::atomic<int>                                                                    disposed_ = FALSE;
+            /** @brief Send direction is permanently closed after a successful TCP FIN. */
+            std::atomic<bool>                                                                   send_shutdown_ = { false };
+            /** @brief Receive direction saw a clean peer FIN rather than a transport failure. */
+            std::atomic<bool>                                                                   receive_closed_ = { false };
             /** @brief Owned connected TCP socket. */
             std::shared_ptr<boost::asio::ip::tcp::socket>                                       socket_;
             /** @brief Cached peer endpoint captured at construction. */

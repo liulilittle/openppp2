@@ -1,26 +1,25 @@
-#include <ppp/app/client/dns/DnsResponseHandler.h>
 #include <ppp/app/client/ClientNetworkInterfaceResolver.h>
 #include <ppp/app/client/VEthernetNetworkTcpipStack.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
-#include <ppp/app/client/RouteTableManager.h>
+#include <ppp/app/client/route/RouteCoordinator.h>
 #include <ppp/app/client/AssignedAddressManager.h>
 #include <ppp/app/client/ClientConnectionTeardown.h>
 #include <ppp/app/client/ClientConnectionOpener.h>
 #include <ppp/app/client/ClientPacketDispatchHandler.h>
+#include <ppp/app/client/xtcp/XtcpRuntime.h>
 #include <ppp/app/client/ClientBypassRouteLoader.h>
 #include <ppp/app/client/QuicRejectRateLimiter.h>
 #include <ppp/app/client/PeerPrefixRouteManager.h>
 #include <ppp/app/client/AggregatorLoader.h>
 #include <ppp/app/client/RemoteEndpointLoader.h>
 #include <ppp/app/client/SwitcherTimeoutRegistry.h>
-#include <ppp/app/client/dns/DnsResponseHandler.h>
-#include <ppp/app/client/dns/DnsHost.h>
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/proxys/VEthernetHttpProxySwitcher.h>
 #include <ppp/app/client/proxys/VEthernetSocksProxySwitcher.h>
 #include <ppp/app/client/dns/DnsInterceptor.h>
+#include <ppp/app/client/dns/DnsController.h>
 #include <ppp/transmissions/proxys/IForwarding.h>
 #include <ppp/transmissions/ITransmission.h>
 #include <ppp/transmissions/ITransmissionQoS.h>
@@ -30,6 +29,7 @@
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
+#include <ppp/diagnostics/Telemetry.h>
 #include <ppp/ipv6/IPv6Packet.h>
 
 #include <ppp/threading/Timer.h>
@@ -78,6 +78,7 @@ static bool AndroidDnsRedirectTraceEnabled() noexcept {
 #include <windows/ppp/net/proxies/HttpProxy.h>
 #include <windows/ppp/win32/network/NetworkInterface.h>
 #include <windows/ppp/app/client/lsp/PaperAirplaneController.h>
+#include <windows/ppp/ipv6/WindowsIPv6RouteOwner.h>
 #else
 #include <common/unix/UnixAfx.h>
 #if defined(_MACOS)
@@ -138,12 +139,18 @@ using ppp::telemetry::Level;
 namespace ppp {
     namespace app {
         namespace client {
-            /** @brief Constructs network switcher and initializes baseline state flags. */
             VEthernetNetworkSwitcher::VEthernetNetworkSwitcher(const std::shared_ptr<boost::asio::io_context>& context, bool lwip, bool vnet, bool mta, const std::shared_ptr<ppp::configurations::AppConfiguration>& configuration) noexcept
-                : VEthernet(context, lwip, vnet, mta)
+                : VEthernetNetworkSwitcher(context, lwip ? ppp::app::TcpStackMode::Lwip : ppp::app::TcpStackMode::Native, vnet, mta, configuration) {
+            }
+
+            /** @brief Constructs network switcher and freezes the selected TCP stack mode. */
+            VEthernetNetworkSwitcher::VEthernetNetworkSwitcher(const std::shared_ptr<boost::asio::io_context>& context, ppp::app::TcpStackMode tcp_stack_mode, bool vnet, bool mta, const std::shared_ptr<ppp::configurations::AppConfiguration>& configuration) noexcept
+                : VEthernet(context, tcp_stack_mode == ppp::app::TcpStackMode::Lwip, vnet, mta)
                 , configuration_(configuration)
-                , dns_interceptor_(std::make_shared<dns::DnsInterceptor>())
-                , route_table_(std::make_unique<RouteTableManager>())
+                , tcp_stack_mode_(tcp_stack_mode)
+                , dns_controller_(std::make_shared<dns::DnsController>(
+                    std::make_unique<dns::DnsInterceptor>(), nullptr))
+                , route_coordinator_(std::make_unique<route::RouteCoordinator>(nullptr))
                 , address_manager_(std::make_unique<AssignedAddressManager>())
                 , teardown_(std::make_unique<ClientConnectionTeardown>())
                 , connection_opener_(std::make_unique<ClientConnectionOpener>())
@@ -157,7 +164,6 @@ namespace ppp {
                 , information_extensions_(std::make_unique<VirtualEthernetInformationExtensions>())
                 , icmppackets_aid_(0) {
 
-                route_table_->Bind(this);
                 address_manager_->Bind(this);
                 teardown_->Bind(this);
                 connection_opener_->Bind(this);
@@ -168,8 +174,11 @@ namespace ppp {
                 remote_endpoint_loader_->Bind(this);
                 timeout_registry_->Bind(&GetSynchronizedObject());
 
+#if defined(_WIN32)
+                windows_ipv6_route_owner_ = std::make_unique<ppp::win32::ipv6::WindowsIPv6RouteOwner>();
+#endif
+
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                route_added_     = false;
 #if defined(_LINUX)
                 protect_mode_    = false;
 #endif
@@ -198,8 +207,69 @@ namespace ppp {
                 return configuration_;
             }
 
+            ppp::app::TcpStackMode VEthernetNetworkSwitcher::GetTcpStackMode() const noexcept {
+                return tcp_stack_mode_;
+            }
+
+            std::shared_ptr<const routing::HumanRoutingRules> VEthernetNetworkSwitcher::GetHumanRoutingRulesSnapshot() const noexcept {
+                std::shared_ptr<dns::DnsController> controller = dns_controller_;
+                return controller ? controller->GetHumanRoutingRules() : nullptr;
+            }
+
             std::shared_ptr<VEthernetExchanger> VEthernetNetworkSwitcher::GetExchanger() noexcept {
                 return exchanger_;
+            }
+
+            bool VEthernetNetworkSwitcher::GetTapRuntimeStats(ppp::tap::TapRuntimeStats& stats) noexcept {
+#if defined(_LINUX)
+                const std::shared_ptr<ppp::tap::ITap> tap = GetTap();
+                const auto* linux_tap = dynamic_cast<ppp::tap::TapLinux*>(tap.get());
+                return linux_tap != NULLPTR && linux_tap->GetRuntimeStats(stats);
+#else
+                (void)stats;
+                return false;
+#endif
+            }
+
+            bool VEthernetNetworkSwitcher::GetXtcpRuntimeStats(ppp::app::runtime::RuntimeXtcpStats& stats) noexcept {
+                if (tcp_stack_mode_ != ppp::app::TcpStackMode::Xtcp) {
+                    return false;
+                }
+                const std::shared_ptr<xtcp::XtcpRuntime> runtime = xtcp_runtime_;
+                if (NULLPTR == runtime) {
+                    return false;
+                }
+                stats = runtime->SnapshotStats();
+                return true;
+            }
+
+            ppp::app::runtime::RuntimeReadiness VEthernetNetworkSwitcher::GetRuntimeReadiness() noexcept {
+                ppp::app::runtime::ClientRuntimeReadinessFacts facts;
+                const std::shared_ptr<VEthernetExchanger> exchanger = exchanger_;
+                const std::shared_ptr<ppp::tap::ITap> tap = GetTap();
+                const route::RouteStateSnapshot route_snapshot = route_coordinator_->Snapshot();
+                facts.session_established = exchanger &&
+                    exchanger->GetNetworkState() == VEthernetExchanger::NetworkState_Established;
+                facts.adapter_open = tap && tap->IsOpen();
+#if defined(_ANDROID) || defined(_IPHONE)
+                facts.route_required = !proxy_only_;
+#else
+                facts.route_required = !proxy_only_ && tap && tap->IsHostedNetwork();
+#endif
+                facts.route_applied = route_snapshot.applied;
+                facts.dns_required = !proxy_only_;
+                facts.dns_configured = dns_controller_ && dns_controller_->IsConfigured();
+                facts.dns_session_active = dns_controller_ && dns_controller_->HasActiveSession();
+                // INFO is optional for unmanaged compatibility sessions. The
+                // switcher is published only after Open() has applied policy.
+                facts.policy_negotiated = facts.session_established;
+                ppp::app::runtime::RuntimeReadiness readiness =
+                    ppp::app::runtime::BuildClientRuntimeReadiness(facts);
+                if (tcp_stack_mode_ == ppp::app::TcpStackMode::Xtcp) {
+                    const std::shared_ptr<xtcp::XtcpRuntime> runtime = xtcp_runtime_;
+                    readiness.policy = readiness.policy && runtime && runtime->IsReady();
+                }
+                return readiness;
             }
 
             void VEthernetNetworkSwitcher::RequestedIPv6(const ppp::string& value) noexcept {
@@ -231,16 +301,61 @@ namespace ppp {
             }
 
             VEthernetNetworkSwitcher::RouteInformationTablePtr VEthernetNetworkSwitcher::GetRib() noexcept {
-                return rib_;
+                return route_coordinator_->Snapshot().rib;
             }
 
             VEthernetNetworkSwitcher::ForwardInformationTablePtr VEthernetNetworkSwitcher::GetFib() noexcept {
-                return fib_;
+                return route_coordinator_->Snapshot().fib;
             }
 
             VEthernetNetworkSwitcher::IForwardingPtr VEthernetNetworkSwitcher::GetForwarding() noexcept {
                 return forwarding_;
             }
+
+#if defined(_WIN32)
+            bool VEthernetNetworkSwitcher::BindWindowsIPv6RouteOwner() noexcept {
+                return windows_ipv6_route_owner_ && tun_ni_ && underlying_ni_ &&
+                    windows_ipv6_route_owner_->BindInterfaces(tun_ni_->Index, underlying_ni_->Index);
+            }
+
+            bool VEthernetNetworkSwitcher::StageWindowsIPv6Egress(
+                const boost::asio::ip::tcp::endpoint& endpoint,
+                bool proven_external) noexcept {
+                return windows_ipv6_route_owner_ &&
+                    windows_ipv6_route_owner_->StageEgressEndpoint(endpoint, proven_external);
+            }
+
+            bool VEthernetNetworkSwitcher::EnsureWindowsIPv6Sink() noexcept {
+                return windows_ipv6_route_owner_ && windows_ipv6_route_owner_->EnsureSinkMode();
+            }
+
+            bool VEthernetNetworkSwitcher::ActivateWindowsManagedIPv6(
+                const boost::asio::ip::address& gateway,
+                bool nat_mode) noexcept {
+                return windows_ipv6_route_owner_ &&
+                    windows_ipv6_route_owner_->ActivateManagedMode(gateway, nat_mode);
+            }
+
+            bool VEthernetNetworkSwitcher::CommitWindowsIPv6Egress() noexcept {
+                return windows_ipv6_route_owner_ && windows_ipv6_route_owner_->CommitStagedPin();
+            }
+
+            bool VEthernetNetworkSwitcher::RollbackWindowsIPv6Egress() noexcept {
+                return !windows_ipv6_route_owner_ || windows_ipv6_route_owner_->RollbackStagedPin();
+            }
+
+            bool VEthernetNetworkSwitcher::StopWindowsIPv6Routes() noexcept {
+                return !windows_ipv6_route_owner_ || windows_ipv6_route_owner_->Stop();
+            }
+
+            bool VEthernetNetworkSwitcher::HasActiveWindowsIPv6Takeover() const noexcept {
+                return windows_ipv6_route_owner_ && windows_ipv6_route_owner_->HasActiveTakeover();
+            }
+
+            bool VEthernetNetworkSwitcher::HasPendingWindowsIPv6Cleanup() const noexcept {
+                return windows_ipv6_route_owner_ && windows_ipv6_route_owner_->HasPendingCleanup();
+            }
+#endif
 
             std::shared_ptr<aggligator::aggligator> VEthernetNetworkSwitcher::GetAggligator() noexcept {
                 return aggligator_;
@@ -272,13 +387,119 @@ namespace ppp {
                 return ip == gw ? true : htonl((ntohl(gw) & ntohl(mask)) + 1) == ip;
             }
 
+            route::RoutePlanInput VEthernetNetworkSwitcher::BuildRoutePlanInput() noexcept {
+                route::RoutePlanInput input;
+                if (const std::shared_ptr<ppp::tap::ITap> tap = GetTap(); tap) {
+                    input.tap_ip = tap->IPAddress;
+                    input.tap_gateway = tap->GatewayServer;
+                    input.tap_submask = tap->SubmaskAddress;
+                    input.tap_hosted = tap->IsHostedNetwork();
+#if defined(_LINUX) && !defined(_ANDROID) && !defined(_IPHONE)
+                    if (auto* platform_tap = dynamic_cast<ppp::tap::TapLinux*>(tap.get())) {
+                        input.tap_promiscuous = platform_tap->IsPromisc();
+                    }
+#elif defined(_MACOS)
+                    if (auto* platform_tap = dynamic_cast<ppp::tap::TapDarwin*>(tap.get())) {
+                        input.tap_promiscuous = platform_tap->IsPromisc();
+                    }
+#endif
+                }
+
+                auto copy_interface = [](const std::shared_ptr<ClientNetworkInterface>& source) {
+                    route::RouteInterfaceSnapshot target;
+                    if (!source) return target;
+                    target.name.assign(source->Name.begin(), source->Name.end());
+                    target.index = source->Index;
+                    target.ip = source->IPAddress;
+                    target.gateway = source->GatewayServer;
+                    target.submask = source->SubmaskAddress;
+                    target.dns.assign(source->DnsAddresses.begin(), source->DnsAddresses.end());
+                    return target;
+                };
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                input.tap_interface = copy_interface(tun_ni_);
+                input.underlying_interface = copy_interface(underlying_ni_);
+#endif
+                for (const auto& pair : route_coordinator_->Snapshot().nics) {
+                    input.nics.emplace(pair.first, std::string(pair.second.begin(), pair.second.end()));
+                }
+#if defined(_ANDROID) || defined(_IPHONE)
+                if (configuration_) {
+                    // Mobile RouteCoordinator loads these files into the native
+                    // RIB/FIB; it does not use the desktop AddLoadIPList API.
+                    const auto& routes = configuration_->client.routing.configured
+                        ? configuration_->client.routing.routes
+                        : configuration_->client.routes;
+                    input.route_sources.reserve(routes.size());
+                    for (const auto& route : routes) {
+                        route::RouteSource source;
+                        source.path.assign(route.path.begin(), route.path.end());
+                        source.gateway = route.ngw;
+                        if (!source.path.empty()) {
+                            input.route_sources.emplace_back(std::move(source));
+                        }
+                    }
+                }
+#endif
+                // DNS reachability routes belong to the TUN/native interception
+                // path. Proxy-only keeps the rule table available to the client
+                // policy, but must not turn those rules into tunnel DNS routes.
+                if (!proxy_only_ && dns_controller_ && configuration_) {
+                    dns_controller_->CollectReachabilityIps(
+                        configuration_,
+                        configuration_->dns.intercept_unmatched,
+                        [&input](uint32_t ip) noexcept { input.tunnel_dns.emplace(ip); },
+                        [&input](uint32_t ip) noexcept { input.underlying_dns.emplace(ip); });
+                    if (const auto human_rules = dns_controller_->GetHumanRoutingRules(); human_rules) {
+                        input.human_ipv4_rules = human_rules->Ipv4Cidrs();
+                    }
+                    input.has_fake_ip_route = dns_controller_->GetFakeIpRoute(
+                        input.fake_ip_route.network, input.fake_ip_route.prefix);
+                    input.fake_ip_route.gateway = input.tap_gateway;
+                }
+                return input;
+            }
+
 #if !defined(_ANDROID) && !defined(_IPHONE)
             boost::asio::ip::address VEthernetNetworkSwitcher::LastAssignedIPv6() noexcept {
                 return address_manager_->LastAssignedIPv6();
             }
 
             bool VEthernetNetworkSwitcher::TryApplyHostedNetworkRoutes() noexcept {
-                return route_table_->TryApplyHostedNetworkRoutes();
+                route::RoutePlanInput input = BuildRoutePlanInput();
+                if (!input.tap_hosted) return true;
+                const route::RouteStateSnapshot snapshot = route_coordinator_->Snapshot();
+                if (snapshot.applied) return true;
+                const bool established = exchanger_ &&
+                    exchanger_->GetNetworkState() == VEthernetExchanger::NetworkState_Established;
+                if (route::RouteCoordinator::ShouldDeferHostedRouteApply(snapshot.apply_ready, established)) {
+                    ppp::telemetry::Count("client.route.defer", 1);
+                    return true;
+                }
+                if (!route_coordinator_->AddRoute(input)) return false;
+#if defined(_WIN32)
+                if (!UsePaperAirplaneController()) {
+                    route_coordinator_->DeleteRoute();
+                    return false;
+                }
+#endif
+                {
+                    ppp::telemetry::SpanScope span("client.dns.apply");
+#if defined(_WIN32)
+                    if (tun_ni_) {
+                        ppp::win32::network::SetAllNicsDnsAddresses(tun_ni_->DnsAddresses, ni_dns_servers_);
+                    }
+                    ppp::tap::TapWindows::DnsFlushResolverCache();
+                    if (underlying_ni_) {
+                        ppp::win32::network::DeleteAllDefaultGatewayRoutes(underlying_ni_->GatewayServer);
+                    }
+#else
+                    if (tun_ni_) ppp::unix__::UnixAfx::SetDnsAddresses(tun_ni_->DnsAddresses);
+#endif
+                }
+                ppp::telemetry::Count("client.dns.setup", 1);
+                route_coordinator_->ProtectDefaultRoute(input);
+                return true;
             }
 #endif
 
@@ -337,9 +558,30 @@ namespace ppp {
                 return true;
             }
 
+            /** @brief Allows complete TCPv4 GSO delivery only while the XTCP runtime is ready. */
+            bool VEthernetNetworkSwitcher::CanConsumeTcpV4Gso() noexcept {
+                if (tcp_stack_mode_ != ppp::app::TcpStackMode::Xtcp) {
+                    return false;
+                }
+                const std::shared_ptr<xtcp::XtcpRuntime> runtime = xtcp_runtime_;
+                return runtime && runtime->IsReady();
+            }
+
             /** @brief Handles native IPv4 packet input and forwards eligible NAT traffic. */
             bool VEthernetNetworkSwitcher::OnPacketInput(ppp::net::native::ip_hdr* packet, int packet_length, int header_length, int proto, bool vnet) noexcept {
-                return packet_dispatch_->OnPacketInput(packet, packet_length, header_length, proto, vnet);
+                if (packet_dispatch_->OnPacketInput(
+                        packet, packet_length, header_length, proto, vnet)) {
+                    return true;
+                }
+                if (tcp_stack_mode_ == ppp::app::TcpStackMode::Xtcp &&
+                    proto == ppp::net::native::ip_hdr::IP_PROTO_TCP) {
+                    const std::shared_ptr<xtcp::XtcpRuntime> runtime = xtcp_runtime_;
+                    if (NULLPTR != runtime) {
+                        runtime->SubmitIPv4Tcp(packet, packet_length);
+                    }
+                    return true;
+                }
+                return false;
             }
 
             /** @brief Handles raw IPv6 packet input and forwards approved traffic. */
@@ -359,14 +601,36 @@ namespace ppp {
 
             /** @brief Dispatches switcher finalization and then disposes base VEthernet. */
             void VEthernetNetworkSwitcher::Dispose() noexcept {
+                Dispose(ppp::function<void(bool)>());
+            }
+
+            /** @brief Disposes the switcher and reports after host rollback has completed. */
+            void VEthernetNetworkSwitcher::Dispose(
+                ppp::function<void(bool)> completion) noexcept {
                 auto self = std::static_pointer_cast<VEthernetNetworkSwitcher>(shared_from_this());
                 std::shared_ptr<boost::asio::io_context> context = GetContext();
                 boost::asio::dispatch(*context,
-                    [self, this, context]() noexcept {
-                        Finalize();
+                    [self, this, completion = std::move(completion)]() mutable noexcept {
+                        DisposeAttempt(std::move(completion), 3);
                     });
-                ppp::telemetry::Log(Level::kInfo, "client", "TUN detached");
+            }
+
+            /** @brief Retries host cleanup before releasing the TAP and its interface identity. */
+            void VEthernetNetworkSwitcher::DisposeAttempt(
+                ppp::function<void(bool)> completion,
+                int attempts_remaining) noexcept {
+                Finalize();
+                const bool cleanup_success = WasTeardownSuccessful();
+                if (!cleanup_success && attempts_remaining > 1) {
+                    DisposeAttempt(std::move(completion), attempts_remaining - 1);
+                    return;
+                }
+
                 VEthernet::Dispose();
+                ppp::telemetry::Log(Level::kInfo, "client", "TUN detached");
+                if (completion) {
+                    completion(cleanup_success);
+                }
             }
 
             /** @brief Releases objects, packets, and timeout handlers. */
@@ -449,25 +713,29 @@ namespace ppp {
 
             /** @brief Converts UDP payload to IP frame and emits it to local output. */
             boost::asio::ip::address VEthernetNetworkSwitcher::RewriteFakeIpAddress(const boost::asio::ip::address& addr) const noexcept {
-                if (!addr.is_v4() || NULLPTR == dns_interceptor_) {
+                if (!addr.is_v4() || NULLPTR == dns_controller_) {
                     return addr;
                 }
+                return dns_controller_->RewriteFakeIpAddress(addr);
+            }
 
-                std::shared_ptr<const dns::FakeIpPool> pool = dns_interceptor_->GetFakeIpPool();
-                if (NULLPTR == pool || !pool->IsEnabled()) {
-                    return addr;
+            bool VEthernetNetworkSwitcher::ResolveDestination(
+                const ppp::net::IPEndPoint& endpoint,
+                routing::ResolvedDestination& destination) const noexcept {
+                if (NULLPTR != dns_controller_) {
+                    return dns_controller_->ResolveDestination(endpoint, destination);
                 }
-
-                const uint32_t fake_host = addr.to_v4().to_uint();
-                const uint32_t real_host = pool->LookupRealIpHostOrder(fake_host);
-                if (real_host == 0) {
-                    return addr;
-                }
-
-                return boost::asio::ip::address_v4(real_host);
+                destination = routing::ResolvedDestination{};
+                destination.original_endpoint = endpoint;
+                destination.connect_endpoint = endpoint;
+                return true;
             }
 
             bool VEthernetNetworkSwitcher::DatagramOutput(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, void* packet, int packet_size, bool caching) noexcept {
+                return DatagramOutput(sourceEP, destinationEP, nullptr, packet, packet_size, caching);
+            }
+
+            bool VEthernetNetworkSwitcher::DatagramOutput(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const std::shared_ptr<Byte>& owner, void* packet, int packet_size, bool caching) noexcept {
                 if (NULLPTR == packet || packet_size < 1) {
                     return false;
                 }
@@ -484,7 +752,19 @@ namespace ppp {
                         return false;
                     }
 
-                    messages->Buffer = wrap_shared_pointer(reinterpret_cast<Byte*>(packet));
+                    // Zero-copy when owner is available; otherwise allocate + copy for safety.
+                    if (NULLPTR != owner) {
+                        messages->Buffer = ppp::wrap_shared_pointer(reinterpret_cast<Byte*>(packet), owner);
+                    }
+
+                    if (NULLPTR == messages->Buffer) {
+                        std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = GetBufferAllocator();
+                        messages->Buffer = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, packet_size);
+                        if (NULLPTR == messages->Buffer) {
+                            return false;
+                        }
+                        memcpy(messages->Buffer.get(), packet, packet_size);
+                    }
                     messages->Length = packet_size;
 
                     std::shared_ptr<UdpFrame> frame = make_shared_object<UdpFrame>();
@@ -514,10 +794,29 @@ namespace ppp {
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
             bool VEthernetNetworkSwitcher::ApplyAssignedIPv6(const VirtualEthernetInformationExtensions& extensions) noexcept {
-                return address_manager_->ApplyAssignedIPv6(extensions);
+                const bool applied = address_manager_->ApplyAssignedIPv6(extensions);
+#if defined(_WIN32)
+                if (!applied) {
+                    return false;
+                }
+
+                const bool nat_mode = extensions.AssignedIPv6Mode ==
+                    VirtualEthernetInformationExtensions::IPv6Mode_Nat66;
+                if (!ActivateWindowsManagedIPv6(extensions.AssignedIPv6Gateway, nat_mode)) {
+                    // Route protection is best-effort: keep the VPN session, but do not leave
+                    // a managed IPv6 address active without the split takeover pair.
+                    EnsureWindowsIPv6Sink();
+                    address_manager_->RestoreAssignedIPv6();
+                    return true;
+                }
+#endif
+                return applied;
             }
 
             void VEthernetNetworkSwitcher::RestoreAssignedIPv6() noexcept {
+#if defined(_WIN32)
+                EnsureWindowsIPv6Sink();
+#endif
                 address_manager_->RestoreAssignedIPv6();
             }
 
@@ -563,13 +862,20 @@ namespace ppp {
 
                 *information_extensions_ = extensions;
 
-                if (NULLPTR != dns_interceptor_) {
-                    dns_interceptor_->OnSessionInfo(extensions, HasManagedIPv6Assignment(extensions));
+                if (NULLPTR != dns_controller_) {
+                    dns_controller_->OnSessionInfo(extensions, HasManagedIPv6Assignment(extensions));
                 }
 
                 bool valid_ipv6_assignment = HasManagedIPv6Assignment(extensions);
-                if (!valid_ipv6_assignment && address_manager_->Ipv6Applied()) {
-                    RestoreAssignedIPv6();
+                if (!valid_ipv6_assignment) {
+                    if (address_manager_->Ipv6Applied()) {
+                        RestoreAssignedIPv6();
+                    }
+#if defined(_WIN32)
+                    else {
+                        EnsureWindowsIPv6Sink();
+                    }
+#endif
                 }
 
                 if (valid_ipv6_assignment &&
@@ -594,8 +900,8 @@ namespace ppp {
 #else
                 *information_extensions_ = extensions;
 
-                if (NULLPTR != dns_interceptor_) {
-                    dns_interceptor_->OnSessionInfo(extensions, HasManagedIPv6Assignment(extensions));
+                if (NULLPTR != dns_controller_) {
+                    dns_controller_->OnSessionInfo(extensions, HasManagedIPv6Assignment(extensions));
                 }
 #endif
 
@@ -633,7 +939,9 @@ namespace ppp {
                     dynamic_peer_routes_ = extensions.PeerRouteTable.routes;
                     ApplyPeerPrefixRoutes(extensions);
                 }
-                elif (!configuration_->client.peer_routes.empty()) {
+                elif (configuration_ && !(configuration_->client.routing.configured
+                        ? configuration_->client.routing.peer_routes
+                        : configuration_->client.peer_routes).empty()) {
                     ApplyPeerPrefixRoutes(extensions);
                 }
 
@@ -755,7 +1063,13 @@ namespace ppp {
 #if defined(_ANDROID) || defined(_IPHONE)
             /** @brief Builds mobile-side route table including bypass and DNS exceptions. */
             bool VEthernetNetworkSwitcher::AddAllRoute(const std::shared_ptr<ITap>& tap) noexcept {
-                if (!route_table_->AddAllRoute(tap)) {
+                route::RoutePlanInput input = BuildRoutePlanInput();
+                input.tap_ip = tap->IPAddress;
+                input.tap_gateway = tap->GatewayServer;
+                input.tap_submask = tap->SubmaskAddress;
+                input.bypass_ip_list.assign(bypass_ip_list_.begin(), bypass_ip_list_.end());
+                bypass_ip_list_.clear();
+                if (!route_coordinator_->AddAllRoute(input)) {
                     return false;
                 }
 
@@ -807,35 +1121,17 @@ namespace ppp {
 #if !defined(_ANDROID) && !defined(_IPHONE)
             /** @brief Attempts to restore default route on underlying physical NIC. */
             bool VEthernetNetworkSwitcher::FixUnderlyingNgw() noexcept {
-                auto ni = underlying_ni_;
-                if (NULLPTR == ni) {
-                    return false;
-                }
-
-                auto gw = ni->GatewayServer;
-                if (gw.is_v4() && !IPEndPoint::IsInvalid(gw) && !gw.is_loopback()) {
-                    uint32_t next_hop = htonl(gw.to_v4().to_uint());
-#if defined(_WIN32)
-                    // Repair physical ethernet route table information on windows platform!
-                    ppp::win32::network::Router::Add(IPEndPoint::AnyAddress, IPEndPoint::AnyAddress, next_hop, 1);
-#elif defined(_MACOS)
-                    ppp::darwin::tun::utun_add_route2(IPEndPoint::AnyAddress, IPEndPoint::AnyAddress, next_hop);
-#else
-                    // Repair physical ethernet route table information on linux platform!
-                    ppp::tap::TapLinux::AddRoute(ni->Name, IPEndPoint::AnyAddress, IPEndPoint::AnyAddress, next_hop);
-#endif
-                    return true;
-                }
-
-                return false;
+                return route_coordinator_->EnsureUnderlyingDefault(BuildRoutePlanInput());
             }
 
             /** @brief Removes VPN route entries and restores system defaults. */
-            void VEthernetNetworkSwitcher::DeleteRoute() noexcept {
-                ClearPeerPrefixRoutes();
-                route_table_->DeleteRoute();
-                FixUnderlyingNgw();
-                route_table_->DeleteRouteWithDnsServers();
+            bool VEthernetNetworkSwitcher::DeleteRoute() noexcept {
+                if (!route_coordinator_->DeleteRoute()) {
+                    return false;
+                }
+                applied_peer_prefix_routes_.clear();
+                route_coordinator_->ReplacePeerPrefix(NULLPTR, NULLPTR);
+                return true;
             }
 
             /** @brief Returns formatted cached remote URI string. */
@@ -869,6 +1165,19 @@ namespace ppp {
                     gw, url);
             }
 
+            bool VEthernetNetworkSwitcher::AddLoadIPListText(
+                const ppp::string& text,
+#if defined(_LINUX)
+                const ppp::string& nic,
+#endif
+                const boost::asio::ip::address& gw) noexcept {
+                return bypass_loader_->AddLoadIPListText(text,
+#if defined(_LINUX)
+                    nic,
+#endif
+                    gw);
+            }
+
             bool VEthernetNetworkSwitcher::LoadAllIPListWithFilePaths(const boost::asio::ip::address& gw) noexcept {
                 return bypass_loader_->LoadAllIPListWithFilePaths(gw);
             }
@@ -880,7 +1189,9 @@ namespace ppp {
 
             /** @brief Releases all runtime services, routes, and related resources. */
             void VEthernetNetworkSwitcher::ReleaseAllObjects() noexcept {
-                teardown_->ReleaseAllObjects();
+                const ppp::app::runtime::RuntimeStopResult result =
+                    teardown_->ReleaseAllObjects();
+                last_teardown_success_.store(result.success, std::memory_order_release);
             }
 
             /** @brief Removes timeout callback associated with a key. */
@@ -900,8 +1211,8 @@ namespace ppp {
                 }
 
                 int events = 0;
-                if (NULLPTR != dns_interceptor_) {
-                    events = dns_interceptor_->LoadRules(rules, load_file_or_string);
+                if (NULLPTR != dns_controller_) {
+                    events = dns_controller_->LoadRules(rules, load_file_or_string);
                 }
 
                 if (1 > events) {
@@ -924,197 +1235,9 @@ namespace ppp {
                 return exchanger_->StaticEchoAddRemoteEndPoint(remoteEP);
             }
 
-            /** @brief Entry point for DNS redirection decision and async execution. */
-            dns::DnsHostPorts VEthernetNetworkSwitcher::BuildDnsHostPorts(
-                const std::shared_ptr<VEthernetExchanger>& exchanger) noexcept {
-
-                const auto self = std::static_pointer_cast<VEthernetNetworkSwitcher>(shared_from_this());
-                auto datagram_output =
-                    [self](const boost::asio::ip::udp::endpoint& sourceEP,
-                        const boost::asio::ip::udp::endpoint& destinationEP,
-                        void* packet,
-                        int packet_size,
-                        bool caching) noexcept {
-                        return self->DatagramOutput(
-                            sourceEP, destinationEP, packet, packet_size, caching);
-                    };
-
-                dns::DnsHostPorts host;
-                host.datagram_output = datagram_output;
-                host.get_tap = [self]() noexcept { return self->GetTap(); };
-                host.get_configuration = [self]() noexcept { return self->GetConfiguration(); };
-                host.get_buffer_allocator = [self]() noexcept { return self->GetBufferAllocator(); };
-                host.emplace_timeout =
-                    [self](void* key,
-                        const std::shared_ptr<ppp::function<void(ppp::threading::Timer*)>>& timeout) noexcept {
-                        return self->EmplaceTimeout(key, timeout);
-                    };
-                host.delete_timeout = [self](void* key) noexcept { return self->DeleteTimeout(key); };
-#if defined(_LINUX)
-                host.get_protector_network = [self]() noexcept { return self->GetProtectorNetwork(); };
-#endif
-                host.handle_resolver_response =
-                    [exchanger, datagram_output, self](
-                        const std::shared_ptr<ppp::net::packet::BufferSegment>& messages,
-                        const boost::asio::ip::udp::endpoint& sourceEP,
-                        const boost::asio::ip::udp::endpoint& destEP,
-                        ppp::vector<Byte> response) noexcept {
-                        dns::DnsResponseHandlerPorts ports;
-                        const std::shared_ptr<ppp::configurations::AppConfiguration> configuration =
-                            self->GetConfiguration();
-                        if (NULLPTR != configuration && configuration->udp.dns.cache) {
-                            ports.enable_dns_cache = true;
-                            ports.write_cache =
-                                [](const Byte* packet, int packet_size) noexcept {
-                                    ppp::net::asio::vdns::AddCache(packet, packet_size);
-                                };
-                        }
-                        ports.datagram_output = datagram_output;
-                        if (NULLPTR != exchanger) {
-                            ports.tunnel_send =
-                                [exchanger](const boost::asio::ip::udp::endpoint& sourceEP,
-                                    const boost::asio::ip::udp::endpoint& destinationEP,
-                                    const void* packet,
-                                    int packet_size) noexcept {
-                                    return exchanger->SendTo(
-                                        sourceEP, destinationEP, packet, packet_size);
-                                };
-                        }
-                        dns::DnsResponseHandler::HandleWithPorts(
-                            ports, messages, sourceEP, destEP, std::move(response));
-                    };
-                return host;
-            }
-
-            const dns::DnsHostPorts& VEthernetNetworkSwitcher::DnsHostPortsFor(
-                const std::shared_ptr<VEthernetExchanger>& exchanger) noexcept {
-
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                SynchronizedObjectScope scope(prdr_);
-#else
-                SynchronizedObjectScope scope(GetSynchronizedObject());
-#endif
-
-                if (std::shared_ptr<VEthernetExchanger> cached = dns_host_ports_exchanger_.lock();
-                    cached == exchanger && NULLPTR != dns_host_ports_cache_ && dns_host_ports_cache_->IsValid()) {
-                    ppp::telemetry::Log(Level::kDebug, "client", "dns_host_ports cache hit");
-                    return *dns_host_ports_cache_;
-                }
-
-                if (NULLPTR == dns_host_ports_cache_) {
-                    dns_host_ports_cache_ = std::make_unique<dns::DnsHostPorts>();
-                }
-
-                ppp::telemetry::Log(Level::kDebug, "client", "dns_host_ports cache rebuild");
-                *dns_host_ports_cache_ = BuildDnsHostPorts(exchanger);
-                dns_host_ports_exchanger_ = exchanger;
-                return *dns_host_ports_cache_;
-            }
-
-            void VEthernetNetworkSwitcher::InvalidateDnsHostPorts() noexcept {
-#if !defined(_ANDROID) && !defined(_IPHONE)
-                SynchronizedObjectScope scope(prdr_);
-#else
-                SynchronizedObjectScope scope(GetSynchronizedObject());
-#endif
-                ppp::telemetry::Log(Level::kDebug, "client", "dns_host_ports cache invalidate");
-                dns_host_ports_cache_.reset();
-                dns_host_ports_exchanger_.reset();
-            }
-
-            bool VEthernetNetworkSwitcher::RedirectDnsServer(
-                const std::shared_ptr<VEthernetExchanger>& exchanger,
-                const std::shared_ptr<IPFrame>& packet,
-                const std::shared_ptr<UdpFrame>& frame,
-                const std::shared_ptr<BufferSegment>& messages) noexcept {
-
-                if (NULLPTR == dns_interceptor_) {
-                    return false;
-                }
-
-                return dns_interceptor_->HandleQuery(
-                    DnsHostPortsFor(exchanger),
-                    exchanger, packet, frame, messages);
-            }
-
-            route::RouteHostPorts VEthernetNetworkSwitcher::BuildRouteHostPorts() noexcept {
-                route::RouteHostPorts host;
-#if !defined(_ANDROID) && !defined(_IPHONE)
-                const auto self = std::static_pointer_cast<VEthernetNetworkSwitcher>(shared_from_this());
-                host.get_tap = [self]() noexcept { return self->GetTap(); };
-#if !defined(_ANDROID) && !defined(_IPHONE)
-                host.get_tap_ni = [self]() noexcept { return self->GetTapNetworkInterface(); };
-                host.get_underlying_ni = [self]() noexcept { return self->GetUnderlyingNetworkInterface(); };
-#else
-                host.get_tap_ni = []() noexcept { return std::shared_ptr<ClientNetworkInterface>(); };
-                host.get_underlying_ni = []() noexcept { return std::shared_ptr<ClientNetworkInterface>(); };
-#endif
-                host.get_rib = [self]() noexcept { return self->GetRib(); };
-                host.set_rib = [self](route::RouteInformationTablePtr rib) noexcept { self->rib_ = std::move(rib); };
-                host.get_fib = [self]() noexcept { return self->GetFib(); };
-                host.set_fib = [self](route::ForwardInformationTablePtr fib) noexcept { self->fib_ = std::move(fib); };
-                host.get_route_added = [self]() noexcept { return self->route_added_; };
-                host.set_route_added = [self](bool value) noexcept { self->route_added_ = value; };
-                host.get_route_apply_ready = [self]() noexcept { return self->route_apply_ready_; };
-                host.add_dns_server_ip =
-                    [self](uint32_t ip, int bucket) noexcept {
-                        if (bucket >= 0 && bucket < static_cast<int>(std::size(self->dns_serverss_))) {
-                            self->dns_serverss_[bucket].emplace(ip);
-                        }
-                    };
-                host.clear_dns_servers =
-                    [self]() noexcept {
-                        for (auto& dns_servers : self->dns_serverss_) {
-                            dns_servers.clear();
-                        }
-                    };
-                host.get_dns_server_bucket =
-                    [self](int bucket) noexcept -> ppp::unordered_set<uint32_t>* {
-                        if (bucket < 0 || bucket >= static_cast<int>(std::size(self->dns_serverss_))) {
-                            return nullptr;
-                        }
-                        return &self->dns_serverss_[bucket];
-                    };
-                host.dedupe_dns_servers =
-                    [self]() noexcept {
-                        ppp::collections::Dictionary::DeduplicationList(self->dns_serverss_[1], self->dns_serverss_[0]);
-                    };
-                host.collect_dns_reachability =
-                    [self]() noexcept {
-                        if (NULLPTR == self->dns_interceptor_ || NULLPTR == self->configuration_) {
-                            return;
-                        }
-
-                        self->dns_interceptor_->CollectReachabilityIps(
-                            self->configuration_,
-                            self->configuration_->dns.intercept_unmatched,
-                            [self](uint32_t ip) noexcept { self->dns_serverss_[0].emplace(ip); },
-                            [self](uint32_t ip) noexcept { self->dns_serverss_[1].emplace(ip); });
-                    };
-                host.get_dns_interceptor = [self]() noexcept { return self->dns_interceptor_; };
-                host.get_configuration = [self]() noexcept { return self->GetConfiguration(); };
-#if defined(_LINUX)
-                host.get_default_routes = [self]() noexcept { return self->default_routes_; };
-                host.set_default_routes =
-                    [self](route::RouteInformationTablePtr routes) noexcept { self->default_routes_ = std::move(routes); };
-                host.get_nics = [self]() noexcept { return &self->nics_; };
-#else
-                // default_routes_/nics_ back only the linux route backend; other platforms keep
-                // these ports valid with empty stand-ins because their route managers never call them.
-                host.get_default_routes = []() noexcept { return route::RouteInformationTablePtr(); };
-                host.set_default_routes = [](route::RouteInformationTablePtr) noexcept {};
-                host.get_nics = []() noexcept -> ppp::unordered_map<uint32_t, ppp::string>* {
-                    static ppp::unordered_map<uint32_t, ppp::string> empty_nics;
-                    return &empty_nics;
-                };
-#endif // _LINUX vs other desktops
-#endif // !_ANDROID && !_IPHONE: mobile uses RouteTableManager_mobile, no route-ports consumer
-                return host;
-            }
-
-#if !defined(_ANDROID) && !defined(_IPHONE)
-            void VEthernetNetworkSwitcher::AddRoute() noexcept {
-                route_table_->AddRoute();
+            bool VEthernetNetworkSwitcher::AddRoute() noexcept {
+                return route_coordinator_->AddRoute(BuildRoutePlanInput());
             }
 #endif
 

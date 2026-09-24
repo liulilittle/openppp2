@@ -1,5 +1,6 @@
 #include <ppp/app/client/RemoteEndpointLoader.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/route/RouteCoordinator.h>
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/transmissions/proxys/IForwarding.h>
@@ -18,22 +19,17 @@ void RemoteEndpointLoader::Bind(VEthernetNetworkSwitcher* owner) noexcept {
     owner_ = owner;
 }
 
-bool RemoteEndpointLoader::Apply(const boost::asio::ip::address& gw) noexcept {
-    using ProtocolType = VEthernetExchanger::ProtocolType;
-
-    // This function must be executed after the remote exchanger object has been created.
-    std::shared_ptr<VEthernetExchanger> exchanger = owner_->exchanger_;
-    if (NULLPTR == exchanger) {
-        return false;
+bool RemoteEndpointLoader::PrepareForwarding() noexcept {
+    if (owner_->forwarding_) {
+        return true;
     }
 
-    // Initialize and try the proxy forwarding object if the link does require proxy forwarding services.
     VEthernetNetworkSwitcher::IForwardingPtr forwarding =
         make_shared_object<IForwarding>(owner_->GetContext(), owner_->configuration_);
     if (NULLPTR == forwarding) {
         return false;
     }
-    elif(forwarding->Open()) {
+    if (forwarding->Open()) {
         owner_->forwarding_ = forwarding;
 #if defined(_LINUX)
         forwarding->ProtectorNetwork = owner_->GetProtectorNetwork();
@@ -41,8 +37,20 @@ bool RemoteEndpointLoader::Apply(const boost::asio::ip::address& gw) noexcept {
     }
     else {
         forwarding->Dispose();
-        forwarding.reset();
     }
+    return true;
+}
+
+bool RemoteEndpointLoader::Apply(const boost::asio::ip::address& gw) noexcept {
+    using ProtocolType = VEthernetExchanger::ProtocolType;
+
+    // This function must be executed after the remote exchanger object has been created.
+    std::shared_ptr<VEthernetExchanger> exchanger = owner_->exchanger_;
+    if (NULLPTR == exchanger || !PrepareForwarding()) {
+        return false;
+    }
+
+    VEthernetNetworkSwitcher::IForwardingPtr forwarding = owner_->forwarding_;
 
     boost::asio::ip::tcp::endpoint remoteEP;
     ppp::string hostname;
@@ -82,10 +90,10 @@ bool RemoteEndpointLoader::Apply(const boost::asio::ip::address& gw) noexcept {
     }
 
     // Add the default IP address of the vpn virtual network adapter to the RIB route table.
-    VEthernetNetworkSwitcher::RouteInformationTablePtr rib = owner_->rib_;
+    route::RouteInformationTablePtr rib = owner_->route_coordinator_->Snapshot().rib;
     if (NULLPTR == rib) {
-        rib = make_shared_object<VEthernetNetworkSwitcher::RouteInformationTable>();
-        owner_->rib_ = rib;
+        rib = make_shared_object<ppp::net::native::RouteInformationTable>();
+        owner_->route_coordinator_->ReplaceRib(rib);
     }
 
     // CIDR: 0.0.0.0/0; 0.0.0.0/1; 128.0.0.0/1

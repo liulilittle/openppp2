@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../runtime/runtime_snapshot.dart';
 
 /// Operational/error log panel.
 ///
@@ -14,6 +15,7 @@ class DebugPanel extends StatelessWidget {
   final VoidCallback onCopy;
   final VoidCallback onClear;
   final VoidCallback onStop;
+  final RuntimeSnapshot runtimeSnapshot;
 
   const DebugPanel({
     super.key,
@@ -24,6 +26,7 @@ class DebugPanel extends StatelessWidget {
     required this.onCopy,
     required this.onClear,
     required this.onStop,
+    required this.runtimeSnapshot,
   });
 
   static final _trafficNoise = RegExp(
@@ -98,6 +101,8 @@ class DebugPanel extends StatelessWidget {
             ),
             Text('状态: $stateText'),
             const SizedBox(height: 4),
+            for (final line in runtimeSnapshot.muxDiagnosticLines) Text(line),
+            for (final line in runtimeSnapshot.p2pDiagnosticLines) Text(line),
             SelectableText(
               '日志文件: ${logPath.isEmpty ? '(未知)' : logPath}',
               style: theme.textTheme.bodySmall,

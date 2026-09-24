@@ -938,6 +938,28 @@ namespace ppp
                                 });
                         return true;
                     }
+                    bool                                                        PacketInput(
+                        const std::shared_ptr<boost::asio::ip::tcp::socket>&                                                   socket,
+                        const std::function<int(boost::asio::ip::tcp::endpoint&, boost::asio::ip::tcp::endpoint&)>&         add_port_forward_handling)
+                    {
+                        if (NULLPTR == socket)
+                        {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketDisconnected);
+                            return false;
+                        }
+
+                        if (NULLPTR == add_port_forward_handling)
+                        {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::PaperAirplaneRootPacketInputNullHandler);
+                            return false;
+                        }
+
+                        return PacketInput(*socket,
+                            [socket, add_port_forward_handling](boost::asio::ip::tcp::endpoint& local, boost::asio::ip::tcp::endpoint& remote) noexcept -> int
+                            {
+                                return add_port_forward_handling(local, remote);
+                            });
+                    }
                 }
             }
         }

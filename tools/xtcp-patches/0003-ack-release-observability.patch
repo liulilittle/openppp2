@@ -1,0 +1,133 @@
+diff '--unified=0' -rN a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
+--- a/include/xtcp/core/stack.h	2026-09-01 09:44:44.008972238 +0800
++++ b/include/xtcp/core/stack.h	2026-09-01 09:44:44.096971904 +0800
+@@ -504,0 +505,4 @@
++         * @brief Aggregates read-only ACK-release telemetry across live connections.
++         */
++        core::AckReleaseTelemetrySnapshot AckReleaseTelemetry() const noexcept;
++        /**
+diff '--unified=0' -rN a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+--- a/include/xtcp/core/tcp.h	2026-09-01 09:44:44.008972238 +0800
++++ b/include/xtcp/core/tcp.h	2026-09-01 09:44:44.096971904 +0800
+@@ -16,0 +17 @@
++#include <atomic>
+@@ -111,0 +113,16 @@
++         * @brief Cumulative ACK-release telemetry; all fields are observational.
++         */
++        struct AckReleaseTelemetrySnapshot {
++            UInt64 valid_acks = 0;
++            UInt64 ack_advance_events = 0;
++            UInt64 ack_advance_bytes = 0;
++            UInt64 pending_flush_attempts = 0;
++            UInt64 tx_sink_packets = 0;
++            UInt64 tx_sink_bytes = 0;
++            UInt64 pending_flush_pacing = 0;
++            UInt64 pending_flush_window_cwnd = 0;
++            UInt64 pending_flush_fast_recovery_pipe = 0;
++            UInt64 pending_flush_packet_allocation = 0;
++        };
++
++        /**
+@@ -272,0 +290,4 @@
++             * @brief Copies cumulative ACK-release telemetry.
++             */
++            AckReleaseTelemetrySnapshot AckReleaseTelemetry() const noexcept;
++            /**
+@@ -1079,0 +1101,10 @@
++            std::atomic<UInt64> ack_release_valid_acks_{0};
++            std::atomic<UInt64> ack_release_advance_events_{0};
++            std::atomic<UInt64> ack_release_advance_bytes_{0};
++            std::atomic<UInt64> ack_release_pending_flush_attempts_{0};
++            std::atomic<UInt64> ack_release_tx_sink_packets_{0};
++            std::atomic<UInt64> ack_release_tx_sink_bytes_{0};
++            std::atomic<UInt64> ack_release_pending_flush_pacing_{0};
++            std::atomic<UInt64> ack_release_pending_flush_window_cwnd_{0};
++            std::atomic<UInt64> ack_release_pending_flush_fast_recovery_pipe_{0};
++            std::atomic<UInt64> ack_release_pending_flush_packet_allocation_{0};
+diff '--unified=0' -rN a/src/core/stack.cpp b/src/core/stack.cpp
+--- a/src/core/stack.cpp	2026-09-01 09:44:44.012972223 +0800
++++ b/src/core/stack.cpp	2026-09-01 09:44:44.104971875 +0800
+@@ -1419,0 +1420,26 @@
++    core::AckReleaseTelemetrySnapshot XtcpStack::AckReleaseTelemetry() const noexcept {
++        core::AckReleaseTelemetrySnapshot total;
++        const auto add = [&total](const core::AckReleaseTelemetrySnapshot& value) noexcept {
++            total.valid_acks += value.valid_acks;
++            total.ack_advance_events += value.ack_advance_events;
++            total.ack_advance_bytes += value.ack_advance_bytes;
++            total.pending_flush_attempts += value.pending_flush_attempts;
++            total.tx_sink_packets += value.tx_sink_packets;
++            total.tx_sink_bytes += value.tx_sink_bytes;
++            total.pending_flush_pacing += value.pending_flush_pacing;
++            total.pending_flush_window_cwnd += value.pending_flush_window_cwnd;
++            total.pending_flush_fast_recovery_pipe += value.pending_flush_fast_recovery_pipe;
++            total.pending_flush_packet_allocation += value.pending_flush_packet_allocation;
++        };
++        for (UInt32 i = 0; i < kShardCount; ++i) {
++            Shard& shard = shards_[i];
++            std::lock_guard<std::recursive_mutex> scope(shard.syncobj_);
++            for (const auto& entry : shard.conns_) {
++                if (NULLPTR != entry.second && NULLPTR != entry.second->conn) {
++                    add(entry.second->conn->AckReleaseTelemetry());
++                }
++            }
++        }
++        return total;
++    }
++
+diff '--unified=0' -rN a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+--- a/src/core/tcp_fsm.cpp	2026-09-01 09:44:44.012972223 +0800
++++ b/src/core/tcp_fsm.cpp	2026-09-01 09:44:44.100971890 +0800
+@@ -2189,0 +2190 @@
++            ack_release_valid_acks_.fetch_add(1, std::memory_order_relaxed);
+@@ -2379,0 +2381,2 @@
++                ack_release_advance_events_.fetch_add(1, std::memory_order_relaxed);
++                ack_release_advance_bytes_.fetch_add(ack - snd_una_, std::memory_order_relaxed);
+@@ -2882,0 +2886,17 @@
++        AckReleaseTelemetrySnapshot TcpConn::AckReleaseTelemetry() const noexcept {
++            AckReleaseTelemetrySnapshot snapshot;
++            snapshot.valid_acks = ack_release_valid_acks_.load(std::memory_order_relaxed);
++            snapshot.ack_advance_events = ack_release_advance_events_.load(std::memory_order_relaxed);
++            snapshot.ack_advance_bytes = ack_release_advance_bytes_.load(std::memory_order_relaxed);
++            snapshot.pending_flush_attempts = ack_release_pending_flush_attempts_.load(std::memory_order_relaxed);
++            snapshot.tx_sink_packets = ack_release_tx_sink_packets_.load(std::memory_order_relaxed);
++            snapshot.tx_sink_bytes = ack_release_tx_sink_bytes_.load(std::memory_order_relaxed);
++            snapshot.pending_flush_pacing = ack_release_pending_flush_pacing_.load(std::memory_order_relaxed);
++            snapshot.pending_flush_window_cwnd = ack_release_pending_flush_window_cwnd_.load(std::memory_order_relaxed);
++            snapshot.pending_flush_fast_recovery_pipe =
++                ack_release_pending_flush_fast_recovery_pipe_.load(std::memory_order_relaxed);
++            snapshot.pending_flush_packet_allocation =
++                ack_release_pending_flush_packet_allocation_.load(std::memory_order_relaxed);
++            return snapshot;
++        }
++
+@@ -3421,0 +3442 @@
++            ack_release_pending_flush_attempts_.fetch_add(1, std::memory_order_relaxed);
+@@ -3429,0 +3451 @@
++                    ack_release_pending_flush_pacing_.fetch_add(1, std::memory_order_relaxed);
+@@ -3450,0 +3473,2 @@
++                        ack_release_pending_flush_fast_recovery_pipe_.fetch_add(
++                            1, std::memory_order_relaxed);
+@@ -3461,0 +3486 @@
++                    ack_release_pending_flush_window_cwnd_.fetch_add(1, std::memory_order_relaxed);
+@@ -3517,0 +3543 @@
++                    ack_release_pending_flush_packet_allocation_.fetch_add(1, std::memory_order_relaxed);
+@@ -3538,0 +3565,2 @@
++                    ack_release_tx_sink_packets_.fetch_add(1, std::memory_order_relaxed);
++                    ack_release_tx_sink_bytes_.fetch_add(n, std::memory_order_relaxed);
+diff '--unified=0' -rN a/tests/test_pacing_flush.cpp b/tests/test_pacing_flush.cpp
+--- a/tests/test_pacing_flush.cpp	2026-08-23 01:12:56.000000000 +0800
++++ b/tests/test_pacing_flush.cpp	2026-09-01 09:44:44.108971859 +0800
+@@ -157,0 +158,5 @@
++    const xtcp::core::AckReleaseTelemetrySnapshot telemetry = stack_a.AckReleaseTelemetry();
++    CHECK(telemetry.pending_flush_attempts >= 1);
++    CHECK(telemetry.tx_sink_packets >= 1);
++    CHECK(telemetry.tx_sink_bytes >= kMss);
++    CHECK(telemetry.pending_flush_pacing >= 1);
+@@ -210,0 +216,7 @@
++    const xtcp::core::AckReleaseTelemetrySnapshot telemetry = stack_a.AckReleaseTelemetry();
++    CHECK(telemetry.valid_acks > 0);
++    CHECK(telemetry.ack_advance_events > 0);
++    CHECK(telemetry.ack_advance_bytes > 0);
++    CHECK(telemetry.pending_flush_attempts > 0);
++    CHECK(telemetry.tx_sink_packets > 0);
++    CHECK(telemetry.tx_sink_bytes >= kTotal);

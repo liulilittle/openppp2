@@ -110,18 +110,3 @@ func openPPP2PacketWriter(
         release: packetRelease
     )
 }
-
-func openPPP2StatisticsWriter(
-    _ statisticsJson: UnsafePointer<CChar>?,
-    _ userData: UnsafeMutableRawPointer?
-) {
-    guard let userData else {
-        return
-    }
-
-    let adapter = Unmanaged<OpenPPP2PacketTunnelAdapter>
-        .fromOpaque(userData)
-        .takeUnretainedValue()
-
-    adapter.updateStatistics(statisticsJson)
-}

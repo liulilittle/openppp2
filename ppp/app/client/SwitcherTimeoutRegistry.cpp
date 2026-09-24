@@ -13,21 +13,24 @@ void SwitcherTimeoutRegistry::Bind(VEthernet::SynchronizedObject* sync) noexcept
 }
 
 bool SwitcherTimeoutRegistry::Emplace(
-    void* key,
+    RegistrationHandle handle,
     const std::shared_ptr<ppp::function<void(ppp::threading::Timer*)>>& handler) noexcept {
-    if (NULLPTR == sync_ || NULLPTR == key || NULLPTR == handler) {
+    if (NULLPTR == sync_ || NULLPTR == handle || NULLPTR == handler) {
         return false;
     }
     VEthernet::SynchronizedObjectScope scope(*sync_);
-    return timeouts_.emplace(key, handler).second;
+    if (released_) {
+        return false;
+    }
+    return timeouts_.emplace(handle, handler).second;
 }
 
-bool SwitcherTimeoutRegistry::Delete(void* key) noexcept {
-    if (NULLPTR == sync_ || NULLPTR == key) {
+bool SwitcherTimeoutRegistry::Delete(RegistrationHandle handle) noexcept {
+    if (NULLPTR == sync_ || NULLPTR == handle) {
         return false;
     }
     VEthernet::SynchronizedObjectScope scope(*sync_);
-    return Dictionary::RemoveValueByKey(timeouts_, key);
+    return Dictionary::RemoveValueByKey(timeouts_, handle);
 }
 
 void SwitcherTimeoutRegistry::ReleaseAll() noexcept {
@@ -37,13 +40,14 @@ void SwitcherTimeoutRegistry::ReleaseAll() noexcept {
     Timer::TimeoutEventHandlerTable timeouts;
     {
         VEthernet::SynchronizedObjectScope scope(*sync_);
+        released_ = true;
         timeouts = std::move(timeouts_);
         timeouts_.clear();
     }
     for (auto&& kv : timeouts) {
         const std::shared_ptr<Timer::TimeoutEventHandler>& handler = kv.second;
         if (handler) {
-            (*handler)(static_cast<Timer*>(kv.first));
+            (*handler)(nullptr);
         }
     }
 }

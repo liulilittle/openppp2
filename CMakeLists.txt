@@ -2,7 +2,7 @@ CMAKE_MINIMUM_REQUIRED(VERSION 3.0.0)
 
 # Define the solutions name.
 SET(NAME ppp)
-PROJECT(${NAME} VERSION 2.0.0.0 LANGUAGES C CXX)# CMAKE_CURRENT_SOURCE_DIR
+PROJECT(${NAME} VERSION 2.1.6.0 LANGUAGES C CXX)# CMAKE_CURRENT_SOURCE_DIR
 
 # C/CXX compiler configurations.
 IF(MSVC)
@@ -66,12 +66,19 @@ ENDIF()
 # linked. NEVER ship an ASan build to production; it is for reproducing the
 # vmux teardown heap-corruption only.
 OPTION(ENABLE_ASAN "Build with AddressSanitizer (diagnostic only; disables jemalloc)" OFF)
-IF(ENABLE_ASAN AND NOT MSVC)
-    SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fno-omit-frame-pointer -g")
-    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer -g")
+OPTION(ENABLE_UBSAN "Build with UndefinedBehaviorSanitizer (diagnostic only)" OFF)
+SET(PPP_SANITIZER_FLAGS "")
+IF(ENABLE_ASAN)
+    SET(PPP_SANITIZER_FLAGS "${PPP_SANITIZER_FLAGS} -fsanitize=address")
 ENDIF()
-
-IF(NOT ENABLE_ASAN)
+IF(ENABLE_UBSAN)
+    SET(PPP_SANITIZER_FLAGS "${PPP_SANITIZER_FLAGS} -fsanitize=undefined")
+ENDIF()
+IF((ENABLE_ASAN OR ENABLE_UBSAN) AND NOT MSVC)
+    SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${PPP_SANITIZER_FLAGS} -fno-omit-frame-pointer -g")
+    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${PPP_SANITIZER_FLAGS} -fno-omit-frame-pointer -g")
+ENDIF()
+IF(NOT ENABLE_ASAN AND NOT ENABLE_UBSAN)
     ADD_DEFINITIONS(-DJEMALLOC)
 ENDIF()
 ADD_DEFINITIONS(-DFUNCTION)
@@ -177,6 +184,14 @@ ENDIF()
 # If the current compiler environment is detected to support AES.
 OPTION(ENABLE_SIMD "Enable x86/x64 SIMD AES-NI implementation" OFF)
 
+# Enable SSEA SIMD acceleration (SSSE3/SSE4.1/SSE4.2/AVX/AVX2) for the
+# ssea-simd codec/transform suite.  Requires ENABLE_SIMD=ON as a prerequisite.
+# When OFF, ssea-simd falls back to SSE2-only kernels at runtime regardless
+# of the CPU's actual capability, because the higher-level intrinsics are
+# gated behind compiler feature macros that are only defined when the
+# corresponding -m flags are passed.
+OPTION(ENABLE_SSEA_SIMD "Enable SSEA SIMD acceleration (SSSE3+AVX2, requires ENABLE_SIMD)" OFF)
+
 # Optional telemetry/observability facade (default OFF for zero-cost on low-end hardware).
 OPTION(PPP_TELEMETRY "Enable optional telemetry/OTel facade (adds non-zero runtime cost)" OFF)
 IF(PPP_TELEMETRY)
@@ -184,9 +199,34 @@ IF(PPP_TELEMETRY)
 ENDIF()
 
 OPTION(ENABLE_TESTS "Build unit tests (GTest)" OFF)
+OPTION(ENABLE_VMUX_CHURN_TEST "Build the root-linked VMUX carrier churn test" OFF)
+OPTION(ENABLE_VMUX_RECEIVE_SEMANTICS_TEST "Build the root-linked VMUX receive-semantics test" OFF)
 OPTION(ENABLE_COVERAGE "Enable LLVM source coverage instrumentation" OFF)
+OPTION(ENABLE_XTCP "Build with the pinned XTCP userspace TCP/IP stack (Linux desktop only)" OFF)
+SET(XTCP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third-party/xtcp" CACHE PATH "Path to the pinned XTCP source tree")
 IF(ENABLE_COVERAGE AND NOT MSVC)
     INCLUDE(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Coverage.cmake)
+ENDIF()
+
+IF(ENABLE_XTCP)
+    IF(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+        MESSAGE(FATAL_ERROR "ENABLE_XTCP is supported only for Linux desktop builds.")
+    ENDIF()
+    IF(NOT EXISTS "${XTCP_SOURCE_DIR}/CMakeLists.txt")
+        MESSAGE(FATAL_ERROR "XTCP source tree not found at ${XTCP_SOURCE_DIR}; run tools/prepare_xtcp.sh first.")
+    ENDIF()
+
+    SET(XTCP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_BENCH OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_PLUGINS OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_LWIP OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_CC_PLUGINS ON CACHE BOOL "" FORCE)
+    SET(XTCP_CHECKSUM_VALIDATE ON CACHE BOOL "" FORCE)
+    ADD_SUBDIRECTORY("${XTCP_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/third-party/xtcp" EXCLUDE_FROM_ALL)
+    IF(NOT TARGET xtcp_static)
+        MESSAGE(FATAL_ERROR "XTCP source tree did not define the required xtcp_static target.")
+    ENDIF()
 ENDIF()
 
 SET(PLATFORM_ARCH_X86 FALSE)
@@ -232,6 +272,18 @@ IF(__SIMD__)
     # Add the AES_NI compiler macro.
     ADD_DEFINITIONS(-D__SIMD__)
 
+    # SSEA SIMD acceleration: enable the instruction sets needed by the
+    # ssea-simd codec/transform suite so the compiler defines the feature
+    # macros (__SSSE3__, __SSE4_1__, __SSE4_2__, __AVX__, __AVX2__,
+    # __POPCNT__) that gate the higher-level intrinsics.  Without these
+    # flags the runtime CPUID probe detects the level, but the compiled
+    # code for that level does not exist, so dispatch falls back to SSE2.
+    IF(ENABLE_SSEA_SIMD)
+        IF(NOT MSVC AND PLATFORM_ARCH_X86)
+            ADD_COMPILE_OPTIONS(-mssse3 -msse4.1 -msse4.2 -mpopcnt -mavx -mavx2)
+        ENDIF()
+    ENDIF()
+
     # Additional options for the old version of GCC.
     IF(NOT MSVC AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 8.0)
         ADD_COMPILE_OPTIONS(-march=westmere)
@@ -273,10 +325,9 @@ ELSE()
     # When the __MUSL__ macro is enabled and compilation errors are encountered, you can add the connector option: -static
     # -rdynamic -Wl,-Bstatic -Wl,-Bdynamic -lstdc++ -lpthread -ldl -lz -lrt
     IF(NOT MSVC)
-        IF(ENABLE_ASAN)
-            # ASan needs its runtime dynamically linked; do not force -Bstatic
-            # and add the sanitizer to the link line.
-            SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -rdynamic -fsanitize=address")
+        IF(ENABLE_ASAN OR ENABLE_UBSAN)
+            # Sanitizers need their runtimes dynamically linked; do not force -Bstatic.
+            SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -rdynamic ${PPP_SANITIZER_FLAGS}")
         ELSE()
             SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -rdynamic -Wl,-Bstatic") 
         ENDIF()
@@ -425,6 +476,13 @@ IF(PLATFORM_SYSTEM_WINDOWS)
 ENDIF()
 
 ADD_LIBRARY(openppp2_lib STATIC ${PPP_LIBRARY_SOURCES})
+IF(ENABLE_XTCP)
+    TARGET_LINK_LIBRARIES(openppp2_lib xtcp_static)
+    TARGET_COMPILE_DEFINITIONS(openppp2_lib PRIVATE
+        PPP_ENABLE_XTCP=1
+        PPP_XTCP_RUNTIME_WIRED=1
+        PPP_XTCP_HAS_TIMER_DEADLINE=1)
+ENDIF()
 
 SET(PPP_EXECUTABLE_SOURCES ${PPP_MAIN_SOURCE})
 IF(PLATFORM_SYSTEM_WINDOWS)
@@ -434,14 +492,14 @@ ENDIF()
 ADD_EXECUTABLE(${NAME} ${PPP_EXECUTABLE_SOURCES})
 
 # Set the compilation output files path.
-IF(PLATFORM_SYSTEM_WINDOWS)
-    IF(NOT PPP_OUTPUT_DIR)
+IF(NOT PPP_OUTPUT_DIR)
+    IF(PLATFORM_SYSTEM_WINDOWS)
         SET(PPP_OUTPUT_DIR ${PROJECT_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE})
+    ELSE()
+        SET(PPP_OUTPUT_DIR ${PROJECT_SOURCE_DIR}/bin)
     ENDIF()
-    SET(EXECUTABLE_OUTPUT_PATH ${PPP_OUTPUT_DIR})
-ELSE()
-    SET(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
 ENDIF()
+SET(EXECUTABLE_OUTPUT_PATH ${PPP_OUTPUT_DIR})
 
 # Set up library connections to dependent libraries.
 IF(PLATFORM_SYSTEM_WINDOWS)
@@ -478,7 +536,7 @@ ELSEIF(PLATFORM_SYSTEM_DARWIN)
 
     # ASan diagnostic build drops jemalloc so the sanitizer's allocator
     # interceptors are in effect; default build links jemalloc as before.
-    IF(ENABLE_ASAN)
+    IF(ENABLE_ASAN OR ENABLE_UBSAN)
         SET(PPP_DARWIN_ALLOC_LIB "")
     ELSE()
         SET(PPP_DARWIN_ALLOC_LIB ${THIRD_PARTY_LIBRARY_DIR}/jemalloc/lib/libjemalloc.a)
@@ -508,7 +566,6 @@ ELSEIF(PLATFORM_COMPILER_CLANG)
     SET(PPP_CLANG_LINK_LIBS
         libssl.a
         libcrypto.a
-        libjemalloc.a
         atomic
         dl
         pthread
@@ -518,6 +575,10 @@ ELSEIF(PLATFORM_COMPILER_CLANG)
         libboost_context.a
         libboost_regex.a
         libboost_filesystem.a)
+    IF(NOT ENABLE_ASAN AND NOT ENABLE_UBSAN)
+        LIST(APPEND PPP_CLANG_LINK_LIBS libjemalloc.a)
+    ENDIF()
+    LIST(APPEND PPP_CLANG_LINK_LIBS z zstd)
     IF(ENABLE_IO_URING)
         LIST(APPEND PPP_CLANG_LINK_LIBS uring)
     ENDIF()
@@ -527,7 +588,7 @@ ELSEIF(PLATFORM_COMPILER_CLANG)
     TARGET_LINK_LIBRARIES(openppp2_lib ${PPP_CLANG_LINK_LIBS})
     TARGET_LINK_LIBRARIES(${NAME} openppp2_lib)
 ELSEIF(NOT MSVC)
-    IF(ENABLE_ASAN)
+    IF(ENABLE_ASAN OR ENABLE_UBSAN)
         # ASan variant: drop libc.a (no full-static libc) and libjemalloc.a (let
         # ASan's allocator intercept malloc/free). Diagnostic build only.
         SET(PPP_LINUX_LINK_LIBS
@@ -572,8 +633,33 @@ ELSEIF(NOT MSVC)
     IF(ENABLE_SYSNAT)
         LIST(APPEND PPP_LINUX_LINK_LIBS bpf)
     ENDIF()
-    TARGET_LINK_LIBRARIES(openppp2_lib ${PPP_LINUX_LINK_LIBS})
+    TARGET_LINK_LIBRARIES(openppp2_lib ${PPP_LINUX_LINK_LIBS} z zstd)
     TARGET_LINK_LIBRARIES(${NAME} openppp2_lib)
+ENDIF()
+
+IF(ENABLE_VMUX_CHURN_TEST)
+    ENABLE_TESTING()
+    ADD_EXECUTABLE(vmux_net_churn_integration_test
+        tests/cpp/vmux_net_churn_integration_test.cpp)
+    TARGET_LINK_LIBRARIES(vmux_net_churn_integration_test openppp2_lib)
+    IF(PLATFORM_SYSTEM_LINUX)
+        TARGET_LINK_OPTIONS(vmux_net_churn_integration_test PRIVATE
+            "-Wl,--exclude-libs,ALL")
+    ENDIF()
+    ADD_TEST(NAME vmux_net_churn_integration_test COMMAND vmux_net_churn_integration_test)
+ENDIF()
+
+
+IF(ENABLE_VMUX_RECEIVE_SEMANTICS_TEST)
+    ENABLE_TESTING()
+    ADD_EXECUTABLE(vmux_receive_semantics_test
+        tests/cpp/vmux_receive_semantics_test.cpp)
+    TARGET_LINK_LIBRARIES(vmux_receive_semantics_test openppp2_lib)
+    IF(PLATFORM_SYSTEM_LINUX)
+        TARGET_LINK_OPTIONS(vmux_receive_semantics_test PRIVATE
+            "-Wl,--exclude-libs,ALL")
+    ENDIF()
+    ADD_TEST(NAME vmux_receive_semantics_test COMMAND vmux_receive_semantics_test)
 ENDIF()
 
 IF(ENABLE_TESTS)

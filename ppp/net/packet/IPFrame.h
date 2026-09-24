@@ -297,6 +297,22 @@ namespace ppp {
                  *                   into allocator-managed storage.
                  */
                 static std::shared_ptr<IPFrame>                         Parse(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const void* packet, int size) noexcept;
+
+                /**
+                 * @brief Parses a raw byte buffer into an IPv4 frame using zero-copy slices.
+                 *
+                 * When @p owner is a valid shared_ptr, the parsed payload and options segments
+                 * are backed by zero-copy views into @p owner (via wrap_shared_pointer) instead
+                 * of allocating and copying into new storage.  When @p owner is NULLPTR the
+                 * function falls back to the copy-based behaviour of the primary overload.
+                 *
+                 * @param allocator  Allocator for parsed segment buffers (used only on fallback).
+                 * @param owner       Shared buffer that owns the lifetime of @p packet.
+                 * @param packet      Pointer to the first byte of the wire-format IPv4 packet.
+                 * @param size        Total packet size in bytes.
+                 * @return           Shared @ref IPFrame on success; NULLPTR on validation failure.
+                 */
+                static std::shared_ptr<IPFrame>                         Parse(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<ppp::Byte>& owner, const void* packet, int size) noexcept;
                 
             public:
                 /**

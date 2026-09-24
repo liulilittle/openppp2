@@ -287,23 +287,6 @@ final class VPNController {
 #endif
     }
 
-    func fetchStatistics(previous: VpnStatistics, completion: @escaping (VpnStatistics) -> Void) {
-#if targetEnvironment(simulator)
-        completion(simulatorPreviewConnected ? previous : .empty)
-#else
-        sendProviderMessage("stats") { data in
-            guard let data,
-                  let raw = String(data: data, encoding: .utf8),
-                  !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else {
-                completion(previous)
-                return
-            }
-            completion(VpnStatistics(jsonText: raw, previous: previous))
-        }
-#endif
-    }
-
     func fetchLinkState(completion: @escaping (Int) -> Void) {
 #if targetEnvironment(simulator)
         completion(simulatorPreviewConnected ? 0 : 6)

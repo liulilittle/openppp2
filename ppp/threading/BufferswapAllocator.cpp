@@ -124,34 +124,19 @@ namespace ppp
                 return NULLPTR;
             }
 
-            int block_length = 0;
-            SynchronizedObjectScope scope(syncobj_);
-            BufferblockAllocatorList::iterator tail = blocks_.begin();
-            BufferblockAllocatorList::iterator endl = blocks_.end();
-            while (tail != endl)
+            // H1: 去掉 swap 层全局锁——各 BufferblockAllocator 已用自身 syncobj_ 保护其 buddy；
+            // blocks_ 构造后固定(不再轮转)，故此处对 blocks_ 只读遍历，多线程可并发进入 block 层，
+            // 消除原本"swap 锁 + block 锁"双重锁里多余的那一层。
+            for (BufferblockAllocatorPtr& allocator : blocks_)
             {
-                BufferblockAllocatorPtr& allocator = *tail;
                 void* memory = allocator->Alloc(allocated_size);
                 if (NULLPTR != memory)
                 {
                     return memory;
                 }
-                elif(block_length++ >= block_count_)
-                {
-                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryPoolExhausted);
-                    return NULLPTR;
-                }
-                else 
-                {
-                    /**
-                     * @brief Rotates current block to the tail after allocation miss.
-                     * @details This approximates round-robin probing across block allocators.
-                     */
-                    blocks_.emplace_back(allocator);
-                    blocks_.erase(tail);
-                    tail = blocks_.begin(); // The following expression is not recommended: tail = std::list.erase(...);
-                }
             }
+
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryPoolExhausted);
             return NULLPTR;
         }
 
@@ -167,7 +152,7 @@ namespace ppp
                 return false;
             }
 
-            SynchronizedObjectScope scope(syncobj_);
+            // H1: 去 swap 锁，只读遍历(blocks_ 构造后固定)；block->Free 内部已有 block 层锁。
             for (auto&& block : blocks_)
             {
                 if (block->Free(allocated_memory))
@@ -175,7 +160,7 @@ namespace ppp
                     return true;
                 }
             }
-    
+
             return false;
         }
 

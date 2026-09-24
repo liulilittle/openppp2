@@ -140,9 +140,12 @@ enum L10n {
         "home.ready": ("准备连接", "Ready to connect"),
         "home.vpnStarting": ("VPN 正在启动", "VPN is starting"),
         "home.stopping": ("正在停止 VPN", "Stopping VPN"),
+        "home.stopTakingTooLong": ("停止耗时过长", "Stopping is taking longer than expected"),
         "home.networkChanged": ("网络已变化", "Network changed"),
         "home.connect": ("连接", "Connect"),
         "home.stop": ("停止", "Stop"),
+        "home.retry": ("重试", "Retry"),
+        "home.forceStop": ("强制停止", "Force Stop"),
         "home.noProfile": ("没有配置", "No Profile"),
         "home.selectProfile": ("点击选择一个配置", "Tap to choose a profile"),
         "home.route.geo": ("GEO 分流", "GEO"),
@@ -266,7 +269,7 @@ enum L10n {
         "profiles.exported": ("配置已导出", "Profiles exported"),
         "profiles.import": ("导入", "Import"),
         "profiles.invalidSubscription": ("订阅地址无效", "Invalid Subscription URL"),
-        "profiles.invalidSubscription.message": ("订阅地址必须是 http 或 https URL。", "Subscription URL must be an http or https URL."),
+        "profiles.invalidSubscription.message": ("订阅地址必须是 HTTPS URL；仅允许本机开发 HTTP 地址。", "Subscription URL must use HTTPS; only local development HTTP URLs are allowed."),
         "profiles.fetching": ("正在拉取订阅...", "Fetching subscription..."),
         "profiles.subscriptionFailed": ("订阅导入失败", "Subscription Import Failed"),
         "profiles.subscriptionBadResponse": ("响应为空、过大或不是 UTF-8。", "Response is empty, too large, or not UTF-8."),
@@ -966,3 +969,52 @@ extension UIViewController {
         present(alert, animated: true)
     }
 }
+
+// MARK: - Secure subscription fetch
+
+func isSecureSubscriptionURL(_ url: URL) -> Bool {
+    SubscriptionUrlPolicy.isSecure(url)
+}
+
+final class SecureSubscriptionRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    private let lock = NSLock()
+    private var redirectCounts: [ObjectIdentifier: Int] = [:]
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        let id = ObjectIdentifier(task)
+        lock.lock()
+        let count = (redirectCounts[id] ?? 0) + 1
+        redirectCounts[id] = count
+        lock.unlock()
+
+        guard count <= SubscriptionUrlPolicy.maxRedirects else {
+            completionHandler(nil)
+            return
+        }
+        guard let url = request.url, SubscriptionUrlPolicy.isSecure(url) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let id = ObjectIdentifier(task)
+        lock.lock()
+        redirectCounts.removeValue(forKey: id)
+        lock.unlock()
+    }
+}
+
+private let secureSubscriptionRedirectDelegate = SecureSubscriptionRedirectDelegate()
+let secureSubscriptionSession = URLSession(
+    configuration: .default,
+    delegate: secureSubscriptionRedirectDelegate,
+    delegateQueue: nil
+)

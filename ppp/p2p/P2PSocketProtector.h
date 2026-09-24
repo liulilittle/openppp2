@@ -5,12 +5,12 @@
  * @brief Platform-adaptive socket protection for P2P UDP channels.
  *
  * Prevents routing loops on Android (VpnService.protect) and Linux
- * (SO_MARK / policy routing). Windows is a no-op.
+ * (SO_MARK / policy routing). Unsupported platforms fail closed.
  *
  * Implementations:
  * - Android: JNI VpnService.protect(fd) — guarded by _ANDROID macro.
  * - Linux: setsockopt SO_MARK with P2P firmware mark — guarded by _LINUX.
- * - Windows/macOS: no-op (not required).
+ * - Windows/macOS: unavailable for direct P2P until a real adapter exists.
  *
  * @license GPL-3.0
  */
@@ -32,6 +32,7 @@ namespace ppp {
         class ISocketProtector {
         public:
             virtual ~ISocketProtector() noexcept = default;
+            virtual bool IsReady() const noexcept = 0;
 
             /**
              * @brief Protects a socket so that its traffic bypasses the VPN tunnel.
@@ -43,10 +44,11 @@ namespace ppp {
         };
 
         /**
-         * @brief No-op socket protector (Windows, macOS, non-VPN environments).
+         * @brief Fail-closed placeholder for unsupported platforms.
          */
         class NoOpSocketProtector final : public ISocketProtector {
         public:
+            bool IsReady() const noexcept override { return false; }
             bool Protect(int /*fd*/) noexcept override { return true; }
         };
 
@@ -60,6 +62,7 @@ namespace ppp {
         class LinuxSocketProtector final : public ISocketProtector {
         public:
             explicit LinuxSocketProtector(uint32_t mark = SOCKET_MARK_P2P) noexcept : mark_(mark) {}
+            bool IsReady() const noexcept override { return true; }
             bool Protect(int fd) noexcept override;
 
         private:
@@ -78,23 +81,8 @@ namespace ppp {
         class AndroidSocketProtector final : public ISocketProtector {
         public:
             AndroidSocketProtector() noexcept = default;
-
-            /**
-             * @brief Initializes the JNI references for VpnService.protect().
-             *
-             * Must be called from the JNI thread with a valid JNIEnv.
-             *
-             * @param env         JNI environment pointer.
-             * @param vpn_service VpnService Java object reference (global ref).
-             */
-            void Initialize(void* env, void* vpn_service) noexcept;
-
+            bool IsReady() const noexcept override;
             bool Protect(int fd) noexcept override;
-
-        private:
-            void* jni_env_       = nullptr;
-            void* vpn_service_   = nullptr;
-            void* protect_method_ = nullptr;
         };
 #endif
 
@@ -111,6 +99,11 @@ namespace ppp {
 #else
             return std::make_shared<NoOpSocketProtector>();
 #endif
+        }
+
+        inline bool ProtectP2PSocket(const std::shared_ptr<ISocketProtector>& protector,
+                                     int fd) noexcept {
+            return protector && protector->IsReady() && protector->Protect(fd);
         }
 
         /**

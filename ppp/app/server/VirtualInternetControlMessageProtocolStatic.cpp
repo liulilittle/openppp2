@@ -53,7 +53,7 @@ namespace ppp {
                     return false;
                 }
 
-                int session_id = exchanger_->static_echo_session_id_;
+                int session_id = exchanger_->GetStaticEchoSessionId();
                 if (session_id < 0) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionNotFound);
                     return false;
@@ -65,7 +65,7 @@ namespace ppp {
                     return false;
                 }
 
-                auto allocated_context = exchanger_->static_allocated_context_;
+                auto allocated_context = exchanger_->GetStaticAllocatedContext();
                 if (NULLPTR == allocated_context) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionNotFound);
                     return false;
@@ -93,7 +93,7 @@ namespace ppp {
                  */
                 boost::system::error_code ec;
                 socket.send_to(boost::asio::buffer(packet_output.get(), packet_length),
-                    exchanger_->static_echo_source_ep_, boost::asio::socket_base::message_end_of_record, ec);
+                    exchanger_->GetStaticEchoSourceEndPoint(), boost::asio::socket_base::message_end_of_record, ec);
 
                 if (ec) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::UdpSendFailed);

@@ -4,6 +4,7 @@
 #include <ppp/threading/BufferswapAllocator.h>
 #include <ppp/configurations/DnsServerEntry.h>
 #include <ppp/configurations/MappingConfiguration.h>
+#include <ppp/configurations/TransportAuthConfiguration.h>
 
 namespace Json {
     class Value;
@@ -16,6 +17,20 @@ namespace Json {
 
 namespace ppp {
     namespace configurations {
+        /**
+         * @brief Trims canonical client routing string sources and removes empties.
+         * @param values String source list to normalize in place.
+         */
+        inline void NormalizeClientRoutingStringList(ppp::vector<ppp::string>& values) noexcept {
+            for (ppp::string& value : values) {
+                value = LTrim(RTrim(value));
+            }
+            values.erase(
+                std::remove_if(values.begin(), values.end(),
+                    [](const ppp::string& value) noexcept { return value.empty(); }),
+                values.end());
+        }
+
         /**
          * @brief Stores runtime and networking configuration for the application.
          */
@@ -50,6 +65,27 @@ namespace ppp {
                 ppp::string                                                 network; ///< Prefix network, e.g. "10.0.0.0".
                 int                                                         prefix = 0; ///< Prefix length, e.g. 24.
                 ppp::string                                                 via;     ///< Gateway peer virtual IPv4, e.g. "10.1.0.2"; empty for announce-only.
+                ppp::string                                                 guid;    ///< Server allowlist owner client GUID; empty for client static routes.
+            };
+
+            /**
+             * @brief Canonical client routing policy model.
+             *
+             * The model is present under @c client.routing when the canonical
+             * object was supplied.  It carries only IP and DNS policy sources:
+             * each @c ip and @c dns item may identify a file or contain inline
+             * text.  The independent @c client.proxy-only flag controls runtime
+             * mode.  During the compatibility period, canonical routes are
+             * mirrored to the legacy @c client.routes and @c client.peer-routes,
+             * while legacy-only input is projected into this model for
+             * serialization.
+             */
+            struct ClientRoutingConfiguration final {
+                bool                                                        configured;  ///< True when client.routing was supplied as a JSON object.
+                ppp::vector<ppp::string>                                    bypass;      ///< IP bypass source files or inline text.
+                ppp::vector<RouteConfiguration>                             routes;      ///< Canonical IP route sources.
+                ppp::vector<PeerPrefixRouteConfiguration>                   peer_routes; ///< Canonical peer-prefix routes.
+                ppp::vector<ppp::string>                                    dns_rules;   ///< DNS rule source files or inline text.
             };
 
             /**
@@ -129,17 +165,45 @@ namespace ppp {
                         int                                                 bytes;          ///< Per-connection reorder buffer byte cap (flow v2); strictly > 0.
                         int                                                 timeout;        ///< Per-connection gap wait timeout in milliseconds (flow v2); strictly > 0.
                     }                                                       reorder;
+                    struct {
+                        int                                                 bytes;          ///< Session-wide reorder buffer byte cap across all flows; strictly > 0.
+                    }                                                       session_reorder;
+                    int                                                     max_open;       ///< Max open logical flows (skts + pre-open); strictly > 0.
+                    struct {
+                        int                                                 max;            ///< Unknown-cid receive budget; strictly > 0 (P0 drops beyond this count).
+                    }                                                       unknown_cid;
                 }                                                           flow;           ///< Per-flow (flow v2) receiver ordering parameters.
                 struct {
                     struct {
                         int                                                 max;            ///< Data tx-queue high-water depth; acceleration read-pump throttles at/above it (D11). > 0.
                         int                                                 stall;          ///< Milliseconds the data tx-queue may stay backlogged before the session is rebuilt (D11 watchdog). > 0.
                     }                                                       queue;
+                    struct {
+                        int                                                 budget_frames;  ///< Max control frames drained before data per process_tx_all_packets turn; strictly > 0.
+                    }                                                       ctrl;
                 }                                                           tx;             ///< Transmit-side flow-control / backpressure parameters.
                 struct {
                     ppp::string                                             key;            ///< Shared debug secret (`--debug-key`); empty disables remote mux-mode control.
                     ppp::string                                             set_mode;       ///< Transient `--mux-mode-set` request; pushes a mode change to the peer once at startup.
                 }                                                           debug;          ///< Debug-only remote control of the peer's scheduler mode.
+                struct {
+                    bool                                                    enabled;        ///< QUIC-style reliability sub-protocol (ACK + fast retransmit + PTO); negotiated, falls back when the peer lacks it.
+                    struct {
+                        int                                                 bytes;          ///< Session-wide retransmit buffer byte cap; strictly > 0.
+                        int                                                 max_attempts;   ///< Per-frame retransmit attempts before flow reset / session rebuild; strictly > 0.
+                    }                                                       rtx;
+                    struct {
+                        int                                                 delay;          ///< Max delayed-ACK wait in milliseconds; strictly > 0.
+                    }                                                       ack;
+                    struct {
+                        int                                                 timeout;        ///< Gap wait timeout in milliseconds when reliability is active; strictly > 0.
+                    }                                                       gap;
+                }                                                           reliability;    ///< Negotiated frame-level reliability (ACK / fast retransmit / PTO) parameters.
+                struct {
+                    bool                                                    enabled;        ///< XOR parity FEC over reliable data frames; requires reliability; default false (bandwidth overhead).
+                    int                                                     group;          ///< Data frames per parity group; strictly > 0.
+                    int                                                     flush;          ///< Milliseconds a partial group may age before being flushed; strictly > 0.
+                }                                                           fec;            ///< Forward-error-correction parameters.
             }                                                               mux;            ///< Multiplexed connection channel parameters.
             struct {
                 struct {
@@ -176,7 +240,10 @@ namespace ppp {
                 bool                                                        plaintext;      ///< Transmit data in plaintext (no encryption) when true; for debugging only.
                 bool                                                        delta_encode;   ///< Apply delta encoding to payload bytes before encryption.
                 bool                                                        shuffle_data;   ///< Randomly reorder payload blocks within each packet when true.
+                bool                                                        simd_auto;      ///< Transparently run aes-*-cfb via AES-NI when the CPU supports it (default true).
             }                                                               key;            ///< Cryptographic key and cipher configuration.
+            TransportAuthConfiguration                                      transport_auth; ///< Shared transport-auth metadata and keyring references; decoded secrets are never stored here.
+            std::shared_ptr<const TransportAuthKeyringSnapshot>              transport_auth_keyring; ///< Runtime decoded keyring snapshot; never serialized.
             struct {
                 int64_t                                                     size;           ///< Virtual memory file size in bytes; 0 disables vmem backing.
                 ppp::string                                                 path;           ///< File path used for memory-mapped virtual memory backing store.
@@ -215,7 +282,15 @@ namespace ppp {
                 struct {
                     bool                                                    enabled;    ///< Enable peer prefix routing on the server.
                     bool                                                    distribute; ///< Push route snapshots to all connected clients.
+                    ppp::vector<PeerPrefixRouteConfiguration>               allowed_routes; ///< Fail-closed per-client announce allowlist (guid+network+prefix).
                 }                                                           peer_routing;
+                struct {
+                    bool                                                    enabled;    ///< Permit same-process recovery of suspended authenticated sessions.
+                    int64_t                                                 grace_ms;   ///< Maximum carrier outage grace period in milliseconds.
+                }                                                           session_resume;
+                struct {
+                    bool                                                    enabled;    ///< Require transport-auth PSK during server handshakes.
+                }                                                           transport_auth;
             }                                                               server;         ///< Server-mode specific parameters.
             struct {
                 ppp::string                                                 guid;           ///< Client GUID string used for authentication and session tracking.
@@ -223,8 +298,17 @@ namespace ppp {
                 ppp::string                                                 server_proxy;   ///< HTTP/SOCKS proxy address used to reach the VPN server; empty = direct.
                 int64_t                                                     bandwidth;      ///< Client-side bandwidth cap in bits per second; 0 = unlimited.
                 struct {
-                    int                                                     timeout;        ///< Seconds to wait before attempting a reconnection after disconnect.
+                    int                                                     timeout;        ///< Base seconds to wait before attempting a reconnection.
+                    int                                                     max_delay;      ///< Maximum exponential reconnect delay in seconds.
+                    int                                                     jitter_percent; ///< Symmetric reconnect-delay jitter percentage (0..100).
                 }                                                           reconnections;
+                struct {
+                    bool                                                    enabled;        ///< Enable authenticated L3 session roaming on the client.
+                }                                                           session_resume;
+                struct {
+                    bool                                                    enabled;        ///< Require transport-auth PSK during client handshakes.
+                }                                                           transport_auth;
+                ClientRoutingConfiguration                                   routing;        ///< Canonical routing policy; legacy route/proxy fields remain mirrored during migration.
 #if defined(_WIN32)
                 struct {
                     bool                                                    tcp;            ///< Enable Paper Airplane TCP acceleration driver on Windows when true.
@@ -245,7 +329,7 @@ namespace ppp {
                     ppp::string                                             username;       ///< SOCKS5 authentication username; empty = no authentication.
                     ppp::string                                             password;       ///< SOCKS5 authentication password; empty = no authentication.
                 }                                                           socks_proxy;
-                bool                                                        proxy_only;     ///< Local HTTP/SOCKS only; skip TUN routes (also implied by --mode=proxy).
+                bool                                                        proxy_only;     ///< Local HTTP/SOCKS runtime; suppresses host TUN routes/DNS takeover while native policy remains active (also implied by --mode=proxy).
             }                                                               client;         ///< Client-mode specific parameters.
             struct {
                 int                                                         update_interval; ///< VIRR (virtual interface routing refresh) update interval in seconds.
@@ -279,6 +363,10 @@ namespace ppp {
                 int                                                         migration_grace_ms;     ///< NAT rebind grace period in ms (default 5000).
                 int                                                         buffer_pool_count;      ///< Buffer pool count per channel (default 64).
             }                                                               p2p;            ///< Optional P2P virtual-subnet coordination settings.
+            struct {
+                ppp::string                                                 rules;            ///< Explicit human-readable routing rules file path; empty preserves legacy routing inputs.
+                bool                                                        tcp_domain_sniff; ///< Inspect initial TCP payloads for routing domains when true; default false.
+            }                                                               routing;          ///< Unified human routing rules configuration.
             /**
              * @brief GeoIP/GeoSite rule generation configuration (Phase G).
              *
@@ -287,8 +375,8 @@ namespace ppp {
              * to the existing bypass and dns-rules loading paths.
              *
              * Binary geoip.dat/geosite.dat files can also be downloaded and
-             * cached for future parsers; Phase G does not parse those binary
-             * dat files yet.
+             * are parsed by the human routing rules parser when referenced by
+             * its GeoIP or GeoSite declarations.
              */
             struct GeoRulesConfiguration final {
                 bool                                                        enabled;               ///< Enable geo-rules generation; default false (no-op).

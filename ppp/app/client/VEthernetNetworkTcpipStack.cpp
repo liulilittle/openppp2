@@ -2,6 +2,8 @@
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/client/VEthernetNetworkTcpipConnection.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/routing/ResolvedDestination.h>
+#include <ppp/app/client/routing/TcpRoutingSelector.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
 
@@ -23,6 +25,65 @@ namespace ppp {
                 , Ethernet(ethernet)
                 , configuration_(ethernet->GetConfiguration()) {
 
+            }
+
+            bool VEthernetNetworkTcpipStack::BeginExternalAccept(
+                const boost::asio::ip::tcp::endpoint& localEP,
+                const boost::asio::ip::tcp::endpoint& remoteEP,
+                uint16_t source_port,
+                uint64_t runtime_generation,
+                uint64_t flow_generation,
+                const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks) noexcept {
+                std::shared_ptr<TapTcpClient> base = BeginAcceptClient(localEP, remoteEP);
+                std::shared_ptr<VEthernetNetworkTcpipConnection> connection =
+                    std::dynamic_pointer_cast<VEthernetNetworkTcpipConnection>(base);
+                if (NULLPTR == connection) {
+                    return false;
+                }
+                connection->SetExternalFirstLeg(
+                    runtime_generation, flow_generation, hooks);
+                if (!RegisterExternalClient(source_port, runtime_generation,
+                        flow_generation, connection)) {
+                    connection->Dispose();
+                    return false;
+                }
+                return true;
+            }
+
+            bool VEthernetNetworkTcpipStack::BeginExternalAcceptWithFd(
+                const boost::asio::ip::tcp::endpoint& localEP,
+                const boost::asio::ip::tcp::endpoint& remoteEP,
+                uint16_t source_port,
+                uint64_t runtime_generation,
+                uint64_t flow_generation,
+                const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks, int fd) noexcept {
+                if (fd < 0) {
+                    return BeginExternalAccept(localEP, remoteEP, source_port,
+                        runtime_generation, flow_generation, hooks);
+                }
+                // XTCP-VNET-BRIDGE-BYPASS-001: 注册后直接采纳 XTCP 侧 socketpair
+                // fd, 跳过 listener accept + 内核 loopback TCP 配对。
+                std::shared_ptr<TapTcpClient> base = BeginAcceptClient(localEP, remoteEP);
+                std::shared_ptr<VEthernetNetworkTcpipConnection> connection =
+                    std::dynamic_pointer_cast<VEthernetNetworkTcpipConnection>(base);
+                if (NULLPTR == connection) {
+                    ::close(fd);
+                    return false;
+                }
+                connection->SetExternalFirstLeg(
+                    runtime_generation, flow_generation, hooks);
+                if (!RegisterExternalClient(source_port, runtime_generation,
+                        flow_generation, connection)) {
+                    connection->Dispose();
+                    ::close(fd);
+                    return false;
+                }
+                const boost::asio::ip::tcp::endpoint natEP(
+                    boost::asio::ip::address_v4::loopback(), source_port);
+                // CompleteExternalAcceptWithFd consumes fd and closes it before
+                // adoption or disposes its Asio owner after adoption.
+                return CompleteExternalAcceptWithFd(
+                    source_port, runtime_generation, fd, natEP);
             }
 
             /**
@@ -52,8 +113,41 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionNotFound, std::shared_ptr<VEthernetNetworkTcpipStack::TapTcpClient>(NULLPTR));
                 }
 
+                routing::ResolvedDestination destination;
+                if (!ethernet->ResolveDestination(
+                        ppp::net::IPEndPoint::ToEndPoint(remoteEP), destination)) {
+                    return ppp::diagnostics::SetLastError(
+                        ppp::diagnostics::ErrorCode::TcpConnectFailed,
+                        std::shared_ptr<VEthernetNetworkTcpipStack::TapTcpClient>(NULLPTR));
+                }
+
+                routing::TcpRoutingSelectorInput selector_input;
+                selector_input.action = destination.action;
+                selector_input.is_fake_ip = destination.is_fake_ip;
+                selector_input.is_resolved = destination.is_resolved;
+#if defined(_IPHONE) || defined(IPHONE)
+                selector_input.direct_supported = false;
+#endif
+                const routing::TcpRoutingMode routing_mode =
+                    routing::TcpRoutingSelector::Select(selector_input);
+                if (routing_mode == routing::TcpRoutingMode::Reject) {
+                    ppp::telemetry::Log(
+                        ppp::telemetry::Level::kInfo,
+                        "tcpip_stack",
+                        "begin accept rejected by routing policy fake=%d resolved=%d action=%d remote=%s:%u",
+                        destination.is_fake_ip ? 1 : 0,
+                        destination.is_resolved ? 1 : 0,
+                        static_cast<int>(destination.action),
+                        remoteEP.address().to_string().c_str(),
+                        remoteEP.port());
+                    return ppp::diagnostics::SetLastError(
+                        ppp::diagnostics::ErrorCode::TcpConnectFailed,
+                        std::shared_ptr<VEthernetNetworkTcpipStack::TapTcpClient>(NULLPTR));
+                }
+
 #if defined(_IPHONE)
-                if (exchanger->IosPeerConnectBackpressured()) {
+                if (routing_mode != routing::TcpRoutingMode::ForceDirect &&
+                    exchanger->IosPeerConnectBackpressured()) {
                     ppp::telemetry::Count("tcpip_stack.begin_accept.backpressure", 1);
                     ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip_stack", "begin accept rejected under iOS child slot backpressure local=%s:%u remote=%s:%u",
                         localEP.address().to_string().c_str(),
@@ -73,13 +167,26 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeSchedulerUnavailable, std::shared_ptr<VEthernetNetworkTcpipStack::TapTcpClient>(NULLPTR));
                 }
 
-                boost::asio::ip::tcp::endpoint connectEP = remoteEP;
-                const boost::asio::ip::address rewritten = ethernet->RewriteFakeIpAddress(remoteEP.address());
-                if (rewritten != remoteEP.address()) {
-                    connectEP = boost::asio::ip::tcp::endpoint(rewritten, remoteEP.port());
-                }
+                const boost::asio::ip::tcp::endpoint connectEP =
+                    ppp::net::IPEndPoint::ToEndPoint<boost::asio::ip::tcp>(
+                        destination.connect_endpoint);
 
-                auto connection = make_shared_object<VEthernetNetworkTcpipConnection>(exchanger, context, strand);
+                std::shared_ptr<const routing::HumanRoutingRules> routing_rules;
+                bool domain_sniff_candidate = false;
+#if !defined(_IPHONE) && !defined(IPHONE)
+                if (configuration_ &&
+                    configuration_->routing.tcp_domain_sniff &&
+                    remoteEP.address().is_v4() &&
+                    !destination.is_fake_ip) {
+                    routing_rules = ethernet->GetHumanRoutingRulesSnapshot();
+                    domain_sniff_candidate = routing_rules &&
+                        routing_rules->HasDomainRules();
+                }
+#endif
+
+                auto connection = make_shared_object<VEthernetNetworkTcpipConnection>(
+                    exchanger, context, strand, routing_mode, routing_rules,
+                    domain_sniff_candidate);
                 if (NULLPTR == connection) {
                     ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip_stack", "begin accept failed: allocation failed");
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed, std::shared_ptr<VEthernetNetworkTcpipStack::TapTcpClient>(NULLPTR));

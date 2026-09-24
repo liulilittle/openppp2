@@ -46,6 +46,9 @@ namespace ppp {
                 /** @brief Returns whether managed IPv6 is currently applied. */
                 bool Ipv6Applied() const noexcept { return ipv6_applied_; }
 
+                /** @brief Returns whether exact-owned IPv6 mutations still require cleanup. */
+                bool HasPendingIPv6Cleanup() const noexcept { return ipv6_state_.HasPendingOwnedMutations(); }
+
                 /** @brief Returns whether server-assigned IPv4 is currently applied. */
                 bool Ipv4Applied() const noexcept { return ipv4_applied_; }
 

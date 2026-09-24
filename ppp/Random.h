@@ -22,6 +22,9 @@ namespace ppp {
         /** @brief Second rolling index into the seed table. */
         int                                 inextp = 0;
 
+        /** @brief Rebuilds the state table from the current seed value. */
+        void                                InitializeSeedTable() noexcept;
+
     public:
         /** @brief Constructs generator seeded with current tick count. */
         Random() noexcept;

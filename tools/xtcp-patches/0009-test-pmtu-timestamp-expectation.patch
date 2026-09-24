@@ -1,0 +1,10 @@
+--- a/tests/test_pmtu.cpp
++++ b/tests/test_pmtu.cpp
+@@ -152 +152,3 @@
+-        // Send with the negotiated MSS (1460): wire segments are full-size.
++        // RFC 7323 timestamps consume 12 bytes of TCP option space, so the
++        // timestamp-aware payload cap is 1460 - 12 = 1448 before PMTU lowers
++        // it further.
+@@ -167 +169 @@
+-        CHECK(1460 == g_tx_payload_max);  // full-size segments before PMTU
++        CHECK(1448 == g_tx_payload_max);  // full-size timestamped segment

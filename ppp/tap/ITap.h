@@ -9,6 +9,7 @@
 #include <ppp/net/native/ip.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/threading/BufferswapAllocator.h>
+#include <ppp/tap/TxGsoMetadata.h>
 
 namespace ppp
 {
@@ -41,11 +42,21 @@ namespace ppp
             {
                 void*                                                       Packet       = NULLPTR;
                 int                                                         PacketLength = 0;
+                bool                                                        TcpV4Gso     = false;
             };
             /**
              * @brief Callback signature invoked when a packet is read from device.
              */
             typedef ppp::function<bool(ITap*, PacketInputEventArgs&)>       PacketInputEventHandler;
+            /**
+             * @brief Returns whether a packet can be delivered as one complete TCPv4 GSO frame.
+             * @note Callers without explicit GSO-consumer capability must return false so the
+             *       platform TAP backend performs its per-MSS fallback.
+             */
+            static constexpr bool                                           ShouldDeliverWholeTcpV4Gso(const PacketInputEventArgs& event, bool consumer_capable) noexcept
+            {
+                return !event.TcpV4Gso || consumer_capable;
+            }
 
         public:
             /**
@@ -66,8 +77,10 @@ namespace ppp
             uint32_t                                                        SubmaskAddress = ppp::net::IPEndPoint::AnyAddress;
 
         public:
-            /** @brief Inbound packet event handler; invoked for every packet received from the device. */
-            PacketInputEventHandler                                         PacketInput;
+            /** @brief Thread-safe setter for the inbound packet event handler (invoked for every packet received from the device). */
+            void                                                            SetPacketInput(const PacketInputEventHandler& handler) noexcept;
+            /** @brief Thread-safe snapshot of the inbound packet event handler. */
+            PacketInputEventHandler                                         GetPacketInput() noexcept;
             /** @brief Shared swap-based memory allocator for packet buffer lifetimes. */
             std::shared_ptr<ppp::threading::BufferswapAllocator>            BufferAllocator;
 
@@ -109,6 +122,13 @@ namespace ppp
              * @return true if MTU update succeeds.
              */
             virtual bool                                                    SetInterfaceMtu(int mtu) noexcept = 0;
+            /** @brief Whether this concrete device can accept validated TCPv4 GSO output. */
+            virtual bool                                                    SupportsTxGso() const noexcept { return false; }
+            /**
+             * @brief Sends one validated L3 super-packet with explicit segmentation metadata.
+             * @note The default is fail-closed; it must never route an oversized packet through Output().
+             */
+            virtual bool                                                    OutputGso(const std::shared_ptr<Byte>&, int, TxGsoMetadata) noexcept { return false; }
 
         public:
             /**
@@ -179,7 +199,7 @@ namespace ppp
             /**
              * @brief Returns underlying asynchronous stream descriptor.
              */
-            std::shared_ptr<boost::asio::posix::stream_descriptor>          GetStream() noexcept { return _stream; }
+            std::shared_ptr<boost::asio::posix::stream_descriptor>          GetStream() noexcept;
             /**
              * @brief Returns reusable packet buffer used for read operations.
              */
@@ -200,6 +220,11 @@ namespace ppp
              * @brief Closes stream and clears packet callback.
              */
             void                                                            Finalize() noexcept;
+            /**
+             * @brief Drains the outbound write queue one async_write at a time.
+             * @note  Always runs on _strand; re-entered from each write completion.
+             */
+            void                                                            DrainWriteQueue() noexcept;
 
         private:
             /** @brief Platform device identifier string (e.g., GUID on Windows, "tun0" on Linux). */
@@ -219,13 +244,25 @@ namespace ppp
             std::shared_ptr<boost::asio::posix::stream_descriptor>          _stream;
             /** @brief Shared io_context used for all asynchronous read/write operations. */
             std::shared_ptr<boost::asio::io_context>                        _context;
-            /** @brief Reusable buffer for single-copy packet reads.
-             *
-             * Sized to ITap::Mtu + 4 to accommodate the 4-byte address-family
-             * header that Darwin utun prepends to every packet.  On Linux (IFF_NO_PI)
-             * the extra 4 bytes are simply unused.
+            /** @brief Strand serialising read re-arm, write drain and Finalize on this adapter. */
+            std::shared_ptr<boost::asio::strand<boost::asio::io_context::executor_type>> _strand;
+            /** @brief Guards _stream publication (constructor/Finalize vs I/O paths). */
+            std::mutex                                                      _stream_mutex;
+            /** @brief Guards packet_input_ assignment/clear/copy. */
+            std::mutex                                                      packet_input_mutex_;
+            /** @brief Inbound packet event handler (was a public field; access via Set/GetPacketInput). */
+            PacketInputEventHandler                                         packet_input_;
+            /** @brief Guards _write_queue/_write_in_progress. */
+            std::mutex                                                      _write_mutex;
+            /** @brief Outbound packets waiting for the stream to become writable (one async_write at a time). */
+            std::deque<std::pair<std::shared_ptr<Byte>, int>>               _write_queue;
+            /** @brief True while an async_write is outstanding on _stream. */
+            bool                                                            _write_in_progress = false;
+            /** @brief Reusable buffer for ordinary MTU-sized packet reads.
+             * Linux VNET/GSO reads are owned by TapLinux with its negotiated
+             * per-instance virtio-header capacity.
              */
-            Byte                                                            _packet[ITap::Mtu + 4];
+            Byte                                                            _packet[ITap::Mtu];
         };
     }
 }

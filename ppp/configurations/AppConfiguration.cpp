@@ -298,10 +298,22 @@ namespace ppp {
             config.mux.turbo = false;
             config.mux.flow.reorder.bytes = PPP_MUX_FLOW_REORDER_BYTES;
             config.mux.flow.reorder.timeout = PPP_MUX_FLOW_REORDER_TIMEOUT;
+            config.mux.flow.session_reorder.bytes = PPP_MUX_FLOW_SESSION_REORDER_BYTES;
+            config.mux.flow.max_open = PPP_MUX_FLOW_MAX_OPEN;
+            config.mux.flow.unknown_cid.max = PPP_MUX_FLOW_UNKNOWN_CID_MAX;
             config.mux.tx.queue.max = PPP_MUX_TX_QUEUE_HIGH_WATER;
             config.mux.tx.queue.stall = PPP_MUX_TX_BACKLOG_STALL_TIMEOUT;
+            config.mux.tx.ctrl.budget_frames = PPP_MUX_TX_CTRL_BUDGET_FRAMES;
             config.mux.debug.key = "";
             config.mux.debug.set_mode = "";
+            config.mux.reliability.enabled = true;
+            config.mux.reliability.rtx.bytes = PPP_MUX_RELIABILITY_RTX_BYTES;
+            config.mux.reliability.rtx.max_attempts = PPP_MUX_RELIABILITY_RTX_MAX_ATTEMPTS;
+            config.mux.reliability.ack.delay = PPP_MUX_RELIABILITY_ACK_DELAY;
+            config.mux.reliability.gap.timeout = PPP_MUX_RELIABILITY_GAP_TIMEOUT;
+            config.mux.fec.enabled = false;
+            config.mux.fec.group = PPP_MUX_FEC_GROUP;
+            config.mux.fec.flush = PPP_MUX_FEC_FLUSH;
 
             config.websocket.listen.ws = IPEndPoint::MinPort;
             config.websocket.listen.wss = IPEndPoint::MinPort;
@@ -331,6 +343,9 @@ namespace ppp {
             config.key.plaintext = true;
             config.key.delta_encode = true;
             config.key.shuffle_data = true;
+            config.key.simd_auto = true;
+            config.transport_auth.Clear();
+            config.transport_auth_keyring.reset();
 
             config.server.log = "";
             config.server.node = 0;
@@ -352,6 +367,9 @@ namespace ppp {
             config.server.ipv4_pool.mask = "";
             config.server.peer_routing.enabled = false;
             config.server.peer_routing.distribute = true;
+            config.server.session_resume.enabled = false;
+            config.server.session_resume.grace_ms = 60000;
+            config.server.transport_auth.enabled = false;
 
             config.client.mappings.clear();
             config.client.guid = StringAuxiliary::Int128ToGuidString(MAKE_OWORD(UINT64_MAX, UINT64_MAX));
@@ -359,6 +377,15 @@ namespace ppp {
             config.client.server_proxy = "";
             config.client.bandwidth = 0;
             config.client.reconnections.timeout = PPP_TCP_CONNECT_TIMEOUT;
+            config.client.reconnections.max_delay = 15;
+            config.client.reconnections.jitter_percent = 20;
+            config.client.session_resume.enabled = false;
+            config.client.transport_auth.enabled = false;
+            config.client.routing.configured = false;
+            config.client.routing.bypass.clear();
+            config.client.routing.routes.clear();
+            config.client.routing.peer_routes.clear();
+            config.client.routing.dns_rules.clear();
             config.client.http_proxy.bind = "";
             config.client.http_proxy.port = PPP_DEFAULT_HTTP_PROXY_PORT;
             config.client.socks_proxy.bind = "";
@@ -366,6 +393,7 @@ namespace ppp {
             config.client.socks_proxy.password = "";
             config.client.socks_proxy.username = "";
             config.client.proxy_only = false;
+            config.client.routes.clear();
             config.client.peer_routes.clear();
             config.client.peer_route_announce.clear();
             config.client.peer_gateway_forward = false;
@@ -399,6 +427,9 @@ namespace ppp {
             config.p2p.suspect_timeout_ms = 2000;
             config.p2p.migration_grace_ms = 5000;
             config.p2p.buffer_pool_count = 64;
+
+            config.routing.rules = "";
+            config.routing.tcp_domain_sniff = false;
 
             config.dns.servers.domestic = "doh.pub";
             config.dns.servers.foreign = "cloudflare";
@@ -528,6 +559,7 @@ namespace ppp {
                     &config.dns.servers.domestic,
                     &config.dns.servers.foreign,
                     &config.dns.ecs.override_ip,
+                    &config.routing.rules,
                     &config.geo_rules.country,
                     &config.geo_rules.geoip_dat,
                     &config.geo_rules.geosite_dat,
@@ -660,6 +692,7 @@ namespace ppp {
          */
         bool AppConfiguration::Loaded() noexcept {
             AppConfiguration& config = *this;
+            std::shared_ptr<const TransportAuthKeyringSnapshot> transport_auth_candidate;
             if (config.concurrent < 1) {
                 config.concurrent = Thread::GetProcessorCount();
             }
@@ -716,6 +749,18 @@ namespace ppp {
                 config.mux.flow.reorder.timeout = PPP_MUX_FLOW_REORDER_TIMEOUT;
             }
 
+            if (config.mux.flow.session_reorder.bytes <= 0) {
+                config.mux.flow.session_reorder.bytes = PPP_MUX_FLOW_SESSION_REORDER_BYTES;
+            }
+
+            if (config.mux.flow.max_open <= 0) {
+                config.mux.flow.max_open = PPP_MUX_FLOW_MAX_OPEN;
+            }
+
+            if (config.mux.flow.unknown_cid.max <= 0) {
+                config.mux.flow.unknown_cid.max = PPP_MUX_FLOW_UNKNOWN_CID_MAX;
+            }
+
             if (config.mux.tx.queue.max <= 0) {
                 config.mux.tx.queue.max = PPP_MUX_TX_QUEUE_HIGH_WATER;
             }
@@ -724,12 +769,56 @@ namespace ppp {
                 config.mux.tx.queue.stall = PPP_MUX_TX_BACKLOG_STALL_TIMEOUT;
             }
 
+            if (config.mux.tx.ctrl.budget_frames <= 0) {
+                config.mux.tx.ctrl.budget_frames = PPP_MUX_TX_CTRL_BUDGET_FRAMES;
+            }
+
+            if (config.mux.reliability.rtx.bytes <= 0) {
+                config.mux.reliability.rtx.bytes = PPP_MUX_RELIABILITY_RTX_BYTES;
+            }
+
+            if (config.mux.reliability.rtx.max_attempts <= 0) {
+                config.mux.reliability.rtx.max_attempts = PPP_MUX_RELIABILITY_RTX_MAX_ATTEMPTS;
+            }
+
+            if (config.mux.reliability.ack.delay <= 0) {
+                config.mux.reliability.ack.delay = PPP_MUX_RELIABILITY_ACK_DELAY;
+            }
+
+            if (config.mux.reliability.gap.timeout <= 0) {
+                config.mux.reliability.gap.timeout = PPP_MUX_RELIABILITY_GAP_TIMEOUT;
+            }
+
+            if (config.mux.fec.group <= 0) {
+                config.mux.fec.group = PPP_MUX_FEC_GROUP;
+            }
+
+            if (config.mux.fec.flush <= 0) {
+                config.mux.fec.flush = PPP_MUX_FEC_FLUSH;
+            }
+
             if (config.udp.static_.aggligator < 0) {
                 config.udp.static_.aggligator = 0;
             }
 
             LRTrim(config, 0);
             LRTrim(config, 1);
+
+            if (config.client.routing.configured) {
+                NormalizeClientRoutingStringList(config.client.routing.bypass);
+                NormalizeClientRoutingStringList(config.client.routing.dns_rules);
+                config.client.routes = config.client.routing.routes;
+                config.client.peer_routes = config.client.routing.peer_routes;
+            }
+            else {
+                // Legacy input remains supported, but is exposed through the
+                // canonical projection for callers that consume client.routing.
+                // The independent client.proxy_only flag is not projected here.
+                config.client.routing.routes = config.client.routes;
+                config.client.routing.peer_routes = config.client.peer_routes;
+                NormalizeClientRoutingStringList(config.client.routing.bypass);
+                NormalizeClientRoutingStringList(config.client.routing.dns_rules);
+            }
 
             // Trim string fields inside structured DNS server entries.
             for (auto* entries : { &config.dns.servers.domestic_entries, &config.dns.servers.foreign_entries }) {
@@ -765,8 +854,32 @@ namespace ppp {
                 config.client.guid = StringAuxiliary::Int128ToGuidString(MAKE_OWORD(UINT64_MAX, UINT64_MAX));
             }
 
+            if (config.server.session_resume.grace_ms < 1000) {
+                config.server.session_resume.grace_ms = 1000;
+            }
+            elif(config.server.session_resume.grace_ms > 3600000) {
+                config.server.session_resume.grace_ms = 3600000;
+            }
+
             if (config.client.reconnections.timeout < 1) {
                 config.client.reconnections.timeout = PPP_TCP_CONNECT_TIMEOUT;
+            }
+            if (config.client.reconnections.max_delay < config.client.reconnections.timeout) {
+                config.client.reconnections.max_delay = config.client.reconnections.timeout;
+            }
+            config.client.reconnections.jitter_percent =
+                std::max(0, std::min(100, config.client.reconnections.jitter_percent));
+
+            const bool transport_auth_enabled =
+                config.client.transport_auth.enabled || config.server.transport_auth.enabled;
+            if (!config.transport_auth.Normalize(transport_auth_enabled)) {
+                return false;
+            }
+            if (transport_auth_enabled) {
+                transport_auth_candidate = BuildTransportAuthKeyringSnapshot(config.transport_auth);
+                if (!transport_auth_candidate) {
+                    return false;
+                }
             }
 
             int* pts[] = {
@@ -1125,6 +1238,7 @@ namespace ppp {
 
             config._lcgmods[LCGMOD_TYPE_TRANSMISSION] = ppp::cryptography::ssea::lcgmod(config.key.kf, EVP_HEADER_MSS_MIN_MOD, EVP_HEADER_MSS_MAX_MOD);
             config._lcgmods[LCGMOD_TYPE_STATIC] = ppp::cryptography::ssea::lcgmod(config.key.kf, VEP_HEADER_MSS_MIN_MOD, VEP_HEADER_MSS_MAX_MOD);
+            config.transport_auth_keyring = std::move(transport_auth_candidate);
             return true;
         }
 
@@ -1352,6 +1466,7 @@ namespace ppp {
             route.network = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["network"])));
             route.prefix = static_cast<int>(JsonAuxiliary::AsInt64(json["prefix"], 0));
             route.via = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["via"])));
+            route.guid = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["guid"])));
             return !route.network.empty() && route.prefix > 0 && route.prefix <= ppp::net::native::MAX_PREFIX_VALUE_V4;
         }
 
@@ -1437,6 +1552,30 @@ namespace ppp {
                     s.emplace_back(route);
                 }
             }
+        }
+
+        /**
+         * @brief Loads a canonical routing string source list from JSON.
+         * @param values Output source list.
+         * @param json Source JSON string or string array.
+         *
+         * Invalid shapes and non-string array elements are ignored.  Empty
+         * entries are removed after trimming so file and inline-text sources
+         * have identical normalization semantics.
+         */
+        static void LoadClientRoutingStringList(ppp::vector<ppp::string>& values, const Json::Value& json) noexcept {
+            values.clear();
+            if (json.isString()) {
+                values.emplace_back(JsonAuxiliary::AsString(json));
+            }
+            elif(json.isArray()) {
+                for (Json::ArrayIndex i = 0; i < json.size(); i++) {
+                    if (json[i].isString()) {
+                        values.emplace_back(JsonAuxiliary::AsString(json[i]));
+                    }
+                }
+            }
+            NormalizeClientRoutingStringList(values);
         }
 
         /**
@@ -1684,8 +1823,20 @@ namespace ppp {
             config.mux.turbo = JsonAuxiliary::AsValue<bool>(json["mux"]["turbo"]);
             config.mux.flow.reorder.bytes = JsonAuxiliary::AsValue<int>(json["mux"]["flow"]["reorder"]["bytes"]);
             config.mux.flow.reorder.timeout = JsonAuxiliary::AsValue<int>(json["mux"]["flow"]["reorder"]["timeout"]);
+            config.mux.flow.session_reorder.bytes = JsonAuxiliary::AsValue<int>(json["mux"]["flow"]["session_reorder"]["bytes"]);
+            config.mux.flow.max_open = JsonAuxiliary::AsValue<int>(json["mux"]["flow"]["max_open"]);
+            config.mux.flow.unknown_cid.max = JsonAuxiliary::AsValue<int>(json["mux"]["flow"]["unknown_cid"]["max"]);
             config.mux.tx.queue.max = JsonAuxiliary::AsValue<int>(json["mux"]["tx"]["queue"]["max"]);
             config.mux.tx.queue.stall = JsonAuxiliary::AsValue<int>(json["mux"]["tx"]["queue"]["stall"]);
+            config.mux.tx.ctrl.budget_frames = JsonAuxiliary::AsValue<int>(json["mux"]["tx"]["ctrl"]["budget_frames"]);
+            AssignBoolIfPresent(config.mux.reliability.enabled, json["mux"]["reliability"]["enabled"]);
+            config.mux.reliability.rtx.bytes = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["rtx"]["bytes"]);
+            config.mux.reliability.rtx.max_attempts = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["rtx"]["max_attempts"]);
+            config.mux.reliability.ack.delay = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["ack"]["delay"]);
+            config.mux.reliability.gap.timeout = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["gap"]["timeout"]);
+            AssignBoolIfPresent(config.mux.fec.enabled, json["mux"]["fec"]["enabled"]);
+            config.mux.fec.group = JsonAuxiliary::AsValue<int>(json["mux"]["fec"]["group"]);
+            config.mux.fec.flush = JsonAuxiliary::AsValue<int>(json["mux"]["fec"]["flush"]);
             config.mux.debug.key = JsonAuxiliary::AsValue<ppp::string>(json["mux"]["debug"]["key"]);
             config.mux.keep_alived[0] = JsonAuxiliary::AsValue<int>(json["mux"]["keep-alived"][0]);
             config.mux.keep_alived[1] = JsonAuxiliary::AsValue<int>(json["mux"]["keep-alived"][1]);
@@ -1720,6 +1871,35 @@ namespace ppp {
             AssignBoolIfPresent(config.key.plaintext, json["key"]["plaintext"]);
             AssignBoolIfPresent(config.key.delta_encode, json["key"]["delta-encode"]);
             AssignBoolIfPresent(config.key.shuffle_data, json["key"]["shuffle-data"]);
+            AssignBoolIfPresent(config.key.simd_auto, json["key"]["simd-auto"]);
+            ppp::cryptography::EVP::SetSimdAuto(config.key.simd_auto);
+
+            const Json::Value& transport_auth_json = json["transport-auth"];
+            if (transport_auth_json.isObject()) {
+                AssignIfPresent(config.transport_auth.handshake_timeout_ms,
+                    transport_auth_json["handshake-timeout-ms"]);
+                const Json::Value& keys_json = transport_auth_json["keys"];
+                if (!keys_json.isNull()) {
+                    if (!keys_json.isArray()) {
+                        return false;
+                    }
+                    config.transport_auth.keys.clear();
+                    for (Json::ArrayIndex i = 0; i < keys_json.size(); ++i) {
+                        const Json::Value& key_json = keys_json[i];
+                        if (!key_json.isObject()) {
+                            return false;
+                        }
+                        TransportAuthKeyMetadata metadata;
+                        metadata.id = JsonAuxiliary::AsValue<std::string>(key_json["id"]);
+                        metadata.secret_file = JsonAuxiliary::AsValue<std::string>(key_json["secret-file"]);
+                        const std::string state = JsonAuxiliary::AsValue<std::string>(key_json["state"]);
+                        if (!TryParseTransportAuthKeyState(state, metadata.state)) {
+                            return false;
+                        }
+                        config.transport_auth.keys.emplace_back(std::move(metadata));
+                    }
+                }
+            }
 
             config.server.log = JsonAuxiliary::AsValue<ppp::string>(json["server"]["log"]);
             config.server.node = JsonAuxiliary::AsValue<int>(json["server"]["node"]);
@@ -1755,8 +1935,18 @@ namespace ppp {
                 if (peer_routing_json.isObject()) {
                     AssignBoolIfPresent(config.server.peer_routing.enabled, peer_routing_json["enabled"]);
                     AssignBoolIfPresent(config.server.peer_routing.distribute, peer_routing_json["distribute"]);
+                    LoadAllPeerPrefixRoutes(
+                        config.server.peer_routing.allowed_routes,
+                        peer_routing_json["allowed-routes"]);
                 }
             }
+
+            AssignBoolIfPresent(config.server.session_resume.enabled,
+                json["server"]["session_resume"]["enabled"]);
+            AssignIfPresent(config.server.session_resume.grace_ms,
+                json["server"]["session_resume"]["grace_ms"]);
+            AssignBoolIfPresent(config.server.transport_auth.enabled,
+                json["server"]["transport-auth"]["enabled"]);
 
             LoadAllMappings(config, json["client"]["mappings"]);
             LoadAllRoutes(config.client.routes, json["client"]["routes"]);
@@ -1765,6 +1955,14 @@ namespace ppp {
             AssignBoolIfPresent(config.client.peer_gateway_forward, json["client"]["peer-gateway-forward"]);
 
             config.client.reconnections.timeout = JsonAuxiliary::AsValue<int>(json["client"]["reconnections"]["timeout"]);
+            AssignIfPresent(config.client.reconnections.max_delay,
+                json["client"]["reconnections"]["max_delay"]);
+            AssignIfPresent(config.client.reconnections.jitter_percent,
+                json["client"]["reconnections"]["jitter_percent"]);
+            AssignBoolIfPresent(config.client.session_resume.enabled,
+                json["client"]["session_resume"]["enabled"]);
+            AssignBoolIfPresent(config.client.transport_auth.enabled,
+                json["client"]["transport-auth"]["enabled"]);
             config.client.guid = JsonAuxiliary::AsValue<ppp::string>(json["client"]["guid"]);
             config.client.server = JsonAuxiliary::AsValue<ppp::string>(json["client"]["server"]);
             config.client.server_proxy = JsonAuxiliary::AsValue<ppp::string>(json["client"]["server-proxy"]);
@@ -1776,6 +1974,42 @@ namespace ppp {
             config.client.socks_proxy.username = JsonAuxiliary::AsValue<ppp::string>(json["client"]["socks-proxy"]["username"]);
             config.client.socks_proxy.password = JsonAuxiliary::AsValue<ppp::string>(json["client"]["socks-proxy"]["password"]);
             AssignBoolIfPresent(config.client.proxy_only, json["client"]["proxy-only"]);
+
+            // Canonical client.routing is authoritative when present.  The
+            // nested ip/dns locations are preferred over direct aliases so a
+            // future schema can add unrelated routing keys without ambiguity.
+            // client.proxy-only remains an independent top-level runtime flag.
+            {
+                const Json::Value& routing_json = json["client"]["routing"];
+                if (routing_json.isObject()) {
+                    config.client.routing.configured = true;
+
+                    const Json::Value& ip_json = routing_json["ip"];
+                    const Json::Value& bypass_json =
+                        ip_json.isObject() && !ip_json["bypass"].isNull()
+                            ? ip_json["bypass"] : routing_json["bypass"];
+                    const Json::Value& routes_json =
+                        ip_json.isObject() && !ip_json["routes"].isNull()
+                            ? ip_json["routes"] : routing_json["routes"];
+                    const Json::Value& peer_routes_json =
+                        ip_json.isObject() && !ip_json["peer-routes"].isNull()
+                            ? ip_json["peer-routes"] : routing_json["peer-routes"];
+                    const Json::Value& dns_json = routing_json["dns"];
+                    const Json::Value& dns_rules_json =
+                        dns_json.isObject() && !dns_json["rules"].isNull()
+                            ? dns_json["rules"] : routing_json["dns-rules"];
+
+                    LoadClientRoutingStringList(config.client.routing.bypass, bypass_json);
+                    LoadAllRoutes(config.client.routing.routes, routes_json);
+                    LoadAllPeerPrefixRoutes(config.client.routing.peer_routes, peer_routes_json);
+                    LoadClientRoutingStringList(config.client.routing.dns_rules, dns_rules_json);
+
+                    // Keep existing consumers on the same effective policy
+                    // until they migrate from the legacy fields.
+                    config.client.routes = config.client.routing.routes;
+                    config.client.peer_routes = config.client.routing.peer_routes;
+                }
+            }
 #if defined(_WIN32)
             AssignBoolIfPresent(config.client.paper_airplane.tcp, json["client"]["paper-airplane"]["tcp"]);
 #endif
@@ -1783,6 +2017,8 @@ namespace ppp {
             AssignIfPresent(config.virr.update_interval, json["virr"]["update-interval"]);
             AssignIfPresent(config.virr.retry_interval, json["virr"]["retry-interval"]);
             AssignIfPresent(config.vbgp.update_interval, json["vbgp"]["update-interval"]);
+            AssignIfPresent(config.routing.rules, json["routing"]["rules"]);
+            AssignBoolIfPresent(config.routing.tcp_domain_sniff, json["routing"]["tcp-domain-sniff"]);
 
             AssignBoolIfPresent(config.telemetry.enabled, json["telemetry"]["enabled"]);
             AssignIfPresent(config.telemetry.level, json["telemetry"]["level"]);
@@ -2014,8 +2250,20 @@ namespace ppp {
             mux["turbo"] = config.mux.turbo;
             mux["flow"]["reorder"]["bytes"] = config.mux.flow.reorder.bytes;
             mux["flow"]["reorder"]["timeout"] = config.mux.flow.reorder.timeout;
+            mux["flow"]["session_reorder"]["bytes"] = config.mux.flow.session_reorder.bytes;
+            mux["flow"]["max_open"] = config.mux.flow.max_open;
+            mux["flow"]["unknown_cid"]["max"] = config.mux.flow.unknown_cid.max;
             mux["tx"]["queue"]["max"] = config.mux.tx.queue.max;
             mux["tx"]["queue"]["stall"] = config.mux.tx.queue.stall;
+            mux["tx"]["ctrl"]["budget_frames"] = config.mux.tx.ctrl.budget_frames;
+            mux["reliability"]["enabled"] = config.mux.reliability.enabled;
+            mux["reliability"]["rtx"]["bytes"] = config.mux.reliability.rtx.bytes;
+            mux["reliability"]["rtx"]["max_attempts"] = config.mux.reliability.rtx.max_attempts;
+            mux["reliability"]["ack"]["delay"] = config.mux.reliability.ack.delay;
+            mux["reliability"]["gap"]["timeout"] = config.mux.reliability.gap.timeout;
+            mux["fec"]["enabled"] = config.mux.fec.enabled;
+            mux["fec"]["group"] = config.mux.fec.group;
+            mux["fec"]["flush"] = config.mux.fec.flush;
             if (!config.mux.debug.key.empty()) {
                 mux["debug"]["key"] = config.mux.debug.key;
             }
@@ -2073,7 +2321,27 @@ namespace ppp {
             key["plaintext"] = config.key.plaintext;
             key["delta-encode"] = config.key.delta_encode;
             key["shuffle-data"] = config.key.shuffle_data;
+            key["simd-auto"] = config.key.simd_auto;
             root["key"] = key;
+
+            if (config.client.transport_auth.enabled || config.server.transport_auth.enabled ||
+                config.transport_auth.handshake_timeout_ms != TransportAuthConfiguration::DefaultHandshakeTimeoutMs ||
+                !config.transport_auth.keys.empty()) {
+                Json::Value transport_auth;
+                transport_auth["handshake-timeout-ms"] = config.transport_auth.handshake_timeout_ms;
+                Json::Value keys(Json::arrayValue);
+                for (const TransportAuthKeyMetadata& metadata : config.transport_auth.keys) {
+                    Json::Value item;
+                    item["id"] = metadata.id.c_str();
+                    item["state"] = TransportAuthKeyStateToString(metadata.state);
+                    if (!metadata.secret_file.empty()) {
+                        item["secret-file"] = metadata.secret_file.c_str();
+                    }
+                    keys.append(item);
+                }
+                transport_auth["keys"] = keys;
+                root["transport-auth"] = transport_auth;
+            }
 
             // Set server structure
             Json::Value server;
@@ -2101,11 +2369,31 @@ namespace ppp {
                 server["ipv4-pool"] = ipv4_pool;
             }
 
-            if (config.server.peer_routing.enabled) {
+            if (config.server.peer_routing.enabled ||
+                !config.server.peer_routing.allowed_routes.empty()) {
                 Json::Value peer_routing;
                 peer_routing["enabled"] = config.server.peer_routing.enabled;
                 peer_routing["distribute"] = config.server.peer_routing.distribute;
+                Json::Value& allowed_routes = peer_routing["allowed-routes"];
+                for (const PeerPrefixRouteConfiguration& route :
+                    config.server.peer_routing.allowed_routes) {
+                    Json::Value jo;
+                    jo["network"] = route.network;
+                    jo["prefix"] = route.prefix;
+                    if (!route.via.empty()) {
+                        jo["via"] = route.via;
+                    }
+                    if (!route.guid.empty()) {
+                        jo["guid"] = route.guid;
+                    }
+                    allowed_routes.append(jo);
+                }
                 server["peer-routing"] = peer_routing;
+            }
+            server["session_resume"]["enabled"] = config.server.session_resume.enabled;
+            server["session_resume"]["grace_ms"] = config.server.session_resume.grace_ms;
+            if (config.server.transport_auth.enabled) {
+                server["transport-auth"]["enabled"] = true;
             }
             root["server"] = server;
 
@@ -2122,28 +2410,94 @@ namespace ppp {
                 mappings.append(jo);
             }
 
-            // Set routes structure
-            Json::Value& routes = client["routes"];
-            for (RouteConfiguration& route : config.client.routes) {
-                Json::Value jo;
-                jo["ngw"] = Ipep::ToAddressString<ppp::string>(Ipep::ToAddress(route.ngw));
+            const AppConfiguration::ClientRoutingConfiguration& canonical_routing = config.client.routing;
+            const bool emit_canonical_routing =
+                canonical_routing.configured ||
+                !canonical_routing.bypass.empty() ||
+                !canonical_routing.routes.empty() ||
+                !canonical_routing.peer_routes.empty() ||
+                !canonical_routing.dns_rules.empty() ||
+                !config.client.routes.empty() ||
+                !config.client.peer_routes.empty();
+            const bool use_canonical_routing = canonical_routing.configured;
+            const ppp::vector<RouteConfiguration>& effective_routes = use_canonical_routing
+                ? canonical_routing.routes : config.client.routes;
+            const ppp::vector<PeerPrefixRouteConfiguration>& effective_peer_routes = use_canonical_routing
+                ? canonical_routing.peer_routes : config.client.peer_routes;
+
+            if (emit_canonical_routing) {
+                Json::Value routing;
+
+                Json::Value bypass(Json::arrayValue);
+                for (const ppp::string& source : canonical_routing.bypass) {
+                    bypass.append(source);
+                }
+                routing["ip"]["bypass"] = bypass;
+
+                Json::Value canonical_routes(Json::arrayValue);
+                for (const RouteConfiguration& route : effective_routes) {
+                    Json::Value jo;
+                    jo["ngw"] = Ipep::ToAddressString<ppp::string>(Ipep::ToAddress(route.ngw));
 #if defined(_LINUX)
-                jo["nic"] = route.nic;
+                    jo["nic"] = route.nic;
 #endif
-                jo["path"] = route.path;
-                jo["vbgp"] = route.vbgp;
-                routes.append(jo);
+                    jo["path"] = route.path;
+                    jo["vbgp"] = route.vbgp;
+                    canonical_routes.append(jo);
+                }
+                routing["ip"]["routes"] = canonical_routes;
+
+                Json::Value canonical_peer_routes(Json::arrayValue);
+                for (const PeerPrefixRouteConfiguration& route : effective_peer_routes) {
+                    Json::Value jo;
+                    jo["network"] = route.network;
+                    jo["prefix"] = route.prefix;
+                    if (!route.via.empty()) {
+                        jo["via"] = route.via;
+                    }
+                    if (!route.guid.empty()) {
+                        jo["guid"] = route.guid;
+                    }
+                    canonical_peer_routes.append(jo);
+                }
+                routing["ip"]["peer-routes"] = canonical_peer_routes;
+
+                Json::Value dns_rules(Json::arrayValue);
+                for (const ppp::string& source : canonical_routing.dns_rules) {
+                    dns_rules.append(source);
+                }
+                routing["dns"]["rules"] = dns_rules;
+                client["routing"] = routing;
             }
 
-            Json::Value& peer_routes = client["peer-routes"];
-            for (const PeerPrefixRouteConfiguration& route : config.client.peer_routes) {
-                Json::Value jo;
-                jo["network"] = route.network;
-                jo["prefix"] = route.prefix;
-                if (!route.via.empty()) {
-                    jo["via"] = route.via;
+            // Legacy top-level client.routes and client.peer-routes are only
+            // emitted when canonical routing is absent.  When canonical routing
+            // is present the data already lives under routing.ip.routes /
+            // routing.ip.peer-routes; writing it again to the legacy keys would
+            // cause a silent canonical-override the next time the file is loaded.
+            if (!use_canonical_routing) {
+                Json::Value& routes = client["routes"];
+                for (const RouteConfiguration& route : effective_routes) {
+                    Json::Value jo;
+                    jo["ngw"] = Ipep::ToAddressString<ppp::string>(Ipep::ToAddress(route.ngw));
+#if defined(_LINUX)
+                    jo["nic"] = route.nic;
+#endif
+                    jo["path"] = route.path;
+                    jo["vbgp"] = route.vbgp;
+                    routes.append(jo);
                 }
-                peer_routes.append(jo);
+
+                Json::Value& peer_routes = client["peer-routes"];
+                for (const PeerPrefixRouteConfiguration& route : effective_peer_routes) {
+                    Json::Value jo;
+                    jo["network"] = route.network;
+                    jo["prefix"] = route.prefix;
+                    if (!route.via.empty()) {
+                        jo["via"] = route.via;
+                    }
+                    peer_routes.append(jo);
+                }
             }
 
             Json::Value& peer_route_announce = client["peer-route-announce"];
@@ -2164,6 +2518,12 @@ namespace ppp {
             client["socks-proxy"]["username"] = config.client.socks_proxy.username;
             client["proxy-only"] = config.client.proxy_only;
             client["reconnections"]["timeout"] = config.client.reconnections.timeout;
+            client["reconnections"]["max_delay"] = config.client.reconnections.max_delay;
+            client["reconnections"]["jitter_percent"] = config.client.reconnections.jitter_percent;
+            client["session_resume"]["enabled"] = config.client.session_resume.enabled;
+            if (config.client.transport_auth.enabled) {
+                client["transport-auth"]["enabled"] = true;
+            }
             client["guid"] = config.client.guid;
             client["server"] = config.client.server;
             client["server-proxy"] = config.client.server_proxy;
@@ -2182,6 +2542,9 @@ namespace ppp {
             Json::Value vbgp;
             vbgp["update-interval"] = config.vbgp.update_interval;
             root["vbgp"] = vbgp;
+
+            root["routing"]["rules"] = config.routing.rules;
+            root["routing"]["tcp-domain-sniff"] = config.routing.tcp_domain_sniff;
 
             Json::Value telemetry;
             telemetry["enabled"] = config.telemetry.enabled;

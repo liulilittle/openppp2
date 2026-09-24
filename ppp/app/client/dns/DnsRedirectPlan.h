@@ -7,6 +7,7 @@
 
 #include <ppp/stdafx.h>
 #include <ppp/app/client/dns/Rule.h>
+#include <ppp/app/client/routing/HumanRoutingRules.h>
 
 namespace ppp {
     namespace app {
@@ -36,6 +37,9 @@ namespace ppp {
                     bool intercept_unmatched = true;
                     bool has_resolver = true;
                     bool allow_ipv6_response = true;
+                    bool has_human_action = false;
+                    routing::RoutingAction human_action = routing::RoutingAction::Auto;
+                    ppp::string human_provider;
                     Rule::Ptr rule;
                     /** When true (desktop), UDP relay to the original destination defers to tunnel fallback. */
                     bool defer_same_destination_to_tunnel = false;
@@ -52,7 +56,7 @@ namespace ppp {
                 public:
                     static DnsRedirectPlanResult Decide(const DnsRedirectPlanInput& input) noexcept;
 
-                    /** Same semantics as VEthernetNetworkSwitcher::IPAddressIsGatewayServer. */
+                    /** Returns whether the destination identifies the tunnel gateway DNS endpoint. */
                     static bool IsGatewayDnsServer(uint32_t destination, uint32_t gateway, uint32_t mask) noexcept;
                 };
 

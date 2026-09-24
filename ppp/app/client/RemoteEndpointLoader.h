@@ -8,6 +8,7 @@ namespace ppp::app::client {
     class RemoteEndpointLoader {
     public:
         void Bind(VEthernetNetworkSwitcher* owner) noexcept;
+        bool PrepareForwarding() noexcept;
         bool Apply(const boost::asio::ip::address& gw) noexcept;
 
     private:

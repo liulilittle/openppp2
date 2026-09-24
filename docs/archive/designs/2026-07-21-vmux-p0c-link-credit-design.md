@@ -8,7 +8,7 @@
 > **Audience:** Maintainers investigating VMUX design history.
 > **Status:** Archived worktree-specific design evidence; not current runtime guidance.
 > **Last verified against:** Preserved 2026-07-21 worktree record and archive placement, 2026-07-22.
-> **Parent index:** [Archived Designs](README.md) · **Related working record:** [status-bound specification](../../superpowers/specs/2026-07-21-vmux-p0c-link-credit-design.md)
+> **Parent index:** [Archived Designs](README.md) · **Related working record:** unavailable (the original worktree-local file was not retained)
 
 > **Archive notice:** Branch, worktree, implementation, and test claims below are historical evidence. Confirm the current checkout and tests before relying on them.
 

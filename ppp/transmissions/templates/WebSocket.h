@@ -88,6 +88,8 @@ namespace ppp {
             public:
                 /** @brief Gets the underlying websocket object (atomic load). */
                 std::shared_ptr<IWebsocket>                                 GetSocket() noexcept { return std::atomic_load(&socket_); }
+                /** @brief Gets the underlying websocket object without mutating the wrapper. */
+                std::shared_ptr<IWebsocket>                                 GetSocket() const noexcept { return std::atomic_load(&socket_); }
                 /** @brief Schedules asynchronous disposal and forwards to base transmission cleanup. */
                 virtual void                                                Dispose() noexcept override {
                     auto self = shared_from_this();

@@ -40,6 +40,7 @@ final class OptionsViewController: UIViewController {
     private let ecsEnabled = UISwitch()
     private let fakeIpEnabled = UISwitch()
     private let tlsVerifyPeer = UISwitch()
+    private var selectedMuxMode = "compat"
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -141,6 +142,7 @@ final class OptionsViewController: UIViewController {
         geoIpDat.text = options.geoIpDat
         geoSiteDat.text = options.geoSiteDat
         mux.text = String(options.mux)
+        selectedMuxMode = options.muxMode
         httpProxyPort.text = String(options.httpProxyPort)
         socksProxyPort.text = String(options.socksProxyPort)
         allowLan.isOn = options.allowLan
@@ -175,6 +177,7 @@ final class OptionsViewController: UIViewController {
         options.geoIpDat = geoIpDat.textValue
         options.geoSiteDat = geoSiteDat.textValue
         options.mux = Int(mux.textValue) ?? 0
+        options.muxMode = selectedMuxMode
         options.httpProxyPort = proxyPortValue(httpProxyPort.textValue, fallback: 8080)
         options.socksProxyPort = proxyPortValue(socksProxyPort.textValue, fallback: 1080)
         options.allowLan = allowLan.isOn
@@ -272,12 +275,24 @@ final class OptionsViewController: UIViewController {
     }
 
     @objc private func openAdvancedOptions() {
+        let snapshot = TunnelSharedState.readRuntimeSnapshotJsonIfAlive()
+            .flatMap { try? TunnelRuntimeBridge.decodeSnapshot($0) }
+            ?? RuntimeSnapshot(
+                generation: 0,
+                monotonicMs: 0,
+                phase: .idle,
+                capabilities: RuntimeSnapshot.bundledCapabilities
+            )
         let controller = OptionsAdvancedViewController(
             mux: mux,
             vnet: vnet,
             blockQuic: blockQuic,
             staticMode: staticMode,
-            autoReconnectOnPathRecovery: autoReconnectOnPathRecovery
+            autoReconnectOnPathRecovery: autoReconnectOnPathRecovery,
+            muxModes: snapshot.availableMuxModes(experimental: store.debugPanelEnabled()),
+            selectedMuxMode: selectedMuxMode,
+            effectiveMuxMode: snapshot.effectiveMuxDisplayName,
+            onMuxModeChanged: { [weak self] in self?.selectedMuxMode = $0 }
         )
         navigationController?.pushViewController(controller, animated: true)
     }
@@ -291,19 +306,31 @@ final class OptionsAdvancedViewController: UIViewController {
     private let blockQuic: UISwitch
     private let staticMode: UISwitch
     private let autoReconnectOnPathRecovery: UISwitch
+    private let muxModes: [String]
+    private let selectedMuxMode: String
+    private let effectiveMuxMode: String
+    private let onMuxModeChanged: (String) -> Void
 
     init(
         mux: FormTextField,
         vnet: UISwitch,
         blockQuic: UISwitch,
         staticMode: UISwitch,
-        autoReconnectOnPathRecovery: UISwitch
+        autoReconnectOnPathRecovery: UISwitch,
+        muxModes: [String],
+        selectedMuxMode: String,
+        effectiveMuxMode: String,
+        onMuxModeChanged: @escaping (String) -> Void
     ) {
         self.mux = mux
         self.vnet = vnet
         self.blockQuic = blockQuic
         self.staticMode = staticMode
         self.autoReconnectOnPathRecovery = autoReconnectOnPathRecovery
+        self.muxModes = muxModes
+        self.selectedMuxMode = selectedMuxMode
+        self.effectiveMuxMode = effectiveMuxMode
+        self.onMuxModeChanged = onMuxModeChanged
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -338,7 +365,27 @@ final class OptionsAdvancedViewController: UIViewController {
             content.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor, constant: -32)
         ])
 
+        let modeControl = UISegmentedControl(items: muxModes.map {
+            $0 == "compat" ? "Compatibility" : $0
+        })
+        modeControl.selectedSegmentIndex = muxModes.firstIndex(of: selectedMuxMode) ?? UISegmentedControl.noSegment
+        modeControl.addAction(UIAction { [weak self, weak modeControl] _ in
+            guard let self, let modeControl,
+                  self.muxModes.indices.contains(modeControl.selectedSegmentIndex) else { return }
+            self.onMuxModeChanged(self.muxModes[modeControl.selectedSegmentIndex])
+        }, for: .valueChanged)
+        let restartLabel = UILabel()
+        restartLabel.text = "Takes effect on next connection"
+        restartLabel.font = .preferredFont(forTextStyle: .footnote)
+        restartLabel.textColor = .secondaryLabel
+        let effectiveLabel = UILabel()
+        effectiveLabel.text = effectiveMuxMode.isEmpty ? nil : "Effective now: \(effectiveMuxMode)"
+        effectiveLabel.isHidden = effectiveMuxMode.isEmpty
+
         content.addArrangedSubview(SectionView(title: "VNet", symbol: "network", views: [
+            modeControl,
+            restartLabel,
+            effectiveLabel,
             mux,
             switchRow(title: "VNet", subtitle: L10n.tr("options.vnet.detail"), control: vnet)
         ]))

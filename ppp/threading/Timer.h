@@ -149,8 +149,12 @@ namespace ppp {
             bool                                                                    Next() noexcept;
             /** @brief Finalizes timer internals and releases resources. */
             void                                                                    Finalize() noexcept;
+            /** @brief Stops the active timer; caller must hold `_syncobj`. */
+            bool                                                                    StopLocked() noexcept;
 
         private:
+            /** @brief Guards `_disposed_`, `_last`, `_interval`, and `_deadline_timer` against cross-thread access. */
+            std::mutex                                                              _syncobj;
             /** @brief Indicates whether Dispose/Finalize has been called. */
             bool                                                                    _disposed_ = false;
             /** @brief Synchronization flag for TickEvent access (false when Finalize in progress). */

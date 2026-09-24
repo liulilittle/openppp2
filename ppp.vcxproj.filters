@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="源文件">
@@ -39,11 +39,17 @@
     <ClCompile Include="ppp\app\ApplicationMainLoop.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\app\runtime\DatapathAcceptanceBoundary.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\app\ApplicationNetwork.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\app\ConsoleUI.cpp">
       <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\P2PCandidateAdapter.cpp">
+      <Filter>ppp\app</Filter>
     </ClCompile>
     <ClCompile Include="ppp\app\PppApplication.cpp">
       <Filter>源文件</Filter>
@@ -249,6 +255,9 @@
     <ClCompile Include="ppp\configurations\AppConfiguration.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\configurations\TransportAuthConfiguration.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="common\base64\base64.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -279,13 +288,22 @@
     <ClCompile Include="ppp\cryptography\EVP.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\cryptography\noise\NoisePsk.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\net\asio\websocket.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\ssl\SSL.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\ssl\TlsSessionExporter.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\transmissions\ITransmission.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\transmissions\NoisePskAuthenticatedCarrierBinding.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\net\asio\IAsynchronousWriteIoQueue.cpp">
@@ -313,6 +331,12 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="common\json\src\json_writer.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\protocol\SessionResumeAuthenticator.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\protocol\TransportAuthNegotiation.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\app\protocol\VirtualEthernetInformation.cpp">
@@ -348,6 +372,9 @@
     <ClCompile Include="ppp\app\server\VirtualEthernetExchanger.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\app\server\SessionResumeEstablishTransaction.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\app\server\VirtualInternetControlMessageProtocol.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -355,6 +382,15 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\app\client\VEthernetNetworkTcpipStack.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\xtcp\XtcpNdiBackend.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\xtcp\XtcpPoolLease.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\xtcp\XtcpRuntime.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\app\client\VEthernetExchanger.cpp">
@@ -372,10 +408,16 @@
     <ClCompile Include="ppp\ipv6\IPv6Auxiliary.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\ipv6\IPv6RouteTransaction.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\app\protocol\VirtualEthernetTcpipConnection.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\app\client\VEthernetNetworkTcpipConnection.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\ClientUnderlyingSocketProtector.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\app\server\VirtualEthernetNetworkTcpipConnection.cpp">
@@ -412,6 +454,9 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="windows\ppp\ipv6\WIN32_IPv6Auxiliary.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\ppp\ipv6\WindowsIPv6RouteOwner.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="windows\ppp\win32\Win32PerformanceCounter.cpp">
@@ -477,10 +522,31 @@
     <ClCompile Include="ppp\app\client\dns\FakeIpPool.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\app\client\routing\GeoDataReader.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\routing\HumanRoutingRouteSpecs.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\routing\HumanRoutingRules.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\routing\ProtocolSniffer.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\routing\TcpRoutingSelector.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\routing\UdpRoutingSelector.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\dns\DnsResolver.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\dns\DnsProviderCatalog.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\dns\DnsUdpFlowRegistry.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\app\client\GeoRuleGenerator.cpp">
@@ -549,13 +615,34 @@
     <ClCompile Include="ppp\p2p\P2PChannel.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\p2p\P2PDatagramTransport.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\p2p\P2PConfigHelper.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\p2p\P2PCrypto.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\p2p\P2PKeyDerivation.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\p2p\P2PRelayOffer.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\p2p\P2PClientOfferSession.cpp">
+      <Filter>ppp\p2p</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\p2p\P2PRelayOfferConsumer.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\p2p\P2PRelayOfferCoordinator.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\p2p\P2PNatClassifier.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\p2p\P2POfferToken.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\p2p\P2PSocketProtector.cpp">
@@ -580,6 +667,12 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\app\client\proxys\VEthernetSocksProxySwitcher.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\ClientFrpRegistry.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\mux\MuxCoordinator.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\app\mux\vmux_net.cpp">
@@ -676,6 +769,9 @@
     </ClInclude>
     <ClInclude Include="ppp\tap\ITap.h">
       <Filter>源文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\tap\TxGsoMetadata.h">
+      <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="windows\ppp\tap\TapWindows.h">
       <Filter>源文件</Filter>
@@ -1268,13 +1364,43 @@
     <ClInclude Include="ppp\configurations\AppConfiguration.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\configurations\TransportAuthConfiguration.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ppp\p2p\P2PDefs.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\mux\IMuxTransport.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\mux\MuxTransportAdapter.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\p2p\P2PCapabilityGate.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\p2p\P2PControlPacket.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\p2p\P2PControlStateMachine.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\p2p\P2PAuthenticatedProbeAck.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\p2p\P2PKeyDerivation.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\p2p\P2POfferToken.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\p2p\P2PPacketHeader.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\p2p\P2PReplayWindow.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\p2p\P2PState.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\p2p\P2PBufferPool.h">
@@ -1322,6 +1448,15 @@
     <ClInclude Include="windows\ppp\ipv6\IPv6Auxiliary.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\ipv6\IPv6ClientPolicy.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\ipv6\IPv6RouteTransaction.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\ppp\ipv6\WindowsIPv6RouteOwner.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="windows\ppp\win32\Win32RegistryKey.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -1341,6 +1476,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\cryptography\EVP.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\cryptography\noise\NoisePsk.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\net\asio\websocket.h">
@@ -1367,6 +1505,9 @@
     <ClInclude Include="ppp\transmissions\ITransmission.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\transmissions\IAuthenticatedCarrierBinding.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ppp\net\asio\IAsynchronousWriteIoQueue.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -1374,6 +1515,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\transmissions\IWebsocketTransmission.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\transmissions\NoisePskAuthenticatedCarrierBinding.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\net\asio\InternetControlMessageProtocol.h">
@@ -1388,7 +1532,16 @@
     <ClInclude Include="ppp\collections\Dictionary.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\app\protocol\SessionResumeAuthenticator.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\protocol\TransportAuthNegotiation.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ppp\app\protocol\VirtualEthernetInformation.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\runtime\DatapathAcceptanceBoundary.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\app\PppApplication.h">
@@ -1475,6 +1628,15 @@
     <ClInclude Include="ppp\app\server\VirtualEthernetExchanger.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\app\server\SessionRecoveryState.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\server\SessionResumeEstablishTransaction.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\server\SessionResumeFallbackDecision.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ppp\app\server\VirtualInternetControlMessageProtocol.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -1497,6 +1659,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\app\client\ClientNetworkInterface.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\ClientUnderlyingSocketProtector.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\app\protocol\VirtualEthernetTcpipConnection.h">
@@ -1607,6 +1772,30 @@
     <ClInclude Include="ppp\app\client\dns\FakeIpPool.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\app\client\dns\HumanDnsQueryPolicy.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\routing\GeoDataReader.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\routing\HumanRoutingRouteSpecs.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\routing\HumanRoutingRules.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\routing\ProtocolSniffer.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\routing\ResolvedDestination.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\routing\TcpRoutingSelector.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\routing\UdpRoutingSelector.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ppp\dns\DnsResolver.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -1671,6 +1860,21 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\app\mux\vmux.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\ClientKeepAlivePolicy.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\ClientReconnectionPolicy.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\ClientSessionResumeHandshakePolicy.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\ClientFrpRegistry.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\mux\MuxCoordinator.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\app\mux\vmux_net.h">

@@ -32,9 +32,23 @@ namespace ppp {
                     DnsRedirectPlanResult result;
 
                     if (input.qtype == DnsQueryType::kAAAA &&
-                        input.has_resolver &&
-                        !input.allow_ipv6_response) {
+                        ((input.has_resolver && !input.allow_ipv6_response) ||
+                         (input.has_human_action &&
+                          input.human_action != routing::RoutingAction::Auto))) {
                         result.action = DnsRouteAction::kBlockAAAA;
+                        return result;
+                    }
+
+                    if (input.has_human_action &&
+                        input.human_action != routing::RoutingAction::Auto) {
+                        if (!input.has_resolver || input.human_provider.empty()) {
+                            result.action = DnsRouteAction::kDrop;
+                            return result;
+                        }
+                        result.action = DnsRouteAction::kResolveProvider;
+                        result.provider_name = input.human_provider;
+                        result.provider_domestic =
+                            input.human_action == routing::RoutingAction::Direct;
                         return result;
                     }
 

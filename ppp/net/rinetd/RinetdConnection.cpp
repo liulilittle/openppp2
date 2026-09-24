@@ -139,6 +139,16 @@ namespace ppp {
                     return false;
                 }
 
+                RemoteSocketProtector remote_socket_protector = ProtectRemoteSocket;
+                if (RemoteSocketProtectorRequired && !remote_socket_protector) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
+                    return false;
+                }
+                if (remote_socket_protector && !remote_socket_protector(socket->native_handle(), y)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
+                    return false;
+                }
+
                 /**
                  * @brief Linux-specific physical-network protection for non-loopback peers.
                  *
@@ -153,7 +163,7 @@ namespace ppp {
                 // If IPV4 is not a loop IP address, it needs to be linked to a physical network adapter. 
                 // IPV6 does not need to be linked, because VPN is IPV4, 
                 // And IPV6 does not affect the physical layer network communication of the VPN.
-                if (!remoteIP.is_loopback()) {
+                if (!remote_socket_protector && !remoteIP.is_loopback()) {
                     auto protector_network = ProtectorNetwork; 
                     if (NULLPTR != protector_network) {
                         if (!protector_network->Protect(socket->native_handle(), y)) {

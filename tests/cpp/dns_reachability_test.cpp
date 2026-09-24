@@ -147,7 +147,12 @@ BOOST_AUTO_TEST_CASE(collect_rule_table_ips_splits_nic_and_tunnel) {
 
     auto provider_rule = ppp::make_shared_object<client_dns::Rule>();
     provider_rule->ProviderName = "cloudflare";
-    rules.emplace("provider.example", provider_rule);
+    rules.emplace("provider-tunnel.example", provider_rule);
+
+    auto provider_nic_rule = ppp::make_shared_object<client_dns::Rule>();
+    provider_nic_rule->ProviderName = "cloudflare";
+    provider_nic_rule->Nic = true;
+    rules.emplace("provider-nic.example", provider_nic_rule);
 
     std::unordered_set<uint32_t> nic_ips;
     std::unordered_set<uint32_t> tunnel_ips;
@@ -159,7 +164,7 @@ BOOST_AUTO_TEST_CASE(collect_rule_table_ips_splits_nic_and_tunnel) {
     BOOST_TEST(nic_ips.count(htonl(0x01000001u)) > 0);
     BOOST_TEST(tunnel_ips.count(htonl(0x08080404u)) > 0);
     BOOST_TEST(nic_ips.count(htonl(0x01010101u)) > 0);
-    BOOST_TEST(tunnel_ips.count(htonl(0x01010101u)) == 0);
+    BOOST_TEST(tunnel_ips.count(htonl(0x01010101u)) > 0);
 }
 
 BOOST_AUTO_TEST_CASE(collect_provider_ips_unknown_is_noop) {

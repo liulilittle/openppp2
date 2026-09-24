@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mutex>
+
 #include <ppp/net/SocketAcceptor.h>
 
 namespace ppp
@@ -25,6 +27,8 @@ namespace ppp
             int                                                                     Adjust(int sockfd) noexcept;
 
         private:
+            /** @brief Serialises listenfd_/hEvent_/afo_/context_ access and operations on the asio object_handle. */
+            std::mutex                                                              syncobj_;
             int                                                                     listenfd_ = -1;
             void*                                                                   hEvent_   = NULLPTR;
             bool                                                                    in_       = false;

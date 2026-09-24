@@ -182,10 +182,7 @@ final class ProfilesViewController: UIViewController, UITableViewDataSource, UIT
     }
 
     private func fetchSubscription(_ urlText: String) {
-        guard let url = URL(string: urlText),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "https" || scheme == "http"
-        else {
+        guard let url = URL(string: urlText), isSecureSubscriptionURL(url) else {
             presentMessage(title: L10n.tr("profiles.invalidSubscription"), message: L10n.tr("profiles.invalidSubscription.message"))
             return
         }
@@ -197,7 +194,7 @@ final class ProfilesViewController: UIViewController, UITableViewDataSource, UIT
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("OpenPPP2/iOS", forHTTPHeaderField: "User-Agent")
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        secureSubscriptionSession.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 progress.dismiss(animated: true) {
                     guard let self else { return }

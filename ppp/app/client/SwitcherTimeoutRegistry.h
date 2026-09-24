@@ -14,15 +14,19 @@ namespace ppp {
             public:
                 void Bind(ppp::ethernet::VEthernet::SynchronizedObject* sync) noexcept;
 
-                bool Emplace(void* key,
+                using RegistrationHandle = void*;
+
+                bool Emplace(RegistrationHandle handle,
                     const std::shared_ptr<ppp::function<void(ppp::threading::Timer*)>>& handler) noexcept;
 
-                bool Delete(void* key) noexcept;
+                bool Delete(RegistrationHandle handle) noexcept;
                 void ReleaseAll() noexcept;
 
             private:
                 ppp::ethernet::VEthernet::SynchronizedObject* sync_ = nullptr;
-                ppp::unordered_map<void*, std::shared_ptr<ppp::function<void(ppp::threading::Timer*)>>> timeouts_;
+                bool released_ = false;
+                ppp::unordered_map<RegistrationHandle,
+                    std::shared_ptr<ppp::function<void(ppp::threading::Timer*)>>> timeouts_;
             };
         }
     }

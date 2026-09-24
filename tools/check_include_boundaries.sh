@@ -38,7 +38,8 @@ fi
 # 103 -> 105: P2-e adds ServerUdpRelayHost.h + ServerDatagramPortManager.h, mirroring the client udp headers.
 # 105 -> 107: P2-f adds StaticUdpRelayHost.h + StaticDatagramPortManager.h for the static-echo table.
 # 107 -> 109: PMTU hardening adds VirtualEthernetPathMtu.h + VirtualEthernetTcpMss.h.
-STDAFX_BASELINE=109
+# 109 -> 110: the XTCP/native-runtime batch adds one additional header-level stdafx dependency.
+STDAFX_BASELINE=110
 stdafx_count=$({ list_headers 'stdafx' ppp 2>/dev/null || true; } | wc -l | tr -d ' ')
 if [[ "$stdafx_count" -gt "$STDAFX_BASELINE" ]]; then
   echo "FAIL: stdafx in ppp/**/*.h increased ($stdafx_count > $STDAFX_BASELINE)"

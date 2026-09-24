@@ -6,6 +6,7 @@
  */
 
 #include <ppp/stdafx.h>
+#include <ppp/dns/DnsUdpFlowRegistry.h>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -68,6 +69,7 @@ namespace ppp {
             ~DnsResolver() noexcept;
 
             void                                            SetProtectSocketCallback(const ProtectSocketCallback& cb) noexcept;
+            void                                            SetUdpFlowRegistry(const std::shared_ptr<DnsUdpFlowRegistry>& registry) noexcept;
 
             /**
              * @brief Sets the client exit IP used as the ECS source address.
@@ -350,22 +352,48 @@ namespace ppp {
              * @param callback  Invoked with the first resolved IPv4 address, or
              *                  an unspecified address on failure/timeout.
              */
-            static void                                     ResolveHostnameAsync(
-                boost::asio::io_context&                    context,
+            void                                            ResolveHostnameAsync(
                 const ppp::string&                          hostname,
                 const ExitIpCallback&                       callback) noexcept;
 
         private:
+            /**
+             * @brief Immutable resolver configuration snapshot.
+             *
+             * @details Setters copy the current snapshot, apply their change, and publish
+             *          the new snapshot with std::atomic_store; query paths take one
+             *          snapshot with std::atomic_load, so configuration hot-updates from
+             *          the management thread never race with in-flight queries running
+             *          on the io_context workers.
+             */
+            struct Config {
+                ProtectSocketCallback                       protect_socket;
+                std::shared_ptr<DnsUdpFlowRegistry>         udp_flow_registry;
+                ppp::string                                 default_domestic;
+                ppp::string                                 default_foreign;
+                boost::asio::ip::address                    exit_ip;
+                bool                                        ecs_enabled = false;
+                ppp::string                                 ecs_override_ip;
+                bool                                        tls_verify_peer = true;
+                ppp::vector<StunCandidate>                  stun_candidates;
+                ppp::vector<StunHostnameCandidate>          stun_hostname_candidates;
+            };
+
+            /** @brief Returns the currently published immutable configuration snapshot. */
+            std::shared_ptr<const Config>                   GetConfig() const noexcept { return std::atomic_load(&config_); }
+
+            /**
+             * @brief Publishes a new configuration snapshot via copy-on-write.
+             * @param mutate Mutation applied to the copied snapshot before publication.
+             */
+            void                                            UpdateConfig(const ppp::function<void(Config&)>& mutate) noexcept;
+
+        private:
             boost::asio::io_context&                        context_;
-            ProtectSocketCallback                           protect_socket_;
-            ppp::string                                     default_domestic_;
-            ppp::string                                     default_foreign_;
-            boost::asio::ip::address                        exit_ip_;
-            bool                                            ecs_enabled_ = false;
-            ppp::string                                     ecs_override_ip_;
-            bool                                            tls_verify_peer_ = true;
-            ppp::vector<StunCandidate>                      stun_candidates_;
-            ppp::vector<StunHostnameCandidate>              stun_hostname_candidates_;
+            /** @brief Serializes copy-on-write configuration updates (setters only). */
+            mutable std::mutex                              config_mutex_;
+            /** @brief Atomically published immutable configuration snapshot. */
+            std::shared_ptr<const Config>                   config_ = make_shared_object<Config>();
             std::atomic<std::size_t>                        stun_rotation_{ 0 };
             std::atomic<bool>                               allow_ipv6_response_{ false }; ///< When false, AAAA queries are answered with empty NOERROR. Default false; promoted to true by OnInformation when the server assigns IPv6.
 

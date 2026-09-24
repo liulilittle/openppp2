@@ -193,8 +193,18 @@ namespace ppp
                 TCONTEXT_PTR context_copy = context;
                 TSTRAND_PTR strand_copy   = strand;
 
+                /**
+                 * @brief A stopped io_context never runs the handler, so reporting
+                 *        success would let callers (e.g. coroutine Suspend paths)
+                 *        wait forever for a wakeup that can never arrive.
+                 */
                 if (strand_copy)
                 {
+                    if (NULLPTR != context_copy && context_copy->stopped())
+                    {
+                        return false;
+                    }
+
                     auto invoked = 
                         [context_copy, strand_copy, handler]() noexcept
                         {
@@ -207,6 +217,11 @@ namespace ppp
 
                 if (context_copy)
                 {
+                    if (context_copy->stopped())
+                    {
+                        return false;
+                    }
+
                     auto invoked = 
                         [context_copy, handler]() noexcept
                         {

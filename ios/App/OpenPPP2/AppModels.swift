@@ -25,6 +25,7 @@ struct LaunchOptions: Codable, Equatable {
     var dns2: String = "1.1.1.1"
     var mtu: Int = 1400
     var mux: Int = 0
+    var muxMode: String = "compat"
     var vnet: Bool = false
     var lwip: Bool = false
     var blockQuic: Bool = true
@@ -63,6 +64,7 @@ struct LaunchOptions: Codable, Equatable {
         case dns2
         case mtu
         case mux
+        case muxMode
         case vnet
         case lwip
         case blockQuic
@@ -102,6 +104,7 @@ struct LaunchOptions: Codable, Equatable {
         dns2 = try container.decodeIfPresent(String.self, forKey: .dns2) ?? defaults.dns2
         mtu = try container.decodeIfPresent(Int.self, forKey: .mtu) ?? defaults.mtu
         mux = try container.decodeIfPresent(Int.self, forKey: .mux) ?? defaults.mux
+        muxMode = try container.decodeIfPresent(String.self, forKey: .muxMode) ?? defaults.muxMode
         vnet = try container.decodeIfPresent(Bool.self, forKey: .vnet) ?? defaults.vnet
         lwip = try container.decodeIfPresent(Bool.self, forKey: .lwip) ?? defaults.lwip
         blockQuic = try container.decodeIfPresent(Bool.self, forKey: .blockQuic) ?? defaults.blockQuic
@@ -252,6 +255,7 @@ struct ConfigProfile: Codable, Equatable {
         try container.encodeIfPresent(subscriptionUrl, forKey: .subscriptionUrl)
         try container.encodeIfPresent(subscriptionNodeId, forKey: .subscriptionNodeId)
         try container.encodeIfPresent(subscriptionUpdatedAtMs, forKey: .subscriptionUpdatedAtMs)
+        try container.encode(options, forKey: .options)
         try container.encode(history, forKey: .history)
     }
 }
@@ -466,47 +470,6 @@ enum RemoteSubscriptionParser {
 extension NSError {
     static func openPPP2(_ message: String) -> NSError {
         NSError(domain: "OpenPPP2", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
-    }
-}
-
-struct VpnStatistics: Equatable {
-    var txSpeedBytes: Int = 0
-    var rxSpeedBytes: Int = 0
-    var inBytes: Int = 0
-    var outBytes: Int = 0
-
-    static let empty = VpnStatistics()
-
-    init() {}
-
-    init(jsonText: String, previous: VpnStatistics = .empty) {
-        guard let data = jsonText.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              let map = object as? [String: Any]
-        else {
-            self = previous
-            return
-        }
-
-        func value(_ keys: [String]) -> Int? {
-            for key in keys {
-                guard let raw = map[key] else { continue }
-                if let number = raw as? NSNumber { return number.intValue }
-                if let text = raw as? String, let parsed = Int(text) { return parsed }
-            }
-            return nil
-        }
-
-        let nativeTxSpeed = value(["tx", "txBytes", "outgoing", "outgoingTraffic"]) ?? 0
-        let nativeRxSpeed = value(["rx", "rxBytes", "incoming", "incomingTraffic"]) ?? 0
-        let nativeInTotal = value(["in", "inBytes", "incomingTotal", "incomingTrafficTotal"])
-        let nativeOutTotal = value(["out", "outBytes", "outgoingTotal", "outgoingTrafficTotal"])
-        let hasPreviousTotals = previous.inBytes > 0 || previous.outBytes > 0
-
-        inBytes = max(previous.inBytes, nativeInTotal ?? (previous.inBytes + nativeRxSpeed))
-        outBytes = max(previous.outBytes, nativeOutTotal ?? (previous.outBytes + nativeTxSpeed))
-        rxSpeedBytes = nativeInTotal != nil && hasPreviousTotals ? max(0, inBytes - previous.inBytes) : nativeRxSpeed
-        txSpeedBytes = nativeOutTotal != nil && hasPreviousTotals ? max(0, outBytes - previous.outBytes) : nativeTxSpeed
     }
 }
 

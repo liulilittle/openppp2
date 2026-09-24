@@ -2,6 +2,7 @@
 
 #include <ppp/stdafx.h>
 #include <ppp/tap/ITap.h>
+#include <ppp/net/IPEndPoint.h>
 #include <ppp/net/native/rib.h>
 
 #include <darwin/ppp/tun/utun.h>
@@ -26,7 +27,7 @@ namespace ppp
             public:
                 typedef std::shared_ptr<NetworkInterface>   Ptr;
             };
-            typedef ppp::unordered_map<uint32_t, uint32_t>  RouteInformationTable;
+            typedef ppp::vector<ppp::net::native::RouteEntry> RouteInformationTable;
 
         public:
             TapDarwin(const std::shared_ptr<boost::asio::io_context>& context, const ppp::string& dev, void* tun, uint32_t address, uint32_t gw, uint32_t mask, bool hosted_network) noexcept;
@@ -47,9 +48,21 @@ namespace ppp
             static std::shared_ptr<TapDarwin>               Create(const std::shared_ptr<boost::asio::io_context>& context, const ppp::string& dev, uint32_t ip, uint32_t gw, uint32_t mask, bool promisc, bool hosted_network, const ppp::vector<uint32_t>& dns_addresses) noexcept;
 
         public:
-            static bool                                     AddAllRoutes(std::shared_ptr<ppp::net::native::RouteInformationTable> rib) noexcept;    
-            static bool                                     DeleteAllRoutes(std::shared_ptr<ppp::net::native::RouteInformationTable> rib) noexcept; 
+            static bool                                     AddAllRoutes(std::shared_ptr<ppp::net::native::RouteInformationTable> rib) noexcept;
+            static bool                                     DeleteAllRoutes(std::shared_ptr<ppp::net::native::RouteInformationTable> rib) noexcept;
+            static bool                                     IsExactRoute(UInt32 address, int prefix, UInt32 gw, UInt32 route_address, UInt32 route_mask, UInt32 route_gateway) noexcept
+            {
+                if (prefix < 0 || prefix > 32)
+                {
+                    prefix = 32;
+                }
+                return address == route_address &&
+                    ppp::net::IPEndPoint::PrefixToNetmask(prefix) == route_mask &&
+                    gw == route_gateway;
+            }
+            static bool                                     TryRouteExists(UInt32 address, int prefix, UInt32 gw, bool& exists) noexcept;
             static std::shared_ptr<RouteInformationTable>   FindAllDefaultGatewayRoutes(const ppp::unordered_set<uint32_t>& bypass_gws) noexcept;
+            static bool                                     TryFindAllDefaultGatewayRoutes(const ppp::unordered_set<uint32_t>& bypass_gws, std::shared_ptr<RouteInformationTable>& routes) noexcept;
 
         private:
             static std::shared_ptr<TapDarwin>               CreateInternal(const std::shared_ptr<boost::asio::io_context>& context, uint32_t ip, uint32_t gw, uint32_t mask, bool promisc, bool hosted_network, int tun, ppp::string interface_name, const ppp::vector<boost::asio::ip::address>& dns_addresses) noexcept;

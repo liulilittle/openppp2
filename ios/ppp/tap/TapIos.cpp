@@ -1,4 +1,5 @@
 #include <ios/ppp/tap/TapIos.h>
+#include <ppp/p2p/P2PDatagramTransport.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/threading/Executors.h>
 
@@ -56,6 +57,7 @@ namespace ppp
 
         void TapIos::SetPacketOutput(PacketOutputEventHandler output) noexcept
         {
+            std::lock_guard<std::mutex> scope(output_mutex_);
             output_ = output;
         }
 
@@ -66,7 +68,7 @@ namespace ppp
                 return false;
             }
 
-            if (!IsOpen() || NULLPTR == PacketInput)
+            if (!IsOpen() || NULLPTR == GetPacketInput())
             {
                 return false;
             }
@@ -76,6 +78,20 @@ namespace ppp
             e.PacketLength = packet_size;
             OnInput(e);
             return true;
+        }
+
+        void TapIos::SetP2PDatagramTransportFactory(
+            const std::shared_ptr<ppp::p2p::IP2PDatagramTransportFactory>& factory) noexcept
+        {
+            std::lock_guard<std::mutex> scope(p2p_factory_mutex_);
+            p2p_factory_ = factory;
+        }
+
+        std::shared_ptr<ppp::p2p::IP2PDatagramTransportFactory>
+            TapIos::GetP2PDatagramTransportFactory() const noexcept
+        {
+            std::lock_guard<std::mutex> scope(p2p_factory_mutex_);
+            return p2p_factory_;
         }
 
         bool TapIos::IsReady() noexcept
@@ -97,7 +113,10 @@ namespace ppp
         void TapIos::Dispose() noexcept
         {
             opened_.store(false);
-            output_ = NULLPTR;
+            {
+                std::lock_guard<std::mutex> scope(output_mutex_);
+                output_ = NULLPTR;
+            }
             ITap::Dispose();
         }
 
@@ -108,7 +127,12 @@ namespace ppp
                 return false;
             }
 
-            PacketOutputEventHandler output = output_;
+            PacketOutputEventHandler output;
+            {
+                std::lock_guard<std::mutex> scope(output_mutex_);
+                output = output_;
+            }
+
             if (NULLPTR == output)
             {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelDeviceMissing);

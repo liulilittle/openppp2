@@ -14,6 +14,12 @@ let package = Package(
                 "AppModels.swift",
                 "TunnelSharedState.swift",
                 "ProfileImportExport.swift",
+                "Runtime/RuntimeSnapshot.swift",
+                "Runtime/RuntimeStore.swift",
+                "Runtime/RuntimeTrafficRate.swift",
+                "Runtime/RuntimeControls.swift",
+                "Runtime/TunnelRuntimeBridge.swift",
+                "SubscriptionUrlPolicy.swift",
             ]
         ),
         .testTarget(

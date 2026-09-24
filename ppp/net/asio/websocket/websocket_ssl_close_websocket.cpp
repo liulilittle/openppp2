@@ -28,8 +28,13 @@ namespace ppp {
                  */
                 ppp::threading::Executors::Post(context, strand,
                     [self, this, context, strand]() noexcept {
-                        std::shared_ptr<SslvWebSocket> ssl_websocket = std::move(ssl_websocket_);
-                        disposed_ = true;
+                        std::shared_ptr<SslvWebSocket> ssl_websocket;
+                        {
+                            std::lock_guard<std::mutex> lock(exporter_mutex_);
+                            tls_handshake_complete_.store(false, std::memory_order_release);
+                            ssl_websocket = std::move(ssl_websocket_);
+                            disposed_ = true;
+                        }
 
                         if (NULLPTR != ssl_websocket) {
                             ssl_websocket->async_close(boost::beast::websocket::close_code::normal,
@@ -65,6 +70,9 @@ namespace ppp {
              * @return true if the socket is successfully moved; otherwise false.
              */
             bool sslwebsocket::ShiftToScheduler() noexcept {
+                std::lock_guard<std::mutex> lock(exporter_mutex_);
+                const bool exporter_ready = tls_handshake_complete_.exchange(
+                    false, std::memory_order_acq_rel);
                 std::shared_ptr<SslvWebSocket> ssl_websocket = ssl_websocket_;
                 if (NULLPTR == ssl_websocket) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketDisconnected);
@@ -86,6 +94,8 @@ namespace ppp {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketOpenFailed);
                 }
 
+                tls_handshake_complete_.store(
+                    exporter_ready && ok && !disposed_, std::memory_order_release);
                 return ok;
             }
         }

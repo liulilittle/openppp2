@@ -143,10 +143,11 @@ namespace ppp {
                     Int128                                               SessionId = 0;            ///< Session that owns this peer record.
                     uint32_t                                             VirtualIP = 0;            ///< Client virtual IPv4 in network byte order.
                     ppp::string                                          Mode;                     ///< Client-requested P2P mode.
-                    boost::asio::ip::udp::endpoint                       ObservedEndpoint;         ///< Coordinator-observed endpoint hint.
+                    boost::asio::ip::udp::endpoint                       ObservedEndpoint;         ///< Authenticated static-echo UDP source endpoint.
                     ppp::vector<ppp::app::protocol::P2PEndpointCandidate> Candidates;              ///< Client-advertised UDP/STUN candidates.
                     UInt64                                               LastSeen = 0;             ///< Last control update tick.
                     UInt64                                               LastOfferAt = 0;          ///< Last peer-offer send tick for coarse throttling.
+                    UInt64                                               LastOfferGeneration = 0;  ///< Unique owner of the current asynchronous offer reservation.
                     std::weak_ptr<VirtualEthernetExchanger>              Exchanger;                ///< Owning exchanger.
                     ppp::p2p::P2PNatType                                 NatType = ppp::p2p::P2PNatType::Unknown; ///< Inferred NAT type from relay traffic.
                 };
@@ -293,12 +294,14 @@ namespace ppp {
                  *          multiple times; subsequent calls are no-ops.
                  */
                 virtual void                                            Dispose() noexcept;
+                void                                                    Dispose(ppp::function<void()> completion) noexcept;
 
                 /**
                  * @brief Returns true if the switcher has been disposed.
                  * @return Disposal state.
                  */
                 virtual bool                                            IsDisposed() noexcept;
+                bool                                                    IsRunning() const noexcept { return running_.load(std::memory_order_acquire); }
 
             public:
                 /** @brief Gets the global traffic statistics collector. */
@@ -445,6 +448,7 @@ namespace ppp {
             private:
                 /** @brief Releases all owned resources synchronously. */
                 void                                                    Finalize() noexcept;
+                void                                                    Finalize(ppp::function<void()> completion) noexcept;
                 /**
                  * @brief Accepts a socket and dispatches it under the specified category.
                  * @param context    I/O context for the new connection.
@@ -461,6 +465,11 @@ namespace ppp {
                  * @return 0 on clean exit; non-zero on error.
                  */
                 int                                                     Run(const ContextPtr& context, const ITransmissionPtr& transmission, YieldContext& y) noexcept;
+                /**
+                 * @brief Authenticates a negotiated plain TCP/WebSocket carrier before session dispatch.
+                 * @return True for a completed authentication or a policy-gated legacy bypass.
+                 */
+                bool                                                    AuthenticatePlainTransport(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept;
                 /**
                  * @brief Removes an exchanger from the table by raw pointer key.
                  * @param exchanger Raw pointer used as the lookup key.
@@ -740,10 +749,11 @@ namespace ppp {
                  */
                 bool                                                    DeleteIPv6TransitRoute(const boost::asio::ip::address& ip, int prefix_length) noexcept;
                 /**
-                 * @brief Clears the IPv6 exchanger table without acquiring `syncobj_`.
-                 * @warning Caller must hold `syncobj_` before calling this function.
+                 * @brief Snapshots IPv6 cleanup keys and clears exchanger/lease state without acquiring `syncobj_`.
+                 * @warning Caller must hold `syncobj_` before calling this function. Owned-neighbor records
+                 *          remain until lock-free kernel cleanup confirms deletion.
                  */
-                void                                                    ClearIPv6ExchangersUnsafe() noexcept;
+                void                                                    ClearIPv6ExchangersUnsafe(ppp::unordered_set<ppp::string>& cleanup_keys, ppp::unordered_set<ppp::string>& cleanup_owned_neighbors) noexcept;
                 /**
                  * @brief Injects a raw packet into the IPv6 transit TAP device.
                  * @param packet        Pointer to the raw IP packet buffer.
@@ -790,6 +800,8 @@ namespace ppp {
                 NatInformationPtr                                       AddNatInformation(const std::shared_ptr<VirtualEthernetExchanger>& exchanger, uint32_t ip, uint32_t mask) noexcept;
                 /** @brief Updates server-side P2P peer state from an INFO extension. */
                 bool                                                    UpdateP2PPeer(const std::shared_ptr<VirtualEthernetExchanger>& exchanger, const ITransmissionPtr& transmission, const VirtualEthernetInformationExtensions& request, VirtualEthernetInformationExtensions& response) noexcept;
+                /** @brief Records an authenticated static-echo UDP endpoint after NAT ownership validation. */
+                bool                                                    ObserveP2PUdpEndpoint(const std::shared_ptr<VirtualEthernetExchanger>& exchanger, uint32_t virtual_ip, const boost::asio::ip::udp::endpoint& source) noexcept;
                 /** @brief Removes P2P peer state for a disconnected session. */
                 bool                                                    DeleteP2PPeer(const Int128& session_id) noexcept;
                 /** @brief Sends peer endpoint hints to both sides while preserving server relay fallback. */
@@ -825,16 +837,20 @@ namespace ppp {
 
             private:
                 SynchronizedObject                                      syncobj_;           ///< Mutex guarding all shared mutable tables.
+                SynchronizedObject                                      ipv6_transit_lifecycle_syncobj_; ///< Serializes TAP-backed route/neighbor lifecycle operations with Finalize().
                 /** @brief Set to true after Dispose() begins; atomic for lock-free cross-thread reads via IsDisposed(). */
                 std::atomic<bool>                                       disposed_{false};
+                std::atomic<bool>                                       running_{false};
 
                 VirtualEthernetLoggerPtr                                logger_;                        ///< Session activity logger.
                 NatInformationTable                                     nats_;                          ///< IPv4 NAT ownership table (key = IP).
                 IPv6ExchangerTable                                      ipv6s_;                         ///< IPv6 address → exchanger mapping.
+                ppp::unordered_set<ppp::string>                          ipv6_transit_neighbor_owned_;   ///< Permanent transit neighbors created by this switcher.
                 IPv6RequestTable                                        ipv6_requests_;                 ///< Per-session IPv6 request state.
                 IPv6LeaseTable                                          ipv6_leases_;                   ///< Active IPv6 lease records.
                 P2PPeerTable                                            p2p_peers_;                     ///< P2P control-plane peer records (key = session_id).
                 ppp::unordered_map<uint32_t, Int128>                    p2p_virtual_ips_;               ///< Reverse index: virtual_ip → session_id for dedup and NAT-ownership validation.
+                UInt64                                                  p2p_offer_generation_ = 0;      ///< Monotonic offer reservation identity guarded by syncobj_.
                 PeerPrefixGatewayTable                                  peer_prefix_gateways_;          ///< Prefix gateway records keyed by session_id.
                 ppp::net::native::RouteInformationTable                 peer_prefix_rib_;               ///< Prefix → gateway virtual IP lookup table.
                 ppp::p2p::P2PNatClassifier                              p2p_nat_classifier_;            ///< Server-side NAT type inference from relay traffic.

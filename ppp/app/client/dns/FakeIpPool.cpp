@@ -102,26 +102,54 @@ namespace ppp {
                     return (ip_host & pool_mask_host_) == pool_network_host_;
                 }
 
-                uint32_t FakeIpPool::Allocate(const ppp::string& hostname) noexcept {
+                FakeIpPool::EntrySnapshot FakeIpPool::Snapshot(const Entry& entry) noexcept {
+                    EntrySnapshot snapshot;
+                    snapshot.hostname = entry.hostname;
+                    snapshot.fake_ip_host = entry.fake_ip_host;
+                    snapshot.real_ip_host = entry.real_ip_host;
+                    snapshot.action = entry.action;
+                    snapshot.domain_matched = entry.domain_matched;
+                    snapshot.is_resolving = entry.is_resolving;
+                    snapshot.is_resolved = entry.is_resolved;
+                    return snapshot;
+                }
+
+                FakeIpPool::AllocationResult FakeIpPool::Allocate(
+                    const ppp::string& hostname,
+                    routing::RoutingAction action,
+                    bool domain_matched) noexcept {
                     std::lock_guard<std::mutex> lock(sync_);
+                    AllocationResult result;
                     if (!enabled_ || hostname.empty()) {
-                        return 0;
+                        return result;
                     }
 
                     auto found = by_hostname_.find(hostname);
                     if (found != by_hostname_.end()) {
-                        return found->second;
+                        Entry& entry = by_fake_ip_[found->second];
+                        if (!entry.is_resolved && !entry.is_resolving) {
+                            entry.is_resolving = true;
+                            result.should_resolve = true;
+                        }
+                        result.entry = Snapshot(entry);
+                        return result;
                     }
 
                     uint32_t candidate = cursor_host_;
+                    bool available = false;
                     for (std::size_t i = 0; i <= (pool_end_host_ - pool_start_host_); ++i) {
                         if (candidate > pool_end_host_) {
                             candidate = pool_start_host_;
                         }
                         if (by_fake_ip_.find(candidate) == by_fake_ip_.end()) {
+                            available = true;
                             break;
                         }
                         ++candidate;
+                    }
+
+                    if (!available) {
+                        return result;
                     }
 
                     cursor_host_ = candidate + 1;
@@ -132,41 +160,87 @@ namespace ppp {
                     Entry entry;
                     entry.hostname = hostname;
                     entry.fake_ip_host = candidate;
+                    entry.action = action;
+                    entry.domain_matched = domain_matched;
+                    entry.is_resolving = true;
                     by_fake_ip_[candidate] = entry;
                     by_hostname_[hostname] = candidate;
-                    return candidate;
+                    result.entry = Snapshot(entry);
+                    result.created = true;
+                    result.should_resolve = true;
+                    return result;
                 }
 
-                void FakeIpPool::SetRealIp(const ppp::string& hostname, uint32_t real_ip_network) noexcept {
+                uint32_t FakeIpPool::Allocate(const ppp::string& hostname) noexcept {
+                    return Allocate(hostname, routing::RoutingAction::Auto, false).entry.fake_ip_host;
+                }
+
+                bool FakeIpPool::SetResolved(
+                    const ppp::string& hostname,
+                    uint32_t real_ip_host,
+                    routing::RoutingAction action) noexcept {
                     std::lock_guard<std::mutex> lock(sync_);
-                    if (!enabled_ || hostname.empty() || real_ip_network == 0) {
-                        return;
+                    if (!enabled_ || hostname.empty() || real_ip_host == 0) {
+                        return false;
                     }
 
                     auto found = by_hostname_.find(hostname);
                     if (found == by_hostname_.end()) {
-                        return;
+                        return false;
                     }
 
-                    by_fake_ip_[found->second].real_ip_host = real_ip_network;
+                    Entry& entry = by_fake_ip_[found->second];
+                    entry.real_ip_host = real_ip_host;
+                    if (!entry.domain_matched) {
+                        entry.action = action;
+                    }
+                    entry.is_resolving = false;
+                    entry.is_resolved = true;
+                    return true;
+                }
+
+                void FakeIpPool::SetResolveFailed(const ppp::string& hostname) noexcept {
+                    std::lock_guard<std::mutex> lock(sync_);
+                    auto found = by_hostname_.find(hostname);
+                    if (found != by_hostname_.end()) {
+                        by_fake_ip_[found->second].is_resolving = false;
+                    }
+                }
+
+                void FakeIpPool::SetRealIp(const ppp::string& hostname, uint32_t real_ip_host) noexcept {
+                    std::lock_guard<std::mutex> lock(sync_);
+                    if (!enabled_ || hostname.empty() || real_ip_host == 0) {
+                        return;
+                    }
+                    auto found = by_hostname_.find(hostname);
+                    if (found == by_hostname_.end()) {
+                        return;
+                    }
+                    Entry& entry = by_fake_ip_[found->second];
+                    entry.real_ip_host = real_ip_host;
+                    entry.is_resolving = false;
+                    entry.is_resolved = true;
+                }
+
+                bool FakeIpPool::Lookup(uint32_t fake_ip_host, EntrySnapshot& entry) const noexcept {
+                    std::lock_guard<std::mutex> lock(sync_);
+                    auto found = by_fake_ip_.find(fake_ip_host);
+                    if (found == by_fake_ip_.end()) {
+                        entry = EntrySnapshot{};
+                        return false;
+                    }
+                    entry = Snapshot(found->second);
+                    return true;
                 }
 
                 uint32_t FakeIpPool::LookupRealIpHostOrder(uint32_t fake_ip_host) const noexcept {
-                    std::lock_guard<std::mutex> lock(sync_);
-                    auto found = by_fake_ip_.find(fake_ip_host);
-                    if (found == by_fake_ip_.end()) {
-                        return 0;
-                    }
-                    return found->second.real_ip_host;
+                    EntrySnapshot entry;
+                    return Lookup(fake_ip_host, entry) && entry.is_resolved ? entry.real_ip_host : 0;
                 }
 
                 ppp::string FakeIpPool::LookupHostname(uint32_t fake_ip_host) const noexcept {
-                    std::lock_guard<std::mutex> lock(sync_);
-                    auto found = by_fake_ip_.find(fake_ip_host);
-                    if (found == by_fake_ip_.end()) {
-                        return {};
-                    }
-                    return found->second.hostname;
+                    EntrySnapshot entry;
+                    return Lookup(fake_ip_host, entry) ? entry.hostname : ppp::string{};
                 }
 
                 bool FakeIpPool::GetRoute(uint32_t& route_network, int& route_prefix) const noexcept {

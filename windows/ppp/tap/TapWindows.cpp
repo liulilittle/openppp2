@@ -220,7 +220,10 @@ namespace ppp
                     return NULLPTR;
                 }
 
-                tap->wintun_ = wrap_shared_pointer<void>(wintun.get(), tap);
+                {
+                    std::lock_guard<std::mutex> lock(tap->wintun_mutex_);
+                    tap->wintun_adapter_ = wintun;
+                }
                 tap->GetInterfaceIndex() = interface_index;
                 return tap;
             }
@@ -388,7 +391,11 @@ namespace ppp
                     return true;
                 }
 
-                WintunAdapter* wintun = static_cast<WintunAdapter*>(GetHandle());
+                std::shared_ptr<WintunAdapter> wintun;
+                {
+                    std::lock_guard<std::mutex> lock(wintun_mutex_);
+                    wintun = wintun_adapter_;
+                }
                 if (NULLPTR == wintun)
                 {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelOpenFailed);
@@ -416,7 +423,11 @@ namespace ppp
                     return true;
                 }
 
-                WintunAdapter* wintun = static_cast<WintunAdapter*>(GetHandle());
+                std::shared_ptr<WintunAdapter> wintun;
+                {
+                    std::lock_guard<std::mutex> lock(wintun_mutex_);
+                    wintun = wintun_adapter_;
+                }
                 if (NULLPTR == wintun)
                 {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelOpenFailed);
@@ -439,7 +450,11 @@ namespace ppp
         {
             if (WintunAdapter::Ready())
             {
-                WintunAdapter* wintun = static_cast<WintunAdapter*>(GetHandle());
+                std::shared_ptr<WintunAdapter> wintun;
+                {
+                    std::lock_guard<std::mutex> lock(wintun_mutex_);
+                    wintun = wintun_adapter_;
+                }
                 if (NULLPTR == wintun)
                 {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelOpenFailed);
@@ -459,18 +474,18 @@ namespace ppp
                     return false;
                 }
 
-                auto self = shared_from_this();
+                auto self = std::static_pointer_cast<TapWindows>(shared_from_this());
                 *packet_input =
-                    [self, this](const uint8_t* data, uint32_t len) noexcept
+                    [self](const uint8_t* data, uint32_t len) noexcept
                     {
                         int packet_length = std::max<int>(len, -1);
                         if (packet_length > 0)
                         {
                             PacketInputEventArgs e{ (char*)data, packet_length };
-                            OnInput(e);
+                            self->OnInput(e);
                         }
                     };
-                wintun->PacketInput = packet_input;
+                wintun->SetPacketInput(packet_input);
                 return true;
             }
             
@@ -650,6 +665,12 @@ namespace ppp
         bool TapWindows::IsWintun() noexcept
         {
             return WintunAdapter::Ready();
+        }
+
+        bool TapWindows::IsWintunBackend() noexcept
+        {
+            std::lock_guard<std::mutex> lock(wintun_mutex_);
+            return NULLPTR != wintun_adapter_;
         }
 
         ppp::string TapWindows::FindComponentId() noexcept
@@ -862,14 +883,16 @@ namespace ppp
         {
             if (WintunAdapter::Ready())
             {
-                void* handle = GetHandle();
-                if (NULLPTR != handle)
+                std::shared_ptr<WintunAdapter> wintun;
                 {
-                    WintunAdapter* wintun = static_cast<WintunAdapter*>(handle);
+                    std::lock_guard<std::mutex> lock(wintun_mutex_);
+                    wintun = wintun_adapter_;
+                }
+                if (wintun)
+                {
+                    wintun->ClearPacketInput();
                     wintun->Stop();
                 }
-
-                wintun_.reset();
             }
 
             ITap::Dispose();

@@ -1,0 +1,133 @@
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -335,6 +335,56 @@
+                 std::lock_guard<std::recursive_mutex> scope(syncobj_);
+                 return ack_deadline_;
+             }
++            /**
++             * @brief Earliest armed timer deadline (steady-clock microseconds,
++             *        the PollAckTimers clock).
++             * @return The minimum of the delayed-ACK/RTO/TLP/persist/MTU-probe/
++             *         FIN-WAIT-2/keepalive/user-timeout deadlines; 0 when timer
++             *         work is due immediately (CLOSED reclamation or buffered
++             *         sends) and ~(TimePoint)0 when nothing is pending. A
++             *         TIME-WAIT connection reports its 2MSL deadline.
++             * @note  OPENPPP2 integration patch (tools/xtcp-patches/
++             *        0001-next-timer-deadline.patch): enables deadline-driven
++             *        polling in the host event loop instead of a fixed
++             *        cadence.
++             */
++            TimePoint NextTimerDeadline() const noexcept {
++                std::lock_guard<std::recursive_mutex> scope(syncobj_);
++                if (TcpState::kClosed == state_) {
++                    return 0;  // the sweep's reclamation pass is due now
++                }
++                if (TcpState::kTimeWait == state_) {
++                    return timewait_deadline_;
++                }
++                TimePoint next = ~(TimePoint)0;
++                const auto consider = [&next](TimePoint due) noexcept {
++                    if (0 != due && due < next) {
++                        next = due;
++                    }
++                };
++                consider(ack_deadline_);
++                consider(rto_deadline_);
++                consider(persist_deadline_);
++                consider(mtu_probe_deadline_);
++                if (TcpState::kFinWait2 == state_) {
++                    consider(finwait2_deadline_);
++                }
++                if (tlp_armed_) {
++                    consider(tlp_deadline_);
++                }
++                if (0 < user_timeout_us_ && 0 != first_outstanding_) {
++                    consider(first_outstanding_ + user_timeout_us_);
++                }
++                if (0 < keepalive_idle_ && TcpState::kEstablished == state_) {
++                    const UInt64 idle_us =
++                        (0 < keepalive_probes_) ? keepalive_intvl_ : keepalive_idle_;
++                    consider(last_rx_ + idle_us);
++                }
++                if (0 < pending_send_.size()) {
++                    return 0;  // buffered sends ride the next sweep
++                }
++                return next;
++            }
+ 
+             /**
+              * @brief Enables TCP-MD5 (RFC 2385) with the given key.
+--- a/include/xtcp/core/stack.h
++++ b/include/xtcp/core/stack.h
+@@ -296,6 +296,26 @@
+          */
+         UInt32 PollAckTimers() noexcept;
+         /**
++         * @brief Sentinel returned by NextTimerDeadlineUs() when no timer
++         *        work is pending anywhere in the stack.
++         * @note  OPENPPP2 integration patch (tools/xtcp-patches/
++         *        0001-next-timer-deadline.patch).
++         */
++        static constexpr UInt64 kNoTimerDeadline = ~static_cast<UInt64>(0);
++        /**
++         * @brief Earliest pending timer deadline across all connections
++         *        (steady-clock microseconds, the PollAckTimers clock).
++         * @return The minimum of every per-connection timer deadline and the
++         *         qdisc pacing time; a value at or below the current clock
++         *         means PollAckTimers is due now; kNoTimerDeadline when
++         *         nothing is pending (the next packet/send/close arms the
++         *         next deadline).
++         * @note  O(1) when every shard is idle (the same sweep hints the
++         *        PollAckTimers fast path uses); O(live connections) only on
++         *        shards with armed timers.
++         */
++        UInt64 NextTimerDeadlineUs() noexcept;
++        /**
+          * @brief Total live connections (all shards).
+          */
+         UInt32 ConnectionCount() const noexcept;
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -1661,6 +1661,42 @@
+         return sent;
+     }
+ 
++    UInt64 XtcpStack::NextTimerDeadlineUs() noexcept {
++        UInt64 next = kNoTimerDeadline;
++        const core::TimePoint pacing = qdisc_next_pacing_.load(std::memory_order_relaxed);
++        if (0 != pacing && pacing < next) {
++            next = pacing;
++        }
++        for (UInt32 i = 0; i < kShardCount; ++i) {
++            Shard& shard = shards_[i];
++            // A pending TX backpressure retry must drain on the next sweep:
++            // report "due now" without walking the connection table.
++            if (NULLPTR != shard.tx_retry_head_.load(std::memory_order_relaxed)) {
++                return 0;
++            }
++            // Mirror of the PollAckTimers fast path: a shard whose sweep hint
++            // is clear has no connection with armed timers - skip the lock.
++            if (!shard.sweep_hint_.load(std::memory_order_relaxed)) {
++                continue;
++            }
++            std::lock_guard<std::recursive_mutex> scope(shard.syncobj_);
++            for (const auto& entry : shard.conns_) {
++                const ConnEntry* e = entry.second;
++                if (NULLPTR == e || NULLPTR == e->conn) {
++                    continue;
++                }
++                const core::TimePoint due = e->conn->NextTimerDeadline();
++                if (due < next) {
++                    next = due;
++                    if (0 == next) {
++                        return 0;
++                    }
++                }
++            }
++        }
++        return next;
++    }
++
+     UInt64 XtcpStack::ConnTimeWaitDeadline(UInt64 conn_id) const noexcept {
+         Shard* shard = ShardOf(conn_id);
+         std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);

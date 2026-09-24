@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/config_profile.dart';
+import '../runtime/runtime_store.dart';
 import '../services/profile_store.dart';
+import '../vpn_service.dart';
 import '../widgets/app_section_card.dart';
+import '../widgets/vmux_mode_selector.dart';
 import 'per_app_proxy_page.dart';
 
 /// Android-specific and extended launch options (VNet, per-app proxy, geo-rules).
@@ -15,6 +18,7 @@ class OptionsAdvancedPage extends StatefulWidget {
 
 class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
   final _store = ProfileStore();
+  final RuntimeStore _runtimeStore = VpnService().runtimeStore;
 
   final _mark = TextEditingController();
   final _mux = TextEditingController();
@@ -35,7 +39,8 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
   bool _perAppProxyEnabled = false;
   String _perAppProxyMode = 'allow';
   List<String> _perAppProxyApps = const <String>[];
-  bool _autoAppendApps = false;
+  bool _experimentalMode = false;
+  String _muxMode = 'compat';
 
   ConfigProfile? _profile;
   bool _loading = true;
@@ -46,7 +51,12 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
   void initState() {
     super.initState();
     _storeSub = _store.changes.listen((_) => _reloadFromStore());
+    _runtimeStore.addListener(_runtimeChanged);
     _load();
+  }
+
+  void _runtimeChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _reloadFromStore() async {
@@ -58,9 +68,13 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
       return;
     }
     final m = await _store.getProfileOptions(active.id);
+    final experimental = await _store.getDebugPanelEnabled();
     if (!mounted) return;
     _hydrate(m);
-    setState(() => _profile = active);
+    setState(() {
+      _profile = active;
+      _experimentalMode = experimental;
+    });
   }
 
   Future<void> _load() async {
@@ -74,18 +88,21 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
       return;
     }
     final m = await _store.getProfileOptions(active.id);
+    final experimental = await _store.getDebugPanelEnabled();
     if (!mounted) return;
     _hydrate(m);
     setState(() {
       _profile = active;
       _loading = false;
       _dirty = false;
+      _experimentalMode = experimental;
     });
   }
 
   void _hydrate(Map<String, dynamic> m) {
     _mark.text = (m['mark'] ?? '0').toString();
     _mux.text = (m['mux'] ?? '0').toString();
+    _muxMode = (m['muxMode'] ?? 'compat').toString();
     _vnet = m['vnet'] == true;
     _blockQuic = m['blockQuic'] == true;
     _staticMode = m['staticMode'] == true;
@@ -97,7 +114,6 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
     _perAppProxyApps = (apps is List)
         ? apps.whereType<String>().where((s) => s.isNotEmpty).toList()
         : const <String>[];
-    _autoAppendApps = m['autoAppendApps'] == true;
 
     final geo = (m['geoRules'] is Map)
         ? Map<String, dynamic>.from(m['geoRules'] as Map)
@@ -120,14 +136,15 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
     options
       ..['mark'] = int.tryParse(_mark.text.trim()) ?? 0
       ..['mux'] = int.tryParse(_mux.text.trim()) ?? 0
+      ..['muxMode'] = _muxMode
       ..['vnet'] = _vnet
       ..['blockQuic'] = _blockQuic
       ..['staticMode'] = _staticMode
       ..['proxyOnly'] = _proxyOnly
       ..['perAppProxyEnabled'] = _perAppProxyEnabled
       ..['perAppProxyMode'] = _perAppProxyMode
-      ..['perAppProxyApps'] = List<String>.from(_perAppProxyApps)
-      ..['autoAppendApps'] = _autoAppendApps;
+      ..['perAppProxyApps'] = List<String>.from(_perAppProxyApps);
+    options.remove('autoAppendApps');
 
     final geo = (options['geoRules'] is Map)
         ? Map<String, dynamic>.from(options['geoRules'] as Map)
@@ -157,7 +174,7 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
     if (!mounted) return;
     setState(() => _dirty = false);
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('「${p.name}」高级参数已保存')),
+      const SnackBar(content: Text('Takes effect on next connection')),
     );
   }
 
@@ -214,6 +231,7 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
   @override
   void dispose() {
     _storeSub?.cancel();
+    _runtimeStore.removeListener(_runtimeChanged);
     for (final c in [
       _mark,
       _mux,
@@ -282,13 +300,10 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
                         ),
                         SwitchListTile(
                           contentPadding: EdgeInsets.zero,
-                          value: _autoAppendApps,
+                          value: false,
                           title: const Text('系统 HTTP 代理'),
-                          subtitle: const Text('注入系统级 HTTP 代理 · Android 10+'),
-                          onChanged: (v) => setState(() {
-                            _autoAppendApps = v;
-                            _markDirty();
-                          }),
+                          subtitle: const Text('为防止本地端口被抢占，Android 上不可用'),
+                          onChanged: null,
                         ),
                       ],
                     ),
@@ -298,6 +313,16 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
                       icon: Icons.tune_rounded,
                       tint: Colors.purple,
                       children: [
+                        VmuxModeSelector(
+                          snapshot: _runtimeStore.state,
+                          selectedMode: _muxMode,
+                          experimental: _experimentalMode,
+                          onChanged: (mode) => setState(() {
+                            _muxMode = mode;
+                            _markDirty();
+                          }),
+                        ),
+                        const SizedBox(height: 12),
                         Row(
                           children: [
                             Expanded(

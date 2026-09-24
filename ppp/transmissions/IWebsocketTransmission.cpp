@@ -74,6 +74,12 @@ namespace ppp {
             ppp::telemetry::Log(Level::kInfo, "websocket", "websocket close");
         }
 
+        bool IWebsocketTransmission::ShiftToScheduler() noexcept {
+            InvalidateAuthenticatedCarrierBinding();
+            auto socket = GetSocket();
+            return socket && socket->ShiftToScheduler();
+        }
+
         /**
          * @brief Performs websocket handshake using override or configuration endpoint.
          */
@@ -182,6 +188,44 @@ namespace ppp {
 
         ISslWebsocketTransmission::~ISslWebsocketTransmission() noexcept {
             ppp::telemetry::Log(Level::kInfo, "websocket", "wss close");
+        }
+
+        void ISslWebsocketTransmission::Dispose() noexcept {
+            exporter_disabled_.store(true, std::memory_order_release);
+            WebSocket::Dispose();
+        }
+
+        bool ISslWebsocketTransmission::ShiftToScheduler() noexcept {
+            exporter_disabled_.store(true, std::memory_order_release);
+            InvalidateAuthenticatedCarrierBinding();
+            auto socket = GetSocket();
+            return socket && socket->ShiftToScheduler();
+        }
+
+        bool ISslWebsocketTransmission::HasAuthenticatedSessionExporter() const noexcept {
+            if (IsServerLoopbackIngress() ||
+                exporter_disabled_.load(std::memory_order_acquire) || !IsHandshakeComplete()) {
+                return false;
+            }
+
+            auto socket = GetSocket();
+            return socket && socket->HasSessionExporter();
+        }
+
+        bool ISslWebsocketTransmission::ExportAuthenticatedSessionKey(
+            const char* label,
+            const std::uint8_t* context,
+            std::size_t context_length,
+            std::uint8_t* output,
+            std::size_t output_length) noexcept {
+            if (IsServerLoopbackIngress() ||
+                exporter_disabled_.load(std::memory_order_acquire) || !IsHandshakeComplete()) {
+                return false;
+            }
+
+            auto socket = GetSocket();
+            return socket && socket->ExportSessionKey(
+                label, context, context_length, output, output_length);
         }
 
         /**

@@ -30,13 +30,17 @@ class libopenppp2 {
             return ok
         }
 
+        @JvmStatic
+        fun isProtectReady(): Boolean = PppVpnService.instance != null
+
         /**
-         * Called from native code to report traffic statistics.
-         * json format: {"tx":"...", "rx":"...", "in":"...", "out":"..."}
+         * Called from native code whenever the runtime publishes a snapshot.
+         * Runs on whichever thread produced the transition, so delivery order
+         * is not guaranteed; the service orders by the snapshot's own fields.
          */
         @JvmStatic
-        fun statistics(json: String) {
-            PppVpnService.instance?.onStatistics(json)
+        fun runtime_snapshot(json: String) {
+            PppVpnService.instance?.onRuntimeSnapshot(json)
         }
 
         /**
@@ -74,6 +78,12 @@ class libopenppp2 {
 
         @JvmStatic
         external fun clearNativeTelemetryResourceAttributes()
+
+        @JvmStatic
+        external fun set_protect_enabled(enabled: Boolean): Boolean
+
+        @JvmStatic
+        external fun protect_socket_fd(fd: Int): Boolean
 
         @JvmStatic
         external fun get_default_ciphersuites(): String?
@@ -124,6 +134,9 @@ class libopenppp2 {
 
         @JvmStatic
         external fun get_link_state(): Int
+
+        @JvmStatic
+        external fun get_runtime_snapshot(): String?
 
         @JvmStatic
         external fun get_aggligator_state(): Int

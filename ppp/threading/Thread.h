@@ -58,12 +58,12 @@ namespace ppp
             ~Thread() noexcept;
 
         public:
-            /** @brief Unique numeric thread identifier assigned at construction (0 until started). */
-            int64_t                                                         Id       = 0;
-            /** @brief Current runtime state of the managed thread. */
-            ThreadState                                                     State    = ThreadState::Stopped;
-            /** @brief Scheduling priority to apply when the thread is started. */
-            ThreadPriority                                                  Priority = ThreadPriority::Normal;
+            /** @brief Atomically published numeric worker identifier; zero until the worker enters. */
+            std::atomic<int64_t>                                            Id{0};
+            /** @brief Atomically published runtime state of the managed thread. */
+            std::atomic<ThreadState>                                        State{ThreadState::Stopped};
+            /** @brief Atomically published scheduling priority applied during startup. */
+            std::atomic<ThreadPriority>                                     Priority{ThreadPriority::Normal};
 
         public:
             /**
@@ -82,8 +82,8 @@ namespace ppp
              */
             bool                                                            Detach() noexcept;
             /**
-             * @brief Gets the synchronization object guarding thread instance state.
-             * @return Reference to the internal mutex.
+             * @brief Gets the synchronization object used by the TLS helpers.
+             * @return Reference to the internal TLS mutex.
              */
             SynchronizedObject&                                             GetSynchronizedObject() noexcept;
             /**
@@ -165,21 +165,25 @@ namespace ppp
             static int                                                      GetProcessorCount() noexcept;
 
         private:
-            /** @brief Underlying OS thread object. */
+            /** @brief Underlying OS thread object, accessed only under `_lifecycle`. */
             std::thread                                                     _thread;
-            /** @brief Mutex guarding lifecycle state transitions. */
-            SynchronizedObject                                              _syncobj;
+            /** @brief Serializes thread-handle and one-shot startup transitions. */
+            SynchronizedObject                                              _lifecycle;
+            /** @brief True after a worker thread has been created for this one-shot wrapper. */
+            bool                                                            _started = false;
             /**
              * @brief Set while a `Join()` is in progress so `Detach()` cannot run
              *        concurrently on the same `std::thread` object.
              * @note  Concurrent `join()`/`detach()` on one `std::thread` is undefined
              *        behaviour (crash during shutdown). `Join()` may not hold
-             *        `_syncobj` while blocking, or the worker thread's own `Detach()`
+             *        `_lifecycle` while blocking, or the worker thread's own `Detach()`
              *        would deadlock, so the flag serializes the two paths instead.
              */
             bool                                                            _joining = false;
-            /** @brief User-supplied entry-point callback. */
+            /** @brief User-supplied entry-point callback, accessed only under `_lifecycle`. */
             ThreadStart                                                     _start;
+            /** @brief Mutex guarding thread-local storage and exposed to existing callers. */
+            SynchronizedObject                                              _syncobj;
             /** @brief Per-thread key-value storage map. */
             ThreadLocalStorageData                                          _tls;
         };

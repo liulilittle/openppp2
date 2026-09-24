@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mutex>
+
 #include <ppp/threading/Timer.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/net/packet/IPFrame.h>
@@ -208,12 +210,18 @@ namespace ppp {
             private:
                 /** @brief Set to true after @ref Dispose / @ref Finalize; guards re-entry. */
                 bool                                                            disposed_ = false;
-                /** @brief Reusable UDP endpoint struct populated by async_receive_from. */
-                boost::asio::ip::udp::endpoint                                  ep_;
-                /** @brief Shared receive buffer sized for a maximum ICMP datagram. */
-                std::shared_ptr<Byte>                                           buffer_;
                 /** @brief IO executor used for posting state transitions and timer callbacks. */
                 std::shared_ptr<boost::asio::io_context>                        executor_;
+                /**
+                 * @brief Serializes access to @ref timeouts_.
+                 *
+                 * Echo() registers entries from the caller thread while receive
+                 * completions and @ref Finalize remove/clear them from executor threads,
+                 * so the table is guarded by this mutex.  @ref Finalize moves the table
+                 * out under the lock and invokes the handlers lock-free to avoid
+                 * re-entrant deadlock through @ref InternetControlMessageProtocol_EchoAsynchronousContext::Release.
+                 */
+                std::mutex                                                      timeouts_syncobj_;
                 /** @brief Map of in-flight echo context pointers to their timeout handlers. */
                 TimeoutEventHandlerTable                                        timeouts_;
             };

@@ -1,0 +1,124 @@
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -84,0 +85,27 @@
++         * @brief Why SendData last rejected application data.
++         */
++        enum class SendAdmissionReason : Byte {
++            kNone = 0,
++            kNonSendableState = 1,
++            kSndBufQuota = 2,
++        };
++
++        /**
++         * @brief Snapshot captured at a SendData rejection for diagnostics.
++         * @note This is observational only: it neither admits data nor alters
++         *       TCP timers, queues, congestion control, or pacing.
++         */
++        struct SendAdmissionSnapshot {
++            UInt64 generation = 0;
++            SendAdmissionReason reason = SendAdmissionReason::kNone;
++            TcpState state = TcpState::kClosed;
++            UInt32 attempted_len = 0;
++            UInt32 pending_send = 0;
++            UInt32 inflight = 0;
++            UInt32 snd_buf = 0;
++            UInt32 snd_wnd = 0;
++            UInt64 cwnd_bytes = 0;
++            TimePoint pacing_deadline = 0;
++        };
++
++        /**
+@@ -240,0 +268,5 @@
++             * @brief Copies the latest SendData rejection snapshot.
++             * @return True when at least one rejection has been observed.
++             */
++            bool LastSendAdmission(SendAdmissionSnapshot& out) const noexcept;
++            /**
+@@ -1046,0 +1079 @@
++            SendAdmissionSnapshot last_send_admission_;  /**< Updated only by rejected SendData calls. */
+--- a/include/xtcp/core/stack.h
++++ b/include/xtcp/core/stack.h
+@@ -496,0 +497,8 @@
++         * @brief Reads the latest SendData rejection snapshot for a connection.
++         * @return True when the connection exists; @a out is zeroed on failure.
++         * @note Diagnostics only; the snapshot is updated only when SendData
++         *       rejects application data.
++         */
++        bool ConnLastSendAdmission(UInt64 conn_id,
++                                   core::SendAdmissionSnapshot& out) const noexcept;
++        /**
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -2876,0 +2877,6 @@
++        bool TcpConn::LastSendAdmission(SendAdmissionSnapshot& out) const noexcept {
++            std::lock_guard<std::recursive_mutex> scope(syncobj_);
++            out = last_send_admission_;
++            return out.generation != 0;
++        }
++
+@@ -2878,0 +2885,17 @@
++            const auto reject = [this, len](SendAdmissionReason reason) noexcept {
++                SendAdmissionSnapshot& snapshot = last_send_admission_;
++                ++snapshot.generation;
++                if (snapshot.generation == 0) {
++                    snapshot.generation = 1;
++                }
++                snapshot.reason = reason;
++                snapshot.state = state_;
++                snapshot.attempted_len = len;
++                snapshot.pending_send = static_cast<UInt32>(pending_send_.size());
++                snapshot.inflight = snd_nxt_ - snd_una_;
++                snapshot.snd_buf = snd_buf_;
++                snapshot.snd_wnd = snd_wnd_;
++                snapshot.cwnd_bytes = static_cast<UInt64>(cc_.snd_cwnd) * peer_mss_;
++                snapshot.pacing_deadline = pacing_deadline_;
++                return false;
++            };
+@@ -2887 +2910 @@
+-                    return false;  // queue full: caller backs off
++                    return reject(SendAdmissionReason::kSndBufQuota);
+@@ -2897 +2920 @@
+-                return false;
++                return reject(SendAdmissionReason::kNonSendableState);
+@@ -2912 +2935 @@
+-                    return false;
++                    return reject(SendAdmissionReason::kSndBufQuota);
+@@ -2986 +3009 @@
+-                    return false;  // app must back off (buffered sends)
++                    return reject(SendAdmissionReason::kSndBufQuota);
+@@ -3003 +3026 @@
+-                return false;
++                return reject(SendAdmissionReason::kSndBufQuota);
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -1409,0 +1410,10 @@
++    bool XtcpStack::ConnLastSendAdmission(
++        UInt64 conn_id, core::SendAdmissionSnapshot& out) const noexcept {
++        out = {};
++        Shard* shard = ShardOf(conn_id);
++        std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
++        auto it = shard->conns_.find(conn_id);
++        return it != shard->conns_.end() && NULLPTR != it->second->conn &&
++            it->second->conn->LastSendAdmission(out);
++    }
++
+--- a/tests/test_sndbuf_config.cpp
++++ b/tests/test_sndbuf_config.cpp
+@@ -74,0 +75,11 @@
++    xtcp::core::SendAdmissionSnapshot snapshot;
++    CHECK(conn.LastSendAdmission(snapshot));
++    CHECK(snapshot.generation == 1);
++    CHECK(snapshot.reason == xtcp::core::SendAdmissionReason::kSndBufQuota);
++    CHECK(snapshot.state == xtcp::core::TcpState::kEstablished);
++    CHECK(snapshot.attempted_len == 16384);
++    // The 16 KiB chunk exceeds the initial congestion window and is queued;
++    // the quota rejection therefore reports buffered rather than wire bytes.
++    CHECK(snapshot.pending_send == 16384);
++    CHECK(snapshot.inflight == 0);
++    CHECK(snapshot.snd_buf == 16384);
+@@ -120,0 +132,5 @@
++    xtcp::core::SendAdmissionSnapshot snapshot;
++    CHECK(stack_a.ConnLastSendAdmission(conn, snapshot));
++    CHECK(snapshot.reason == xtcp::core::SendAdmissionReason::kSndBufQuota);
++    CHECK(snapshot.attempted_len == 16384);
++    CHECK(snapshot.snd_buf == 16384);

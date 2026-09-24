@@ -5,7 +5,7 @@
  * @brief Owns DNS rules, resolver lifecycle, and intercepted query handling.
  */
 
-#include <ppp/app/client/dns/DnsHost.h>
+#include <ppp/app/client/dns/IDnsPolicy.h>
 #include <ppp/app/client/dns/FakeIpPool.h>
 #include <ppp/app/client/dns/DnsRedirectPlan.h>
 #include <ppp/app/client/dns/Rule.h>
@@ -15,7 +15,7 @@
 #include <ppp/stdafx.h>
 
 namespace ppp { namespace configurations { class AppConfiguration; } }
-namespace ppp { namespace dns { class DnsResolver; } }
+namespace ppp { namespace dns { class DnsResolver; class DnsUdpFlowRegistry; } }
 
 #if defined(_LINUX)
 namespace ppp { namespace net { class ProtectorNetwork; } }
@@ -24,11 +24,9 @@ namespace ppp { namespace net { class ProtectorNetwork; } }
 namespace ppp {
     namespace app {
         namespace client {
-            class VEthernetExchanger;
-
             namespace dns {
 
-                class DnsInterceptor final {
+                class DnsInterceptor final : public IDnsPolicy {
                 public:
                     using RuleMap = ppp::unordered_map<ppp::string, Rule::Ptr>;
 
@@ -43,7 +41,7 @@ namespace ppp {
 #endif
                     ) noexcept;
 
-                    void Close() noexcept;
+                    void Close() noexcept override;
 
                     void OnSessionInfo(
                         const ppp::app::protocol::VirtualEthernetInformationExtensions& extensions,
@@ -56,15 +54,28 @@ namespace ppp {
                         bool intercept_unmatched,
                         const ppp::function<void(uint32_t)>& add_tunnel_ip,
                         const ppp::function<void(uint32_t)>& add_nic_ip) noexcept;
+                    void SetUdpFlowRegistry(
+                        const std::shared_ptr<ppp::dns::DnsUdpFlowRegistry>& registry) noexcept override;
+
+                    boost::asio::ip::address RewriteFakeIpAddress(
+                        const boost::asio::ip::address& address) const noexcept override;
+                    std::shared_ptr<const routing::HumanRoutingRules> GetHumanRoutingRules() const noexcept override;
+                    bool ResolveDestination(
+                        const ppp::net::IPEndPoint& endpoint,
+                        routing::ResolvedDestination& destination) const noexcept override;
+                    bool GetFakeIpRoute(uint32_t& network, int& prefix) const noexcept override;
 
                     bool HandleQuery(
-                        const DnsHostPorts& host,
-                        const std::shared_ptr<VEthernetExchanger>& exchanger,
+                        const DnsQueryContext& context,
+                        const std::shared_ptr<const DnsSessionContext>& session,
                         const std::shared_ptr<ppp::net::packet::IPFrame>& packet,
                         const std::shared_ptr<ppp::net::packet::UdpFrame>& frame,
-                        const std::shared_ptr<ppp::net::packet::BufferSegment>& messages) noexcept;
+                        const std::shared_ptr<ppp::net::packet::BufferSegment>& messages) noexcept override;
 
-                    std::shared_ptr<ppp::dns::DnsResolver> GetResolver() const noexcept { return dns_resolver_; }
+                    std::shared_ptr<ppp::dns::DnsResolver> GetResolver() const noexcept {
+                        std::lock_guard<std::mutex> scope(syncobj_);
+                        return dns_resolver_;
+                    }
 
                     const RuleMap* RuleTables() const noexcept { return dns_ruless_; }
 
@@ -72,15 +83,23 @@ namespace ppp {
 
                 private:
                     void SpawnFakeIpBackgroundResolve(
+                        const std::shared_ptr<FakeIpPool>& pool,
+                        const std::shared_ptr<ppp::dns::DnsResolver>& resolver,
+                        const std::shared_ptr<ppp::configurations::AppConfiguration>& configuration,
                         const DnsRedirectPlanResult& plan,
                         const Rule::Ptr& rule,
                         const ppp::string& hostname,
-                        const std::shared_ptr<ppp::net::packet::BufferSegment>& messages) noexcept;
+                        const std::shared_ptr<ppp::net::packet::BufferSegment>& messages,
+                        const std::shared_ptr<const routing::HumanRoutingRules>& human_rules) noexcept;
 
                     std::shared_ptr<ppp::configurations::AppConfiguration> configuration_;
                     std::shared_ptr<ppp::dns::DnsResolver> dns_resolver_;
+                    std::shared_ptr<ppp::dns::DnsUdpFlowRegistry> udp_flow_registry_;
                     std::shared_ptr<FakeIpPool> fake_ip_pool_ = make_shared_object<FakeIpPool>();
+                    std::shared_ptr<const routing::HumanRoutingRules> human_routing_rules_;
                     RuleMap dns_ruless_[3];
+                    /** @brief Serializes runtime-generation publication and DNS rule-table access. */
+                    mutable std::mutex syncobj_;
                 };
 
             }

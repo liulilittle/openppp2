@@ -20,7 +20,7 @@ namespace aesni {
 
     public:     
         bool                                TryAttach(const void* key, const void* iv, bool __i128m, bool __bgctr) noexcept;
-        bool                                IsAttached() noexcept { return NULLPTR != iv_; }
+        bool                                IsAttached() const noexcept { return NULLPTR != iv_; }
         static bool                         Support(const ppp::string& method, bool* __i128m = NULLPTR, bool* __bgctr = NULLPTR, ppp::string* __rname = NULLPTR) noexcept;
 
     public:     

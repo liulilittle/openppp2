@@ -69,15 +69,18 @@ namespace ppp
         public:
             std::atomic<int64_t>                                                DefaultThreadId = 0;
             std::atomic<uint64_t>                                               TickCount = 0;
+            std::atomic<bool>                                                   TickThreadStop = false;
             DateTime                                                           Now;
             ExecutorContextPtr                                                  Default;
             ExecutorContextPtr                                                  Scheduler;
             SynchronizedObject                                                  Lock;
+            SynchronizedObject                                                  TickThreadLock;
+            std::thread                                                         TickThread;
             ExecutorLinkedList                                                  ContextFifo;
             ExecutorTable                                                       ContextTable;
             ExecutorThreadTable                                                 Threads;
+            ppp::vector<ExecutorThreadPtr>                                      SchedulerThreads;
             ExecutorBufferArrayTable                                            Buffers;
-            std::shared_ptr<Executors::Awaitable>                               NetstackExitAwaitable;
 
         public:
             /** @brief Initializes runtime callbacks and process priority behavior. */
@@ -99,25 +102,35 @@ namespace ppp
 
             if (NULLPTR != i) 
             {
-                std::thread(
-                    []() noexcept 
-                    {
-                        SetThreadName("tick");
-                        for (std::shared_ptr<ExecutorsInternal> i = Internal; NULLPTR != i; Sleep(kTickThreadSleepMilliseconds))
+                try
+                {
+                    i->TickThread = std::thread(
+                        [i]() noexcept 
                         {
-                            UInt64 now = ppp::GetTickCount();
-                            bool past = (now / kSecondsPerTickUnit) != (i->TickCount / kSecondsPerTickUnit);
-
-                            i->TickCount = now;
-                            i->Now = DateTime::Now();
-                            
-                            if (past)
+                            SetThreadName("tick");
+                            while (!i->TickThreadStop.load(std::memory_order_acquire))
                             {
-                                ppp::net::asio::vdns::UpdateAsync();
-                                ppp::net::asio::InternetControlMessageProtocol_DoEvents();
+                                UInt64 now = ppp::GetTickCount();
+                                bool past = false;
+                                {
+                                    SynchronizedObjectScope scope(i->Lock);
+                                    UInt64 previous = i->TickCount.load(std::memory_order_relaxed);
+                                    past = (now / kSecondsPerTickUnit) != (previous / kSecondsPerTickUnit);
+                                    i->TickCount.store(now, std::memory_order_relaxed);
+                                    i->Now = DateTime::Now();
+                                }
+
+                                if (past)
+                                {
+                                    ppp::net::asio::vdns::UpdateAsync();
+                                    ppp::net::asio::InternetControlMessageProtocol_DoEvents();
+                                }
+
+                                Sleep(kTickThreadSleepMilliseconds);
                             }
-                        }
-                    }).detach();
+                        });
+                }
+                catch (const std::exception&) {}
             }
         }
 
@@ -271,55 +284,31 @@ namespace ppp
          */
         bool Executors_NetstackTryExit() noexcept
         {
-            using Awaitable               = Executors::Awaitable;
-            using SynchronizedObject      = std::mutex;
-            using SynchronizedObjectScope = std::lock_guard<SynchronizedObject>;
-
-            static SynchronizedObject syncobj;
-
-            bool processed = false;
-            std::shared_ptr<Awaitable> awaitable;
-            for (;;)
+            std::shared_ptr<Executors::Awaitable> awaitable =
+                make_shared_object<Executors::Awaitable>();
+            if (NULLPTR == awaitable)
             {
-                /** @brief Serialize netstack close signaling and awaitable extraction. */
-                SynchronizedObjectScope scope(syncobj);
-
-                awaitable = Internal->NetstackExitAwaitable;
-                lwip::netstack::close(
-                    [awaitable]() noexcept  
-                    {
-                        if (NULLPTR != awaitable) 
-                        {
-                            awaitable->Processed();
-                        }
-                    });
-
-                if (NULLPTR != awaitable)
-                {
-                    std::shared_ptr<boost::asio::io_context> executor = lwip::netstack::Executor;
-                    if (NULLPTR != executor)
-                    {
-                        bool stopped = executor->stopped();
-                        if (!stopped)
-                        {
-                            processed = awaitable->Await();
-                        }
-                    }
-                }
-
-                Internal->NetstackExitAwaitable.reset();
-                break;
+                lwip::netstack::close();
+                return false;
             }
 
-            return processed;
-        }
+            /*
+             * Each shutdown owns its completion state. netstack::close() is
+             * required to complete the callback even when its context has
+             * already stopped, so Await() never runs under an external lock.
+             */
+            lwip::netstack::close(
+                [awaitable]() noexcept
+                {
+                    awaitable->Processed();
+                });
 
-        /**
-         * @brief Allocates an awaitable used by netstack shutdown coordination.
-         */
-        void Executors_NetstackAllocExitAwaitable() noexcept
-        {
-            Internal->NetstackExitAwaitable = make_shared_object<Executors::Awaitable>();
+            bool processed = awaitable->Await();
+            if (processed)
+            {
+                lwip::netstack::wait_closed();
+            }
+            return processed;
         }
 
         /**
@@ -373,28 +362,26 @@ namespace ppp
          */
         std::shared_ptr<boost::asio::io_context> Executors::GetCurrent(bool defaultContext) noexcept
         {
+            std::shared_ptr<ExecutorsInternal> i = Internal;
+            if (NULLPTR == i)
+            {
+                return NULLPTR;
+            }
+
             int64_t threadId = GetCurrentThreadId();
-            if (threadId == Internal->DefaultThreadId)
+            SynchronizedObjectScope scope(i->Lock);
+            if (threadId == i->DefaultThreadId.load(std::memory_order_relaxed))
             {
-                return Internal->Default;
+                return i->Default;
             }
-            else
+
+            ExecutorTable::iterator tail = i->ContextTable.find(threadId);
+            if (tail != i->ContextTable.end())
             {
-                ExecutorTable& contexts = Internal->ContextTable;
-                for (SynchronizedObjectScope scope(Internal->Lock);;)
-                {
-                    ExecutorTable::iterator tail = contexts.find(threadId);
-                    ExecutorTable::iterator endl = contexts.end();
-                    if (tail == endl)
-                    {
-                        break;
-                    }
-
-                    return tail->second;
-                }
-
-                return defaultContext ? Internal->Default : NULLPTR;
+                return tail->second;
             }
+
+            return defaultContext ? i->Default : NULLPTR;
         }
 
         /**
@@ -438,7 +425,14 @@ namespace ppp
          */
         std::shared_ptr<boost::asio::io_context> Executors::GetScheduler() noexcept
         {
-            return Internal->Scheduler;
+            std::shared_ptr<ExecutorsInternal> i = Internal;
+            if (NULLPTR == i)
+            {
+                return NULLPTR;
+            }
+
+            SynchronizedObjectScope scope(i->Lock);
+            return i->Scheduler;
         }
 
         /**
@@ -447,7 +441,14 @@ namespace ppp
          */
         std::shared_ptr<boost::asio::io_context> Executors::GetDefault() noexcept
         {
-            return Internal->Default;
+            std::shared_ptr<ExecutorsInternal> i = Internal;
+            if (NULLPTR == i)
+            {
+                return NULLPTR;
+            }
+
+            SynchronizedObjectScope scope(i->Lock);
+            return i->Default;
         }
 
         /**
@@ -699,19 +700,14 @@ namespace ppp
          */
         bool Executors::Exit(const std::shared_ptr<boost::asio::io_context>& context) noexcept
         {
-            if (NULLPTR == context)
+            if (NULLPTR == context || context->stopped())
             {
                 return false;
             }
 
-            bool stopped = context->stopped();
-            if (stopped)
-            {
-                return false;
-            }
-
-            boost::asio::post(*context, 
-                std::bind(&boost::asio::io_context::stop, context));
+            /* io_context::stop() is thread-safe and cannot be stranded behind
+             * a stopped event loop like a posted stop handler can. */
+            context->stop();
             return true;
         }
 
@@ -732,6 +728,7 @@ namespace ppp
             ExecutorLinkedList ContextFifo;
             ExecutorTable ContextTable;
             ExecutorThreadTable Threads;
+            ppp::vector<ExecutorThreadPtr> SchedulerThreads;
             {
                 SynchronizedObjectScope scope(i->Lock);
                 ContextFifo = i->ContextFifo;
@@ -739,7 +736,12 @@ namespace ppp
                 Threads = i->Threads;
                 Default = i->Default;
                 Scheduler = i->Scheduler;
+                SchedulerThreads = i->SchedulerThreads;
             }
+
+            /* Signal the tick thread to leave its loop so it stops taking the
+             * executor lock and calling into vdns/ICMP before teardown proceeds. */
+            i->TickThreadStop.store(true, std::memory_order_release);
 
             bool any = false;
             for (auto&& context : ContextFifo)
@@ -766,9 +768,33 @@ namespace ppp
                 any |= true;
             }
 
+            /* Scheduler threads are registered in SchedulerThreads instead of
+             * Threads; join them once their context has been stopped. */
+            for (auto&& thread : SchedulerThreads)
+            {
+                if (NULLPTR != thread)
+                {
+                    thread->Join();
+                }
+            }
+
             if (Exit(Default))
             {
                 any |= true;
+            }
+
+            /* Join the tick thread last: after this returns it can no longer
+             * hold the executor lock or call into vdns during process exit. */
+            {
+                SynchronizedObjectScope scope(i->TickThreadLock);
+                if (i->TickThread.joinable() && i->TickThread.get_id() != std::this_thread::get_id())
+                {
+                    try
+                    {
+                        i->TickThread.join();
+                    }
+                    catch (const std::exception&) {}
+                }
             }
 
             return any;
@@ -781,7 +807,13 @@ namespace ppp
         DateTime Executors::Now() noexcept
         {
             std::shared_ptr<ExecutorsInternal> i = Internal;
-            return NULLPTR != i ? i->Now : DateTime::Now();
+            if (NULLPTR == i)
+            {
+                return DateTime::Now();
+            }
+
+            SynchronizedObjectScope scope(i->Lock);
+            return i->Now;
         }
 
         /**
@@ -793,10 +825,10 @@ namespace ppp
             std::shared_ptr<ExecutorsInternal> i = Internal;
             if (NULLPTR != i)
             {
-                std::shared_ptr<boost::asio::io_context> context = i->Default;
-                if (NULLPTR != context)
+                SynchronizedObjectScope scope(i->Lock);
+                if (NULLPTR != i->Default)
                 {
-                    return i->TickCount;
+                    return i->TickCount.load(std::memory_order_relaxed);
                 }
             }
 
@@ -842,7 +874,7 @@ namespace ppp
                 std::shared_ptr<Thread> t = make_shared_object<Thread>(
                     [](Thread* my) noexcept
                     {
-                        ExecutorContextPtr scheduler = Internal->Scheduler;
+                        ExecutorContextPtr scheduler = Executors::GetScheduler();
                         if (NULLPTR != scheduler)
                         {
                             if (ppp::RT) 
@@ -871,6 +903,8 @@ namespace ppp
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeThreadStartFailed);
                     return false;
                 }
+
+                Internal->SchedulerThreads.emplace_back(t);
             }
             return true;
         }
@@ -881,16 +915,6 @@ namespace ppp
         ExecutorsInternal::ExecutorsInternal() noexcept
             : TickCount(ppp::GetTickCount())
         {
-            lwip::netstack::closed =
-                [this]() noexcept
-                {
-                    std::shared_ptr<Executors::Awaitable> awaitable = std::move(NetstackExitAwaitable);
-                    if (NULLPTR != awaitable)
-                    {
-                        awaitable->Processed();
-                    }
-                };
-            
             if (ppp::RT)
             {
                 SetThreadPriorityToMaxLevel();

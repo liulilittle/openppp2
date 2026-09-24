@@ -256,9 +256,14 @@ namespace {
      * @return true when all restored keys are applied (or no snapshot exists); otherwise false.
      */
     static bool RestoreSysctlFromSnapshotFile(bool delete_on_success) noexcept {
+        ppp::string path = GetIPv6SysctlSnapshotPath();
+        if (!ppp::io::File::Exists(path.data())) {
+            return true;
+        }
+
         ppp::unordered_map<ppp::string, ppp::string> snapshot;
         if (!LoadSysctlSnapshot(snapshot)) {
-            return true;
+            return false;
         }
 
         bool all_ok = true;
@@ -289,7 +294,8 @@ namespace {
         keys.emplace_back("net.ipv6.conf.all.forwarding");
         keys.emplace_back("net.ipv6.conf.default.forwarding");
 
-        if (mode == ppp::configurations::AppConfiguration::IPv6Mode_Gua && !uplink_name.empty()) {
+        if ((mode == ppp::configurations::AppConfiguration::IPv6Mode_Nat66 ||
+            mode == ppp::configurations::AppConfiguration::IPv6Mode_Gua) && !uplink_name.empty()) {
             keys.emplace_back("net.ipv6.conf." + uplink_name + ".accept_ra");
         }
 
@@ -625,6 +631,7 @@ namespace ppp {
 
                     if (!RestoreSysctlFromSnapshotFile(true)) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ForwardingEnableFailed);
+                        return false;
                     }
 
                     CleanupServerRules(mode, prefix, prefix_length, preferred_nic, transit_ifname);
@@ -654,7 +661,7 @@ namespace ppp {
                         return false;
                     }
 
-                    if (mode == ppp::configurations::AppConfiguration::IPv6Mode_Gua && !uplink_name.empty()) {
+                    if (!uplink_name.empty()) {
                         char accept_ra_command[512];
                         snprintf(accept_ra_command, sizeof(accept_ra_command), "sysctl -w net.ipv6.conf.%s.accept_ra=2 > /dev/null 2>&1", uplink_name.data());
                         if (!LinuxExecuteCommand(accept_ra_command)) {
@@ -812,12 +819,29 @@ namespace ppp {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::IPv6GatewayMissing);
                     }
 
+                    bool gateway_neighbor_created = false;
+                    if (!gateway_string.empty()) {
+                        ppp::tap::TapLinux::NeighborMutationResult neighbor_result =
+                            ppp::tap::TapLinux::AddIPv6PermanentNeighbor(context.InterfaceName, gateway_string);
+                        if (neighbor_result == ppp::tap::TapLinux::NeighborMutationResult::Failed) {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientRouteApplyFailed);
+                            return false;
+                        }
+                        gateway_neighbor_created = neighbor_result == ppp::tap::TapLinux::NeighborMutationResult::Changed;
+                    }
+
                     if (!ppp::tap::TapLinux::AddRoute6(context.InterfaceName, "::", 0, gateway_string)) {
+                        if (gateway_neighbor_created &&
+                            !ppp::tap::TapLinux::DeleteIPv6PermanentNeighbor(context.InterfaceName, gateway_string)) {
+                            state.GatewayNeighborOwned = true;
+                            state.DefaultRouteGateway = gateway_string;
+                        }
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientRouteApplyFailed);
                         return false;
                     }
 
                     state.DefaultRouteApplied = true;
+                    state.GatewayNeighborOwned = state.GatewayNeighborOwned || gateway_neighbor_created;
                     state.DefaultRouteGateway = gateway_string;
                     return true;
                 }
@@ -901,6 +925,25 @@ namespace ppp {
                         ppp::tap::TapLinux::DeleteRoute6(context.InterfaceName, "::", 0, state.DefaultRouteGateway);
                     }
 
+                    bool gateway_neighbor_delete_failed = false;
+                    if (state.GatewayNeighborOwned) {
+                        bool removed = false;
+                        if (!state.DefaultRouteGateway.empty()) {
+                            // Retry once because netlink teardown can fail transiently while the
+                            // default route removal is still settling in the kernel.
+                            for (int attempt = 0; attempt < 2 && !removed; ++attempt) {
+                                removed = ppp::tap::TapLinux::DeleteIPv6PermanentNeighbor(
+                                    context.InterfaceName, state.DefaultRouteGateway);
+                            }
+                        }
+                        if (removed) {
+                            state.GatewayNeighborOwned = false;
+                        }
+                        else {
+                            gateway_neighbor_delete_failed = true;
+                        }
+                    }
+
                     if (state.AddressApplied && address.is_v6() && !state.Address.empty()) {
                         ppp::tap::TapLinux::DeleteIPv6Address(context.InterfaceName, state.Address, prefix_length);
                     }
@@ -913,6 +956,12 @@ namespace ppp {
                         for (const ppp::string& route : state.OriginalDefaultRoutes) {
                             ApplyDefaultRouteCommand(route);
                         }
+                    }
+
+                    if (gateway_neighbor_delete_failed) {
+                        // The void cross-platform restore API cannot report partial cleanup.
+                        // Preserve ownership for a later manager retry and expose diagnostics.
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
                     }
                 }
             }

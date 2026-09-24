@@ -14,6 +14,7 @@
 #include <ppp/ethernet/VNetstack.h>
 
 namespace ppp::configurations { class AppConfiguration; }
+namespace ppp::app::client::xtcp { class XtcpFirstLegHooks; }
 
 namespace ppp {
     namespace app {
@@ -65,7 +66,24 @@ namespace ppp {
                  * @details The base class `VNetstack` destructor handles IO context teardown.
                  *          No additional cleanup is required at this level.
                  */
-                virtual ~VEthernetNetworkTcpipStack() noexcept = default; 
+                virtual ~VEthernetNetworkTcpipStack() noexcept = default;
+
+                bool BeginExternalAccept(
+                    const boost::asio::ip::tcp::endpoint& localEP,
+                    const boost::asio::ip::tcp::endpoint& remoteEP,
+                    uint16_t source_port,
+                    uint64_t runtime_generation,
+                    uint64_t flow_generation,
+                    const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks) noexcept;
+
+                /** @brief XTCP-VNET-BRIDGE-BYPASS-001: takes ownership of the XTCP-side socketpair fd (fd >= 0), registers it for direct adoption, and falls back to listener pairing when fd < 0. */
+                bool BeginExternalAcceptWithFd(
+                    const boost::asio::ip::tcp::endpoint& localEP,
+                    const boost::asio::ip::tcp::endpoint& remoteEP,
+                    uint16_t source_port,
+                    uint64_t runtime_generation,
+                    uint64_t flow_generation,
+                    const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks, int fd) noexcept;
 
             protected:
                 /**
@@ -92,9 +110,9 @@ namespace ppp {
                 /**
                  * @brief Creates and opens a TCP client handler for an accepted lwIP flow.
                  *
-                 * @details Allocates a `VEthernetNetworkTcpipConnection`, calls `Open()` on it,
-                 *          and returns the resulting shared pointer to the base class so it can
-                 *          be tracked.  Returns null if allocation or `Open()` fails.
+                 * @details Resolves fake destinations and selects the strict routing mode before
+                 *          allocating `VEthernetNetworkTcpipConnection`. Unresolved fake addresses
+                 *          and unsupported routing modes are rejected. Returns null on any failure.
                  *
                  * @param localEP  Local (TAP-side) TCP endpoint of the accepted connection.
                  * @param remoteEP Remote (Internet-side) TCP endpoint of the accepted connection.

@@ -1,7 +1,5 @@
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/client/VEthernetDatagramPort.h>
-#include <ppp/app/client/VEthernetExchanger.h>
-#include <ppp/app/client/VEthernetNetworkSwitcher.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/Socket.h>
 #include <ppp/net/IPEndPoint.h>
@@ -29,18 +27,18 @@ namespace ppp {
              * @param transmission Underlying transmission channel for tunneled sends.
              * @param sourceEP Source UDP endpoint represented by this port mapping.
              */
-            VEthernetDatagramPort::VEthernetDatagramPort(const VEthernetExchangerPtr& exchanger, const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP) noexcept
+            VEthernetDatagramPort::VEthernetDatagramPort(const VEthernetExchangerPtr& exchanger, udp::UdpRelayHostPorts ports, const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP) noexcept
                 : disposed_(false)
                 , onlydns_(true)
                 , sendto_(false)
                 , finalize_(false)
                 , timeout_(0)
                 , context_(transmission->GetContext())
-                , switcher_(exchanger->GetSwitcher())
+                , ports_(std::move(ports))
                 , exchanger_(exchanger)
                 , transmission_(transmission)
-                , configuration_(exchanger->GetConfiguration())
-                , sourceEP_(sourceEP) 
+                , configuration_(ports_.get_configuration())
+                , sourceEP_(sourceEP)
 #if defined(_ANDROID)
                 , opened_(0)
                 , socket_(*context_)
@@ -50,7 +48,7 @@ namespace ppp {
 
 #if defined(_ANDROID)
                 buffer_ = Executors::GetCachedBuffer(context_);
-                ProtectorNetwork = switcher_->GetProtectorNetwork();
+                ProtectorNetwork = ports_.get_protector_network();
 #endif
             }
 
@@ -66,11 +64,12 @@ namespace ppp {
              * @note If packets were sent before finalization, a terminal notification send is attempted.
              */
             void VEthernetDatagramPort::Finalize() noexcept {
-                std::shared_ptr<ITransmission> transmission = std::move(transmission_);
-                bool fin = false; 
+                std::shared_ptr<ITransmission> transmission;
+                bool fin = false;
 
                 for (;;) {
                     SynchronizedObjectScope scope(syncobj_);
+                    transmission = std::move(transmission_);
                     if (sendto_ && !finalize_) {
                         fin = true;
                     }
@@ -86,12 +85,12 @@ namespace ppp {
                     break;
                 }
 
-                exchanger_->ReleaseDatagramPort(sourceEP_);
+                ports_.release_port(sourceEP_, this);
                 /**
                  * @brief Notify upstream path about closure when this mapping already transmitted data.
                  */
                 if (fin && transmission) {
-                    if (!exchanger_->DoSendTo(transmission, sourceEP_, sourceEP_, NULLPTR, 0, nullof<YieldContext>())) {
+                    if (!ports_.do_send_to(transmission, sourceEP_, sourceEP_, NULLPTR, 0, nullof<YieldContext>())) {
                         transmission->Dispose();
                     }
                 }
@@ -117,13 +116,36 @@ namespace ppp {
              * @return true if the payload is accepted for sending; otherwise false.
              * @note Android bypass mode may queue packets until local UDP socket opening completes.
              */
+            bool VEthernetDatagramPort::RebindTransmission(
+                const ITransmissionPtr& transmission) noexcept {
+                if (NULLPTR != transmission && transmission->GetContext() != context_) {
+                    return false;
+                }
+
+                SynchronizedObjectScope scope(syncobj_);
+                if (disposed_) {
+                    return false;
+                }
+                transmission_ = transmission;
+                return true;
+            }
+
             bool VEthernetDatagramPort::SendTo(const void* packet, int packet_length, const boost::asio::ip::udp::endpoint& destinationEP) noexcept {
+                return SendTo(packet, packet_length, destinationEP, routing::RoutingAction::Auto);
+            }
+
+            bool VEthernetDatagramPort::SendTo(const void* packet, int packet_length, const boost::asio::ip::udp::endpoint& destinationEP, routing::RoutingAction action) noexcept {
                 if (NULLPTR == packet || packet_length < 1) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::UdpPacketInvalid);
                 }
 
-                if (disposed_) {
-                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionDisposed);
+                std::shared_ptr<ITransmission> transmission;
+                {
+                    SynchronizedObjectScope scope(syncobj_);
+                    if (disposed_) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionDisposed);
+                    }
+                    transmission = transmission_;
                 }
 
                 int destinationPort = destinationEP.port();
@@ -136,6 +158,19 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
                 }
 
+                routing::UdpRoutingSelectorInput routing_input;
+                routing_input.action = action;
+#if defined(_ANDROID)
+                if (address.is_v4()) {
+                    routing_input.platform = routing::UdpRoutingPlatform::Android;
+                    routing_input.legacy_bypass = ports_.is_bypass_ip(address);
+                }
+#endif
+                routing::UdpRoutingMode routing_mode = routing::UdpRoutingSelector::Select(routing_input);
+                if (routing_mode == routing::UdpRoutingMode::Reject) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::UdpSendFailed);
+                }
+
                 bool ok = false;
                 bool fin = false;
 
@@ -143,16 +178,16 @@ namespace ppp {
                  * @brief Select direct physical-network bypass or VPN tunnel forwarding.
                  */
                 do {
-                    std::shared_ptr<ITransmission> transmission = transmission_;
                     if (NULLPTR == transmission) {
+                        // Suspension intentionally detaches the carrier without deleting
+                        // the logical UDP flow; a committed resume will rebind it.
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionTransportMissing);
-                        fin = true;
                         break;
                     }
 
 #if defined(_ANDROID)
                     // It is sent out through the local physical NIC.
-                    if (address.is_v4() && switcher_->IsBypassIpAddress(address)) {
+                    if (routing_mode == routing::UdpRoutingMode::DirectSocket) {
                         // If the socket is currently open, send data directly.
                         SynchronizedObjectScope scope(syncobj_);
                         if (opened_ > 1) {
@@ -204,6 +239,7 @@ namespace ppp {
                             message.packet        = packet_managed;
                             message.packet_length = packet_length;
                             message.destinationEP = destinationEP;
+                            message.action        = action;
 
                             ok = true;
                             messages_.emplace_back(message);
@@ -213,7 +249,7 @@ namespace ppp {
                     }
 #endif
                     // Send it to the VPN server for outgoing.
-                    ok = exchanger_->DoSendTo(transmission, sourceEP_, destinationEP, (Byte*)packet, packet_length, nullof<YieldContext>());
+                    ok = ports_.do_send_to(transmission, sourceEP_, destinationEP, (Byte*)packet, packet_length, nullof<YieldContext>());
                     if (destinationPort == PPP_DNS_SYS_PORT || !ok) {
                         ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "udp_port", "DoSendTo source=%s:%u destination=%s:%u bytes=%d ok=%d",
                             sourceEP_.address().to_string().c_str(),
@@ -254,11 +290,8 @@ namespace ppp {
              * @param packet_length Payload length in bytes.
              * @param destinationEP Destination endpoint associated with the payload.
              */
-            void VEthernetDatagramPort::OnMessage(void* packet, int packet_length, const boost::asio::ip::udp::endpoint& destinationEP) noexcept {
-                std::shared_ptr<VEthernetExchanger> exchanger = exchanger_;
-                if (exchanger) {
-                    switcher_->DatagramOutput(sourceEP_, destinationEP, packet, packet_length);
-                }
+            void VEthernetDatagramPort::OnMessage(const std::shared_ptr<Byte>& owner, void* packet, int packet_length, const boost::asio::ip::udp::endpoint& destinationEP) noexcept {
+                ports_.datagram_output(sourceEP_, destinationEP, owner, packet, packet_length, true);
             }
 
 #if defined(_ANDROID)
@@ -300,12 +333,11 @@ namespace ppp {
                 }
 
                 // Protect udp sockets to prevent udp data from being sent to the VPN loop.
-                auto protector_network = ProtectorNetwork; 
-                if (NULLPTR != protector_network) {
-                    if (!protector_network->Protect(socket_.native_handle(), y)) {
-                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
-                        return false;
-                    }
+                auto protector_network = ProtectorNetwork;
+                if (NULLPTR == protector_network ||
+                    !protector_network->Protect(socket_.native_handle(), y)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
+                    return false;
                 }
 
                 /**
@@ -315,13 +347,13 @@ namespace ppp {
                 Messages messages; {
                     SynchronizedObjectScope scope(syncobj_);
                     opened_ = 2;
-                    
+
                     messages = std::move(messages_);
                     messages_.clear();
                 }
 
                 for (Message& message : messages) {
-                    SendTo(message.packet.get(), message.packet_length, message.destinationEP);
+                    SendTo(message.packet.get(), message.packet_length, message.destinationEP, message.action);
                 }
 
                 bool ok = Loopback();
@@ -364,7 +396,7 @@ namespace ppp {
                         bool disposing = false;
                         if (ec == boost::system::errc::success) {
                             if (sz > 0) {
-                                OnMessage(buffer_.get(), sz, remoteEP_);
+                                OnMessage(buffer_, buffer_.get(), sz, remoteEP_);
                             }
                         }
                         elif(ec == boost::system::errc::operation_canceled) {

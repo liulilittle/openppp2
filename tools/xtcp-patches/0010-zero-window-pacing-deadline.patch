@@ -1,0 +1,69 @@
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -443,6 +443,13 @@
+                     consider(last_rx_ + idle_us);
+                 }
+                 if (0 < pending_send_.size()) {
++                    // A zero peer window cannot be opened by the pacing clock.
++                    // Wake only for the actual recovery timers (persist/RTO/...)
++                    // instead of returning a stale pacing deadline and spinning
++                    // the host loop while the colocated receiver is starved.
++                    if (0 == snd_wnd_ && 0 != persist_deadline_) {
++                        return next;
++                    }
+                     // Buffered sends: when a pacing clock is armed the flush
+                     // cannot make progress before pacing_deadline_, so wake
+                     // AT the deadline instead of reporting "due now" and
+--- a/tests/test_persist.cpp
++++ b/tests/test_persist.cpp
+@@ -9,6 +9,7 @@
+ 
+ #include <xtcp/core/tcp.h>
+ #include <xtcp/buf/bufref.h>
++#include <xtcp/cc/cc.h>
+ 
+ #include <cstdio>
+ #include <cstring>
+@@ -40,6 +41,15 @@
+         }
+     };
+ 
++    void PersistPacedInit(xtcp::cc::XtcpConnCc* sk) noexcept {
++        sk->pacing_rate = 1000000000;
++    }
++
++    const xtcp::cc::XtcpCongestionOps kPersistPaced = {
++        "persist_paced", PersistPacedInit, NULLPTR, NULLPTR, NULLPTR, NULLPTR,
++        NULLPTR, NULLPTR, NULLPTR, NULLPTR, NULLPTR, 0,
++    };
++
+     std::unique_ptr<xtcp::core::TcpConn> MakeConn(TxLog& log) {
+         static UInt32 g_iss = 0x40000000;
+         ++g_iss;
+@@ -82,6 +92,7 @@
+ static void TestZeroWindowProbe() {
+     TxLog log;
+     auto conn = MakeConn(log);
++    CHECK(conn->SetCongestionControl("persist_paced"));
+     conn->SetPersistInterval(1000);  // 1 ms probes for the test
+ 
+     // Peer advertises window 0.
+@@ -94,6 +105,10 @@
+     std::memset(data, 0xAB, sizeof(data));
+     CHECK(conn->SendData(data, 100, 2000));
+     CHECK(0 != conn->PersistDeadline());
++    // A closed peer window cannot make progress at the pacing deadline. The
++    // host must sleep until persist/RTO work instead of busy-polling and
++    // starving a colocated receiver that needs CPU to reopen the window.
++    CHECK(conn->NextTimerDeadline() == conn->PersistDeadline());
+     CHECK(100 == conn->PendingSendBytes());
+     CHECK(0 == log.lens.size());  // nothing sent yet
+ 
+@@ -234,6 +249,7 @@
+ 
+ int main() {
+     xtcp::buf::InitPools();
++    CHECK(xtcp::cc::RegisterCongestionControl(kPersistPaced));
+     TestZeroWindowProbe();
+     TestPersistIntervalPreservedAcrossRecovery();
+     TestLostProbeByteRecoverable();

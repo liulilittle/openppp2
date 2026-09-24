@@ -248,6 +248,8 @@ namespace ppp
 
         bool Win32SocketAcceptor::Next() noexcept
         {
+            std::lock_guard<std::mutex> scope(syncobj_);
+
             boost::asio::windows::object_handle* afo = reinterpret_cast<boost::asio::windows::object_handle*>(afo_.get());
             if (NULLPTR == afo)
             {
@@ -288,7 +290,7 @@ namespace ppp
                                 struct sockaddr_in6 address = { 0 };
                                 int address_size = sizeof(address);
 
-                                int sockfd = WSAAccept(listenfd_, (sockaddr*)&address, &address_size, NULLPTR, NULL);
+                                int sockfd = WSAAccept(listenfd, (sockaddr*)&address, &address_size, NULLPTR, NULL);
                                 if (sockfd != INVALID_SOCKET)
                                 {
                                     AcceptSocketEventArgs e = { Adjust(sockfd) };
@@ -326,23 +328,32 @@ namespace ppp
 
         int Win32SocketAcceptor::GetHandle() noexcept
         {
+            std::lock_guard<std::mutex> scope(syncobj_);
             return listenfd_;
         }
 
         void Win32SocketAcceptor::Finalize() noexcept
         {
+            std::lock_guard<std::mutex> scope(syncobj_);
+
+            /**
+             * @brief Snapshot hEvent_ BEFORE clearing any member: the previous code
+             *        nulled hEvent_ inside the afo branch and then read it back, so
+             *        WSACloseEvent() never ran and the event handle leaked.
+             */
+            void* hEvent = hEvent_;
+
             boost::asio::windows::object_handle* afo = reinterpret_cast<boost::asio::windows::object_handle*>(afo_.get());
             if (NULLPTR != afo)
             {
                 ppp::win32::Win32Native::CloseHandle(afo);
                 afo_ = NULLPTR;
-                hEvent_ = NULLPTR;
             }
 
-            void* hEvent = hEvent_;
             if (NULLPTR != hEvent)
             {
                 ppp::win32::Win32Native::WSACloseEvent(hEvent);
+                hEvent_ = NULLPTR;
             }
 
             int listenfd = listenfd_;

@@ -7,6 +7,7 @@
 #include <ppp/app/ApplicationClientBootstrap.h>
 #include <ppp/app/ApplicationServerBootstrap.h>
 #include <ppp/app/PppApplicationInternal.h>
+#include <ppp/p2p/P2PCapabilityGate.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
 #include <ppp/diagnostics/Error.h>
 #if defined(_WIN32)
@@ -139,6 +140,25 @@ bool Windows_PreparedEthernetEnvironment(const std::shared_ptr<NetworkInterface>
 int PppApplication::Main(int argc, const char* argv[]) noexcept {
     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::Success);
 
+    ppp::app::runtime::RuntimeSnapshot runtime_seed;
+    runtime_seed.role = proxy_mode_ ? "proxy" : (client_mode_ ? "client" : "server");
+    runtime_seed.capabilities = {
+        "mux.compat", "mux.flow", "mux.balance", "mux.stripe"};
+    if (configuration_) {
+        runtime_seed.p2p_state = ppp::p2p::P2PCapabilityGate::Evaluate(
+            configuration_->p2p.enabled,
+            configuration_->p2p.mode.c_str(),
+            false,
+            false,
+            ppp::p2p::ProductionAuthenticatedControlV1Ready).state;
+    }
+    const std::uint64_t runtime_generation =
+        runtime_lifecycle_.Begin(std::move(runtime_seed), Executors::GetTickCount());
+    runtime_lifecycle_.Transition(
+        runtime_generation,
+        ppp::app::runtime::RuntimePhase::PreparingHost,
+        Executors::GetTickCount());
+
     if (!proxy_mode_ && !ppp::IsUserAnAdministrator()) {
         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::AppPrivilegeRequired);
         return -1;
@@ -173,12 +193,20 @@ int PppApplication::Main(int argc, const char* argv[]) noexcept {
     quic_ = ppp::net::proxies::HttpProxy::IsSupportExperimentalQuicProtocol();
 #endif
 
+    runtime_lifecycle_.Transition(
+        runtime_generation,
+        ppp::app::runtime::RuntimePhase::Connecting,
+        Executors::GetTickCount());
     if (!PreparedLoopbackEnvironment(network_interface_)) {
         if (ppp::diagnostics::ErrorCode::Success == ppp::diagnostics::GetLastErrorCode()) {
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::AppPreflightCheckFailed);
         }
         return -1;
     }
+    runtime_lifecycle_.Transition(
+        runtime_generation,
+        ppp::app::runtime::RuntimePhase::Handshaking,
+        Executors::GetTickCount());
 
     /**
      * @brief TUI startup with isatty-based fallback.

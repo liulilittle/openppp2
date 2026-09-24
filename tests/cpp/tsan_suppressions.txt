@@ -1,0 +1,11 @@
+# OpenSSL 3.x CRYPTO_THREAD_run_once lazy initialization — known TSan false positive.
+#
+# When two fibers/threads concurrently call SSL_CTX_new for the first time,
+# OpenSSL's internal CRYPTO_THREAD_run_once performs lazy initialization
+# that TSan's pthread_once interceptor cannot fully model.  The race is
+# between a memcmp (read) and a memcpy (write) inside libcrypto's own
+# once-initialization path, not in project code.
+#
+# The stack frames inside libcrypto have no exported symbol names, so
+# function-name suppression does not match.  We suppress by shared object.
+race:libcrypto.so.3

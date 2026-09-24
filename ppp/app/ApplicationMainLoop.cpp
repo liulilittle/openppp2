@@ -14,6 +14,8 @@
 #include <ppp/app/server/VirtualEthernetSwitcher.h>
 #include <ppp/app/server/VirtualEthernetManagedServer.h>
 #include <ppp/app/PppApplicationInternal.h>
+#include <ppp/app/runtime/RuntimeStatsJson.h>
+#include <ppp/app/tui/TuiRuntimeAdapter.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/LinkTelemetry.h>
 #include <ppp/diagnostics/Telemetry.h>
@@ -73,6 +75,51 @@ static ppp::string BuildHostingEnvironmentText(ApplicationMode mode) noexcept {
         prefix = "proxy:";
     }
     return prefix + env;
+}
+
+static const char* RuntimeStatsGradeName(
+    ppp::diagnostics::LinkQualityGrade grade) noexcept {
+    using Grade = ppp::diagnostics::LinkQualityGrade;
+    switch (grade) {
+        case Grade::Excellent: return "Excellent";
+        case Grade::Outstanding: return "Outstanding";
+        case Grade::Good: return "Good";
+        case Grade::Average: return "Average";
+        case Grade::Poor: return "Poor";
+        case Grade::Terrible: return "Terrible";
+        case Grade::Unusable: return "Unusable";
+        default: return "Unknown";
+    }
+}
+
+static bool WriteRuntimeStatsLine(
+    const ppp::string& path,
+    const ppp::app::runtime::RuntimeStatsSample& sample) noexcept {
+    if (path.empty()) {
+        return false;
+    }
+
+    const std::string json = ppp::app::runtime::SerializeRuntimeStats(sample);
+    if (json.empty()) {
+        return false;
+    }
+    std::FILE* output = stdout;
+    bool close_output = false;
+    if (path != "stdout") {
+        output = std::fopen(path.c_str(), "ab");
+        close_output = true;
+    }
+    if (NULLPTR == output) {
+        return false;
+    }
+
+    const bool written = std::fwrite(json.data(), 1, json.size(), output) == json.size() &&
+        std::fputc('\n', output) != EOF && std::fflush(output) == 0 && !std::ferror(output);
+    if (!close_output) {
+        return written;
+    }
+    const int close_result = std::fclose(output);
+    return written && close_result == 0;
 }
 
 /**
@@ -471,14 +518,59 @@ void PppApplication::GetEnvironmentInformationLines(ppp::vector<ppp::string>& li
  * @brief Disposes active server/client switchers and clears periodic timers.
  */
 void PppApplication::Dispose() noexcept {
-    ConsoleUI::GetInstance().Stop();
-
-    std::shared_ptr<VirtualEthernetSwitcher> server = std::move(server_);
-    if (NULLPTR != server) {
-        server->Dispose();
+    const ppp::app::runtime::RuntimeSnapshot runtime = runtime_lifecycle_.GetSnapshot();
+    bool stop_owner = false;
+    if (runtime.generation != 0) {
+        if (!runtime_lifecycle_.TryBeginStop(
+                runtime.generation, Executors::GetTickCount())) {
+            return;
+        }
+        stop_owner = true;
     }
 
+    ConsoleUI::GetInstance().Stop();
+    auto complete_stop =
+        [self = shared_from_this(), generation = runtime.generation](
+            bool cleanup_success) noexcept {
+            int error_code = static_cast<int>(ppp::diagnostics::GetLastErrorCode());
+            if (!cleanup_success && error_code == 0) {
+                error_code = static_cast<int>(
+                    ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+            }
+            ppp::app::runtime::RuntimeError error;
+            error.code = static_cast<std::uint32_t>(std::max(0, error_code));
+            error.severity = cleanup_success ? std::string() : "error";
+            error.retryable = !cleanup_success;
+            error.user_message_key = cleanup_success ? std::string() : "CleanupFailed";
+            self->runtime_lifecycle_.CompleteStop(
+                generation,
+                cleanup_success,
+                std::move(error),
+                Executors::GetTickCount());
+        };
+    std::shared_ptr<VirtualEthernetSwitcher> server = std::move(server_);
     std::shared_ptr<VEthernetNetworkSwitcher> client = std::move(client_);
+    const int teardown_count = (NULLPTR != server ? 1 : 0) + (NULLPTR != client ? 1 : 0);
+    auto remaining = std::make_shared<std::atomic<int>>(teardown_count);
+    auto cleanup_success = std::make_shared<std::atomic<bool>>(true);
+    auto complete_one =
+        [complete_stop, remaining, cleanup_success](bool success) noexcept {
+            if (!success) {
+                cleanup_success->store(false, std::memory_order_release);
+            }
+            if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                complete_stop(cleanup_success->load(std::memory_order_acquire));
+            }
+        };
+
+    if (NULLPTR != server) {
+        ppp::function<void()> completion;
+        if (stop_owner) {
+            completion = [complete_one]() noexcept { complete_one(true); };
+        }
+        server->Dispose(std::move(completion));
+    }
+
     if (NULLPTR != client) {
 #if defined(_WIN32)
         ppp::net::proxies::HttpProxy::SetSupportExperimentalQuicProtocol(quic_);
@@ -486,13 +578,21 @@ void PppApplication::Dispose() noexcept {
             client->ClearHttpProxyToSystemEnv();
         }
 #endif
-        client->Dispose();
+        ppp::function<void(bool)> completion;
+        if (stop_owner) {
+            completion = complete_one;
+        }
+        client->Dispose(std::move(completion));
     }
 
     ClearTickAlwaysTimeout();
 
     ppp::telemetry::Flush(3000);
     ppp::telemetry::Shutdown();
+
+    if (stop_owner && teardown_count == 0) {
+        complete_stop(true);
+    }
 }
 
 /**
@@ -545,6 +645,8 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
     uint64_t incoming_traffic = 0;
     uint64_t outgoing_traffic = 0;
 
+    acceptance_boundary_.RetryAcknowledgement();
+
     std::shared_ptr<ppp::transmissions::ITransmissionStatistics> statistics_snapshot;
     std::shared_ptr<VEthernetNetworkSwitcher> client = client_;
     std::shared_ptr<VEthernetExchanger> exchanger = NULLPTR;
@@ -552,28 +654,132 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
         exchanger = client->GetExchanger();
     }
 
-    if (!GetTransmissionStatistics(incoming_traffic, outgoing_traffic, statistics_snapshot)) {
+    ppp::app::runtime::RuntimeSnapshot runtime = runtime_lifecycle_.GetSnapshot();
+    if (runtime.generation != 0 && runtime.phase != ppp::app::runtime::RuntimePhase::Stopping) {
+        VEthernetExchanger::RuntimeStateSnapshot exchanger_runtime;
+        if (NULLPTR != exchanger) {
+            exchanger_runtime = exchanger->GetRuntimeState();
+            runtime_lifecycle_.UpdateMuxState(
+                runtime.generation,
+                exchanger->GetMuxRuntimeState(),
+                now);
+            runtime_lifecycle_.UpdateP2PState(
+                runtime.generation,
+                exchanger_runtime.p2p_state,
+                now);
+        }
+        if (NULLPTR == client) {
+            if (NULLPTR != server_ && !server_->IsDisposed()) {
+                const ppp::app::runtime::RuntimeReadiness readiness =
+                    ppp::app::runtime::BuildServerRuntimeReadiness(server_->IsRunning());
+                runtime_lifecycle_.UpdateReadiness(runtime.generation, readiness, now);
+                runtime_lifecycle_.Transition(
+                    runtime.generation,
+                    ppp::app::runtime::RuntimePhase::Connected,
+                    now);
+            }
+        }
+        else if (NULLPTR == exchanger) {
+            runtime_lifecycle_.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Connecting,
+                now);
+        }
+        else if (exchanger_runtime.network_state == NetworkState::NetworkState_Reconnecting) {
+            runtime_lifecycle_.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Reconnecting,
+                now);
+        }
+        else if (exchanger_runtime.network_state == NetworkState::NetworkState_Established) {
+            if (runtime.phase != ppp::app::runtime::RuntimePhase::Connected &&
+                runtime.phase != ppp::app::runtime::RuntimePhase::ApplyingPolicy) {
+                runtime_lifecycle_.Transition(
+                    runtime.generation,
+                    ppp::app::runtime::RuntimePhase::ApplyingPolicy,
+                    now);
+            }
+            runtime_lifecycle_.UpdateReadiness(
+                runtime.generation,
+                client->GetRuntimeReadiness(),
+                now);
+            runtime_lifecycle_.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Connected,
+                now);
+        }
+        else {
+            runtime_lifecycle_.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Handshaking,
+                now);
+        }
+    }
+
+    const bool has_transmission_statistics = GetTransmissionStatistics(
+        incoming_traffic,
+        outgoing_traffic,
+        statistics_snapshot);
+    if (!has_transmission_statistics) {
         incoming_traffic = 0;
         outgoing_traffic = 0;
     }
 
-    ppp::string vpn_state = "disconnected";
-    if (NULLPTR != client) {
-        if (NULLPTR == exchanger) {
-            vpn_state = "connecting";
-        } else {
-            NetworkState network_state = exchanger->GetNetworkState();
-            if (network_state == NetworkState::NetworkState_Established) {
-                vpn_state = "established";
-            } else if (network_state == NetworkState::NetworkState_Reconnecting) {
-                vpn_state = "reconnecting";
-            } else {
-                vpn_state = "connecting";
-            }
-        }
+    if (runtime.generation != 0 && NULLPTR != statistics_snapshot) {
+        ppp::app::runtime::RuntimeTraffic traffic;
+        traffic.rx_bytes = statistics_snapshot->IncomingTraffic.load();
+        traffic.tx_bytes = statistics_snapshot->OutgoingTraffic.load();
+        runtime_lifecycle_.UpdateTraffic(runtime.generation, traffic, now);
     }
 
-    ppp::string status = "vpn=" + vpn_state;
+    runtime = runtime_lifecycle_.GetSnapshot();
+    if (has_transmission_statistics && !stats_json_path_.empty()) {
+        const ppp::diagnostics::LinkTelemetrySnapshot link =
+            ppp::diagnostics::LinkTelemetryGlobal::GetInstance().GetTotal().GetSnapshot();
+        ppp::app::runtime::RuntimeStatsSample sample;
+        sample.monotonic_ms = now;
+        sample.rx_bytes = incoming_traffic;
+        sample.tx_bytes = outgoing_traffic;
+        sample.link.quality_percent = link.quality_percent;
+        sample.link.grade = RuntimeStatsGradeName(link.grade);
+        sample.link.error_count = link.error_count;
+        sample.link.success_count = link.success_count;
+        sample.runtime = runtime;
+        if (NULLPTR != client) {
+            const char* tcp_stack = ppp::app::GetTcpStackModeName(client->GetTcpStackMode());
+            sample.requested_tcp_stack = tcp_stack;
+            sample.active_tcp_stack = tcp_stack;
+
+            ppp::tap::TapRuntimeStats tap_stats;
+            if (client->GetTapRuntimeStats(tap_stats)) {
+                sample.has_tap_linux = true;
+                sample.tap_linux = tap_stats;
+            }
+
+            ppp::app::runtime::RuntimeXtcpStats xtcp_stats;
+            if (client->GetXtcpRuntimeStats(xtcp_stats)) {
+                sample.has_xtcp = true;
+                sample.xtcp = xtcp_stats;
+            }
+        }
+        ppp::app::runtime::DatapathAcceptanceBoundaryRecord boundary;
+        if (acceptance_boundary_.Poll(boundary)) {
+            boundary.monotonic_ms = sample.monotonic_ms;
+            boundary.xtcp_runtime_instance_id = sample.has_xtcp
+                ? sample.xtcp.runtime_instance_id : 0;
+            sample.has_acceptance_boundary = true;
+            sample.acceptance_boundary = boundary;
+        }
+        if (WriteRuntimeStatsLine(stats_json_path_, sample) && sample.has_acceptance_boundary) {
+            acceptance_boundary_.MarkStatsWritten(
+                sample.monotonic_ms, sample.acceptance_boundary.xtcp_runtime_instance_id);
+            acceptance_boundary_.RetryAcknowledgement();
+        }
+    }
+    const std::vector<std::string> runtime_lines =
+        ppp::app::tui::BuildStatusLines(runtime);
+    ppp::string status = "vpn=";
+    status += runtime_lines.empty() ? "Unknown" : runtime_lines.front().c_str();
     status += " rx=" + ppp::StrFormatByteSize((Int64)incoming_traffic);
     status += " tx=" + ppp::StrFormatByteSize((Int64)outgoing_traffic);
 
@@ -591,6 +797,9 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
 
     ppp::vector<ppp::string> info;
     GetEnvironmentInformationLines(info, incoming_traffic, outgoing_traffic, statistics_snapshot);
+    for (auto line = runtime_lines.rbegin(); line != runtime_lines.rend(); ++line) {
+        info.insert(info.begin(), ppp::string(line->data(), line->size()));
+    }
     ConsoleUI::GetInstance().SetInfoLines(info);
 
 #if defined(_WIN32)

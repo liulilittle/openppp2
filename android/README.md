@@ -1,68 +1,78 @@
-# OpenPPP2 Mobile
+# OpenPPP2 Android client
 
-这是一个 OpenPPP2 Android Flutter MVP 客户端，目标是先跑通“一键连接 / 断开 + JSON 配置输入 + VPN Service + JNI + libopenppp2.so”的最小链路。
+> [中文](README_CN.md) · [Technical guide](debug.md) · [Rule assets](android/app/src/main/assets/rules/README.md)
 
-## 当前状态
+**Status:** Experimental
 
-- 已创建 Flutter 项目结构。
-- 已实现基础 Material 3 UI。
-- 已实现 Dart `MethodChannel` / `EventChannel` 包装。
-- 已实现 Kotlin `MainActivity`、`PppVpnService`、JNI 桥接类 `supersocksr.ppp.android.c.libopenppp2`。
-- 已接入 `arm64-v8a/libopenppp2.so`。
-- 当前只打包 `arm64-v8a`，优先用于现代 Android 真机测试。
+**Type:** Platform-specific Flutter, Android VPN, and JNI client surface
 
-## 你需要先安装的软件
+**Last verified:** 2026-07-22
 
-1. Android Studio
-2. Flutter SDK
-3. Android SDK / Platform Tools
-4. 一台 Android 真机
+This directory is the Android client that is shipped with this OpenPPP2 tree. It is a Flutter application backed by an Android `VpnService` and the bundled native `libopenppp2.so`; it is not a standalone SDK or a replacement for the native command-line runtime.
 
-安装好 Flutter 后，在命令行确认：
+## What is here
 
-```powershell
-flutter doctor
+- Flutter UI and profile/settings code in `lib/`.
+- Android activity, VPN service, state mirror, and JNI declarations in `android/app/src/main/`.
+- A packaged native library at `android/app/src/main/jniLibs/arm64-v8a/libopenppp2.so`.
+- Native Android CMake sources and the ABI-oriented `build.sh` helper at this directory level.
+
+The UI currently has Home, launch-options, profiles, and settings areas. Treat the client as an experimental platform surface: validate a real connection and the device's VPN behavior before relying on it operationally.
+
+## Startup and runtime path
+
+```text
+Flutter VpnService.connect(configJson, vpnOptions)
+  -> MethodChannel "supersocksr.ppp/vpn"
+  -> MainActivity requests Android VPN permission when needed
+  -> PppVpnService in the private :vpn process
+  -> VpnService.Builder establishes a TUN interface
+  -> JNI configures and runs libopenppp2.so
+  -> native callbacks and a service poller mirror runtime state to app files
+  -> Flutter polls the mirror while the app is visible
 ```
 
-## 第一次运行
+`PppVpnService` is deliberately declared in a separate `:vpn` process. The UI therefore does not read native state directly: it asks the activity for a mirrored runtime snapshot, link state, heartbeat, or last error. See [the technical guide](debug.md) before changing that lifecycle or any JNI signature.
 
-如果这个项目不是通过 `flutter create` 生成的完整模板，先运行一次引导脚本：
+## Work on the Flutter application
 
-```powershell
-.\tools\bootstrap_flutter.ps1
-```
+From this directory, with a compatible Flutter/Android toolchain installed:
 
-这个脚本会让 Flutter 生成缺失的 Android wrapper/模板文件，并恢复本项目已写好的 Dart/Kotlin 代码。
-
-在项目目录运行：
-
-```powershell
+```sh
 flutter pub get
+flutter test
+```
+
+A device run/build also needs a native library whose ABI matches the active Android Gradle configuration. The checked-in `jniLibs` directory currently contains an `arm64-v8a` library; do not assume that this also covers every emulator or build variant.
+
+```sh
 flutter run
 ```
 
-如果 Android Studio 提示缺少 SDK、NDK 或 Gradle，按提示安装即可。
+Use a disposable development device and a non-production configuration. Do not put credentials or private endpoints in documentation, screenshots, or committed test profiles.
 
-## 注意事项
+### Rebuild the native library (maintainers)
 
-- VPN/TUN 必须用真机测试，模拟器通常不适合作为最终验证环境。
-- 目前只包含 `arm64-v8a` 的 `libopenppp2.so`，所以建议先用 64 位 ARM 真机测试。
-- 配置页面里默认 JSON 只是模板，你需要把 `client.server` 等字段改成你的真实 PPP 服务端地址。
-- 如果要支持 `armeabi-v7a`、`x86_64`、`x86`，需要先为这些 ABI 构建 `libopenppp2.so` 并放入 `android/app/src/main/jniLibs/` 对应目录，再修改 `android/app/build.gradle` 的 `abiFilters`。
+`CMakeLists.txt` builds `libopenppp2.so` from the shared C/C++ runtime and writes it under `bin/android/<ABI>/`. `build.sh` selects `x86`, `x64`, `arm`, `arm64`, or `all`; it requires an Android NDK plus matching prebuilt Boost and OpenSSL libraries.
 
-## 目录说明
+A path-independent template for an arm64 build is:
 
-```text
-lib/
-  main.dart
-  vpn_service.dart
-  pages/home_page.dart
-  pages/settings_page.dart
-android/app/src/main/kotlin/supersocksr/ppp/android/
-  MainActivity.kt
-  PppVpnService.kt
-android/app/src/main/kotlin/supersocksr/ppp/android/c/
-  libopenppp2.kt
-android/app/src/main/jniLibs/arm64-v8a/
-  libopenppp2.so
+```sh
+cd android
+NDK_ROOT=/path/to/android-ndk \
+OTHER_ARGS="-DTHIRD_PARTY_LIBRARY_DIR=/path/to/android-third-party" \
+./build.sh arm64
+
+cp ../bin/android/arm64-v8a/libopenppp2.so \
+  android/app/src/main/jniLibs/arm64-v8a/libopenppp2.so
 ```
+
+The helper removes its temporary `build/` directory. Check the active Gradle scripts and package each required ABI deliberately before using the result. The local bootstrap/WSL helper scripts contain overwrite behavior or machine-specific paths, so they are not general onboarding commands.
+
+## Documentation boundary
+
+- [Technical guide](debug.md) documents the current Flutter/Kotlin/JNI implementation and troubleshooting signals.
+- [Rule assets](android/app/src/main/assets/rules/README.md) documents the bundled GeoIP/GeoSite fallback files.
+- [Work status](WORK_STATUS.md) is a status-bound maintenance note, not a record of current build or device-test success.
+
+Configuration field semantics, protocol behavior, and cross-platform runtime guarantees belong to the canonical project documentation, not to this platform wrapper.

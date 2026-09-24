@@ -22,6 +22,7 @@ namespace ppp
                 JavaVM*                                             vm = NULLPTR;
                 jclass                                              clazz = NULLPTR;
                 jmethodID                                           protect = NULLPTR;
+                jmethodID                                           is_ready = NULLPTR;
                 bool                                                enabled = true;
                 std::mutex                                          syncobj;
             };
@@ -85,7 +86,8 @@ namespace ppp
                     return false;
                 }
 
-                if (NULLPTR != state.clazz && NULLPTR != state.protect)
+                if (NULLPTR != state.clazz && NULLPTR != state.protect &&
+                    NULLPTR != state.is_ready)
                 {
                     return true;
                 }
@@ -109,6 +111,16 @@ namespace ppp
                     return false;
                 }
 
+                jmethodID ready_method = env->GetStaticMethodID(local_clazz, "isProtectReady", "()Z");
+                ClearException(env, "GetStaticMethodID(isProtectReady)");
+                if (NULLPTR == ready_method)
+                {
+                    env->DeleteLocalRef(local_clazz);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeEventDispatchFailed);
+                    __android_log_print(ANDROID_LOG_WARN, TAG, "method not found: isProtectReady()Z");
+                    return false;
+                }
+
                 jclass global_clazz = static_cast<jclass>(env->NewGlobalRef(local_clazz));
                 env->DeleteLocalRef(local_clazz);
                 ClearException(env, "NewGlobalRef(protect class)");
@@ -125,6 +137,7 @@ namespace ppp
 
                 state.clazz = global_clazz;
                 state.protect = protect_method;
+                state.is_ready = ready_method;
                 return true;
             }
         }
@@ -156,6 +169,7 @@ namespace ppp
                 clazz = state.clazz;
                 state.clazz = NULLPTR;
                 state.protect = NULLPTR;
+                state.is_ready = NULLPTR;
                 state.vm = NULLPTR;
                 state.enabled = false;
             }
@@ -196,6 +210,47 @@ namespace ppp
             return state.enabled;
         }
 
+        bool IsProtectBridgeReady() noexcept
+        {
+            ProtectBridgeState& state = GetState();
+            JavaVM* vm = NULLPTR;
+            {
+                std::lock_guard<std::mutex> scope(state.syncobj);
+                if (!state.enabled)
+                {
+                    return false;
+                }
+                vm = state.vm;
+            }
+
+            bool attached = false;
+            JNIEnv* env = AttachEnvironment(vm, attached);
+            if (NULLPTR == env)
+            {
+                return false;
+            }
+
+            jboolean result = JNI_FALSE;
+            {
+                std::lock_guard<std::mutex> scope(state.syncobj);
+                if (state.enabled && state.vm == vm &&
+                    CacheProtectClassLocked(state, env))
+                {
+                    result = env->CallStaticBooleanMethod(state.clazz, state.is_ready);
+                    if (ClearException(env, "CallStaticBooleanMethod(isProtectReady)"))
+                    {
+                        result = JNI_FALSE;
+                    }
+                }
+            }
+
+            if (attached)
+            {
+                vm->DetachCurrentThread();
+            }
+            return result == JNI_TRUE;
+        }
+
         bool ProtectSocketFd(int fd) noexcept
         {
             if (fd < 0)
@@ -205,8 +260,6 @@ namespace ppp
             }
 
             JavaVM* vm = NULLPTR;
-            jclass clazz = NULLPTR;
-            jmethodID protect_method = NULLPTR;
             {
                 ProtectBridgeState& state = GetState();
                 std::lock_guard<std::mutex> scope(state.syncobj);
@@ -216,8 +269,6 @@ namespace ppp
                 }
 
                 vm = state.vm;
-                clazz = state.clazz;
-                protect_method = state.protect;
             }
 
             bool attached = false;
@@ -228,28 +279,30 @@ namespace ppp
                 return false;
             }
 
-            if (NULLPTR == clazz || NULLPTR == protect_method)
+            jclass clazz = NULLPTR;
+            jmethodID protect_method = NULLPTR;
             {
                 ProtectBridgeState& state = GetState();
                 std::lock_guard<std::mutex> scope(state.syncobj);
-                if (!CacheProtectClassLocked(state, env))
+                if (state.enabled && state.vm == vm &&
+                    CacheProtectClassLocked(state, env))
                 {
-                    if (attached)
-                    {
-                        vm->DetachCurrentThread();
-                    }
-                    return false;
+                    clazz = static_cast<jclass>(env->NewLocalRef(state.clazz));
+                    ClearException(env, "NewLocalRef(protect class)");
+                    protect_method = state.protect;
                 }
-
-                clazz = state.clazz;
-                protect_method = state.protect;
             }
 
-            jboolean result = env->CallStaticBooleanMethod(clazz, protect_method, static_cast<jint>(fd));
-            if (ClearException(env, "CallStaticBooleanMethod(protect)"))
+            jboolean result = JNI_FALSE;
+            if (NULLPTR != clazz && NULLPTR != protect_method)
             {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeEventDispatchFailed);
-                result = JNI_FALSE;
+                result = env->CallStaticBooleanMethod(clazz, protect_method, static_cast<jint>(fd));
+                if (ClearException(env, "CallStaticBooleanMethod(protect)"))
+                {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeEventDispatchFailed);
+                    result = JNI_FALSE;
+                }
+                env->DeleteLocalRef(clazz);
             }
 
             if (attached)

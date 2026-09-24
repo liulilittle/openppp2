@@ -9,7 +9,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, codex/runtime-ui-lifecycle-integration]
   workflow_dispatch:
 
 concurrency:
@@ -39,7 +39,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake git zip unzip curl wget \
             libkrb5-dev libicu-dev libssl-dev libunwind-dev \
-            autoconf clang \
+            autoconf clang libbenchmark-dev \
             liburing-dev libbpf-dev
 
       - name: Cache third-party libraries
@@ -88,6 +88,24 @@ jobs:
             -DENABLE_SIMD=${{ matrix.enable_simd }}
           make -j$(nproc)
 
+      - name: UDP benchmark correctness smoke
+        if: matrix.suffix == ''
+        run: |
+          TP="${{ github.workspace }}/third-party"
+          cmake -S bench -B build-bench \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENPPP2_BOOST_INCLUDE_DIR="$TP/boost"
+          cmake --build build-bench -j$(nproc)
+          ctest --test-dir build-bench --output-on-failure -L correctness
+
+      - name: Client/server Android-key compat smoke
+        if: matrix.suffix == ''
+        run: |
+          sudo PPP_BIN="$PWD/bin/ppp" COMPAT_MODE=match \
+            bash tools/client_server_compat_smoke.sh
+          sudo PPP_BIN="$PWD/bin/ppp" COMPAT_MODE=mismatch \
+            bash tools/client_server_compat_smoke.sh
+
       - name: Collect artifacts
         run: |
           ARTIFACT="openppp2-linux-amd64${{ matrix.suffix }}.zip"
@@ -129,6 +147,32 @@ jobs:
           path: bin/openppp2-linux-amd64${{ matrix.suffix }}.zip
           if-no-files-found: error
 
+      # XTCP end-to-end runs after packaging: the root CMake always links the
+      # ppp executable into bin/, so the XTCP-enabled rebuild below overwrites
+      # bin/ppp and must not precede artifact collection.
+      - name: XTCP TAP netns end-to-end
+        if: matrix.suffix == ''
+        run: |
+          bash tools/prepare_xtcp.sh
+          TP="${{ github.workspace }}/third-party"
+          cmake -S . -B build-xtcp \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTHIRD_PARTY_LIBRARY_DIR="$TP" \
+            -DENABLE_XTCP=ON \
+            -DENABLE_SYSNAT=OFF -DENABLE_IO_URING=OFF -DENABLE_SIMD=OFF
+          cmake --build build-xtcp -j$(nproc)
+          sudo PPP_BIN="$PWD/bin/ppp" \
+            OPENPPP2_NAMESPACE_ARTIFACT_DIR="$PWD/xtcp-e2e-artifacts" \
+            bash tests/integration/linux/xtcp_tap_netns_e2e.sh
+
+      - name: Upload XTCP E2E artifacts
+        if: matrix.suffix == '' && failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xtcp-e2e-artifacts
+          path: xtcp-e2e-artifacts/
+          if-no-files-found: ignore
+
   # ── Debian 10 (Buster) compatibility build ──────────────────────────
   # Ensures the binary runs on Debian 10 / glibc 2.28 / kernel 4.19+.
   # io_uring and SYSNAT are disabled (require kernel ≥ 5.10).
@@ -139,17 +183,21 @@ jobs:
     container: debian:buster
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
+      - name: Install Git for checkout
         run: |
-          # Debian 10 Buster reached EOL — switch to archive mirrors.
+          # Debian 10 Buster reached EOL; switch to archive mirrors before checkout.
           sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list
           sed -i 's|deb.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list
           sed -i '/buster-updates/d' /etc/apt/sources.list
           apt-get update -y
+          apt-get install -y --no-install-recommends git ca-certificates
+
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
           apt-get install -y --no-install-recommends \
-            build-essential cmake git zip unzip curl wget ca-certificates \
+            build-essential cmake zip unzip curl wget \
             libkrb5-dev libicu-dev libssl-dev libunwind-dev \
             autoconf
 
@@ -288,10 +336,21 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DTHIRD_PARTY_LIBRARY_DIR="$TP" \
             -DENABLE_ASAN=ON \
+            -DENABLE_UBSAN=ON \
+            -DENABLE_VMUX_CHURN_TEST=ON \
+            -DENABLE_VMUX_RECEIVE_SEMANTICS_TEST=ON \
             -DENABLE_SYSNAT=OFF \
             -DENABLE_IO_URING=OFF \
             -DENABLE_SIMD=OFF
           make -j$(nproc)
+
+      - name: Run VMUX sanitizer tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          bin/vmux_net_churn_integration_test
+          bin/vmux_receive_semantics_test
 
       - name: Collect ASan artifact
         run: |

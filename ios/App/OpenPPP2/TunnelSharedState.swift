@@ -155,6 +155,7 @@ enum TunnelSharedState {
     static let connectWatchdogMaxSeconds = 180
 
     private static let linkStateFileName = "openppp2-linkstate.txt"
+    private static let runtimeSnapshotFileName = "openppp2-runtime-snapshot.json"
     private static let diagnosticsFileName = "openppp2-shared-diagnostics.json"
     private static let lastTunnelConfigurationKey = "openppp2_last_tunnel_configuration_v1"
     private static let lastTunnelStopReasonKey = "openppp2_last_tunnel_stop_reason_v1"
@@ -178,6 +179,24 @@ enum TunnelSharedState {
             guard let url = linkStateURL() else { return }
             try? "\(linkState)\n".write(to: url, atomically: true, encoding: .utf8)
         }
+    }
+
+    static func writeRuntimeSnapshotJson(_ json: String) {
+        queue.async {
+            guard let url = runtimeSnapshotURL(),
+                  let data = json.data(using: .utf8)
+            else { return }
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    static func readRuntimeSnapshotJsonIfAlive() -> String? {
+        guard shouldUseSharedHeartbeat,
+              isExtensionAlive(),
+              let url = runtimeSnapshotURL(),
+              let text = try? String(contentsOf: url, encoding: .utf8)
+        else { return nil }
+        return text
     }
 
     static func heartbeatAgeMs() -> Int64 {
@@ -295,7 +314,7 @@ enum TunnelSharedState {
     static func clearSession() {
         queue.sync {
             guard let base = containerURL() else { return }
-            for name in [linkStateFileName, diagnosticsFileName] {
+            for name in [linkStateFileName, runtimeSnapshotFileName, diagnosticsFileName] {
                 let url = base.appendingPathComponent(name)
                 if FileManager.default.fileExists(atPath: url.path) {
                     try? FileManager.default.removeItem(at: url)
@@ -335,6 +354,10 @@ enum TunnelSharedState {
 
     private static func linkStateURL() -> URL? {
         containerURL()?.appendingPathComponent(linkStateFileName)
+    }
+
+    private static func runtimeSnapshotURL() -> URL? {
+        containerURL()?.appendingPathComponent(runtimeSnapshotFileName)
     }
 
     private static func diagnosticsURL() -> URL? {

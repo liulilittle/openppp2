@@ -1,6 +1,7 @@
 #include <ppp/transmissions/ITcpipTransmission.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
+#include <ppp/diagnostics/DatapathPerfJson.h>
 
 /**
  * @file ITcpipTransmission.cpp
@@ -142,6 +143,41 @@ namespace ppp {
             return remoteEP_;
         }
 
+        bool ITcpipTransmission::SupportsSendHalfClose() const noexcept {
+            return role_ == TcpTransmissionRole::Child;
+        }
+
+        bool ITcpipTransmission::ShutdownSend() noexcept {
+            if (!SupportsSendHalfClose() || disposed_.load() != FALSE) {
+                return false;
+            }
+            bool expected = false;
+            if (!send_shutdown_.compare_exchange_strong(expected, true)) {
+                return true;
+            }
+            std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::atomic_load(&socket_);
+            if (!socket || !socket->is_open()) {
+                send_shutdown_.store(false);
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketOpenFailed);
+                return false;
+            }
+            boost::system::error_code ec;
+            socket->shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+            if (!ec) {
+                ppp::telemetry::Count("tcpip.shutdown_send.child", 1);
+                return true;
+            }
+            send_shutdown_.store(false);
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketWriteFailed);
+            ppp::telemetry::Log(Level::kInfo, "tcpip", "shutdown send failed role=%s ec=%d msg=%s",
+                TcpTransmissionRoleName(role_), ec.value(), ec.message().c_str());
+            return false;
+        }
+
+        bool ITcpipTransmission::IsReceiveClosed() const noexcept {
+            return receive_closed_.load();
+        }
+
         /**
          * @brief Reads bytes through the QoS-managed path.
          * @param y Coroutine yield context.
@@ -222,12 +258,17 @@ namespace ppp {
             boost::system::error_code read_ec;
             std::size_t bytes_transferred = 0;
             auto buffer = boost::asio::buffer(packet.get(), length);
+            // Lab-only JSONL: exact carrier receive post-to-completion duration.
+            ppp::diagnostics::datapath_perf::Scope receive_scope;
             boost::asio::post(socket->get_executor(),
-                [socket, buffer, &y, &read_ec, &bytes_transferred]() noexcept {
+                [socket, buffer, &y, &read_ec, &bytes_transferred, length, receive_scope]() noexcept {
                     boost::asio::async_read(*socket, buffer,
-                        [&y, &read_ec, &bytes_transferred](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                        [&y, &read_ec, &bytes_transferred, length, receive_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
                             read_ec = ec;
                             bytes_transferred = sz;
+                            if (!ec && sz == (std::size_t)length) {
+                                ppp::diagnostics::datapath_perf::RecordCarrierReceive((int)sz, receive_scope.Elapsed());
+                            }
                             y.R();
                         });
                 });
@@ -235,6 +276,12 @@ namespace ppp {
             y.Suspend();
             bool ok = !read_ec && bytes_transferred == (std::size_t)length;
             if (!ok) {
+                if (read_ec == boost::asio::error::eof &&
+                    role_ == TcpTransmissionRole::Child) {
+                    receive_closed_.store(true);
+                    ppp::telemetry::Count("tcpip.receive_eof.child", 1);
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketReadFailed, NULLPTR);
+                }
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketReadFailed);
                 ppp::telemetry::Log(Level::kInfo,
                     "tcpip",
@@ -273,7 +320,7 @@ namespace ppp {
                 return false;
             }
 
-            if (disposed_.load() != FALSE) {
+            if (disposed_.load() != FALSE || send_shutdown_.load()) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionClosing);
                 return false;
             }
@@ -281,12 +328,15 @@ namespace ppp {
             std::shared_ptr<IAsynchronousWriteIoQueue> self = shared_from_this();
             auto context = GetContext();
             auto strand = GetStrand();
+            // Lab-only JSONL: physical carrier send post-to-completion duration.
+            ppp::diagnostics::datapath_perf::Scope send_scope;
 
-            auto complete_do_write_bytes_async_callback = [self, this, socket, context, strand, packet, offset, packet_length, cb]() noexcept {
+            auto complete_do_write_bytes_async_callback = [self, this, socket, context, strand, packet, offset, packet_length, cb, send_scope]() noexcept {
                 boost::asio::async_write(*socket, boost::asio::buffer((Byte*)packet.get() + offset, packet_length),
-                    [self, this, context, strand, packet, packet_length, cb](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                    [self, this, context, strand, packet, packet_length, cb, send_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         bool ok = ec == boost::system::errc::success;
                         if (ok) {
+                            ppp::diagnostics::datapath_perf::RecordCarrierSend((int)sz, send_scope.Elapsed());
                             std::shared_ptr<ITransmissionStatistics> statistics = this->Statistics;
                             if (statistics) {
                                 statistics->AddOutgoingTraffic(packet_length);

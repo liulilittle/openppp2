@@ -169,6 +169,8 @@ namespace ppp {
                 virtual void                                                Dispose() noexcept;
                 /** @brief Returns whether this client uses lwIP accept path. */
                 bool                                                        IsLwip() const noexcept { return lwip_ != 0; }
+                /** @brief Returns whether this client was registered by an external loopback bridge. */
+                bool                                                        IsExternal() const noexcept { return external_; }
                 /** @brief Returns whether this client is disposed. */
                 bool                                                        IsDisposed() noexcept { return disposed_.load() != FALSE; }
 
@@ -228,6 +230,8 @@ namespace ppp {
             private:
                 /** @brief Non-zero when this client was created through the lwIP accept path. */
                 Int128                                                      lwip_                = 0;
+                /** @brief True only for a one-shot external loopback registration. */
+                bool                                                        external_            = false;
                 /** @brief Disposal guard; exchange FALSE→non-zero to perform one-time finalization. */
                 std::atomic<int>                                            disposed_            = FALSE;
 
@@ -297,6 +301,14 @@ namespace ppp {
             virtual bool                                                    Input(ip_hdr* ip, tcp_hdr* tcp, int tcp_len) noexcept;
             /** @brief Performs periodic timeout and cleanup maintenance. */
             virtual bool                                                    Update(uint64_t now) noexcept;
+            /** @brief Returns the loopback endpoint used by external bridge connectors. */
+            boost::asio::ip::tcp::endpoint                                  GetLocalListenerEndpoint() noexcept;
+            /** @brief Registers one exact loopback source port for an external client. */
+            bool                                                            RegisterExternalClient(uint16_t source_port, uint64_t runtime_generation, uint64_t flow_generation, const std::shared_ptr<TapTcpClient>& client) noexcept;
+            /** @brief Cancels a pending exact external registration. */
+            void                                                            CancelExternalClient(uint16_t source_port, uint64_t runtime_generation) noexcept;
+            /** @brief XTCP-VNET-BRIDGE-BYPASS-001: takes ownership of a caller-provided AF_UNIX fd for a pre-registered external client (skips the kernel loopback listener accept); raw-close failures only before Asio adoption. */
+            bool                                                            CompleteExternalAcceptWithFd(uint16_t source_port, uint64_t runtime_generation, int fd, const boost::asio::ip::tcp::endpoint& natEP) noexcept;
 
 #if defined(_IPHONE) || defined(IPHONE)
             /** @brief Emits server payload to the TUN client as a TCP segment (iOS ctcp). */
@@ -352,7 +364,14 @@ namespace ppp {
             bool                                                            DeliverNativeLoopback(const std::shared_ptr<TapTcpLink>& link, tcp_hdr* tcp, int tcp_len) noexcept;
 #endif
 
-            /** @brief Guards wan2lan_, lan2wan_, and acceptor_ from concurrent access. */
+            struct ExternalClient final {
+                uint64_t                                                    runtime_generation = 0;
+                uint64_t                                                    flow_generation = 0;
+                std::shared_ptr<TapTcpClient>                               client;
+            };
+            typedef ppp::unordered_map<uint16_t, ExternalClient>            ExternalClientTable;
+
+            /** @brief Guards native/lwIP tables, external registrations, and acceptor_. */
             SynchronizedObject                                              syncobj_;
             /** @brief Next NAT port allocation counter. */
             int                                                             ap_     = 0;
@@ -377,6 +396,8 @@ namespace ppp {
             WAN2LANTABLE                                                    wan2lan_;
             /** @brief LAN-to-WAN NAT translation table keyed by composite flow ID. */
             LAN2WANTABLE                                                    lan2wan_;
+            /** @brief One-shot loopback registrations, separate from native/lwIP links. */
+            ExternalClientTable                                             external_clients_;
             /** @brief Loopback socket acceptor used to receive locally originated connections. */
             std::shared_ptr<SocketAcceptor>                                 acceptor_;
         };

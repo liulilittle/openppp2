@@ -1,6 +1,6 @@
 #include <ppp/app/client/PeerPrefixRouteManager.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
-#include <ppp/app/client/RouteTableManager.h>
+#include <ppp/app/client/route/RouteCoordinator.h>
 #include <ppp/app/protocol/PeerPrefixRoute.h>
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
 #include <ppp/configurations/AppConfiguration.h>
@@ -9,9 +9,6 @@
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/net/native/rib.h>
 
-#if defined(_WIN32)
-#include <windows/ppp/win32/network/Router.h>
-#endif
 
 using ppp::telemetry::Level;
 
@@ -24,34 +21,27 @@ namespace ppp {
             }
 
             void PeerPrefixRouteManager::Clear() noexcept {
-#if defined(_WIN32)
-                auto mib = ppp::win32::network::Router::GetIpForwardTable();
-#endif
-                for (const auto& route : owner_->applied_peer_prefix_routes_) {
-#if defined(_WIN32)
-                    if (NULLPTR != mib) {
-                        owner_->route_table_->DeleteRoute(mib, route.Destination, route.NextHop, route.Prefix);
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                const route::RoutePlanInput input = owner_->BuildRoutePlanInput();
+                if (!owner_->proxy_only_) {
+                    for (const auto& route : owner_->applied_peer_prefix_routes_) {
+                        owner_->route_coordinator_->DeleteRoute(
+                            input, route.Destination, route.NextHop, route.Prefix);
                     }
-#elif !defined(_ANDROID) && !defined(_IPHONE)
-                    owner_->route_table_->DeleteRoute(route.Destination, route.NextHop, route.Prefix);
+                }
 #endif
-                }
                 owner_->applied_peer_prefix_routes_.clear();
-                if (NULLPTR != owner_->peer_prefix_rib_) {
-                    owner_->peer_prefix_rib_->Clear();
+                const route::RouteStateSnapshot snapshot = owner_->route_coordinator_->Snapshot();
+                if (NULLPTR != snapshot.peer_prefix_rib) {
+                    snapshot.peer_prefix_rib->Clear();
                 }
-                if (NULLPTR != owner_->peer_prefix_fib_) {
-                    owner_->peer_prefix_fib_->Clear();
+                if (NULLPTR != snapshot.peer_prefix_fib) {
+                    snapshot.peer_prefix_fib->Clear();
                 }
-                owner_->peer_prefix_rib_ = NULLPTR;
-                owner_->peer_prefix_fib_ = NULLPTR;
+                owner_->route_coordinator_->ReplacePeerPrefix(NULLPTR, NULLPTR);
             }
 
             bool PeerPrefixRouteManager::Apply(const ppp::app::protocol::VirtualEthernetInformationExtensions& extensions) noexcept {
-                if (owner_->proxy_only_) {
-                    return false;
-                }
-
                 std::shared_ptr<ppp::tap::ITap> tap = owner_->GetTap();
                 if (NULLPTR == tap) {
                     return false;
@@ -68,6 +58,10 @@ namespace ppp {
                 const auto& dynamic_routes = extensions.PeerRouteTable.HasAny()
                     ? extensions.PeerRouteTable.routes
                     : owner_->dynamic_peer_routes_;
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                const route::RoutePlanInput route_input = owner_->BuildRoutePlanInput();
+                const bool apply_host_routes = !owner_->proxy_only_;
+#endif
 
                 auto install_route = [&](const ppp::app::protocol::PeerPrefixRouteEntry& route) -> bool {
                     if (!route.HasVia()) {
@@ -89,18 +83,17 @@ namespace ppp {
                     }
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                    if (!owner_->route_table_->AddRoute(network, via, route.prefix)) {
+                    if (apply_host_routes && !owner_->route_coordinator_->AddRoute(route_input, network, via, route.prefix)) {
                         return false;
                     }
 #endif
 
                     if (!rib->AddRoute(network, route.prefix, via)) {
-#if defined(_WIN32)
-                        if (auto mib = ppp::win32::network::Router::GetIpForwardTable(); NULLPTR != mib) {
-                            owner_->route_table_->DeleteRoute(mib, network, via, route.prefix);
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                        if (apply_host_routes) {
+                            owner_->route_coordinator_->DeleteRoute(
+                                route_input, network, via, route.prefix);
                         }
-#elif !defined(_ANDROID) && !defined(_IPHONE)
-                        owner_->route_table_->DeleteRoute(network, via, route.prefix);
 #endif
                         return false;
                     }
@@ -115,7 +108,14 @@ namespace ppp {
 
                 bool any = false;
                 if (NULLPTR != owner_->configuration_) {
-                    for (const auto& route : owner_->configuration_->client.peer_routes) {
+                    // Use canonical peer_routes when client.routing was supplied;
+                    // fall back to the legacy field only when the canonical object
+                    // is absent (mirrors the precedence in ApplicationClientBootstrap).
+                    const auto& static_peer_routes =
+                        owner_->configuration_->client.routing.configured
+                            ? owner_->configuration_->client.routing.peer_routes
+                            : owner_->configuration_->client.peer_routes;
+                    for (const auto& route : static_peer_routes) {
                         ppp::app::protocol::PeerPrefixRouteEntry entry;
                         entry.network = route.network;
                         entry.prefix = route.prefix;
@@ -134,8 +134,7 @@ namespace ppp {
                     if (NULLPTR != fib) {
                         fib->Fill(*rib);
                         if (fib->IsAvailable()) {
-                            owner_->peer_prefix_rib_ = rib;
-                            owner_->peer_prefix_fib_ = fib;
+                            owner_->route_coordinator_->ReplacePeerPrefix(rib, fib);
                         }
                     }
 

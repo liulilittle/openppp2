@@ -6,6 +6,8 @@
  */
 
 #include <ppp/stdafx.h>
+#include <ppp/app/client/routing/HumanRoutingRules.h>
+
 #include <mutex>
 
 namespace ppp {
@@ -15,6 +17,22 @@ namespace ppp {
 
                 class FakeIpPool final {
                 public:
+                    struct EntrySnapshot final {
+                        ppp::string hostname;
+                        uint32_t fake_ip_host = 0;
+                        uint32_t real_ip_host = 0;
+                        routing::RoutingAction action = routing::RoutingAction::Auto;
+                        bool domain_matched = false;
+                        bool is_resolving = false;
+                        bool is_resolved = false;
+                    };
+
+                    struct AllocationResult final {
+                        EntrySnapshot entry;
+                        bool created = false;
+                        bool should_resolve = false;
+                    };
+
                     FakeIpPool() noexcept {}
 
                     /** @brief Configures the assignable IPv4 range (e.g. "198.18.0.1/16"). */
@@ -27,11 +45,24 @@ namespace ppp {
                     /** @brief Returns true when @p ip_host is inside the configured pool. */
                     bool ContainsHostOrder(uint32_t ip_host) const noexcept;
 
-                    /** @brief Allocates or returns an existing fake IP for @p hostname (lowercase). */
+                    AllocationResult Allocate(
+                        const ppp::string& hostname,
+                        routing::RoutingAction action,
+                        bool domain_matched) noexcept;
+
+                    /** @brief Legacy wrapper returning only the allocated fake address. */
                     uint32_t Allocate(const ppp::string& hostname) noexcept;
 
-                    /** @brief Stores the resolved real IPv4 (network byte order) for @p hostname. */
-                    void SetRealIp(const ppp::string& hostname, uint32_t real_ip_network) noexcept;
+                    bool SetResolved(
+                        const ppp::string& hostname,
+                        uint32_t real_ip_host,
+                        routing::RoutingAction action) noexcept;
+                    void SetResolveFailed(const ppp::string& hostname) noexcept;
+
+                    /** @brief Legacy wrapper preserving the entry's sticky routing action. */
+                    void SetRealIp(const ppp::string& hostname, uint32_t real_ip_host) noexcept;
+
+                    bool Lookup(uint32_t fake_ip_host, EntrySnapshot& entry) const noexcept;
 
                     /** @brief Looks up the real destination if known; 0 when unresolved. */
                     uint32_t LookupRealIpHostOrder(uint32_t fake_ip_host) const noexcept;
@@ -45,7 +76,13 @@ namespace ppp {
                         ppp::string hostname;
                         uint32_t fake_ip_host = 0;
                         uint32_t real_ip_host = 0;
+                        routing::RoutingAction action = routing::RoutingAction::Auto;
+                        bool domain_matched = false;
+                        bool is_resolving = false;
+                        bool is_resolved = false;
                     };
+
+                    static EntrySnapshot Snapshot(const Entry& entry) noexcept;
 
                     mutable std::mutex sync_;
                     bool enabled_ = false;

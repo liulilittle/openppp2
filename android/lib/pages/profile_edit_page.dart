@@ -28,6 +28,8 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
   // Server
   final _serverHostController = TextEditingController();
   final _serverPortController = TextEditingController();
+  final _serverPathController = TextEditingController();
+  String _serverScheme = 'ppp'; // ppp | ws | wss
   final _guidController = TextEditingController();
   final _bandwidthController = TextEditingController();
 
@@ -97,8 +99,12 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
 
     final serverUrl = client['server']?.toString() ?? '';
     final endpoint = ServerEndpoint.parse(serverUrl);
+    _serverScheme = endpoint.scheme == 'ws' || endpoint.scheme == 'wss'
+        ? endpoint.scheme
+        : 'ppp';
     _serverHostController.text = endpoint.host;
     _serverPortController.text = endpoint.port?.toString() ?? '';
+    _serverPathController.text = endpoint.path;
     _guidController.text = client['guid']?.toString() ?? '';
     _bandwidthController.text = (client['bandwidth'] ?? 0).toString();
 
@@ -145,10 +151,15 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
     final host = _serverHostController.text.trim();
     final port = int.tryParse(_serverPortController.text.trim()) ?? 0;
     if (host.isNotEmpty) {
+      final path = _serverPathController.text.trim().isEmpty
+          ? '/'
+          : _serverPathController.text.trim();
       client['server'] = ServerEndpoint(
+        scheme: _serverScheme,
         host: host,
         port: port > 0 ? port : null,
-      ).toPppUrl();
+        path: path,
+      ).toUrl();
     }
     if (_guidController.text.trim().isNotEmpty) {
       client['guid'] = _guidController.text.trim();
@@ -306,6 +317,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
       _flagController,
       _serverHostController,
       _serverPortController,
+      _serverPathController,
       _guidController,
       _bandwidthController,
       _protocolController,
@@ -381,6 +393,24 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
             title: '服务器',
             icon: Icons.cloud_outlined,
             children: [
+              DropdownButtonFormField<String>(
+                value: _serverScheme,
+                decoration: const InputDecoration(
+                  labelText: '协议 (ppp=TCP, ws/wss=WebSocket)',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'ppp', child: Text('ppp (TCP)')),
+                  DropdownMenuItem(value: 'ws', child: Text('ws (WebSocket)')),
+                  DropdownMenuItem(value: 'wss', child: Text('wss (TLS WebSocket)')),
+                ],
+                onChanged: (v) {
+                  if (v == null) return;
+                  setState(() => _serverScheme = v);
+                },
+              ),
+              const SizedBox(height: 8),
               Row(
                 children: [
                   Expanded(
@@ -395,6 +425,8 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                   ),
                 ],
               ),
+              if (_serverScheme == 'ws' || _serverScheme == 'wss')
+                _text(_serverPathController, 'WebSocket Path (e.g. /tun)'),
               _text(_bandwidthController, 'Bandwidth (kbps, 0=不限)',
                   keyboardType: TextInputType.number),
               _text(_guidController, 'GUID (可选)'),

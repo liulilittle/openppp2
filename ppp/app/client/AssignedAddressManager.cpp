@@ -2,6 +2,7 @@
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
+#include <ppp/diagnostics/Error.h>
 #include <ppp/ipv6/IPv6Packet.h>
 #include <ppp/diagnostics/Telemetry.h>
 #include <ppp/net/IPEndPoint.h>
@@ -36,6 +37,30 @@ namespace ppp {
 #else
                     return false;
 #endif
+                }
+
+                /** @brief Clears restored state while preserving exact-owned cleanup retry records. */
+                void ClearRestoredIPv6State(ppp::ipv6::auxiliary::ClientState& state) noexcept {
+                    const bool address_owned = state.AddressOwned;
+                    const auto owned_address = state.OwnedAddress;
+                    ppp::string address = address_owned ? std::move(state.Address) : ppp::string();
+                    const bool neighbor_owned = state.GatewayNeighborOwned;
+                    ppp::string gateway = neighbor_owned ? std::move(state.DefaultRouteGateway) : ppp::string();
+                    const std::uint64_t interface_luid = state.GatewayNeighborInterfaceLuid;
+                    const int interface_index = state.GatewayNeighborInterfaceIndex;
+
+                    state.Clear();
+                    if (address_owned) {
+                        state.AddressOwned = true;
+                        state.OwnedAddress = owned_address;
+                        state.Address = std::move(address);
+                    }
+                    if (neighbor_owned) {
+                        state.GatewayNeighborOwned = true;
+                        state.GatewayNeighborInterfaceLuid = interface_luid;
+                        state.GatewayNeighborInterfaceIndex = interface_index;
+                        state.DefaultRouteGateway = std::move(gateway);
+                    }
                 }
             }
 
@@ -91,6 +116,11 @@ namespace ppp {
 
                 bool applied = true;
                 bool attempted = false;
+                if (ipv6_state_.HasPendingOwnedMutations()) {
+                    // Do not overwrite exact ownership needed to retry cleanup while the TAP exists.
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientAddressApplyFailed);
+                    return false;
+                }
                 ipv6_state_.Clear();
 
                 ppp::ipv6::auxiliary::ClientContext ipv6_context;
@@ -156,7 +186,7 @@ namespace ppp {
                 }
                 else {
                     ppp::ipv6::auxiliary::RestoreClientConfiguration(ipv6_context, extensions.AssignedIPv6Address, prefix, nat_mode, ipv6_state_);
-                    ipv6_state_.Clear();
+                    ClearRestoredIPv6State(ipv6_state_);
                 }
 
                 return applied;
@@ -165,7 +195,7 @@ namespace ppp {
             /** @brief Restores previous IPv6 configuration captured before apply. */
             void AssignedAddressManager::RestoreAssignedIPv6() noexcept {
                 ppp::telemetry::SpanScope span("client.ipv6.restore");
-                if (!ipv6_applied_) {
+                if (!ipv6_applied_ && !ipv6_state_.HasPendingOwnedMutations()) {
                     return;
                 }
 
@@ -200,7 +230,9 @@ namespace ppp {
                 ppp::telemetry::Histogram("client.ipv6.restore.us", elapsed);
 
                 ipv6_applied_ = false;
-                ipv6_state_.Clear();
+                ClearRestoredIPv6State(ipv6_state_);
+                // Failed exact-owned address or neighbor deletion remains available for retry.
+                // The void platform API cannot guarantee cleanup after the TAP lifetime ends.
             }
 
             /** @brief Applies the server-assigned IPv4 address to the TAP interface. */

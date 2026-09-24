@@ -1,6 +1,7 @@
 #include <ppp/net/asio/websocket/websocket_async_sslv_websocket.h>
 #include <ppp/net/asio/websocket/websocket_accept_sslv_websocket.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/ssl/TlsSessionExporter.h>
 
 /**
  * @file websocket_ssl_websocket.cpp
@@ -54,6 +55,32 @@ namespace ppp {
                 }
 
                 return false;
+            }
+
+            bool sslwebsocket::HasSessionExporter() noexcept {
+                std::lock_guard<std::mutex> lock(exporter_mutex_);
+                return !disposed_ && tls_handshake_complete_.load(std::memory_order_acquire);
+            }
+
+            bool sslwebsocket::ExportSessionKey(
+                const char* label,
+                const std::uint8_t* context,
+                std::size_t context_length,
+                std::uint8_t* output,
+                std::size_t output_length) noexcept {
+                std::lock_guard<std::mutex> lock(exporter_mutex_);
+                if (disposed_ || !tls_handshake_complete_.load(std::memory_order_acquire) ||
+                    !strand_ || !strand_->running_in_this_thread() || !ssl_websocket_) {
+                    return false;
+                }
+
+                return ppp::ssl::ExportTlsSessionKey(
+                    ssl_websocket_->next_layer().native_handle(),
+                    label,
+                    context,
+                    context_length,
+                    output,
+                    output_length);
             }
 
             /**
@@ -157,6 +184,10 @@ namespace ppp {
                 bool ok = accept->Run(type == HandshakeType::HandshakeType_Client, y);
                 if (!ok && ppp::diagnostics::ErrorCode::Success == ppp::diagnostics::GetLastErrorCode()) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::WebSocketHandshakeFailed);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(exporter_mutex_);
+                    tls_handshake_complete_.store(ok && !disposed_, std::memory_order_release);
                 }
                 return ok;
             }

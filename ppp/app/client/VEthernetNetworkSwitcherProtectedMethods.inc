@@ -1,3 +1,4 @@
+                virtual bool CanConsumeTcpV4Gso() noexcept override;
                 virtual bool OnPacketInput(ppp::net::native::ip_hdr* packet, int packet_length, int header_length, int proto, bool vnet) noexcept override;
                 virtual bool OnPacketInput(Byte* packet, int packet_length, bool vnet) noexcept override;
                 virtual bool OnPacketInput(const std::shared_ptr<IPFrame>& packet) noexcept override;
@@ -22,4 +23,8 @@
 #endif
 
                 virtual bool DatagramOutput(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, void* packet, int packet_size, bool caching = true) noexcept;
+                virtual bool DatagramOutput(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const std::shared_ptr<Byte>& owner, void* packet, int packet_size, bool caching = true) noexcept;
                 boost::asio::ip::address RewriteFakeIpAddress(const boost::asio::ip::address& addr) const noexcept;
+                bool ResolveDestination(
+                    const ppp::net::IPEndPoint& endpoint,
+                    routing::ResolvedDestination& destination) const noexcept;

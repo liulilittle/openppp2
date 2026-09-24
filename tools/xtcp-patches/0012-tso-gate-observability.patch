@@ -1,0 +1,412 @@
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -123,6 +123,41 @@
+             UInt64 pending_flush_window_cwnd = 0;
+             UInt64 pending_flush_fast_recovery_pipe = 0;
+             UInt64 pending_flush_packet_allocation = 0;
++            // ACK-side congestion-control pacing-rate changes. The flush fields
++            // describe the ACK's pre-rate-update buffered-data flush only.
++            UInt64 rate_change_events = 0;
++            UInt64 rate_change_with_pending = 0;
++            UInt64 rate_change_old_rate_sum = 0;
++            UInt64 rate_change_new_rate_sum = 0;
++            UInt64 rate_change_flush_packets = 0;
++            UInt64 rate_change_flush_bytes = 0;
++            UInt64 rate_change_deadline_active = 0;
++            UInt64 rate_change_deadline_remaining_us_sum = 0;
++        };
++
++        /**
++         * @brief Cumulative super-MSS TSO gate telemetry; observational only.
++         * @note Each candidate is classified by its first blocking gate, or as
++         *       emitted when it took the TSO path. Flush candidates account for
++         *       the queued remainder at each flush-loop iteration.
++         */
++        struct TsoGateTelemetrySnapshot {
++            UInt64 direct_candidates = 0;
++            UInt64 direct_disabled = 0;
++            UInt64 direct_pending = 0;
++            UInt64 direct_outstanding = 0;
++            UInt64 direct_fast_recovery = 0;
++            UInt64 direct_window_cwnd = 0;
++            UInt64 direct_pacing = 0;
++            UInt64 direct_pool_limit = 0;
++            UInt64 direct_emitted = 0;
++            UInt64 flush_candidates = 0;
++            UInt64 flush_disabled = 0;
++            UInt64 flush_outstanding = 0;
++            UInt64 flush_fast_recovery = 0;
++            UInt64 flush_window_cwnd = 0;
++            UInt64 flush_pacing = 0;
++            UInt64 flush_emitted = 0;
+         };
+ 
+         /**
+@@ -304,6 +339,10 @@
+              */
+             AckReleaseTelemetrySnapshot AckReleaseTelemetry() const noexcept;
+             /**
++             * @brief Copies cumulative super-MSS TSO gate telemetry.
++             */
++            TsoGateTelemetrySnapshot TsoGateTelemetry() const noexcept;
++            /**
+              * @brief Re-sends buffered data after a window update.
+              * @param now Monotonic time.
+              */
+@@ -1166,6 +1205,30 @@
+             std::atomic<UInt64> ack_release_pending_flush_window_cwnd_{0};
+             std::atomic<UInt64> ack_release_pending_flush_fast_recovery_pipe_{0};
+             std::atomic<UInt64> ack_release_pending_flush_packet_allocation_{0};
++            std::atomic<UInt64> ack_release_rate_change_events_{0};
++            std::atomic<UInt64> ack_release_rate_change_with_pending_{0};
++            std::atomic<UInt64> ack_release_rate_change_old_rate_sum_{0};
++            std::atomic<UInt64> ack_release_rate_change_new_rate_sum_{0};
++            std::atomic<UInt64> ack_release_rate_change_flush_packets_{0};
++            std::atomic<UInt64> ack_release_rate_change_flush_bytes_{0};
++            std::atomic<UInt64> ack_release_rate_change_deadline_active_{0};
++            std::atomic<UInt64> ack_release_rate_change_deadline_remaining_us_sum_{0};
++            std::atomic<UInt64> tso_gate_direct_candidates_{0};
++            std::atomic<UInt64> tso_gate_direct_disabled_{0};
++            std::atomic<UInt64> tso_gate_direct_pending_{0};
++            std::atomic<UInt64> tso_gate_direct_outstanding_{0};
++            std::atomic<UInt64> tso_gate_direct_fast_recovery_{0};
++            std::atomic<UInt64> tso_gate_direct_window_cwnd_{0};
++            std::atomic<UInt64> tso_gate_direct_pacing_{0};
++            std::atomic<UInt64> tso_gate_direct_pool_limit_{0};
++            std::atomic<UInt64> tso_gate_direct_emitted_{0};
++            std::atomic<UInt64> tso_gate_flush_candidates_{0};
++            std::atomic<UInt64> tso_gate_flush_disabled_{0};
++            std::atomic<UInt64> tso_gate_flush_outstanding_{0};
++            std::atomic<UInt64> tso_gate_flush_fast_recovery_{0};
++            std::atomic<UInt64> tso_gate_flush_window_cwnd_{0};
++            std::atomic<UInt64> tso_gate_flush_pacing_{0};
++            std::atomic<UInt64> tso_gate_flush_emitted_{0};
+             mutable std::recursive_mutex syncobj_;  /**< Guards state changes (multi-thread safe) */
+             TxSink      sink_;
+             RecvCallback recv_cb_;
+--- a/include/xtcp/core/stack.h
++++ b/include/xtcp/core/stack.h
+@@ -516,6 +516,10 @@
+          */
+         core::AckReleaseTelemetrySnapshot AckReleaseTelemetry() const noexcept;
+         /**
++         * @brief Aggregates read-only super-MSS TSO gate telemetry.
++         */
++        core::TsoGateTelemetrySnapshot TsoGateTelemetry() const noexcept;
++        /**
+          * @brief Sets the algorithm applied to all new connections.
+          * @param name Registered algorithm name; NULLPTR/empty = Reno.
+          */
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -2474,7 +2474,13 @@
+                 } else {
+                     rto_deadline_ = 0;
+                 }
+-                if (0 < pending_send_.size()) {
++                const bool pending_before_ack_flush = !pending_send_.empty();
++                const TimePoint deadline_before_ack_flush = pacing_deadline_;
++                const UInt64 flush_packets_before =
++                    ack_release_tx_sink_packets_.load(std::memory_order_relaxed);
++                const UInt64 flush_bytes_before =
++                    ack_release_tx_sink_bytes_.load(std::memory_order_relaxed);
++                if (pending_before_ack_flush) {
+                     FlushPendingSend(now);  // buffered sends ride the freed window
+                 }
+                 cc_.inflight = snd_nxt_ - snd_una_;
+@@ -2581,6 +2587,31 @@
+                         }
+                     }
+                 }
++                if (cc_.pacing_rate != old_rate) {
++                    ack_release_rate_change_events_.fetch_add(1, std::memory_order_relaxed);
++                    ack_release_rate_change_old_rate_sum_.fetch_add(old_rate, std::memory_order_relaxed);
++                    ack_release_rate_change_new_rate_sum_.fetch_add(
++                        cc_.pacing_rate, std::memory_order_relaxed);
++                    if (pending_before_ack_flush) {
++                        ack_release_rate_change_with_pending_.fetch_add(1, std::memory_order_relaxed);
++                        const UInt64 flush_packets =
++                            ack_release_tx_sink_packets_.load(std::memory_order_relaxed) -
++                            flush_packets_before;
++                        const UInt64 flush_bytes =
++                            ack_release_tx_sink_bytes_.load(std::memory_order_relaxed) -
++                            flush_bytes_before;
++                        ack_release_rate_change_flush_packets_.fetch_add(
++                            flush_packets, std::memory_order_relaxed);
++                        ack_release_rate_change_flush_bytes_.fetch_add(
++                            flush_bytes, std::memory_order_relaxed);
++                    }
++                    if (deadline_before_ack_flush > now) {
++                        ack_release_rate_change_deadline_active_.fetch_add(
++                            1, std::memory_order_relaxed);
++                        ack_release_rate_change_deadline_remaining_us_sum_.fetch_add(
++                            deadline_before_ack_flush - now, std::memory_order_relaxed);
++                    }
++                }
+                 if (fast_recovery_) {
+                     // RFC 6937 PRR: the cwnd tracks the delivered/out balance
+                     // so the send rate stays proportional to the recovery
+@@ -2893,6 +2924,43 @@
+                 ack_release_pending_flush_fast_recovery_pipe_.load(std::memory_order_relaxed);
+             snapshot.pending_flush_packet_allocation =
+                 ack_release_pending_flush_packet_allocation_.load(std::memory_order_relaxed);
++            snapshot.rate_change_events =
++                ack_release_rate_change_events_.load(std::memory_order_relaxed);
++            snapshot.rate_change_with_pending =
++                ack_release_rate_change_with_pending_.load(std::memory_order_relaxed);
++            snapshot.rate_change_old_rate_sum =
++                ack_release_rate_change_old_rate_sum_.load(std::memory_order_relaxed);
++            snapshot.rate_change_new_rate_sum =
++                ack_release_rate_change_new_rate_sum_.load(std::memory_order_relaxed);
++            snapshot.rate_change_flush_packets =
++                ack_release_rate_change_flush_packets_.load(std::memory_order_relaxed);
++            snapshot.rate_change_flush_bytes =
++                ack_release_rate_change_flush_bytes_.load(std::memory_order_relaxed);
++            snapshot.rate_change_deadline_active =
++                ack_release_rate_change_deadline_active_.load(std::memory_order_relaxed);
++            snapshot.rate_change_deadline_remaining_us_sum =
++                ack_release_rate_change_deadline_remaining_us_sum_.load(std::memory_order_relaxed);
++            return snapshot;
++        }
++
++        TsoGateTelemetrySnapshot TcpConn::TsoGateTelemetry() const noexcept {
++            TsoGateTelemetrySnapshot snapshot;
++            snapshot.direct_candidates = tso_gate_direct_candidates_.load(std::memory_order_relaxed);
++            snapshot.direct_disabled = tso_gate_direct_disabled_.load(std::memory_order_relaxed);
++            snapshot.direct_pending = tso_gate_direct_pending_.load(std::memory_order_relaxed);
++            snapshot.direct_outstanding = tso_gate_direct_outstanding_.load(std::memory_order_relaxed);
++            snapshot.direct_fast_recovery = tso_gate_direct_fast_recovery_.load(std::memory_order_relaxed);
++            snapshot.direct_window_cwnd = tso_gate_direct_window_cwnd_.load(std::memory_order_relaxed);
++            snapshot.direct_pacing = tso_gate_direct_pacing_.load(std::memory_order_relaxed);
++            snapshot.direct_pool_limit = tso_gate_direct_pool_limit_.load(std::memory_order_relaxed);
++            snapshot.direct_emitted = tso_gate_direct_emitted_.load(std::memory_order_relaxed);
++            snapshot.flush_candidates = tso_gate_flush_candidates_.load(std::memory_order_relaxed);
++            snapshot.flush_disabled = tso_gate_flush_disabled_.load(std::memory_order_relaxed);
++            snapshot.flush_outstanding = tso_gate_flush_outstanding_.load(std::memory_order_relaxed);
++            snapshot.flush_fast_recovery = tso_gate_flush_fast_recovery_.load(std::memory_order_relaxed);
++            snapshot.flush_window_cwnd = tso_gate_flush_window_cwnd_.load(std::memory_order_relaxed);
++            snapshot.flush_pacing = tso_gate_flush_pacing_.load(std::memory_order_relaxed);
++            snapshot.flush_emitted = tso_gate_flush_emitted_.load(std::memory_order_relaxed);
+             return snapshot;
+         }
+ 
+@@ -2965,6 +3033,22 @@
+                     inflight + len <= cwnd_bytes &&
+                     (0 == cc_.pacing_rate || now >= pacing_deadline_) &&
+                     len + 40 <= xtcp::buf::kMaxPoolPayload;
++                tso_gate_direct_candidates_.fetch_add(1, std::memory_order_relaxed);
++                if (!tso_tx_) {
++                    tso_gate_direct_disabled_.fetch_add(1, std::memory_order_relaxed);
++                } else if (!pending_send_.empty()) {
++                    tso_gate_direct_pending_.fetch_add(1, std::memory_order_relaxed);
++                } else if (!retrans_queue_.empty()) {
++                    tso_gate_direct_outstanding_.fetch_add(1, std::memory_order_relaxed);
++                } else if (fast_recovery_) {
++                    tso_gate_direct_fast_recovery_.fetch_add(1, std::memory_order_relaxed);
++                } else if (inflight + len > snd_wnd_ || inflight + len > cwnd_bytes) {
++                    tso_gate_direct_window_cwnd_.fetch_add(1, std::memory_order_relaxed);
++                } else if (0 < cc_.pacing_rate && now < pacing_deadline_) {
++                    tso_gate_direct_pacing_.fetch_add(1, std::memory_order_relaxed);
++                } else if (len + 40 > xtcp::buf::kMaxPoolPayload) {
++                    tso_gate_direct_pool_limit_.fetch_add(1, std::memory_order_relaxed);
++                }
+                 if (!tso_direct) {
+                     // Super-MSS sends are buffered and flushed in MSS-sized
+                     // segments by FlushPendingSend (the direct-send variant
+@@ -3061,6 +3145,12 @@
+                 timers_dirty_.store(true, std::memory_order_relaxed);
+                 return true;
+             }
++            if (len > payload_cap && tso_tx_ && pending_send_.empty() && retrans_queue_.empty() &&
++                !fast_recovery_ && inflight + len <= snd_wnd_ && inflight + len <= cwnd_bytes &&
++                (0 == cc_.pacing_rate || now >= pacing_deadline_) &&
++                len + 40 <= xtcp::buf::kMaxPoolPayload) {
++                tso_gate_direct_emitted_.fetch_add(1, std::memory_order_relaxed);
++            }
+             cwr_pending_ = false;  // CWR emitted on this data segment (RFC 3168 s6.1.2)
+             snd_nxt_ += len;
+             // RFC 6937 PRR: bytes sent during the recovery count against the
+@@ -3445,6 +3535,21 @@
+             // pins throughput at MSS / loop-iteration regardless of RTT/cwnd.
+             UInt64 pacing_budget = 0;
+             for (UInt32 off = 0; off < data.size();) {
++                const bool tso_candidate = data.size() - off > DataPayloadCap();
++                bool tso_gate_classified = false;
++                if (tso_candidate) {
++                    tso_gate_flush_candidates_.fetch_add(1, std::memory_order_relaxed);
++                    if (!tso_tx_) {
++                        tso_gate_flush_disabled_.fetch_add(1, std::memory_order_relaxed);
++                        tso_gate_classified = true;
++                    } else if (!retrans_queue_.empty()) {
++                        tso_gate_flush_outstanding_.fetch_add(1, std::memory_order_relaxed);
++                        tso_gate_classified = true;
++                    } else if (fast_recovery_) {
++                        tso_gate_flush_fast_recovery_.fetch_add(1, std::memory_order_relaxed);
++                        tso_gate_classified = true;
++                    }
++                }
+                 // Pacing gate: a rate-limited CC must not have its buffered
+                 // sends flushed past the pacing deadline (SendData already
+                 // gates, FlushPendingSend must too - otherwise the ACK clock
+@@ -3455,6 +3560,10 @@
+                 if (0 < cc_.pacing_rate && 0 == pacing_budget) {
+                     if (now < pacing_deadline_) {
+                         ack_release_pending_flush_pacing_.fetch_add(1, std::memory_order_relaxed);
++                        if (tso_candidate && !tso_gate_classified) {
++                            tso_gate_flush_pacing_.fetch_add(1, std::memory_order_relaxed);
++                            tso_gate_classified = true;
++                        }
+                         if (0 == off) {
+                             pending_send_.swap(data);  // zero-copy handback
+                         } else {
+@@ -3493,6 +3602,10 @@
+                     if (pipe >= ssthresh_bytes) {
+                         ack_release_pending_flush_fast_recovery_pipe_.fetch_add(
+                             1, std::memory_order_relaxed);
++                        if (tso_candidate && !tso_gate_classified) {
++                            tso_gate_flush_fast_recovery_.fetch_add(1, std::memory_order_relaxed);
++                            tso_gate_classified = true;
++                        }
+                         pending_send_.assign(data.begin() + off, data.end());
+                         return;  // pipe full: the ACK clock reopens it
+                     }
+@@ -3505,6 +3618,10 @@
+                 if (limit <= inflight) {
+                     // Window closed mid-flush: re-queue the remainder.
+                     ack_release_pending_flush_window_cwnd_.fetch_add(1, std::memory_order_relaxed);
++                    if (tso_candidate && !tso_gate_classified) {
++                        tso_gate_flush_window_cwnd_.fetch_add(1, std::memory_order_relaxed);
++                        tso_gate_classified = true;
++                    }
+                     pending_send_.assign(data.begin() + off, data.end());
+                     // RFC 1122 s4.2.2.17: data buffered behind a zero window
+                     // MUST be probed - a lost window-update ACK must not
+@@ -3530,6 +3647,10 @@
+                     return;
+                 }
+                 if (n > limit - inflight) {
++                    if (tso_candidate && !tso_gate_classified) {
++                        tso_gate_flush_window_cwnd_.fetch_add(1, std::memory_order_relaxed);
++                        tso_gate_classified = true;
++                    }
+                     n = limit - inflight;
+                 }
+                 const UInt32 payload_cap = DataPayloadCap();
+@@ -3547,6 +3668,10 @@
+                 // current tick (the quantum refills to >= payload_cap, so n
+                 // stays positive here).
+                 if (0 < cc_.pacing_rate && static_cast<UInt64>(n) > pacing_budget) {
++                    if (tso_candidate && !tso_gate_classified) {
++                        tso_gate_flush_pacing_.fetch_add(1, std::memory_order_relaxed);
++                        tso_gate_classified = true;
++                    }
+                     n = static_cast<UInt32>(pacing_budget);
+                 }
+                 const bool tso_flush = tso_tx_ && retrans_queue_.empty() &&
+@@ -3575,6 +3700,9 @@
+                     pending_send_.insert(pending_send_.begin(), data.begin() + off, data.end());
+                     return;
+                 }
++                if (tso_flush) {
++                    tso_gate_flush_emitted_.fetch_add(1, std::memory_order_relaxed);
++                }
+                 cwr_pending_ = false;  // CWR emitted on this data segment (RFC 3168 s6.1.2)
+                 snd_nxt_ += n;
+                 SentSeg seg;
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -1478,6 +1478,14 @@
+             total.pending_flush_window_cwnd += value.pending_flush_window_cwnd;
+             total.pending_flush_fast_recovery_pipe += value.pending_flush_fast_recovery_pipe;
+             total.pending_flush_packet_allocation += value.pending_flush_packet_allocation;
++            total.rate_change_events += value.rate_change_events;
++            total.rate_change_with_pending += value.rate_change_with_pending;
++            total.rate_change_old_rate_sum += value.rate_change_old_rate_sum;
++            total.rate_change_new_rate_sum += value.rate_change_new_rate_sum;
++            total.rate_change_flush_packets += value.rate_change_flush_packets;
++            total.rate_change_flush_bytes += value.rate_change_flush_bytes;
++            total.rate_change_deadline_active += value.rate_change_deadline_active;
++            total.rate_change_deadline_remaining_us_sum += value.rate_change_deadline_remaining_us_sum;
+         };
+         for (UInt32 i = 0; i < kShardCount; ++i) {
+             Shard& shard = shards_[i];
+@@ -1488,6 +1496,38 @@
+                 }
+             }
+         }
++        return total;
++    }
++
++    core::TsoGateTelemetrySnapshot XtcpStack::TsoGateTelemetry() const noexcept {
++        core::TsoGateTelemetrySnapshot total;
++        const auto add = [&total](const core::TsoGateTelemetrySnapshot& value) noexcept {
++            total.direct_candidates += value.direct_candidates;
++            total.direct_disabled += value.direct_disabled;
++            total.direct_pending += value.direct_pending;
++            total.direct_outstanding += value.direct_outstanding;
++            total.direct_fast_recovery += value.direct_fast_recovery;
++            total.direct_window_cwnd += value.direct_window_cwnd;
++            total.direct_pacing += value.direct_pacing;
++            total.direct_pool_limit += value.direct_pool_limit;
++            total.direct_emitted += value.direct_emitted;
++            total.flush_candidates += value.flush_candidates;
++            total.flush_disabled += value.flush_disabled;
++            total.flush_outstanding += value.flush_outstanding;
++            total.flush_fast_recovery += value.flush_fast_recovery;
++            total.flush_window_cwnd += value.flush_window_cwnd;
++            total.flush_pacing += value.flush_pacing;
++            total.flush_emitted += value.flush_emitted;
++        };
++        for (UInt32 i = 0; i < kShardCount; ++i) {
++            Shard& shard = shards_[i];
++            std::lock_guard<std::recursive_mutex> scope(shard.syncobj_);
++            for (const auto& entry : shard.conns_) {
++                if (NULLPTR != entry.second && NULLPTR != entry.second->conn) {
++                    add(entry.second->conn->TsoGateTelemetry());
++                }
++            }
++        }
+         return total;
+     }
+ 
+--- a/tests/test_pacing_update.cpp
++++ b/tests/test_pacing_update.cpp
+@@ -183,6 +183,15 @@
+ 
+     // The CC saw the ACK and raised the rate to the high value.
+     CHECK(kPacingHigh == stack_a.ConnPacingRate(conn));
++    const xtcp::core::AckReleaseTelemetrySnapshot telemetry = stack_a.AckReleaseTelemetry();
++    CHECK(telemetry.rate_change_events >= 1);
++    CHECK(telemetry.rate_change_with_pending >= 1);
++    CHECK(telemetry.rate_change_old_rate_sum >= kPacingLow);
++    CHECK(telemetry.rate_change_new_rate_sum >= kPacingHigh);
++    CHECK(telemetry.rate_change_deadline_active >= 1);
++    CHECK(telemetry.rate_change_deadline_remaining_us_sum > 0);
++    CHECK(0 == telemetry.rate_change_flush_packets);
++    CHECK(0 == telemetry.rate_change_flush_bytes);
+     // Transmission recovered: every byte arrived, nothing is gated.
+     CHECK(kTotal == received.size());
+     CHECK(0 == std::memcmp(received.data(), payload.data(), kTotal));
+--- a/tests/test_tso_tx.cpp
++++ b/tests/test_tso_tx.cpp
+@@ -205,6 +205,9 @@
+         CHECK(1400 == backend_a.last_gso_meta.gso_size);
+         CHECK(1400 == backend_a.last_gso_meta.mss);
+         CHECK(24 == backend_a.last_gso_meta.segs);
++        const xtcp::core::TsoGateTelemetrySnapshot direct_tso = stack_a.TsoGateTelemetry();
++        CHECK(0 < direct_tso.direct_candidates);
++        CHECK(0 < direct_tso.direct_emitted);
+         // Reap the super-segment's ACK (the delayed-ACK fires on a 40ms
+         // timer) so the next super-send finds an empty retransmission queue.
+         for (UInt32 i = 0; i < 500 && 0 < stack_a.ConnOutstandingSegments(conn); ++i) {
+@@ -264,6 +267,10 @@
+         // The retry queue emits the rejected frame whole; its cumulative ACK
+         // then flushes the buffered range as one more whole TSO frame.
+         CHECK(2 == backend_a.gso_tx_calls.load() - gso_calls_before2);
++        const xtcp::core::TsoGateTelemetrySnapshot buffered_tso = stack_a.TsoGateTelemetry();
++        CHECK(buffered_tso.direct_outstanding > direct_tso.direct_outstanding);
++        CHECK(0 < buffered_tso.flush_candidates);
++        CHECK(0 < buffered_tso.flush_emitted);
+         CHECK(1400 == backend_a.last_gso_meta.gso_size);
+         CHECK(1400 == backend_a.last_gso_meta.mss);
+         CHECK(backend_a.last_gso_payload > backend_a.last_gso_meta.gso_size);

@@ -13,6 +13,7 @@
 #include <ppp/tap/ITap.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
+#include <ppp/diagnostics/DatapathPerfJson.h>
 
 #if defined(_WIN32)
 #include <windows/ppp/tap/TapWindows.h>
@@ -143,6 +144,12 @@ namespace ppp
                 constantof(IPAddress) = ip;
                 constantof(GatewayServer) = gw;
                 constantof(SubmaskAddress) = mask;
+            }
+
+            _strand = ppp::make_shared_object<boost::asio::strand<boost::asio::io_context::executor_type>>(boost::asio::make_strand(*_context));
+            if (NULLPTR == _strand)
+            {
+                throw std::runtime_error("Default thread not working.");
             }
 
 #if defined(_WIN32)
@@ -343,11 +350,43 @@ namespace ppp
         }
 
         /**
+         * @brief Thread-safe setter for the inbound packet handler.
+         */
+        void ITap::SetPacketInput(const PacketInputEventHandler& handler) noexcept
+        {
+            std::lock_guard<std::mutex> scope(packet_input_mutex_);
+            packet_input_ = handler;
+        }
+
+        /**
+         * @brief Thread-safe snapshot of the inbound packet handler.
+         */
+        ITap::PacketInputEventHandler ITap::GetPacketInput() noexcept
+        {
+            std::lock_guard<std::mutex> scope(packet_input_mutex_);
+            return packet_input_;
+        }
+
+        /**
+         * @brief Thread-safe snapshot of the underlying stream descriptor.
+         */
+        std::shared_ptr<boost::asio::posix::stream_descriptor> ITap::GetStream() noexcept
+        {
+            std::lock_guard<std::mutex> scope(_stream_mutex);
+            return _stream;
+        }
+
+        /**
          * @brief Closes stream resources and clears input callback.
          */
         void ITap::Finalize() noexcept
         {
-            std::shared_ptr<boost::asio::posix::stream_descriptor> stream = std::move(_stream); 
+            std::shared_ptr<boost::asio::posix::stream_descriptor> stream;
+            {
+                std::lock_guard<std::mutex> scope(_stream_mutex);
+                stream = std::move(_stream);
+            }
+
             if (NULLPTR != stream) 
             {
                 ppp::telemetry::Log(Level::kInfo, "tap", "Closing tap stream");
@@ -355,7 +394,7 @@ namespace ppp
                 ppp::net::Socket::Closestream(stream);
             }
 
-            PacketInput = NULLPTR;
+            SetPacketInput(NULLPTR);
         }
 
         /**
@@ -364,9 +403,8 @@ namespace ppp
         void ITap::Dispose() noexcept
         {
             std::shared_ptr<ITap> self = shared_from_this();
-            std::shared_ptr<boost::asio::io_context> context = GetContext();
-            boost::asio::dispatch(*context, 
-                [self, this, context]() noexcept 
+            boost::asio::dispatch(*_strand, 
+                [self, this]() noexcept 
                 {
                     Finalize();
                 });
@@ -409,7 +447,7 @@ namespace ppp
          */
         bool ITap::AsynchronousReadPacketLoops() noexcept
         {
-            std::shared_ptr<boost::asio::posix::stream_descriptor> stream = _stream;
+            std::shared_ptr<boost::asio::posix::stream_descriptor> stream = GetStream();
             if (NULLPTR == stream)
             {
                 ppp::telemetry::Log(Level::kDebug, "tap", "Read loop failed: no stream");
@@ -425,6 +463,7 @@ namespace ppp
 
             std::shared_ptr<ITap> self = shared_from_this();
             stream->async_read_some(boost::asio::buffer(_packet, sizeof(_packet)), 
+                boost::asio::bind_executor(*_strand,
                 [self, this, stream](const boost::system::error_code& ec, std::size_t sz) noexcept
                 {
                     if (ec == boost::system::errc::operation_canceled)
@@ -435,12 +474,14 @@ namespace ppp
                     int len = std::max<int>(ec ? -1 : sz, -1);
                     if (len > 0)
                     {
+                        // Lab-only JSONL: successful kernel read completion count and bytes.
+                        ppp::diagnostics::datapath_perf::RecordTunRead(len);
                         PacketInputEventArgs e{ _packet, len };
                         OnInput(e);
                     }
 
                     AsynchronousReadPacketLoops();
-                });
+                }));
             return true;
         }
 
@@ -450,7 +491,7 @@ namespace ppp
          */
         void ITap::OnInput(PacketInputEventArgs& e) noexcept
         {
-            PacketInputEventHandler eh = PacketInput;
+            PacketInputEventHandler eh = GetPacketInput();
             if (eh)
             {
                 eh(this, e);
@@ -480,7 +521,7 @@ namespace ppp
                     return true;
                 }
 
-                std::shared_ptr<boost::asio::posix::stream_descriptor> stream = my->_stream;
+                std::shared_ptr<boost::asio::posix::stream_descriptor> stream = my->GetStream();
                 if (NULLPTR == stream)
                 {
                     ppp::telemetry::Log(Level::kDebug, "tap", "Write failed: no stream");
@@ -494,33 +535,135 @@ namespace ppp
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::TunnelWriteFailed);
                 }
 
-                std::shared_ptr<ITap> self = my->shared_from_this();
-                boost::asio::dispatch(*my->_context, 
-                    [self, my, stream, packet, packet_size]() noexcept 
-                    { 
-                        bool opened = stream->is_open();
-                        if (!opened)
-                        {
-                            ppp::telemetry::Log(Level::kDebug, "tap", "Write failed: stream not open (dispatch)");
-                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::TunnelWriteFailed);
-                        }
+                /**
+                 * @brief Enqueue the packet and let DrainWriteQueue() drive exactly one
+                 *        async_write at a time on the strand; concurrent Output() calls
+                 *        no longer overlap writes on the same stream object.
+                 */
+                bool arm = false;
+                {
+                    std::lock_guard<std::mutex> scope(my->_write_mutex);
+                    my->_write_queue.emplace_back(packet, packet_size);
+                    if (!my->_write_in_progress)
+                    {
+                        my->_write_in_progress = true;
+                        arm = true;
+                    }
+                }
+                // Lab-only JSONL: packet accepted into the single async-write queue.
+                ppp::diagnostics::datapath_perf::RecordTunWriteEnqueued(packet_size);
 
-                        /**
-                         * @brief Completion handler finalizes on cancellation errors.
-                         */
-                        boost::asio::async_write(*stream, boost::asio::buffer(packet.get(), packet_size), 
-                            [self, my, stream, packet](const boost::system::error_code& ec, std::size_t sz) noexcept
-                            {
-                                if (ec == boost::system::errc::operation_canceled)
-                                {
-                                    my->Finalize();
-                                }
-                            });
-                        return true;
-                    }); 
+                if (arm)
+                {
+                    std::shared_ptr<ITap> self = my->shared_from_this();
+                    boost::asio::post(*my->_strand,
+                        [self, my]() noexcept
+                        {
+                            my->DrainWriteQueue();
+                        });
+                }
+
                 return true;
             }
         };
+
+        /**
+         * @brief Issues queued writes; completions re-enter on the strand.
+         *
+         * XTCP-STRAND-DISPATCH-001 (data-plane tier): the TAP fd is
+         * O_NONBLOCK, so a bounded synchronous drain amortizes one strand
+         * dispatch and one epoll round-trip over a whole burst of queued
+         * frames instead of one async_write completion per frame. On EAGAIN
+         * the packet is pushed back and a single async_write re-arms when the
+         * kernel queue drains.
+         */
+        void ITap::DrainWriteQueue() noexcept
+        {
+            std::shared_ptr<boost::asio::posix::stream_descriptor> stream = GetStream();
+            if (NULLPTR == stream || !stream->is_open())
+            {
+                ppp::telemetry::Log(Level::kDebug, "tap", "Write queue drained: stream closed");
+                std::lock_guard<std::mutex> scope(_write_mutex);
+                _write_in_progress = false;
+                return;
+            }
+
+            static constexpr int kTapWriteBatch = 64;
+            int batch = kTapWriteBatch;
+            std::pair<std::shared_ptr<Byte>, int> front;
+            for (;;)
+            {
+                {
+                    std::lock_guard<std::mutex> scope(_write_mutex);
+                    if (_write_queue.empty())
+                    {
+                        _write_in_progress = false;
+                        return;
+                    }
+                    front = _write_queue.front();
+                    _write_queue.pop_front();
+                }
+
+                std::shared_ptr<Byte> packet = front.first;
+                ppp::diagnostics::datapath_perf::Scope write_scope;
+                boost::system::error_code ec;
+                const std::size_t sz = stream->write_some(boost::asio::buffer(packet.get(), front.second), ec);
+                if (ec == boost::asio::error::would_block)
+                {
+                    std::lock_guard<std::mutex> scope(_write_mutex);
+                    _write_queue.push_front(std::move(front));
+                    break;
+                }
+                if (!ec)
+                {
+                    // Lab-only JSONL: physical kernel-write completion bytes and post-to-completion time.
+                    ppp::diagnostics::datapath_perf::RecordTunWriteCompleted((int)sz, write_scope.Elapsed());
+                }
+                if (--batch == 0)
+                {
+                    break;
+                }
+            }
+
+            /**
+             * @brief Queue still has work (EAGAIN backoff or batch budget
+             *        exhausted): keep _write_in_progress and resume with one
+             *        async_write for the front packet; the completion handler
+             *        re-enters this drain.
+             */
+            {
+                std::lock_guard<std::mutex> scope(_write_mutex);
+                if (_write_queue.empty())
+                {
+                    _write_in_progress = false;
+                    return;
+                }
+                front = _write_queue.front();
+                _write_queue.pop_front();
+            }
+
+            std::shared_ptr<Byte> packet = front.first;
+            ppp::diagnostics::datapath_perf::Scope write_scope;
+            std::shared_ptr<ITap> self = shared_from_this();
+            boost::asio::async_write(*stream, boost::asio::buffer(packet.get(), front.second),
+                boost::asio::bind_executor(*_strand,
+                    [self, this, stream, packet, write_scope](const boost::system::error_code& ec, std::size_t sz) noexcept
+                    {
+                        // Lab-only JSONL: physical kernel-write completion bytes and post-to-completion time.
+                        if (!ec) {
+                            ppp::diagnostics::datapath_perf::RecordTunWriteCompleted((int)sz, write_scope.Elapsed());
+                        }
+                        /**
+                         * @brief Completion handler finalizes on cancellation errors.
+                         */
+                        if (ec == boost::system::errc::operation_canceled)
+                        {
+                            Finalize();
+                        }
+
+                        DrainWriteQueue();
+                    }));
+        }
 
         /**
          * @brief Copies raw packet bytes into managed memory and writes out.

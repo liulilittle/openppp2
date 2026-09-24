@@ -29,6 +29,7 @@ namespace ppp {
                             if (static_cast<bool>(ports.datagram_output)) {
                                 bool injected = ports.datagram_output(
                                     sourceEP, destEP,
+                                    nullptr,
                                     response.data(),
                                     static_cast<int>(response.size()),
                                     false);

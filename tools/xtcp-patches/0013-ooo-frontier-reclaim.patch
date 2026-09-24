@@ -1,0 +1,269 @@
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -1183,6 +1183,7 @@
+                 bool fin = false;  // RFC 793: the segment carried the FIN flag
+                 UInt32 ts_val = 0; // RFC 7323: the segment's TSval (TsRecent on drain)
+             };
++            bool TrimOooToFrontier() noexcept;
+             std::map<UInt32, OutSeg> ooo_;       /**< Out-of-order reassembly buffer (seq -> segment) */
+             UInt32      ooo_bytes_ = 0;
+             std::deque<SentSeg> retrans_queue_;
+@@ -1358,6 +1359,5 @@
+ 
+ 
+ 
+-
+ 
+ 
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -26,6 +26,7 @@
+ #include <new>
+ 
+ #include <algorithm>
++#include <iterator>
+ #include <cstdlib>
+ #include <cstring>
+ #include <utility>
+@@ -1657,6 +1658,56 @@
+             return 0 == diff;
+         }
+ 
++        bool TcpConn::TrimOooToFrontier() noexcept {
++            bool changed = false;
++            const auto trim = [&](std::map<UInt32, OutSeg>::iterator current) noexcept {
++                const UInt32 skipped = rcv_nxt_ - current->first;
++                const UInt32 length = static_cast<UInt32>(current->second.data.size());
++                changed = true;
++                if (skipped > length || (skipped == length && !current->second.fin)) {
++                    ooo_bytes_ -= length;
++                    ooo_.erase(current);
++                    return;
++                }
++                // Keep only fresh bytes, including a FIN exactly at RCV.NXT.
++                // Re-key the existing node without allocating another node.
++                auto node = ooo_.extract(current);
++                auto& segment = node.mapped();
++                segment.data.erase(segment.data.begin(), segment.data.begin() + skipped);
++                ooo_bytes_ -= skipped;
++                node.key() = rcv_nxt_;
++                auto existing = ooo_.find(rcv_nxt_);
++                if (existing == ooo_.end()) {
++                    ooo_.insert(std::move(node));
++                } else if (segment.data.size() > existing->second.data.size()) {
++                    ooo_bytes_ -= static_cast<UInt32>(existing->second.data.size());
++                    existing->second = std::move(segment);
++                } else {
++                    if (segment.data.size() == existing->second.data.size()) {
++                        existing->second.fin |= segment.fin;
++                    }
++                    ooo_bytes_ -= static_cast<UInt32>(segment.data.size());
++                }
++            };
++            // TCP-old keys occupy at most two numeric map ranges around
++            // wraparound. Visit only those ranges, never scan future entries
++            // on every drain. Each old node is removed/re-keyed once, giving
++            // O(N log N) map work over a drain (plus prefix compaction bytes).
++            for (;;) {
++                const auto boundary = ooo_.lower_bound(rcv_nxt_);
++                if (boundary == ooo_.begin()) break;
++                const auto previous = std::prev(boundary);
++                if (!SeqLt(previous->first, rcv_nxt_)) break;
++                trim(previous);
++            }
++            while (!ooo_.empty()) {
++                const auto last = std::prev(ooo_.end());
++                if (!SeqLt(last->first, rcv_nxt_)) break;
++                trim(last);
++            }
++            return changed;
++        }
++
+         bool TcpConn::ProcessClosingData(const Byte* payload, UInt32 payload_len, UInt32 seq,
+                                          bool has_fin, TimePoint now, UInt32 ts_val) noexcept {
+             // RFC 793 half-close: the peer may still send data after our FIN
+@@ -1725,6 +1776,7 @@
+                 }
+                 rcv_blocked_ = false;  // accepted: the receive window is open
+                 while (!ooo_.empty()) {
++                    TrimOooToFrontier();
+                     auto it = ooo_.find(rcv_nxt_);
+                     if (it == ooo_.end()) {
+                         break;
+@@ -1798,6 +1850,7 @@
+                         // Fresh suffix delivered (or backpressure-free):
+                         // the frontier already advanced past the segment's data.
+                         while (!ooo_.empty()) {
++                            TrimOooToFrontier();
+                             auto it = ooo_.find(rcv_nxt_);
+                             if (it == ooo_.end()) {
+                                 break;
+@@ -4674,6 +4727,7 @@
+                         // ACK here would stall every loss recovery.
+                         bool drained_gap = false;
+                         while (!ooo_.empty()) {
++                            drained_gap |= TrimOooToFrontier();
+                             // Exact-key lookup: sequence wraparound makes
+                             // std::less<UInt32> ordering meaningless at the
+                             // 2^32 boundary, so do not rely on map order.
+@@ -4691,7 +4745,7 @@
+                                 ts_recent_ = seg.ts_val;
+                                 ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
+                             }
+-                            if (recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
++                            if (!seg.data.empty() && recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
+                                 // Backpressure: drop this buffered segment
+                                 // (refund its bytes) and stop draining; the
+                                 // peer retransmits, keeping the data intact
+@@ -4803,6 +4857,7 @@
+                                     break;
+                                 }
+                                 while (!ooo_.empty()) {
++                                    TrimOooToFrontier();
+                                     // Exact-key lookup: sequence wraparound makes
+                                     // std::less<UInt32> ordering meaningless at
+                                     // the 2^32 boundary, so do not rely on map order.
+@@ -4813,7 +4868,7 @@
+                                     const OutSeg& os = it->second;
+                                     const UInt32 prev_os = rcv_nxt_;
+                                     rcv_nxt_ += static_cast<UInt32>(os.data.size());  // advance before callback
+-                                    if (recv_cb_ && !recv_cb_(os.data.data(), static_cast<UInt32>(os.data.size()))) {
++                                    if (!os.data.empty() && recv_cb_ && !recv_cb_(os.data.data(), static_cast<UInt32>(os.data.size()))) {
+                                         // Backpressure: drop and stop draining.
+                                         rcv_nxt_ = prev_os;  // rollback
+                                         rcv_blocked_ = true;  // advertise window 0 (RFC 1122 s4.2.3.4)
+@@ -5290,4 +5345,3 @@
+ }
+ 
+ 
+-
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -186,6 +186,7 @@
+         test_mss_negotiation
+         test_stack
+         test_ooo_capacity
++        test_ooo_frontier
+         test_options
+         test_options_stack
+         test_syncookies
+@@ -519,7 +520,6 @@
+ 
+ 
+ 
+-
+ 
+ 
+ 
+--- a/tests/test_ooo_frontier.cpp
++++ b/tests/test_ooo_frontier.cpp
+@@ -0,0 +1,109 @@
++#include <xtcp/core/tcp.h>
++#include <algorithm>
++#include <cstdio>
++#include <vector>
++
++static int failures = 0;
++#define CHECK(value) do { if (!(value)) { ++failures; std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #value); } } while (0)
++
++static void Put32(Byte* p, UInt32 n) {
++    p[0] = Byte(n >> 24); p[1] = Byte(n >> 16); p[2] = Byte(n >> 8); p[3] = Byte(n);
++}
++
++static void CheckOverlap(UInt32 irs, xtcp::core::TcpState state, int scenario) {
++    using namespace xtcp::core;
++    Endpoint local, remote;
++    local.family = remote.family = 4;
++    local.addr[0] = 0x0a000001; remote.addr[0] = 0x0a000002;
++    local.port = 40002; remote.port = 443;
++    constexpr UInt32 iss = 100;
++    TcpConn conn(state, local, remote, iss, irs, [](xtcp::buf::BufRef&&) {});
++    std::vector<Byte> bytes(64000), received;
++    for (std::size_t i = 0; i < bytes.size(); ++i) bytes[i] = Byte(i * 37 + i / 251);
++    unsigned calls = 0;
++    bool reject_tail = scenario == 6;
++    conn.SetRecvHandler([&](const Byte* p, UInt32 n) {
++        CHECK(n != 0);
++        ++calls;
++        if (reject_tail && calls == 2) return false;
++        received.insert(received.end(), p, p + n);
++        return true;
++    });
++    const auto inject = [&](UInt32 offset, UInt32 length, bool fin = false) {
++        std::vector<Byte> packet(20 + length, 0);
++        packet[0] = Byte(remote.port >> 8); packet[1] = Byte(remote.port);
++        packet[2] = Byte(local.port >> 8); packet[3] = Byte(local.port);
++        Put32(packet.data() + 4, irs + 1 + offset);
++        Put32(packet.data() + 8, iss + 1);
++        packet[12] = 0x50; packet[13] = Byte(kFlagAck | (fin ? kFlagFin : 0));
++        packet[14] = packet[15] = 0xff;
++        std::copy(bytes.begin() + offset, bytes.begin() + offset + length, packet.begin() + 20);
++        conn.OnSegment(packet.data(), static_cast<UInt32>(packet.size()));
++    };
++    UInt32 expected = 0;
++    bool expected_fin = false;
++    switch (scenario) {
++    case 0:
++        inject(1000, 31000); inject(32000, 31207); inject(0, 64000);
++        expected = 64000;
++        break;
++    case 1:
++        inject(1000, 31000); inject(32000, 31207); inject(0, 2000);
++        expected = 63207;
++        break;
++    case 2:
++        inject(0, 500); inject(1000, 2000); inject(0, 2000);
++        expected = 3000;
++        break;
++    case 3:
++        inject(1000, 3000); inject(2000, 5000); inject(0, 2000);
++        expected = 7000;
++        break;
++    case 4:
++        inject(1000, 6000); inject(2000, 2000); inject(0, 2000);
++        expected = 7000;
++        break;
++    case 5:
++        inject(1000, 2000, true); inject(0, 3000);
++        expected = 3000; expected_fin = true;
++        break;
++    case 6:
++        inject(1000, 3000); inject(0, 2000);
++        CHECK(conn.RcvNxt() == irs + 1 + 2000);
++        CHECK(conn.ReceiveState().rcv_blocked);
++        CHECK(conn.ReceiveState().ooo_bytes == 0);
++        CHECK(conn.ResumeReceiveDetailed() == ReceiveResumeResult::kResumed);
++        reject_tail = false;
++        inject(2000, 2000);
++        expected = 4000;
++        break;
++    case 7:
++        // Every drain advances into the next range, without an exact key.
++        // This exercises a deep overlap chain and both numeric map ranges.
++        for (UInt32 i = 1; i <= 2048; ++i) inject(2 * i, 3);
++        inject(0, 2);
++        expected = 4099;
++        break;
++    }
++    const auto snapshot = conn.ReceiveState();
++    CHECK(snapshot.ooo_bytes == 0);
++    CHECK(snapshot.advertised_window == 65535);
++    CHECK(received.size() == expected);
++    CHECK(received.size() <= bytes.size() && std::equal(received.begin(), received.end(), bytes.begin()));
++    CHECK(conn.RcvNxt() == irs + 1 + expected + (expected_fin ? 1 : 0));
++    if (expected_fin) {
++        CHECK(conn.State() == (state == TcpState::kEstablished ? TcpState::kCloseWait : TcpState::kTimeWait));
++    }
++}
++
++int main() {
++    xtcp::buf::InitPools();
++    for (UInt32 irs : {200U, 0xfffff000U}) {
++        for (auto state : {xtcp::core::TcpState::kEstablished, xtcp::core::TcpState::kFinWait2}) {
++            for (int scenario = 0; scenario < 8; ++scenario) CheckOverlap(irs, state, scenario);
++        }
++    }
++    xtcp::buf::ShutdownPools();
++    std::printf("OOO frontier: 32 scenarios, %d failures\n", failures);
++    return failures ? 1 : 0;
++}

@@ -143,7 +143,9 @@ namespace ppp {
                         }
 
                         if (!rule->ProviderName.empty()) {
-                            CollectProviderIps(rule->ProviderName, add_nic_ip);
+                            CollectProviderIps(
+                                rule->ProviderName,
+                                rule->Nic ? add_nic_ip : add_tunnel_ip);
                             continue;
                         }
 

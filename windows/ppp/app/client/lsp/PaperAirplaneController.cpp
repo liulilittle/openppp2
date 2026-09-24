@@ -31,7 +31,9 @@ namespace ppp
                     , exchanger_(exchanger)
                     , configuration_(exchanger->GetConfiguration())
                     , context_(exchanger->GetContext())
-                    , acceptors_{ boost::asio::ip::tcp::acceptor(*context_), boost::asio::ip::tcp::acceptor(*context_) }
+                    , acceptors_{
+                        make_shared_object<boost::asio::ip::tcp::acceptor>(*context_),
+                        make_shared_object<boost::asio::ip::tcp::acceptor>(*context_) }
                 {
 
                 }
@@ -41,35 +43,80 @@ namespace ppp
                     Finalize();
                 }
 
+                bool PaperAirplaneController::IsDisposed() noexcept
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    return disposed_;
+                }
+
                 void PaperAirplaneController::Finalize() noexcept
                 {
-                    PaperAirplaneControlBlockPortPtr block_port = std::move(block_port_);
-                    if (NULLPTR != block_port)
+                    PaperAirplaneControlBlockPortPtr block_port;
+                    std::vector<TimerPtr> timeouts;
+                    std::vector<PaperAirplaneConnectionPtr> connections;
+                    std::array<Socket::AsioTcpAcceptor, 2> acceptors;
+
                     {
-                        if (block_port->IsAvailable())
+                        std::lock_guard<std::mutex> lock(state_mutex_);
+                        if (disposed_)
                         {
-                            block_port->Set(-1, IPEndPoint::MinPort, IPEndPoint::MinPort, IPEndPoint::MinPort);
+                            return;
+                        }
+
+                        disposed_ = true;
+                        forward_port_ = 0;
+                        block_port = std::move(block_port_);
+                        entries_.clear();
+                        acceptors = std::move(acceptors_);
+
+                        timeouts.reserve(timeouts_.size());
+                        for (auto& entry : timeouts_)
+                        {
+                            timeouts.emplace_back(std::move(entry.second));
+                        }
+                        timeouts_.clear();
+
+                        connections.reserve(connections_.size());
+                        for (auto& entry : connections_)
+                        {
+                            connections.emplace_back(std::move(entry.second));
+                        }
+                        connections_.clear();
+                    }
+
+                    if (NULLPTR != block_port && block_port->IsAvailable())
+                    {
+                        block_port->Set(-1, IPEndPoint::MinPort, IPEndPoint::MinPort, IPEndPoint::MinPort);
+                    }
+
+                    for (const TimerPtr& timeout : timeouts)
+                    {
+                        if (NULLPTR != timeout)
+                        {
+                            timeout->Dispose();
                         }
                     }
 
-                    for (int i = 0; i < arraysizeof(acceptors_); i++)
+                    for (const Socket::AsioTcpAcceptor& acceptor : acceptors)
                     {
-                        boost::asio::ip::tcp::acceptor& acceptor = acceptors_[i];
-                        ppp::net::Socket::Closesocket(acceptor);
+                        if (NULLPTR != acceptor)
+                        {
+                            Socket::Closesocket(acceptor);
+                        }
                     }
 
-                    disposed_ = true;
+                    for (const PaperAirplaneConnectionPtr& connection : connections)
+                    {
+                        if (NULLPTR != connection)
+                        {
+                            connection->Dispose();
+                        }
+                    }
                 }
 
                 void PaperAirplaneController::Dispose() noexcept
                 {
-                    auto self = shared_from_this();
-                    std::shared_ptr<boost::asio::io_context> context = GetContext();
-                    boost::asio::post(*context, 
-                        [self, this, context]() noexcept
-                        {
-                            Finalize();
-                        });
+                    Finalize();
                 }
 
                 bool PaperAirplaneController::OpenAllAcceptors() noexcept
@@ -80,30 +127,35 @@ namespace ppp
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::AppConfigurationMissing);
                     }
 
-                    for (int i = 0; i < arraysizeof(acceptors_); i++)
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    if (disposed_)
                     {
-                        boost::asio::ip::tcp::acceptor& acceptor = acceptors_[i];
-                        if (acceptor.is_open())
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionDisposed);
+                    }
+
+                    for (const Socket::AsioTcpAcceptor& acceptor : acceptors_)
+                    {
+                        if (NULLPTR == acceptor || acceptor->is_open())
                         {
                             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::PaperAirplaneControllerOpenAcceptorAlreadyOpen);
                         }
                     }
 
-                    boost::asio::ip::address bind_addresses[] = { boost::asio::ip::address_v4::loopback(), boost::asio::ip::address_v4::any() };
-                    for (int i = 0; i < arraysizeof(acceptors_); i++)
+                    const boost::asio::ip::address bind_addresses[] = { boost::asio::ip::address_v4::loopback(), boost::asio::ip::address_v4::any() };
+                    for (std::size_t i = 0; i < acceptors_.size(); i++)
                     {
-                        boost::asio::ip::tcp::acceptor& acceptor = acceptors_[i];
-                        if (!Socket::OpenAcceptor(acceptor, bind_addresses[i],
+                        const Socket::AsioTcpAcceptor& acceptor = acceptors_[i];
+                        if (!Socket::OpenAcceptor(*acceptor, bind_addresses[i],
                             IPEndPoint::MinPort, configuration->tcp.backlog, configuration->tcp.fast_open, configuration->tcp.turbo))
                         {
                             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketOpenFailed);
                         }
 
-                        Socket::SetWindowSizeIfNotZero(acceptor.native_handle(), configuration->tcp.cwnd, configuration->tcp.rwnd);
+                        Socket::SetWindowSizeIfNotZero(acceptor->native_handle(), configuration->tcp.cwnd, configuration->tcp.rwnd);
                     }
 
                     boost::system::error_code ec;
-                    boost::asio::ip::tcp::endpoint localEP = acceptors_[1].local_endpoint(ec);
+                    boost::asio::ip::tcp::endpoint localEP = acceptors_[1]->local_endpoint(ec);
                     if (ec)
                     {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketAddressInvalid);
@@ -115,38 +167,53 @@ namespace ppp
 
                 bool PaperAirplaneController::OpenControlBlockPort(int interface_index, uint32_t ip, uint32_t mask) noexcept
                 {
-                    std::shared_ptr<PaperAirplaneControlBlockPort> block_port = make_shared_object<PaperAirplaneControlBlockPort>();
+                    PaperAirplaneControlBlockPortPtr block_port = make_shared_object<PaperAirplaneControlBlockPort>();
                     if (NULLPTR == block_port)
                     {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::PaperAirplaneControllerControlBlockAllocFailed);
                     }
 
-                    bool available = block_port->IsAvailable();
-                    if (!available)
+                    if (!block_port->IsAvailable())
                     {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MappingOpenFailed);
                     }
 
-                    boost::system::error_code ec;
-                    boost::asio::ip::tcp::endpoint localEP = acceptors_[0].local_endpoint(ec);
-                    if (ec)
+                    PaperAirplaneControlBlockPortPtr previous_block_port;
                     {
-                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketAddressInvalid);
+                        std::lock_guard<std::mutex> lock(state_mutex_);
+                        if (disposed_)
+                        {
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionDisposed);
+                        }
+
+                        const Socket::AsioTcpAcceptor& acceptor = acceptors_[0];
+                        if (NULLPTR == acceptor)
+                        {
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketOpenFailed);
+                        }
+
+                        boost::system::error_code ec;
+                        boost::asio::ip::tcp::endpoint localEP = acceptor->local_endpoint(ec);
+                        if (ec)
+                        {
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketAddressInvalid);
+                        }
+
+                        if (!block_port->Set(interface_index, localEP.port(), ip, mask))
+                        {
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
+                        }
+
+                        previous_block_port = std::move(block_port_);
+                        block_port_ = block_port;
                     }
 
-                    bool ok = block_port->Set(interface_index, localEP.port(), ip, mask);
-                    if (!ok)
-                    {
-                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
-                    }
-
-                    block_port_ = std::move(block_port);
                     return true;
                 }
 
                 bool PaperAirplaneController::Open(int interface_index, uint32_t ip, uint32_t mask) noexcept
                 {
-                    if (disposed_)
+                    if (IsDisposed())
                     {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionDisposed);
                     }
@@ -160,24 +227,89 @@ namespace ppp
 
                 bool PaperAirplaneController::NextAlwaysTickTimer() noexcept
                 {
-                    if (disposed_)
+                    if (IsDisposed())
                     {
                         return false;
                     }
 
+                    std::weak_ptr<PaperAirplaneController> weak_self = weak_from_this();
                     return Timeout(1000,
-                        [this](Timer*) noexcept
+                        [weak_self](Timer*) noexcept
                         {
+                            std::shared_ptr<PaperAirplaneController> self = weak_self.lock();
+                            if (NULLPTR == self || self->IsDisposed())
+                            {
+                                return;
+                            }
+
                             UInt64 now = ppp::threading::Executors::GetTickCount();
-                            Update(now);
-                            NextAlwaysTickTimer();
+                            self->Update(now);
+                            if (!self->IsDisposed())
+                            {
+                                self->NextAlwaysTickTimer();
+                            }
                         });
                 }
 
                 void PaperAirplaneController::Update(UInt64 now) noexcept
                 {
+                    if (IsDisposed())
+                    {
+                        return;
+                    }
+
                     UpdateAllForwardEntries(now);
-                    ppp::collections::Dictionary::UpdateAllObjects(connections_, now);
+
+                    std::vector<PaperAirplaneConnectionPtr> connections;
+                    {
+                        std::lock_guard<std::mutex> lock(state_mutex_);
+                        if (disposed_)
+                        {
+                            return;
+                        }
+
+                        connections.reserve(connections_.size());
+                        for (const auto& entry : connections_)
+                        {
+                            connections.emplace_back(entry.second);
+                        }
+                    }
+
+                    std::vector<PaperAirplaneConnection*> releases;
+                    for (const PaperAirplaneConnectionPtr& connection : connections)
+                    {
+                        if (NULLPTR == connection || connection->IsPortAging(now))
+                        {
+                            releases.emplace_back(connection.get());
+                        }
+                    }
+
+                    std::vector<PaperAirplaneConnectionPtr> released_connections;
+                    if (!releases.empty())
+                    {
+                        std::lock_guard<std::mutex> lock(state_mutex_);
+                        if (!disposed_)
+                        {
+                            released_connections.reserve(releases.size());
+                            for (PaperAirplaneConnection* connection : releases)
+                            {
+                                auto tail = connections_.find(connection);
+                                if (tail != connections_.end())
+                                {
+                                    released_connections.emplace_back(std::move(tail->second));
+                                    connections_.erase(tail);
+                                }
+                            }
+                        }
+                    }
+
+                    for (const PaperAirplaneConnectionPtr& connection : released_connections)
+                    {
+                        if (NULLPTR != connection)
+                        {
+                            connection->Dispose();
+                        }
+                    }
                 }
 
                 PaperAirplaneController::PaperAirplaneConnectionPtr PaperAirplaneController::NewConnection(const std::shared_ptr<boost::asio::io_context>& context, const ppp::threading::Executors::StrandPtr& strand, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket) noexcept
@@ -300,7 +432,7 @@ namespace ppp
                                 return false;
                             }
 
-                            return ppp::app::client::lsp::paper_airplane::PacketInput(*socket,
+                            return ppp::app::client::lsp::paper_airplane::PacketInput(socket,
                                 [self, this, socket](boost::asio::ip::tcp::endpoint& local, boost::asio::ip::tcp::endpoint& remote) noexcept -> int
                                 {
                                     if (disposed_)
@@ -322,8 +454,14 @@ namespace ppp
                 bool PaperAirplaneController::AcceptForwardAcceptor() noexcept
                 {
                     auto self = shared_from_this();
-                    return ppp::net::Socket::AcceptLoopbackSchedulerAsync(acceptors_[1],
-                        [self, this](const ppp::net::Socket::AsioContext& context, const ppp::net::Socket::AsioStrandPtr& strand, const ppp::net::Socket::AsioTcpSocket& socket) noexcept
+                    auto acceptor = acceptors_[1];
+                    if (NULLPTR == acceptor)
+                    {
+                        return false;
+                    }
+
+                    return ppp::net::Socket::AcceptLoopbackSchedulerAsync(*acceptor,
+                        [self, this, acceptor](const ppp::net::Socket::AsioContext& context, const ppp::net::Socket::AsioStrandPtr& strand, const ppp::net::Socket::AsioTcpSocket& socket) noexcept
                         {
                             if (disposed_)
                             {

@@ -443,20 +443,22 @@ namespace ppp
             }
         }
 
-        std::shared_ptr<TapDarwin::RouteInformationTable> TapDarwin::FindAllDefaultGatewayRoutes(const ppp::unordered_set<uint32_t>& bypass_gws) noexcept
+        bool TapDarwin::TryFindAllDefaultGatewayRoutes(
+            const ppp::unordered_set<uint32_t>& bypass_gws,
+            std::shared_ptr<TapDarwin::RouteInformationTable>& routes) noexcept
         {
+            routes.reset();
             std::shared_ptr<TapDarwin::RouteInformationTable> rib = make_shared_object<TapDarwin::RouteInformationTable>();
-            if (NULLPTR == rib) 
+            if (NULLPTR == rib)
             {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
-                return NULLPTR;
+                return false;
             }
 
-            bool any = false;
             uint32_t mid = inet_addr("128.0.0.0");
 
-            FetchAllRouteNtreeStuff(
-                [&bypass_gws, &any, &rib, mid](int interface_index, uint32_t ip, uint32_t gw, uint32_t mask) noexcept 
+            const int query_result = FetchAllRouteNtreeStuff(
+                [&bypass_gws, &rib, mid](int interface_index, uint32_t ip, uint32_t gw, uint32_t mask) noexcept
                 {
                     bool ok = IsDefaultGatewayRouteOSX(ip, mid, mask);
                     if (!ok) 
@@ -485,19 +487,52 @@ namespace ppp
                         return false;
                     }
 
-                    auto r = rib->emplace(ip, gw);
-                    any |= r.second;
+                    const int prefix = IPEndPoint::NetmaskToPrefix(mask);
+                    const auto duplicate = std::find_if(
+                        rib->begin(), rib->end(),
+                        [ip, prefix, gw](const ppp::net::native::RouteEntry& route) noexcept {
+                            return route.Destination == ip &&
+                                route.Prefix == prefix &&
+                                route.NextHop == gw;
+                        });
+                    if (duplicate == rib->end()) {
+                        rib->push_back(ppp::net::native::RouteEntry{ ip, prefix, gw });
+                    }
                     return false;
                 });
-
-            if (any)
-            {
-                return rib;
+            if (query_result < 0) {
+                return false;
             }
-            else
-            {
+            routes = std::move(rib);
+            return true;
+        }
+
+        bool TapDarwin::TryRouteExists(
+            UInt32 address,
+            int prefix,
+            UInt32 gw,
+            bool& exists) noexcept
+        {
+            exists = false;
+            const int query_result = FetchAllRouteNtreeStuff(
+                [&exists, address, prefix, gw](int, uint32_t ip,
+                    uint32_t next_hop, uint32_t route_mask) noexcept
+                {
+                    exists = IsExactRoute(
+                        address, prefix, gw, ip, route_mask, next_hop);
+                    return exists;
+                });
+            return query_result >= 0;
+        }
+
+        std::shared_ptr<TapDarwin::RouteInformationTable> TapDarwin::FindAllDefaultGatewayRoutes(const ppp::unordered_set<uint32_t>& bypass_gws) noexcept
+        {
+            std::shared_ptr<TapDarwin::RouteInformationTable> routes;
+            if (!TryFindAllDefaultGatewayRoutes(bypass_gws, routes) ||
+                !routes || routes->empty()) {
                 return NULLPTR;
             }
+            return routes;
         }
 
         bool TapDarwin::GetAllNetworkInterfaces(ppp::vector<NetworkInterface::Ptr>& interfaces) noexcept
@@ -581,14 +616,14 @@ namespace ppp
                 return NULLPTR;
             }
 
-            IPEndPoint gwEP(ip, 0);
+            IPEndPoint gwEP(gw, 0);
             if (IPEndPoint::IsInvalid(gwEP))
             {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkGatewayInvalid);
                 return NULLPTR;
             }
 
-            IPEndPoint maskEP(ip, 0);
+            IPEndPoint maskEP(mask, 0);
             if (IPEndPoint::IsInvalid(maskEP))
             {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkMaskInvalid);

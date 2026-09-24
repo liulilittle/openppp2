@@ -32,8 +32,9 @@ client_dns::DnsResponseHandlerPorts MakePorts(
     client_dns::DnsResponseHandlerPorts ports;
     ports.enable_dns_cache = false;
     ports.datagram_output =
-        [&inject_ok, &inject_called](const boost::asio::ip::udp::endpoint&,
+        [inject_ok, &inject_called](const boost::asio::ip::udp::endpoint&,
             const boost::asio::ip::udp::endpoint&,
+            const std::shared_ptr<ppp::Byte>&,
             void*,
             int,
             bool) noexcept {
@@ -63,6 +64,7 @@ BOOST_AUTO_TEST_CASE(inject_success_skips_tunnel_fallback) {
     ports.datagram_output =
         [&inject_called](const boost::asio::ip::udp::endpoint&,
             const boost::asio::ip::udp::endpoint&,
+            const std::shared_ptr<ppp::Byte>&,
             void*,
             int,
             bool) noexcept {
@@ -173,6 +175,7 @@ BOOST_AUTO_TEST_CASE(cache_write_runs_before_inject) {
     ports.datagram_output =
         [&inject_called](const boost::asio::ip::udp::endpoint&,
             const boost::asio::ip::udp::endpoint&,
+            const std::shared_ptr<ppp::Byte>&,
             void*,
             int,
             bool) noexcept {

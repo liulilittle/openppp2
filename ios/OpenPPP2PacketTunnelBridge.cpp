@@ -1,12 +1,17 @@
 #include <ios/OpenPPP2PacketTunnelBridge.h>
+#include <ios/IosP2PDatagramTransport.h>
 #include <ios/ppp/tap/TapIos.h>
+#include <ppp/app/ApplicationClientBootstrap.h>
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/runtime/RuntimeLifecycle.h>
+#include <ppp/app/runtime/RuntimeSnapshotJson.h>
 #include <ppp/auxiliary/JsonAuxiliary.h>
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
 #include <ppp/IDisposable.h>
+#include <ppp/io/File.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/net/asio/vdns.h>
@@ -38,22 +43,20 @@ struct openppp2_ios_tap
     std::shared_ptr<ppp::app::client::VEthernetNetworkSwitcher>                 client;
     std::shared_ptr<boost::asio::io_context>                                    context;
     std::shared_ptr<ppp::threading::BufferswapAllocator>                        allocator;
-    ppp::transmissions::ITransmissionStatistics                                 statistics_reference;
+    std::shared_ptr<ppp::p2p::IP2PDatagramTransportFactory>                    p2p_datagram_factory;
     ppp::string                                                                 start_stage = "idle";
     std::thread                                                                 runtime_thread;
     openppp2_ios_packet_writer                                                  writer = nullptr;
     void*                                                                       user_data = nullptr;
-    ppp::string                                                                 latest_statistics = "{}";
     uint64_t                                                                    inbound_total = 0;
     uint64_t                                                                    outbound_total = 0;
-    uint64_t                                                                    inbound_last = 0;
-    uint64_t                                                                    outbound_last = 0;
     int                                                                         link_state = 6;
     int                                                                         start_result = 1;
     bool                                                                        start_completed = false;
     bool                                                                        running = false;
     bool                                                                        stopping = false;
     std::atomic<bool>                                                           packet_logging { false };
+    ppp::app::runtime::RuntimeLifecycle                                         runtime_lifecycle;
 };
 
 namespace
@@ -76,6 +79,88 @@ namespace
     ppp::string g_last_error_text = "success";
     std::once_flag g_runtime_bootstrap_once;
     std::once_flag g_telemetry_sink_once;
+
+    uint64_t runtime_now_ms() noexcept
+    {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+
+    void refresh_runtime(openppp2_ios_tap* tap) noexcept
+    {
+        if (tap == nullptr)
+        {
+            return;
+        }
+
+        const ppp::app::runtime::RuntimeSnapshot runtime = tap->runtime_lifecycle.GetSnapshot();
+        if (runtime.generation == 0 || runtime.phase == ppp::app::runtime::RuntimePhase::Stopping)
+        {
+            return;
+        }
+
+        std::shared_ptr<VEthernetNetworkSwitcher> client;
+        {
+            std::lock_guard<std::mutex> scope(tap->sync);
+            client = tap->client;
+        }
+        if (client == nullptr)
+        {
+            tap->runtime_lifecycle.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Connecting,
+                runtime_now_ms());
+            return;
+        }
+
+        std::shared_ptr<VEthernetExchanger> exchanger = client->GetExchanger();
+        if (exchanger == nullptr)
+        {
+            tap->runtime_lifecycle.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Connecting,
+                runtime_now_ms());
+            return;
+        }
+        tap->runtime_lifecycle.UpdateMuxState(
+            runtime.generation,
+            exchanger->GetMuxRuntimeState(),
+            runtime_now_ms());
+        // Lifetime counters, read straight from the atomics: the delta helper
+        // rebases its reference and would make the totals non-monotonic.
+        if (std::shared_ptr<ITransmissionStatistics> statistics = client->GetStatistics(); statistics != nullptr)
+        {
+            ppp::app::runtime::RuntimeTraffic traffic;
+            traffic.rx_bytes = statistics->IncomingTraffic.load();
+            traffic.tx_bytes = statistics->OutgoingTraffic.load();
+            tap->runtime_lifecycle.UpdateTraffic(runtime.generation, traffic, runtime_now_ms());
+        }
+        if (exchanger->GetNetworkState() == VEthernetExchanger::NetworkState_Reconnecting)
+        {
+            tap->runtime_lifecycle.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Reconnecting,
+                runtime_now_ms());
+        }
+        else if (exchanger->GetNetworkState() == VEthernetExchanger::NetworkState_Established)
+        {
+            tap->runtime_lifecycle.UpdateReadiness(
+                runtime.generation,
+                client->GetRuntimeReadiness(),
+                runtime_now_ms());
+            tap->runtime_lifecycle.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Connected,
+                runtime_now_ms());
+        }
+        else
+        {
+            tap->runtime_lifecycle.Transition(
+                runtime.generation,
+                ppp::app::runtime::RuntimePhase::Handshaking,
+                runtime_now_ms());
+        }
+    }
 
     void native_logf(const char* format, ...) noexcept
     {
@@ -237,23 +322,53 @@ namespace
         return true;
     }
 
-    ppp::string make_statistics_json(uint64_t rx_speed, uint64_t tx_speed, uint64_t in_total, uint64_t out_total) noexcept
-    {
-        char buffer[192];
-        std::snprintf(
-            buffer,
-            sizeof(buffer),
-            "{\"rx\":\"%" PRIu64 "\",\"tx\":\"%" PRIu64 "\",\"in\":\"%" PRIu64 "\",\"out\":\"%" PRIu64 "\"}",
-            rx_speed,
-            tx_speed,
-            in_total,
-            out_total);
-        return ppp::string(buffer);
-    }
-
     ppp::string c_string_or_empty(const char* value) noexcept
     {
         return value == nullptr ? ppp::string() : ppp::string(value);
+    }
+
+    ppp::string resolve_routing_source(ppp::string source) noexcept
+    {
+        source = ppp::LTrim(ppp::RTrim(source));
+        const bool has_file_uri_prefix = source.size() >= 7 &&
+            (source[0] == 'f' || source[0] == 'F') &&
+            (source[1] == 'i' || source[1] == 'I') &&
+            (source[2] == 'l' || source[2] == 'L') &&
+            (source[3] == 'e' || source[3] == 'E') &&
+            source[4] == ':' && source[5] == '/' && source[6] == '/';
+        if (has_file_uri_prefix)
+        {
+            source = ppp::LTrim(ppp::RTrim(source.substr(7)));
+        }
+
+        if (!source.empty())
+        {
+            ppp::string path = ppp::io::File::RewritePath(source.data());
+            if (!path.empty() && ppp::io::File::Exists(path.data()))
+            {
+                return ppp::LTrim(ppp::RTrim(ppp::io::File::ReadAllText(path.data())));
+            }
+        }
+        return source;
+    }
+
+    ppp::string resolve_routing_sources(const ppp::vector<ppp::string>& sources) noexcept
+    {
+        ppp::string resolved;
+        for (const ppp::string& source : sources)
+        {
+            ppp::string item = resolve_routing_source(source);
+            if (item.empty())
+            {
+                continue;
+            }
+            if (!resolved.empty())
+            {
+                resolved += "\n";
+            }
+            resolved += item;
+        }
+        return resolved;
     }
 
     struct tunnel_options_snapshot
@@ -494,60 +609,6 @@ namespace
         return 1;
     }
 
-    bool refresh_engine_statistics_locked(openppp2_ios_tap* tap) noexcept
-    {
-        if (tap == nullptr || tap->client == nullptr || tap->client->IsDisposed())
-        {
-            return false;
-        }
-
-        std::shared_ptr<ITransmissionStatistics> source = tap->client->GetStatistics();
-        if (source == nullptr)
-        {
-            return false;
-        }
-
-        uint64_t incoming = 0;
-        uint64_t outgoing = 0;
-        std::shared_ptr<ITransmissionStatistics> snapshot;
-        if (!ITransmissionStatistics::GetTransmissionStatistics(source, tap->statistics_reference, incoming, outgoing, snapshot))
-        {
-            return false;
-        }
-
-        uint64_t total_in = snapshot == nullptr ? 0 : snapshot->IncomingTraffic.load();
-        uint64_t total_out = snapshot == nullptr ? 0 : snapshot->OutgoingTraffic.load();
-        tap->latest_statistics = make_statistics_json(incoming, outgoing, total_in, total_out);
-        return true;
-    }
-
-    void refresh_statistics(openppp2_ios_tap* tap, openppp2_ios_statistics_writer writer, void* writer_user_data) noexcept
-    {
-        if (nullptr == tap)
-        {
-            return;
-        }
-
-        uint64_t rx_speed = 0;
-        uint64_t tx_speed = 0;
-        {
-            std::lock_guard<std::mutex> scope(tap->sync);
-            if (!refresh_engine_statistics_locked(tap))
-            {
-                rx_speed = tap->inbound_total >= tap->inbound_last ? tap->inbound_total - tap->inbound_last : 0;
-                tx_speed = tap->outbound_total >= tap->outbound_last ? tap->outbound_total - tap->outbound_last : 0;
-                tap->inbound_last = tap->inbound_total;
-                tap->outbound_last = tap->outbound_total;
-                tap->latest_statistics = make_statistics_json(rx_speed, tx_speed, tap->inbound_total, tap->outbound_total);
-            }
-        }
-
-        if (nullptr != writer)
-        {
-            writer(tap->latest_statistics.c_str(), writer_user_data);
-        }
-    }
-
     bool change_working_directory(const char* root_path) noexcept
     {
         if (root_path == nullptr || root_path[0] == '\0')
@@ -584,9 +645,7 @@ namespace
     bool start_runtime(
         openppp2_ios_tap*                  tap,
         const char*                        configuration_json,
-        const openppp2_ios_tunnel_options* options,
-        openppp2_ios_statistics_writer     statistics_writer,
-        void*                              statistics_user_data) noexcept
+        const openppp2_ios_tunnel_options* options) noexcept
     {
         if (tap == nullptr || tap->writer == nullptr)
         {
@@ -615,7 +674,27 @@ namespace
             return false;
         }
 
-        if (!configure_vdns_servers(configuration, options_copy.dns1, options_copy.dns2))
+        const bool proxy_only_runtime = configuration->client.proxy_only;
+        if (proxy_only_runtime) {
+            // Mirror the desktop/Android behaviour: force loopback listener
+            // defaults so the HTTP/SOCKS proxy is never bound to a non-loopback
+            // address inside the iOS app sandbox.
+            configuration->ApplyProxyModeDefaults();
+        }
+        ppp::string resolved_bypass_ip_list;
+        ppp::string resolved_dns_rules;
+        if (configuration->client.routing.configured)
+        {
+            resolved_bypass_ip_list = resolve_routing_sources(configuration->client.routing.bypass);
+            resolved_dns_rules = resolve_routing_sources(configuration->client.routing.dns_rules);
+        }
+        else
+        {
+            resolved_bypass_ip_list = resolve_routing_source(options_copy.bypass_ip_list);
+            resolved_dns_rules = resolve_routing_source(options_copy.dns_rules_list);
+        }
+
+        if (!proxy_only_runtime && !configure_vdns_servers(configuration, options_copy.dns1, options_copy.dns2))
         {
             native_logf("OpenPPP2 native: vdns servers not configured; gateway DNS may fail");
         }
@@ -639,12 +718,8 @@ namespace
             tap->running = true;
             tap->link_state = 5;
             tap->configuration = configuration;
-            tap->statistics_reference.Clear();
             tap->inbound_total = 0;
             tap->outbound_total = 0;
-            tap->inbound_last = 0;
-            tap->outbound_last = 0;
-            tap->latest_statistics = "{}";
             tap->start_stage = "runtime thread pending";
             tap->packet_logging.store(options_copy.packet_logging != 0, std::memory_order_relaxed);
         }
@@ -653,9 +728,9 @@ namespace
         {
             native_logf("OpenPPP2 native start: creating runtime thread");
             tap->runtime_thread = start_thread_with_stack_size(
-                [tap, configuration, options_copy, ip, gateway, mask, statistics_writer, statistics_user_data]() mutable noexcept
+                [tap, configuration, options_copy, proxy_only_runtime, resolved_bypass_ip_list, resolved_dns_rules, ip, gateway, mask]() mutable noexcept
             {
-                auto start = [tap, configuration, &options_copy, ip, gateway, mask, statistics_writer, statistics_user_data](int, const char**) noexcept -> int
+                auto start = [tap, configuration, &options_copy, proxy_only_runtime, resolved_bypass_ip_list, resolved_dns_rules, ip, gateway, mask](int, const char**) noexcept -> int
                 {
                     set_start_stage(tap, "executor callback entered");
                     std::shared_ptr<boost::asio::io_context> context = Executors::GetDefault();
@@ -690,6 +765,9 @@ namespace
                         set_last_error("failed to create iOS packet tap");
                         return complete_start(tap, 1);
                     }
+
+                    ios_tap->SetP2PDatagramTransportFactory(
+                        ppp::p2p::GetIosProviderP2PDatagramTransportFactory(tap));
 
                     set_start_stage(tap, "installing packet output");
                     ios_tap->SetPacketOutput(
@@ -733,6 +811,9 @@ namespace
                         return complete_start(tap, 1);
                     }
 
+                    bool proxy_only_flag = proxy_only_runtime;
+                    client->ProxyOnly(&proxy_only_flag);
+
                     set_start_stage(tap, "configuring network switcher");
                     int requested_mux = options_copy.mux;
                     int effective_mux = requested_mux > 0 ? std::min<int>(requested_mux, UINT16_MAX) : 0;
@@ -743,22 +824,30 @@ namespace
                     ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "ios_tunnel",
                         "dataplane start lwip=%d mux=%d requested_mux=%d effective_mux=%d vmux_active=%d max_concurrent=%d stack_mb=5",
                         lwip ? 1 : 0, static_cast<int>(mux), requested_mux, effective_mux, vmux_active ? 1 : 0, max_concurrent);
-                    bool static_mode = options_copy.static_mode != 0;
+                    bool static_mode = ppp::app::NormalizeClientStaticMode(options_copy.static_mode != 0, proxy_only_runtime);
                     client->Mux(&mux);
                     client->StaticMode(&static_mode);
                     client->BlockQUIC(options_copy.block_quic != 0);
 
-                    ppp::string dns_rules = options_copy.dns_rules_list;
+                    // Native bypass and DNS policy is shared by TUN and
+                    // proxy-only modes; only host DNS/route takeover remains
+                    // TUN-only in the platform bridge.
+                    ppp::string dns_rules = resolved_dns_rules;
                     if (!dns_rules.empty())
                     {
                         client->LoadAllDnsRules(dns_rules, false);
                     }
 
-                    ppp::string bypass_ip_list = options_copy.bypass_ip_list;
+                    ppp::string bypass_ip_list = resolved_bypass_ip_list;
                     if (!bypass_ip_list.empty())
                     {
                         client->SetBypassIpList(std::move(bypass_ip_list));
                     }
+
+                    // Mobile route sources are loaded into the native RIB/FIB
+                    // by RouteCoordinator_mobile during ClientConnectionOpener::AddAllRoute.
+                    // The mobile switcher intentionally has no desktop
+                    // AddLoadIPList API, so do not duplicate that load here.
 
                     set_start_stage(tap, "opening OpenPPP2 client");
                     if (!client->Open(ios_tap))
@@ -777,7 +866,6 @@ namespace
                         tap->link_state = 0;
                     }
 
-                    refresh_statistics(tap, statistics_writer, statistics_user_data);
                     set_last_error("success");
                     set_start_stage(tap, "client opened");
                     return complete_start(tap, 0);
@@ -893,6 +981,58 @@ openppp2_ios_tap* openppp2_ios_tap_create(
     return bridge;
 }
 
+int openppp2_ios_tap_set_p2p_datagram_provider(
+    openppp2_ios_tap*                           tap,
+    const openppp2_ios_p2p_datagram_provider* provider,
+    void*                                       user_data)
+{
+    if (nullptr == tap || nullptr == provider || nullptr == user_data)
+    {
+        return 0;
+    }
+
+    auto factory = ppp::p2p::CreateIosProviderP2PDatagramTransportFactory(
+        *provider, user_data);
+    if (nullptr == factory)
+    {
+        return 0;
+    }
+
+    std::lock_guard<std::mutex> scope(tap->sync);
+    if (tap->running || nullptr != tap->p2p_datagram_factory)
+    {
+        return 0;
+    }
+    tap->p2p_datagram_factory = std::move(factory);
+    return 1;
+}
+
+void openppp2_ios_tap_clear_p2p_datagram_provider(openppp2_ios_tap* tap)
+{
+    if (nullptr == tap)
+    {
+        return;
+    }
+    std::lock_guard<std::mutex> scope(tap->sync);
+    tap->p2p_datagram_factory.reset();
+}
+
+namespace ppp {
+    namespace p2p {
+        std::shared_ptr<IP2PDatagramTransportFactory>
+        GetIosProviderP2PDatagramTransportFactory(
+                openppp2_ios_tap* tap) noexcept
+        {
+            if (nullptr == tap)
+            {
+                return nullptr;
+            }
+            std::lock_guard<std::mutex> scope(tap->sync);
+            return tap->p2p_datagram_factory;
+        }
+    }
+}
+
 void openppp2_ios_tap_destroy(openppp2_ios_tap* tap)
 {
     if (nullptr == tap)
@@ -900,15 +1040,14 @@ void openppp2_ios_tap_destroy(openppp2_ios_tap* tap)
         return;
     }
 
+    tap->p2p_datagram_factory.reset();
     delete tap;
 }
 
 int openppp2_ios_tap_start(
     openppp2_ios_tap*                  tap,
     const char*                        configuration_json,
-    const openppp2_ios_tunnel_options* options,
-    openppp2_ios_statistics_writer     statistics_writer,
-    void*                              statistics_user_data)
+    const openppp2_ios_tunnel_options* options)
 {
     if (nullptr == tap || nullptr == tap->writer)
     {
@@ -924,10 +1063,43 @@ int openppp2_ios_tap_start(
         }
     }
 
-    if (!start_runtime(tap, configuration_json, options, statistics_writer, statistics_user_data))
+    ppp::app::runtime::RuntimeSnapshot runtime_seed;
+    runtime_seed.role = "client";
+    runtime_seed.capabilities = {
+        "mux.compat", "mux.flow", "mux.balance", "mux.stripe"};
+    const uint64_t runtime_generation = tap->runtime_lifecycle.Begin(
+        std::move(runtime_seed),
+        runtime_now_ms());
+    tap->runtime_lifecycle.Transition(
+        runtime_generation,
+        ppp::app::runtime::RuntimePhase::PreparingHost,
+        runtime_now_ms());
+    tap->runtime_lifecycle.Transition(
+        runtime_generation,
+        ppp::app::runtime::RuntimePhase::Connecting,
+        runtime_now_ms());
+
+    if (!start_runtime(tap, configuration_json, options))
     {
+        ppp::app::runtime::RuntimeError error;
+        error.code = static_cast<uint32_t>(std::max(0, openppp2_ios_last_error_code()));
+        error.severity = "error";
+        error.user_message_key = "RuntimeFailed";
+        if (tap->runtime_lifecycle.TryBeginStop(runtime_generation, runtime_now_ms()))
+        {
+            tap->runtime_lifecycle.CompleteStop(
+                runtime_generation,
+                false,
+                std::move(error),
+                runtime_now_ms());
+        }
         return 1;
     }
+
+    tap->runtime_lifecycle.Transition(
+        runtime_generation,
+        ppp::app::runtime::RuntimePhase::Handshaking,
+        runtime_now_ms());
 
     return 0;
 }
@@ -972,6 +1144,14 @@ int openppp2_ios_tap_stop(openppp2_ios_tap* tap, int stop_reason)
         return 0;
     }
 
+    const ppp::app::runtime::RuntimeSnapshot runtime = tap->runtime_lifecycle.GetSnapshot();
+    const bool stop_owner = runtime.generation != 0 &&
+        tap->runtime_lifecycle.TryBeginStop(runtime.generation, runtime_now_ms());
+    if (runtime.generation != 0 && !stop_owner)
+    {
+        return 0;
+    }
+
     std::shared_ptr<VEthernetNetworkSwitcher> client;
     std::shared_ptr<ppp::tap::TapIos> ios_tap;
     std::shared_ptr<boost::asio::io_context> context;
@@ -992,21 +1172,44 @@ int openppp2_ios_tap_stop(openppp2_ios_tap* tap, int stop_reason)
     ppp::telemetry::Count("ios_tunnel.stop", 1);
     ppp::telemetry::Flush(3000);
 
+    auto cleanup_complete =
+        [tap, runtime, stop_owner, ios_tap, context](
+            bool cleanup_success) mutable noexcept
+        {
+            if (nullptr != ios_tap)
+            {
+                ios_tap->Dispose();
+            }
+            if (stop_owner)
+            {
+                ppp::app::runtime::RuntimeError error;
+                if (!cleanup_success)
+                {
+                    error.code = static_cast<uint32_t>(
+                        ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                    error.severity = "error";
+                    error.retryable = true;
+                    error.user_message_key = "CleanupFailed";
+                }
+                tap->runtime_lifecycle.CompleteStop(
+                    runtime.generation,
+                    cleanup_success,
+                    std::move(error),
+                    runtime_now_ms());
+            }
+            if (nullptr != context)
+            {
+                Executors::Exit(context);
+            }
+        };
+
     if (nullptr != client)
     {
-        client->Dispose();
+        client->Dispose(cleanup_complete);
     }
-
-    if (nullptr != ios_tap)
+    else
     {
-        ios_tap->Dispose();
-    }
-
-    // Stop only this tunnel's io_context. Never call Executors::Exit() without a
-    // context from the XPC stop thread — that joins worker threads and can SIGSEGV.
-    if (nullptr != context)
-    {
-        Executors::Exit(context);
+        cleanup_complete(true);
     }
 
     if (tap->runtime_thread.joinable())
@@ -1014,15 +1217,16 @@ int openppp2_ios_tap_stop(openppp2_ios_tap* tap, int stop_reason)
         tap->runtime_thread.join();
     }
 
-    std::lock_guard<std::mutex> scope(tap->sync);
-    tap->tap.reset();
-    tap->client.reset();
-    tap->context.reset();
-    tap->configuration.reset();
-    tap->running = false;
-    tap->stopping = false;
-    tap->link_state = 2;
-    tap->latest_statistics = "{}";
+    {
+        std::lock_guard<std::mutex> scope(tap->sync);
+        tap->tap.reset();
+        tap->client.reset();
+        tap->context.reset();
+        tap->configuration.reset();
+        tap->running = false;
+        tap->stopping = false;
+        tap->link_state = 2;
+    }
     return 0;
 }
 
@@ -1086,7 +1290,7 @@ int openppp2_ios_tap_get_link_state(openppp2_ios_tap* tap)
     return tap->link_state;
 }
 
-int openppp2_ios_tap_get_statistics(
+int openppp2_ios_tap_get_runtime_snapshot(
     openppp2_ios_tap* tap,
     char*             buffer,
     int               buffer_size)
@@ -1096,25 +1300,15 @@ int openppp2_ios_tap_get_statistics(
         return 0;
     }
 
-    ppp::string statistics;
-    {
-        std::lock_guard<std::mutex> scope(tap->sync);
-        if (!refresh_engine_statistics_locked(tap))
-        {
-            uint64_t rx_speed = tap->inbound_total >= tap->inbound_last ? tap->inbound_total - tap->inbound_last : 0;
-            uint64_t tx_speed = tap->outbound_total >= tap->outbound_last ? tap->outbound_total - tap->outbound_last : 0;
-            tap->inbound_last = tap->inbound_total;
-            tap->outbound_last = tap->outbound_total;
-            tap->latest_statistics = make_statistics_json(rx_speed, tx_speed, tap->inbound_total, tap->outbound_total);
-        }
-        statistics = tap->latest_statistics;
-    }
-
-    if (!copy_text(statistics, buffer, buffer_size))
+    refresh_runtime(tap);
+    const std::string encoded = ppp::app::runtime::SerializeRuntimeSnapshot(
+        tap->runtime_lifecycle.GetSnapshot());
+    const ppp::string snapshot(encoded.data(), encoded.size());
+    if (!copy_text(snapshot, buffer, buffer_size))
     {
         return 0;
     }
-    return static_cast<int>(statistics.size());
+    return static_cast<int>(snapshot.size());
 }
 
 int openppp2_ios_tap_get_start_stage(

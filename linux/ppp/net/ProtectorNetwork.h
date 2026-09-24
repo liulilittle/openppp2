@@ -2,6 +2,7 @@
 
 #include <ppp/stdafx.h>
 #include <ppp/coroutines/YieldContext.h>
+#include <linux/ppp/net/ProtectorNetworkRequest.h>
 
 #if defined(_ANDROID)
 #include <android/log.h>
@@ -58,6 +59,9 @@ namespace ppp
 
 #if defined(_ANDROID)               
 
+        private:
+            struct JniSession;
+
         public:
             // When Java/Kotlin creates a new thread and calls the root Loopback function, 
             // The JVM needs to pass in a JNIEnv environment pointer assigned to the current thread by the JVM, 
@@ -67,6 +71,11 @@ namespace ppp
             // To prevent security problems caused by multithreading.
             bool                                                    DetachJNI() noexcept;
             bool                                                    ProtectJNI(const std::shared_ptr<boost::asio::io_context>& context, int sockfd, YieldContext& y) noexcept;
+
+        private:
+            bool                                                    ProtectJNISession(const std::shared_ptr<JniSession>& session, int sockfd, YieldContext& y) noexcept;
+
+        public:
             // If PPP is used as the embedded layer of an apps, 
             // It is recommended not to rely on the sendfd/recvfd model for Java layer to protect network sockets.  
             // Instead of using a VPN virtual loopback network, 
@@ -126,15 +135,39 @@ namespace ppp
             static bool                                             ProtectJNI(JNIEnv* env, jint fd) noexcept;
             
         public:
-            std::shared_ptr<boost::asio::io_context>                GetContext() noexcept     { SynchronizedObjectScope scope(syncobj_); return jni_; }
-            JNIEnv*                                                 GetEnvironment() noexcept { SynchronizedObjectScope scope(syncobj_); return env_; }
+            std::shared_ptr<boost::asio::io_context>                GetContext() noexcept
+            {
+                SynchronizedObjectScope scope(syncobj_);
+                return session_ ? session_->context : NULLPTR;
+            }
+            JNIEnv*                                                 GetEnvironment() noexcept
+            {
+                SynchronizedObjectScope scope(syncobj_);
+                return session_ ? session_->env : NULLPTR;
+            }
 #endif
 
         private:                
 #if defined(_ANDROID)
+            struct JniSession final
+            {
+                JniSession(std::uint64_t generation_, const std::shared_ptr<boost::asio::io_context>& context_, JNIEnv* env_)
+                    : generation(generation_)
+                    , context(context_)
+                    , env(env_)
+                    , requests(generation_)
+                {
+                }
+
+                const std::uint64_t                                  generation;
+                const std::shared_ptr<boost::asio::io_context>        context;
+                JNIEnv* const                                         env;
+                ProtectorNetworkRequestSession                        requests;
+            };
+
             SynchronizedObject                                      syncobj_;
-            JNIEnv*                                                 env_ = NULLPTR;
-            std::shared_ptr<boost::asio::io_context>                jni_;
+            std::uint64_t                                           next_generation_ = 0;
+            std::shared_ptr<JniSession>                             session_;
 #endif
             const ppp::string                                       dev_;
         };

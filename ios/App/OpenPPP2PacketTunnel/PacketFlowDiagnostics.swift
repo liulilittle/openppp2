@@ -168,7 +168,7 @@ final class PacketFlowDiagnostics {
         lastError: String,
         outputDroppedCount: Int,
         pendingOutputDepth: Int,
-        statisticsJson: String
+        runtimeSnapshotJson: String
     ) -> [String: Any] {
         lock.lock()
         let inputCount = inputPacketCount
@@ -195,7 +195,7 @@ final class PacketFlowDiagnostics {
             "lastOutputPacketOK": outputOK,
             "outputPackets": outputSamples,
             "dataplane": dataplane,
-            "statistics": statisticsJson
+            "runtimeSnapshot": runtimeSnapshotJson
         ]
         if let networkPath = TunnelSharedState.readNetworkPathSnapshot() {
             payload["networkPath"] = networkPath.dictionary
@@ -209,7 +209,7 @@ final class PacketFlowDiagnostics {
         lastError: String,
         outputDroppedCount: Int,
         pendingOutputDepth: Int,
-        statisticsJson: String
+        runtimeSnapshotJson: String
     ) -> String {
         let payload = diagnosticsPayload(
             linkState: linkState,
@@ -217,7 +217,7 @@ final class PacketFlowDiagnostics {
             lastError: lastError,
             outputDroppedCount: outputDroppedCount,
             pendingOutputDepth: pendingOutputDepth,
-            statisticsJson: statisticsJson
+            runtimeSnapshotJson: runtimeSnapshotJson
         )
 
         guard JSONSerialization.isValidJSONObject(payload),
@@ -235,7 +235,7 @@ final class PacketFlowDiagnostics {
         lastError: String,
         outputDroppedCount: Int,
         pendingOutputDepth: Int,
-        statisticsJson: String
+        runtimeSnapshotJson: String
     ) {
         var payload = diagnosticsPayload(
             linkState: linkState,
@@ -243,7 +243,7 @@ final class PacketFlowDiagnostics {
             lastError: lastError,
             outputDroppedCount: outputDroppedCount,
             pendingOutputDepth: pendingOutputDepth,
-            statisticsJson: statisticsJson
+            runtimeSnapshotJson: runtimeSnapshotJson
         )
         payload["updatedAt"] = ISO8601DateFormatter().string(from: Date())
 
@@ -267,7 +267,7 @@ final class PacketFlowDiagnostics {
         lastError: String,
         outputDroppedCount: Int,
         pendingOutputDepth: Int,
-        statisticsJson: String
+        runtimeSnapshotJson: String
     ) {
         TunnelSharedState.writeLinkStateHeartbeat(linkState)
         if diagnosticsEnabled {
@@ -277,7 +277,7 @@ final class PacketFlowDiagnostics {
                 lastError: lastError,
                 outputDroppedCount: outputDroppedCount,
                 pendingOutputDepth: pendingOutputDepth,
-                statisticsJson: statisticsJson
+                runtimeSnapshotJson: runtimeSnapshotJson
             )
         }
         if shouldExportSnapshotTelemetry(linkState: linkState) {
@@ -288,28 +288,9 @@ final class PacketFlowDiagnostics {
                 lastError: lastError,
                 outputDroppedCount: outputDroppedCount,
                 pendingOutputDepth: pendingOutputDepth,
-                statisticsJson: statisticsJson
+                runtimeSnapshotJson: runtimeSnapshotJson
             )
         }
-    }
-
-    func onStatisticsUpdated(
-        linkState: Int,
-        startStage: String,
-        lastError: String,
-        outputDroppedCount: Int,
-        pendingOutputDepth: Int,
-        statisticsJson: String
-    ) {
-        guard diagnosticsEnabled else { return }
-        persistSnapshot(
-            linkState: linkState,
-            startStage: startStage,
-            lastError: lastError,
-            outputDroppedCount: outputDroppedCount,
-            pendingOutputDepth: pendingOutputDepth,
-            statisticsJson: statisticsJson
-        )
     }
 
     private func shouldExportPacketTelemetry(packetNumber: Int, ok: Bool) -> Bool {
@@ -393,7 +374,7 @@ final class PacketFlowDiagnostics {
         lastError: String,
         outputDroppedCount: Int,
         pendingOutputDepth: Int,
-        statisticsJson: String
+        runtimeSnapshotJson: String
     ) {
         guard let packetFlowExporter else { return }
 
@@ -426,7 +407,7 @@ final class PacketFlowDiagnostics {
                 "openppp2.pending_output_depth": .int(Int64(pendingOutputDepth)),
                 "openppp2.app_group.identifier": .string(TunnelSharedState.appGroupIdentifier),
                 "openppp2.app_group.available": .bool(sharedContainerAvailable),
-                "openppp2.engine.statistics": .string(statisticsJson)
+                "openppp2.runtime.snapshot": .string(runtimeSnapshotJson)
             ]
         )
         packetFlowExporter.export(records: [record]) { result in

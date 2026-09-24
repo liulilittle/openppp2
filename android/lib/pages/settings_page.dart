@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../runtime/runtime_controls.dart';
+import '../runtime/runtime_store.dart';
 import '../services/profile_store.dart';
 import '../services/telemetry_settings_store.dart';
 import '../services/theme_controller.dart';
@@ -24,21 +26,23 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _debugPanelEnabled = false;
   bool _loading = true;
   bool _telemetryUploadEnabled = false;
-  VpnState _state = VpnState.disconnected;
   String _debugLog = '';
   String _logPath = '';
   Timer? _pollTimer;
-  StreamSubscription<VpnState>? _stateSub;
+  late final RuntimeStore _runtimeStore;
 
   @override
   void initState() {
     super.initState();
     _vpnService.init();
-    _stateSub = _vpnService.stateStream.listen((s) {
-      if (!mounted) return;
-      setState(() => _state = s);
-    });
+    _runtimeStore = _vpnService.runtimeStore;
+    _runtimeStore.addListener(_runtimeChanged);
     _load();
+  }
+
+  void _runtimeChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   Future<void> _load() async {
@@ -64,12 +68,10 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _refresh() async {
-    final state = await _vpnService.getState();
     final log = await _vpnService.readLog();
     final path = await _vpnService.getLogPath();
     if (!mounted) return;
     setState(() {
-      _state = state;
       _debugLog = log;
       _logPath = path;
     });
@@ -136,23 +138,12 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  String _stateText() {
-    switch (_state) {
-      case VpnState.connected:
-        return '已连接';
-      case VpnState.connecting:
-        return '连接中';
-      case VpnState.disconnecting:
-        return '断开中';
-      case VpnState.disconnected:
-        return '未连接';
-    }
-  }
+  String _stateText() => controlsFor(_runtimeStore.state.phase).statusLabel;
 
   @override
   void dispose() {
     _pollTimer?.cancel();
-    _stateSub?.cancel();
+    _runtimeStore.removeListener(_runtimeChanged);
     super.dispose();
   }
 
@@ -254,6 +245,7 @@ class _SettingsPageState extends State<SettingsPage> {
               onCopy: _copyLog,
               onClear: _clearLog,
               onStop: _stopVpn,
+              runtimeSnapshot: _vpnService.runtimeStore.state,
             ),
           ],
           const SizedBox(height: 12),

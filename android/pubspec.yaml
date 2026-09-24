@@ -1,7 +1,7 @@
 name: openppp2_mobile
 description: OpenPPP2 VPN Client for Android
 publish_to: 'none'
-version: 1.0.0+1
+version: 2.1.6+5
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>2.1.6</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>5</string>
 	<key>OpenPPP2TelemetryDeveloperEndpoint</key>
 	<string>$(OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT)</string>
 	<key>OpenPPP2AppGroupIdentifier</key>

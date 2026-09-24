@@ -146,16 +146,38 @@ namespace ppp {
                 return NULLPTR;
             }
 
+        protected:
+            /**
+             * @brief Shared completion latch for one throttled coroutine read.
+             * @details The QoS queue owns this state instead of a bare YieldContext pointer.
+             *          A completion that wins before Await() is consumed without suspending.
+             */
+            class ReadWaiter final {
+            public:
+                bool                                                    Complete() noexcept;
+                bool                                                    Await(YieldContext& y) noexcept;
+
+            private:
+                std::mutex                                              syncobj_;
+                bool                                                    completed_ = false;
+                ppp::function<bool()>                                   resume_;
+            };
+            typedef std::shared_ptr<ReadWaiter>                          ReadWaiterPtr;
+
+            /** @brief Wait seam used by deterministic admission/completion tests. */
+            virtual bool                                                AwaitRead(YieldContext& y, const ReadWaiterPtr& waiter) noexcept;
+
         private:
             /**
              * @brief Marks disposed and resumes all pending callbacks/coroutines.
              */
             void                                                        Finalize() noexcept;
+            static int                                                  CompleteAllWaiters(ppp::list<ReadWaiterPtr>& waiters) noexcept;
 
         private:
             /** @brief Set when Dispose() has been called; prevents re-entry. */
             bool                                                        disposed_  = false;
-            /** @brief Mutex protecting reads_ and contexts_ from concurrent modification. */
+            /** @brief Mutex protecting reads_ and waiters_ from concurrent modification. */
             SynchronizedObject                                          syncobj_;
             /** @brief Bound io_context used to post deferred callbacks and disposal. */
             std::shared_ptr<boost::asio::io_context>                    context_;
@@ -168,8 +190,8 @@ namespace ppp {
 
             /** @brief Queue of deferred read callbacks waiting for QoS budget to open. */
             ppp::list<BeginReadAsynchronousCallback>                    reads_;
-            /** @brief Coroutine contexts suspended while over bandwidth limit. */
-            ppp::list<YieldContext*>                                    contexts_;
+            /** @brief Shared waiter latches for throttled coroutine reads. */
+            ppp::list<ReadWaiterPtr>                                    waiters_;
         };
     }
 }

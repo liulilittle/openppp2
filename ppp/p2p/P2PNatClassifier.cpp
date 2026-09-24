@@ -71,6 +71,12 @@ namespace ppp {
 
             result.confidence = static_cast<int>(dest_ips.size());
 
+            // A single UDP destination cannot reveal endpoint-dependent mapping.
+            if (dest_ips.size() < 2) {
+                result.type = P2PNatType::Unknown;
+                return result;
+            }
+
             if (observations.empty()) {
                 result.type = P2PNatType::Unknown;
                 return result;

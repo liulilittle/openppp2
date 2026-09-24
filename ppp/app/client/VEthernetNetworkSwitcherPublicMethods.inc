@@ -7,7 +7,14 @@
 #endif
 
                 std::shared_ptr<ppp::configurations::AppConfiguration> GetConfiguration() noexcept;
+                ppp::app::TcpStackMode GetTcpStackMode() const noexcept;
+                std::shared_ptr<const routing::HumanRoutingRules> GetHumanRoutingRulesSnapshot() const noexcept;
                 std::shared_ptr<VEthernetExchanger> GetExchanger() noexcept;
+                ppp::app::runtime::RuntimeReadiness GetRuntimeReadiness() noexcept;
+                bool GetTapRuntimeStats(ppp::tap::TapRuntimeStats& stats) noexcept;
+                bool GetXtcpRuntimeStats(ppp::app::runtime::RuntimeXtcpStats& stats) noexcept;
+                bool WasTeardownSuccessful() const noexcept { return last_teardown_success_.load(std::memory_order_acquire); }
+                void Dispose(ppp::function<void(bool)> completion) noexcept;
                 void RequestedIPv6(const ppp::string& value) noexcept;
                 ppp::string RequestedIPv6() noexcept;
 #if !defined(_ANDROID) && !defined(_IPHONE)
@@ -53,6 +60,12 @@
 #endif
                     const boost::asio::ip::address& gw,
                     const ppp::string& url) noexcept;
+                virtual bool AddLoadIPListText(
+                    const ppp::string& text,
+#if defined(_LINUX)
+                    const ppp::string& nic,
+#endif
+                    const boost::asio::ip::address& gw) noexcept;
                 virtual ppp::string GetRemoteUri() noexcept;
 #endif
 
@@ -60,14 +73,9 @@
                 virtual void Dispose() noexcept override;
                 virtual std::shared_ptr<ppp::threading::BufferswapAllocator> GetBufferAllocator() noexcept override;
                 virtual bool BlockQUIC(bool value) noexcept;
-                dns::DnsHostPorts BuildDnsHostPorts(const std::shared_ptr<VEthernetExchanger>& exchanger) noexcept override;
-                const dns::DnsHostPorts& DnsHostPortsFor(const std::shared_ptr<VEthernetExchanger>& exchanger) noexcept override;
-                void InvalidateDnsHostPorts() noexcept override;
-                bool RedirectDnsServer(const std::shared_ptr<VEthernetExchanger>& exchanger, const std::shared_ptr<IPFrame>& packet, const std::shared_ptr<UdpFrame>& frame, const std::shared_ptr<ppp::net::packet::BufferSegment>& messages) noexcept override;
-                route::RouteHostPorts BuildRouteHostPorts() noexcept override;
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                void AddRoute() noexcept override;
-                void DeleteRoute() noexcept override;
+                bool AddRoute() noexcept;
+                bool DeleteRoute() noexcept;
 #else
-                bool AddAllRoute(const std::shared_ptr<ITap>& tap) noexcept override;
+                bool AddAllRoute(const std::shared_ptr<ITap>& tap) noexcept;
 #endif

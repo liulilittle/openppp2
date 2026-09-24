@@ -545,7 +545,7 @@ namespace ppp {
                         break;                              // no more data or read error
                     }
 
-                    if (!PacketInput(transmission, packet.get(), packet_length, y)) {
+                    if (!PacketInput(transmission, packet, packet.get(), packet_length, y)) {
                         if (ppp::diagnostics::ErrorCode::Success == ppp::diagnostics::GetLastErrorCode()) {
                             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
                         }
@@ -560,6 +560,25 @@ namespace ppp {
                     (int)ppp::diagnostics::GetLastErrorCode());
                 ppp::telemetry::Count("protocol.session.disposed", 1);
                 return ok;
+            }
+
+            /** @brief Reads one complete INFO frame for pre-data proof exchanges. */
+            bool VirtualEthernetLinklayer::ReadInformation(const ITransmissionPtr& transmission, InformationEnvelope& information, YieldContext& y) noexcept {
+                if (NULLPTR == transmission) {
+                    return global::PACKET_Fail(ppp::diagnostics::ErrorCode::SessionTransportMissing);
+                }
+
+                int packet_length = 0;
+                std::shared_ptr<Byte> packet = transmission->Read(y, packet_length);
+                if (NULLPTR == packet) {
+                    return false;
+                }
+
+                if (!DecodeInformation(packet.get(), packet_length, information)) {
+                    return global::PACKET_Fail(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
+                }
+
+                return true;
             }
 
 #pragma pack(push, 1)   // ensure packed structures for wire compatibility
@@ -598,7 +617,7 @@ namespace ppp {
              * @details The first byte selects action; remaining payload is parsed by
              * action-specific wire-format readers before calling `On*` handlers.
              */
-            bool VirtualEthernetLinklayer::PacketInput(const ITransmissionPtr& transmission, Byte* p, int packet_length, YieldContext& y) noexcept
+            bool VirtualEthernetLinklayer::PacketInput(const ITransmissionPtr& transmission, const std::shared_ptr<Byte>& owner, Byte* p, int packet_length, YieldContext& y) noexcept
             {
                 if (NULLPTR == p || packet_length < 1) {
                     return global::PACKET_Fail(ppp::diagnostics::ErrorCode::ProtocolFrameInvalid);
@@ -636,7 +655,7 @@ namespace ppp {
                         if (sourceEP.port() != 0 && packet_length >= 0) {
                             // call preparation hook and then the actual send handler
                             if (OnPreparedSendTo(transmission, sourceHost, sourceEP, destinationHost, destinationEP, p, packet_length, y)) {
-                                return OnSendTo(transmission, sourceEP, destinationEP, p, packet_length, y);
+                                return OnSendTo(transmission, sourceEP, destinationEP, owner, p, packet_length, y);
                             }
                         }
                     }
@@ -652,7 +671,7 @@ namespace ppp {
 
                             int remote_port = global::PACKET_Word(p, packet_length);
                             if (remote_port != 0 && packet_length > 0) {
-                                return OnFrpPush(transmission, connection_id, in, remote_port, p, packet_length);
+                                return OnFrpPush(transmission, connection_id, in, remote_port, owner, p, packet_length);
                             }
                         }
                     } else {
@@ -670,7 +689,7 @@ namespace ppp {
 
                         int remote_port = global::PACKET_Word(p, packet_length);
                         if (remote_port != 0 && packet_length > 0) {
-                            return OnFrpSendTo(transmission, in, remote_port, destinationEP, p, packet_length, y);
+                            return OnFrpSendTo(transmission, in, remote_port, destinationEP, owner, p, packet_length, y);
                         }
                     }
                 }
@@ -678,7 +697,7 @@ namespace ppp {
                     if (packet_length > 0) {
                         ppp::telemetry::Log(Level::kDebug, "protocol", "ECHO received");
                         ppp::telemetry::Count("protocol.echo.received", 1);
-                        return OnEcho(transmission, p, packet_length, y);
+                        return OnEcho(transmission, owner, p, packet_length, y);
                     } else {
                         return packet_length == 0;
                     }
@@ -722,8 +741,11 @@ namespace ppp {
                 }
                 elif (packet_action == PacketAction_LAN) {           // LAN advertisement
                     if (packet_length >= static_cast<int>(sizeof(uint32_t) * 2)) {
-                        uint32_t* addresses = reinterpret_cast<uint32_t*>(p);
-                        return OnLan(transmission, addresses[0], addresses[1], y);
+                        uint32_t address = 0;
+                        uint32_t mask = 0;
+                        std::memcpy(&address, p, sizeof(address));
+                        std::memcpy(&mask, p + sizeof(address), sizeof(mask));
+                        return OnLan(transmission, address, mask, y);
                     } else {
                         return packet_length == 0;
                     }
@@ -785,37 +807,22 @@ namespace ppp {
                     }
                 }
                 elif (packet_action == PacketAction_INFO) {           // Virtual Ethernet information
-                    if (packet_length >= static_cast<int>(sizeof(VirtualEthernetInformation))) {
-                        ppp::string session_guid = ppp::auxiliary::StringAuxiliary::Int128ToGuidString(id_);
-                        ppp::telemetry::SpanScope span("protocol.auth", session_guid.c_str());
+                    ppp::string session_guid = ppp::auxiliary::StringAuxiliary::Int128ToGuidString(id_);
+                    ppp::telemetry::SpanScope span("protocol.auth", session_guid.c_str());
 
-                        InformationEnvelope info;
-                        info.Base = *reinterpret_cast<VirtualEthernetInformation*>(p);
-
-                        // convert from network byte order to host byte order
-                        info.Base.BandwidthQoS    = ppp::net::Ipep::NetworkToHostOrder(info.Base.BandwidthQoS);
-                        info.Base.ExpiredTime     = ntohl(info.Base.ExpiredTime);
-                        info.Base.IncomingTraffic = ppp::net::Ipep::NetworkToHostOrder(info.Base.IncomingTraffic);
-                        info.Base.OutgoingTraffic = ppp::net::Ipep::NetworkToHostOrder(info.Base.OutgoingTraffic);
-
-                        p += sizeof(VirtualEthernetInformation);
-                        packet_length -= sizeof(VirtualEthernetInformation);
-                        if (packet_length > 0) {
-                            info.ExtendedJson.assign(reinterpret_cast<char*>(p), packet_length);
-                            VirtualEthernetInformationExtensions::FromJson(info.Extensions, info.ExtendedJson);
-                        }
-
-                        ppp::telemetry::Log(Level::kDebug, "protocol", "INFO received bandwidth_qos=%lld incoming=%llu outgoing=%llu",
-                                            static_cast<long long>(info.Base.BandwidthQoS),
-                                            static_cast<unsigned long long>(info.Base.IncomingTraffic),
-                                            static_cast<unsigned long long>(info.Base.OutgoingTraffic));
-                        ppp::telemetry::Count("protocol.info.received", 1);
-                        ppp::telemetry::Count("protocol.auth.success", 1);
-                        ppp::telemetry::Count("protocol.bandwidth.received", 1);
-                        return OnInformation(transmission, static_cast<const InformationEnvelope&>(info), y);
-                    } else {
-                        return packet_length == 0;
+                    InformationEnvelope info;
+                    if (!DecodeInformation(p - 1, packet_length + 1, info)) {
+                        return global::PACKET_Fail(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
                     }
+
+                    ppp::telemetry::Log(Level::kDebug, "protocol", "INFO received bandwidth_qos=%lld incoming=%llu outgoing=%llu",
+                                        static_cast<long long>(info.Base.BandwidthQoS),
+                                        static_cast<unsigned long long>(info.Base.IncomingTraffic),
+                                        static_cast<unsigned long long>(info.Base.OutgoingTraffic));
+                    ppp::telemetry::Count("protocol.info.received", 1);
+                    ppp::telemetry::Count("protocol.auth.success", 1);
+                    ppp::telemetry::Count("protocol.bandwidth.received", 1);
+                    return OnInformation(transmission, static_cast<const InformationEnvelope&>(info), y);
                 }
                 elif (packet_action == PacketAction_FRP_ENTRY) {      // FRP entry registration
                     if (packet_length > 0) {

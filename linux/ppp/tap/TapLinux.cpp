@@ -8,6 +8,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <ppp/diagnostics/DatapathPerfJson.h>
+#include "TapGsoLedger.h"
+#include "TapGsoMergeabilityAnalyzer.h"
+#include "TapVnetCodec.h"
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
 
@@ -132,6 +136,29 @@ namespace ppp {
                 return true;
             }
 
+            static bool TryRouteExists(
+                const ppp::string& interface_id,
+                UInt32 address,
+                int prefix,
+                UInt32 gateway,
+                bool& exists) noexcept {
+                if (prefix < 0 || prefix > 32) {
+                    prefix = 32;
+                }
+                const uint32_t mask = IPEndPoint::PrefixToNetmask(prefix);
+                uint32_t ignored_gateway = 0;
+                bool query_succeeded = false;
+                exists = TapLinux::GetDefaultGateway(
+                    &ignored_gateway,
+                    [&interface_id, address, gateway, mask](const char* interface_name,
+                        uint32_t ip, uint32_t gw, uint32_t route_mask, int) noexcept {
+                        return (interface_id.empty() || interface_id == interface_name) &&
+                            ip == address && gw == gateway && route_mask == mask;
+                    },
+                    &query_succeeded);
+                return query_succeeded;
+            }
+
             static int GetInterfaceIndexByName(const ppp::string& ifrName) noexcept {
                 if (!IsSafeInterfaceName(ifrName)) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TapLinuxUnsafeToken);
@@ -186,29 +213,31 @@ namespace ppp {
                 return true;
             }
 
-            static bool SendNetlinkRequest(struct nlmsghdr& header, ppp::diagnostics::ErrorCode failure_code, bool missing_ok) noexcept {
+            static int SendNetlinkRequestStatus(struct nlmsghdr& header, ppp::diagnostics::ErrorCode failure_code) noexcept {
                 int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
                 if (fd < 0) {
                     ppp::diagnostics::SetLastErrorCode(failure_code);
-                    return false;
+                    return errno > 0 ? errno : EIO;
                 }
 
                 struct sockaddr_nl local_addr;
                 memset(&local_addr, 0, sizeof(local_addr));
                 local_addr.nl_family = AF_NETLINK;
                 if (bind(fd, reinterpret_cast<struct sockaddr*>(&local_addr), sizeof(local_addr)) < 0) {
+                    int error = errno;
                     ::close(fd);
                     ppp::diagnostics::SetLastErrorCode(failure_code);
-                    return false;
+                    return error > 0 ? error : EIO;
                 }
 
                 struct timeval timeout;
                 memset(&timeout, 0, sizeof(timeout));
                 timeout.tv_sec = 1;
                 if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) < 0) {
+                    int error = errno;
                     ::close(fd);
                     ppp::diagnostics::SetLastErrorCode(failure_code);
-                    return false;
+                    return error > 0 ? error : EIO;
                 }
 
                 header.nlmsg_flags |= NLM_F_REQUEST | NLM_F_ACK;
@@ -232,9 +261,10 @@ namespace ppp {
                 msg.msg_iovlen = 1;
 
                 if (sendmsg(fd, &msg, 0) < 0) {
+                    int error = errno;
                     ::close(fd);
                     ppp::diagnostics::SetLastErrorCode(failure_code);
-                    return false;
+                    return error > 0 ? error : EIO;
                 }
 
                 Byte buffer[4096];
@@ -245,14 +275,15 @@ namespace ppp {
                             continue;
                         }
 
+                        int error = errno;
                         ::close(fd);
                         ppp::diagnostics::SetLastErrorCode(failure_code);
-                        return false;
+                        return error > 0 ? error : EIO;
                     }
                     if (received == 0) {
                         ::close(fd);
                         ppp::diagnostics::SetLastErrorCode(failure_code);
-                        return false;
+                        return EIO;
                     }
 
                     int remaining = static_cast<int>(received);
@@ -267,26 +298,31 @@ namespace ppp {
                             if (response->nlmsg_len < NLMSG_LENGTH(sizeof(struct nlmsgerr))) {
                                 ::close(fd);
                                 ppp::diagnostics::SetLastErrorCode(failure_code);
-                                return false;
+                                return EIO;
                             }
 
                             struct nlmsgerr* error = reinterpret_cast<struct nlmsgerr*>(NLMSG_DATA(response));
                             int error_code = error->error;
                             ::close(fd);
-                            if (error_code == 0 || (missing_ok && (error_code == -ENOENT || error_code == -ESRCH))) {
-                                return true;
-                            }
-
-                            ppp::diagnostics::SetLastErrorCode(failure_code);
-                            return false;
+                            return error_code < 0 ? -error_code : error_code;
                         }
 
                         if (response->nlmsg_type == NLMSG_DONE) {
                             ::close(fd);
-                            return true;
+                            return 0;
                         }
                     }
                 }
+            }
+
+            static bool SendNetlinkRequest(struct nlmsghdr& header, ppp::diagnostics::ErrorCode failure_code, bool missing_ok) noexcept {
+                int error = SendNetlinkRequestStatus(header, failure_code);
+                if (error == 0 || (missing_ok && (error == ENOENT || error == ESRCH))) {
+                    return true;
+                }
+
+                ppp::diagnostics::SetLastErrorCode(failure_code);
+                return false;
             }
 
             static bool DeleteIPv6AddressByNetlink(const ppp::string& ifrName, const ppp::string& addressIP, int prefix_length) noexcept {
@@ -411,6 +447,201 @@ namespace ppp {
                 return SendNetlinkRequest(request.header, ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed, false);
             }
 
+            static bool QueryIPv6PermanentNeighborByNetlink(int interface_index, const struct in6_addr& address, bool& exact_exists) noexcept {
+                exact_exists = false;
+
+                int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+                if (fd < 0) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                    return false;
+                }
+
+                struct sockaddr_nl local_addr;
+                memset(&local_addr, 0, sizeof(local_addr));
+                local_addr.nl_family = AF_NETLINK;
+                if (bind(fd, reinterpret_cast<struct sockaddr*>(&local_addr), sizeof(local_addr)) < 0) {
+                    ::close(fd);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                    return false;
+                }
+
+                struct timeval timeout;
+                memset(&timeout, 0, sizeof(timeout));
+                timeout.tv_sec = 1;
+                if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) < 0) {
+                    ::close(fd);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                    return false;
+                }
+
+                NetlinkRequest<64> request;
+                memset(&request, 0, sizeof(request));
+                request.header.nlmsg_len = NLMSG_LENGTH(sizeof(struct ndmsg));
+                request.header.nlmsg_type = RTM_GETNEIGH;
+                request.header.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+                request.header.nlmsg_seq = static_cast<unsigned int>(std::chrono::steady_clock::now().time_since_epoch().count());
+
+                struct ndmsg* query = reinterpret_cast<struct ndmsg*>(NLMSG_DATA(&request.header));
+                query->ndm_family = AF_INET6;
+                query->ndm_ifindex = interface_index;
+
+                struct sockaddr_nl kernel_addr;
+                memset(&kernel_addr, 0, sizeof(kernel_addr));
+                kernel_addr.nl_family = AF_NETLINK;
+
+                struct iovec iov;
+                memset(&iov, 0, sizeof(iov));
+                iov.iov_base = &request.header;
+                iov.iov_len = request.header.nlmsg_len;
+
+                struct msghdr msg;
+                memset(&msg, 0, sizeof(msg));
+                msg.msg_name = &kernel_addr;
+                msg.msg_namelen = sizeof(kernel_addr);
+                msg.msg_iov = &iov;
+                msg.msg_iovlen = 1;
+                if (sendmsg(fd, &msg, 0) < 0) {
+                    ::close(fd);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                    return false;
+                }
+
+                Byte buffer[8192];
+                for (;;) {
+                    ssize_t received = recv(fd, buffer, sizeof(buffer), 0);
+                    if (received < 0) {
+                        if (errno == EINTR) {
+                            continue;
+                        }
+                        ::close(fd);
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                        return false;
+                    }
+                    if (received == 0) {
+                        ::close(fd);
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                        return false;
+                    }
+
+                    int remaining = static_cast<int>(received);
+                    for (struct nlmsghdr* response = reinterpret_cast<struct nlmsghdr*>(buffer);
+                        NLMSG_OK(response, remaining);
+                        response = NLMSG_NEXT(response, remaining)) {
+                        if (response->nlmsg_seq != request.header.nlmsg_seq) {
+                            continue;
+                        }
+                        if (response->nlmsg_type == NLMSG_DONE) {
+                            ::close(fd);
+                            return true;
+                        }
+                        if (response->nlmsg_type == NLMSG_ERROR) {
+                            ::close(fd);
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                            return false;
+                        }
+                        if (response->nlmsg_type != RTM_NEWNEIGH || response->nlmsg_len < NLMSG_LENGTH(sizeof(struct ndmsg))) {
+                            continue;
+                        }
+
+                        struct ndmsg* neighbor = reinterpret_cast<struct ndmsg*>(NLMSG_DATA(response));
+                        if (neighbor->ndm_family != AF_INET6 || neighbor->ndm_ifindex != interface_index ||
+                            (neighbor->ndm_flags & NTF_PROXY) != 0 || (neighbor->ndm_state & NUD_PERMANENT) == 0) {
+                            continue;
+                        }
+
+                        bool destination_matches = false;
+                        int attributes_length = NLMSG_PAYLOAD(response, sizeof(struct ndmsg));
+                        struct rtattr* attribute = reinterpret_cast<struct rtattr*>(
+                            reinterpret_cast<Byte*>(neighbor) + NLMSG_ALIGN(sizeof(struct ndmsg)));
+                        for (; RTA_OK(attribute, attributes_length); attribute = RTA_NEXT(attribute, attributes_length)) {
+                            if (attribute->rta_type == NDA_DST && RTA_PAYLOAD(attribute) == sizeof(address)) {
+                                destination_matches = memcmp(RTA_DATA(attribute), &address, sizeof(address)) == 0;
+                            }
+                        }
+
+                        if (destination_matches) {
+                            exact_exists = true;
+                            ::close(fd);
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            static TapLinux::NeighborMutationResult AddIPv6PermanentNeighborByNetlink(const ppp::string& ifrName, const ppp::string& addressIP) noexcept {
+                int interface_index = GetInterfaceIndexByName(ifrName);
+                if (interface_index < 0) {
+                    return TapLinux::NeighborMutationResult::Failed;
+                }
+
+                struct in6_addr address;
+                if (!ParseIPv6Address(addressIP, address)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                    return TapLinux::NeighborMutationResult::Failed;
+                }
+
+                NetlinkRequest<256> request;
+                memset(&request, 0, sizeof(request));
+                request.header.nlmsg_len = NLMSG_LENGTH(sizeof(struct ndmsg));
+                request.header.nlmsg_type = RTM_NEWNEIGH;
+                request.header.nlmsg_flags = NLM_F_CREATE | NLM_F_EXCL;
+
+                struct ndmsg* message = reinterpret_cast<struct ndmsg*>(NLMSG_DATA(&request.header));
+                message->ndm_family = AF_INET6;
+                message->ndm_ifindex = interface_index;
+                message->ndm_state = NUD_PERMANENT;
+                message->ndm_flags = 0;
+
+                const Byte dummy_lladdr[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 };
+                if (!AppendNetlinkAttribute(request.header, sizeof(request), NDA_DST, &address, sizeof(address)) ||
+                    !AppendNetlinkAttribute(request.header, sizeof(request), NDA_LLADDR, dummy_lladdr, sizeof(dummy_lladdr))) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                    return TapLinux::NeighborMutationResult::Failed;
+                }
+
+                int error = SendNetlinkRequestStatus(request.header, ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                bool query_succeeded = false;
+                bool exact_exists = false;
+                if (error == EEXIST) {
+                    query_succeeded = QueryIPv6PermanentNeighborByNetlink(interface_index, address, exact_exists);
+                }
+
+                TapLinux::NeighborMutationResult result = TapLinux::ClassifyPermanentNeighborAddResult(error, query_succeeded, exact_exists);
+                if (result == TapLinux::NeighborMutationResult::Failed) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                }
+                return result;
+            }
+
+            static bool DeleteIPv6PermanentNeighborByNetlink(const ppp::string& ifrName, const ppp::string& addressIP) noexcept {
+                int interface_index = GetInterfaceIndexByName(ifrName);
+                if (interface_index < 0) {
+                    return false;
+                }
+
+                struct in6_addr address;
+                if (!ParseIPv6Address(addressIP, address)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                    return false;
+                }
+
+                NetlinkRequest<256> request;
+                memset(&request, 0, sizeof(request));
+                request.header.nlmsg_len = NLMSG_LENGTH(sizeof(struct ndmsg));
+                request.header.nlmsg_type = RTM_DELNEIGH;
+
+                struct ndmsg* message = reinterpret_cast<struct ndmsg*>(NLMSG_DATA(&request.header));
+                message->ndm_family = AF_INET6;
+                message->ndm_ifindex = interface_index;
+
+                if (!AppendNetlinkAttribute(request.header, sizeof(request), NDA_DST, &address, sizeof(address))) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                    return false;
+                }
+
+                return SendNetlinkRequest(request.header, ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed, true);
+            }
+
             static ppp::string GetProxyNdpPath(const ppp::string& ifrName) noexcept {
                 if (!IsSafeInterfaceName(ifrName)) {
                     return ppp::string();
@@ -509,17 +740,45 @@ namespace ppp {
         };
 
         static thread_local SsmtThreadLocalTls  ssmt_tls_;
+        static thread_local bool                tun_gso_force_bare_ = false;
         static bool                             ifc_ctl_sock_compatible_route = false;
+
+        static bool TapGsoMergeRequested() noexcept {
+            const char* disable = std::getenv("OPENPPP2_TAP_GSO_MERGE_DISABLE");
+            if (disable != NULLPTR && *disable == '1') return false;
+            const char* enable = std::getenv("OPENPPP2_TAP_GSO_MERGE");
+            return enable != NULLPTR && *enable == '1';
+        }
+
+        static bool TapNdiTsoRequested() noexcept {
+            const char* enable = std::getenv("OPENPPP2_XTCP_NDI_TSO_TX");
+            return enable != NULLPTR && enable[0] == '1' && enable[1] == '\0';
+        }
 
         TapLinux::TapLinux(const std::shared_ptr<boost::asio::io_context>& context, const ppp::string& dev, void* tun, uint32_t address, uint32_t gw, uint32_t mask, bool hosted_network)
             : ITap(context, dev, tun, address, gw, mask, hosted_network)
             , promisc_(false)
-            , disposed_(FALSE) {
+            , disposed_(FALSE)
+            , gso_hold_timer_(*context)
+            , gso_coalescer_([this](const uint8_t* frame, size_t frame_size) noexcept { return WriteGsoFrameLocked(frame, frame_size); }) {
 
         }
 
         TapLinux::~TapLinux() noexcept {
             Finalize();
+        }
+
+        bool TapLinux::GetRuntimeStats(ppp::tap::TapRuntimeStats& stats) const noexcept {
+            std::lock_guard<std::mutex> lock(gso_mutex_);
+            stats.vnet_header = vnet_header_;
+            stats.gso_merge_active = gso_merge_active_;
+            stats.tx_gso_supported = disposed_.load(std::memory_order_acquire) == FALSE &&
+                tun_write_failed_.load(std::memory_order_acquire) == FALSE &&
+                vnet_header_ && tx_gso_supported_ && !gso_ssmt_disabled_;
+            stats.direct_gso_packets = direct_gso_packets_.load(std::memory_order_relaxed);
+            stats.direct_gso_bytes = direct_gso_bytes_.load(std::memory_order_relaxed);
+            stats.direct_gso_rejected = direct_gso_rejected_.load(std::memory_order_relaxed);
+            return true;
         }
 
         int TapLinux::OpenDriver(const char* ifrName) noexcept {
@@ -552,6 +811,13 @@ namespace ppp {
             // https://www.kernel.org/doc/Documentation/networking/tuntap.txt
             strncpy(ifr.ifr_name, ifrName, IFNAMSIZ);
 
+            bool request_gso = !tun_gso_force_bare_ &&
+                (TapGsoMergeRequested() || TapNdiTsoRequested());
+            if (request_gso) {
+                unsigned int features = 0;
+                request_gso = ioctl(tun, TUNGETFEATURES, &features) == 0 && (features & IFF_VNET_HDR) != 0;
+            }
+
             bool fails = false;
 #if defined(IFF_MULTI_QUEUE)
 #if defined(IFF_ATTACH_QUEUE)
@@ -559,24 +825,46 @@ namespace ppp {
             ioctl(tun, TUNSETQUEUE, &ifr);
 #endif
 
-            ifr.ifr_flags = IFF_TUN | IFF_NO_PI | IFF_MULTI_QUEUE;
+            ifr.ifr_flags = IFF_TUN | IFF_NO_PI | IFF_MULTI_QUEUE | (request_gso ? IFF_VNET_HDR : 0);
             fails = ioctl(tun, TUNSETIFF, &ifr) < 0;
 
             if (fails) {
-                ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+                ifr.ifr_flags = IFF_TUN | IFF_NO_PI | (request_gso ? IFF_VNET_HDR : 0);
                 fails = ioctl(tun, TUNSETIFF, &ifr) < 0;
             }
 #else
-            ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+            ifr.ifr_flags = IFF_TUN | IFF_NO_PI | (request_gso ? IFF_VNET_HDR : 0);
             fails = ioctl(tun, TUNSETIFF, &ifr) < 0;
 #endif
 
             if (fails) {
                 ::close(tun);
+                if (request_gso) {
+                    tun_gso_force_bare_ = true;
+                    const int bare_tun = OpenDriver(ifrName);
+                    tun_gso_force_bare_ = false;
+                    return bare_tun;
+                }
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelDeviceConfigureFailed);
                 return -1;
             }
             else {
+                if (request_gso) {
+                    int header_size = static_cast<int>(sizeof(virtio_net_hdr));
+                    int header_readback = 0;
+                    const bool configured =
+                        ioctl(tun, TUNSETVNETHDRSZ, &header_size) == 0 &&
+                        ioctl(tun, TUNGETVNETHDRSZ, &header_readback) == 0 &&
+                        header_readback == static_cast<int>(sizeof(virtio_net_hdr)) &&
+                        ioctl(tun, TUNSETOFFLOAD, TUN_F_CSUM | TUN_F_TSO4) == 0;
+                    if (!configured) {
+                        ::close(tun);
+                        tun_gso_force_bare_ = true;
+                        const int bare_tun = OpenDriver(ifrName);
+                        tun_gso_force_bare_ = false;
+                        return bare_tun;
+                    }
+                }
 #if defined(IFF_ATTACH_QUEUE)
                 ifr.ifr_flags = IFF_ATTACH_QUEUE; /* IFF_DETACH_QUEUE */
                 ioctl(tun, TUNSETQUEUE, &ifr);
@@ -851,6 +1139,34 @@ namespace ppp {
             return ok;
         }
 
+        TapLinux::NeighborMutationResult TapLinux::AddIPv6PermanentNeighbor(const ppp::string& ifrName, const ppp::string& addressIP) noexcept {
+            ppp::telemetry::SpanScope span("tap.ipv6.neighbor.permanent.add");
+            if (!IsSafeInterfaceName(ifrName) || !IsSafeShellToken(addressIP)) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                return NeighborMutationResult::Failed;
+            }
+
+            NeighborMutationResult result = AddIPv6PermanentNeighborByNetlink(ifrName, addressIP);
+            if (result == NeighborMutationResult::Changed) {
+                ppp::telemetry::Log(Level::kDebug, "tap", "permanent ipv6 neighbor added: %s", addressIP.data());
+            }
+            return result;
+        }
+
+        bool TapLinux::DeleteIPv6PermanentNeighbor(const ppp::string& ifrName, const ppp::string& addressIP) noexcept {
+            ppp::telemetry::SpanScope span("tap.ipv6.neighbor.permanent.delete");
+            if (!IsSafeInterfaceName(ifrName) || !IsSafeShellToken(addressIP)) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                return false;
+            }
+
+            bool ok = DeleteIPv6PermanentNeighborByNetlink(ifrName, addressIP);
+            if (ok) {
+                ppp::telemetry::Log(Level::kDebug, "tap", "permanent ipv6 neighbor deleted: %s", addressIP.data());
+            }
+            return ok;
+        }
+
         ppp::string TapLinux::GetIPAddress(const ppp::string& ifrName) noexcept {
             if (ifrName.empty()) {
                 return "";
@@ -992,9 +1308,6 @@ namespace ppp {
             int err = ioctl(ifc_ctl_sock.sock_v4, action, &rt);
             if (err < 0) {
                 err = errno;
-                if (err == EEXIST) {
-                    err = 0;
-                }
             }
             return err;
         }
@@ -1071,13 +1384,25 @@ namespace ppp {
             return SetRouteToLinux(address, prefix, gw, false);
         }
 
-        bool TapLinux::AddRoute(const ppp::string& ifrName, UInt32 address, int prefix, UInt32 gw) noexcept {
+        TapLinux::RouteMutationResult TapLinux::AddRouteStatus(
+            const ppp::string& ifrName,
+            UInt32 address,
+            int prefix,
+            UInt32 gw) noexcept {
             if (ifc_ctl_sock_compatible_route) {
-                bool ok = SetRouteToLinux(address, prefix, gw, true);
-                if (!ok) {
-                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteAddFailed);
+                bool exists = false;
+                if (TryRouteExists(ifrName, address, prefix, gw, exists) && exists) {
+                    return RouteMutationResult::Unchanged;
                 }
-                return ok;
+                bool ok = SetRouteToLinux(address, prefix, gw, true);
+                if (ok) {
+                    return RouteMutationResult::Changed;
+                }
+                if (TryRouteExists(ifrName, address, prefix, gw, exists) && exists) {
+                    return RouteMutationResult::Unchanged;
+                }
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteAddFailed);
+                return RouteMutationResult::Failed;
             }
 
             if (prefix < 0 || prefix > 32) {
@@ -1092,16 +1417,31 @@ namespace ppp {
 
             int err = TapLinux::SetRoute(SIOCADDRT, ifrName, in_dst, prefix, in_gw);
             if (0 == err) {
-                return true;
+                return RouteMutationResult::Changed;
+            }
+            if (EEXIST == err) {
+                bool exists = false;
+                const bool query_succeeded =
+                    TryRouteExists(ifrName, address, prefix, gw, exists);
+                return ClassifyRouteAddResult(err, query_succeeded, exists);
             }
 
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteAddFailed);
-            return false;
+            return RouteMutationResult::Failed;
+        }
+
+        bool TapLinux::AddRoute(const ppp::string& ifrName, UInt32 address, int prefix, UInt32 gw) noexcept {
+            return AddRouteStatus(ifrName, address, prefix, gw) !=
+                RouteMutationResult::Failed;
         }
 
         bool TapLinux::DeleteRoute(const ppp::string& ifrName, UInt32 address, int prefix, UInt32 gw) noexcept {
             if (ifc_ctl_sock_compatible_route) {
-                return SetRouteToLinux(address, prefix, gw, false);
+                if (SetRouteToLinux(address, prefix, gw, false)) {
+                    return true;
+                }
+                bool exists = false;
+                return TryRouteExists(ifrName, address, prefix, gw, exists) && !exists;
             }
 
             if (prefix < 0 || prefix > 32) {
@@ -1132,7 +1472,7 @@ namespace ppp {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteDeleteFailed);
             }
 
-            return any;
+            return any || ENOENT == last_err || ESRCH == last_err;
         }
 
         ppp::string TapLinux::GetDeviceId(const ppp::string& ifrName) noexcept {
@@ -1251,7 +1591,7 @@ namespace ppp {
          * eth0    00000000        00000000        0001    0       0       1000    00000000        0       0       0
          * One header line, and then one line by route by route table entry.
         */
-        bool TapLinux::GetDefaultGateway(UInt32* address, const ppp::function<bool(const char*, uint32_t ip, uint32_t gw, uint32_t mask, int metric)>& predicate) noexcept {
+        bool TapLinux::GetDefaultGateway(UInt32* address, const ppp::function<bool(const char*, uint32_t ip, uint32_t gw, uint32_t mask, int metric)>& predicate, bool* query_succeeded) noexcept {
             unsigned long d, g, fl, rc, us, metric, mask;
             char buf[256];
             char eth[256];
@@ -1261,6 +1601,9 @@ namespace ppp {
             FILE* f;
             char* p;
 
+            if (query_succeeded) {
+                *query_succeeded = false;
+            }
             if (!address || !predicate) {
                 return false;
             }
@@ -1268,6 +1611,9 @@ namespace ppp {
             f = fopen("/proc/net/route", "r");
             if (!f) {
                 return false;
+            }
+            if (query_succeeded) {
+                *query_succeeded = true;
             }
 
             while (fgets(buf, sizeof(buf), f)) {
@@ -1441,6 +1787,8 @@ namespace ppp {
             return TapLinux::DeleteRoute(this->GetId(), address, prefix, gw);
         }
 
+        namespace { void RecordTunFinalizeDiagnostic() noexcept; }
+
         void TapLinux::Dispose() noexcept {
             std::shared_ptr<ITap> self = shared_from_this();
             std::shared_ptr<boost::asio::io_context> context = GetContext();
@@ -1453,8 +1801,18 @@ namespace ppp {
         }
 
         void TapLinux::Finalize() noexcept {
+            RecordTunFinalizeDiagnostic();
             int disposed = disposed_.exchange(TRUE);
             if (disposed != TRUE) {
+                {
+                    std::lock_guard<std::mutex> lock(gso_mutex_);
+                    gso_ssmt_disabled_ = true;
+                    if (gso_merge_active_) {
+                        DisableGsoMergeLocked(static_cast<int>(reinterpret_cast<std::intptr_t>(GetHandle())));
+                    } else {
+                        CancelGsoHoldTimerLocked();
+                    }
+                }
                 ppp::telemetry::Log(Level::kInfo, "tap", "TUN device closing");
                 ppp::telemetry::Count("tap.close", 1);
                 SetNetifUp(false);
@@ -1476,20 +1834,513 @@ namespace ppp {
             }
         }
 
+        namespace {
+            struct GsoMergeabilityTelemetry {
+                bool enabled = false;
+                bool ledger_enabled = false;
+                bool tun_output_diagnostics_enabled = false;
+                bool measurement_window_closed = false;
+                std::atomic<uint64_t> tun_output_invalid{0};
+                std::atomic<uint64_t> tun_output_disposed{0};
+                std::atomic<uint64_t> tun_output_write_failed{0};
+                std::atomic<uint64_t> tun_write_latch_bare{0};
+                std::atomic<uint64_t> tun_write_latch_gso_disable_flush{0};
+                std::atomic<uint64_t> tun_write_latch_gso_hold_timer_flush{0};
+                std::atomic<uint64_t> tun_write_latch_gso_ordinary_write{0};
+                std::atomic<uint64_t> tun_write_latch_gso_coalescer_push{0};
+                std::atomic<uint64_t> tun_vnet_input_close{0};
+                std::atomic<uint64_t> tun_finalize{0};
+                std::atomic<uint64_t> first_push_returned_false_ns{0};
+                std::atomic<uint64_t> first_fail_tun_write_latch_ns{0};
+                std::atomic<uint64_t> first_dispose_from_tun_write_latch_ns{0};
+                std::atomic<uint64_t> push_false_without_terminal{0};
+                std::sig_atomic_t applied_boundary = 0;
+                ppp::tap::TunGsoMergeabilityAnalyzer analyzer;
+                ppp::tap::TunGsoLedger ledger;
+                ppp::tap::TunGsoFirstPushFailure first_push_failure;
+
+                void SynchronizeMeasurementBoundary() noexcept {
+                    const std::sig_atomic_t boundary = ppp::diagnostics::datapath_perf::MeasurementBoundaryRequest();
+                    if (boundary == 0 || boundary == applied_boundary) return;
+                    applied_boundary = boundary;
+                    if (boundary == 1) {
+                        measurement_window_closed = false;
+                        if (enabled) analyzer.ResetWindow();
+                        if (ledger_enabled) ledger.ResetWindow();
+                    } else if (boundary == 2) {
+                        measurement_window_closed = true;
+                        if (enabled) analyzer.FinalizeOpenRun();
+                        if (ledger_enabled) ledger.FinalizeWindow();
+                    }
+                }
+
+                void CountTunOutputInvalid() noexcept {
+                    if (tun_output_diagnostics_enabled) tun_output_invalid.fetch_add(1, std::memory_order_relaxed);
+                }
+
+                void CountTunOutputDisposed() noexcept {
+                    if (tun_output_diagnostics_enabled) tun_output_disposed.fetch_add(1, std::memory_order_relaxed);
+                }
+
+                void CountTunOutputWriteFailed() noexcept {
+                    if (tun_output_diagnostics_enabled) tun_output_write_failed.fetch_add(1, std::memory_order_relaxed);
+                }
+
+                void CountTunWriteLatch(unsigned source) noexcept {
+                    if (!tun_output_diagnostics_enabled) return;
+                    switch (source) {
+                        case 0: tun_write_latch_bare.fetch_add(1, std::memory_order_relaxed); break;
+                        case 1: tun_write_latch_gso_disable_flush.fetch_add(1, std::memory_order_relaxed); break;
+                        case 2: tun_write_latch_gso_hold_timer_flush.fetch_add(1, std::memory_order_relaxed); break;
+                        case 3: tun_write_latch_gso_ordinary_write.fetch_add(1, std::memory_order_relaxed); break;
+                        case 4: tun_write_latch_gso_coalescer_push.fetch_add(1, std::memory_order_relaxed); break;
+                        default: break;
+                    }
+                }
+
+                void CountTunVnetInputClose() noexcept {
+                    if (tun_output_diagnostics_enabled) tun_vnet_input_close.fetch_add(1, std::memory_order_relaxed);
+                }
+
+                void CountTunFinalize() noexcept {
+                    if (tun_output_diagnostics_enabled) tun_finalize.fetch_add(1, std::memory_order_relaxed);
+                }
+
+                static void RecordFirstTimestamp(std::atomic<uint64_t>& destination,
+                    uint64_t timestamp_ns) noexcept {
+                    uint64_t expected = 0;
+                    (void)destination.compare_exchange_strong(expected, timestamp_ns,
+                        std::memory_order_relaxed);
+                }
+
+                void RecordPushReturnedFalse(uint64_t timestamp_ns) noexcept {
+                    if (tun_output_diagnostics_enabled) {
+                        RecordFirstTimestamp(first_push_returned_false_ns, timestamp_ns);
+                    }
+                }
+
+                void RecordFailTunWriteLatch() noexcept {
+                    if (tun_output_diagnostics_enabled) {
+                        RecordFirstTimestamp(first_fail_tun_write_latch_ns, TunGsoCoalescer::NowNs());
+                    }
+                }
+
+                void RecordDisposeFromTunWriteLatch() noexcept {
+                    if (tun_output_diagnostics_enabled) {
+                        RecordFirstTimestamp(first_dispose_from_tun_write_latch_ns, TunGsoCoalescer::NowNs());
+                    }
+                }
+
+                void CountPushFalseWithoutTerminal() noexcept {
+                    if (tun_output_diagnostics_enabled) {
+                        push_false_without_terminal.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+
+                static const char* FirstPushFailureKindName(ppp::tap::TunGsoFirstPushFailure::Kind kind) noexcept {
+                    switch (kind) {
+                    case ppp::tap::TunGsoFirstPushFailure::Kind::Ordinary: return "ordinary";
+                    case ppp::tap::TunGsoFirstPushFailure::Kind::Gso: return "gso";
+                    case ppp::tap::TunGsoFirstPushFailure::Kind::None: return "none";
+                    }
+                    return "none";
+                }
+
+                static const char* WriteOutcomeName(TunGsoCoalescer::WriteOutcome outcome) noexcept {
+                    switch (outcome) {
+                    case TunGsoCoalescer::WriteOutcome::NegativeFailure: return "negative";
+                    case TunGsoCoalescer::WriteOutcome::PartialDelivery: return "partial";
+                    case TunGsoCoalescer::WriteOutcome::Complete: return "complete";
+                    case TunGsoCoalescer::WriteOutcome::None: return "none";
+                    }
+                    return "none";
+                }
+
+                static const char* RejectionReasonName(TunGsoCoalescer::RejectionReason reason) noexcept {
+                    switch (reason) {
+                    case TunGsoCoalescer::RejectionReason::Incompatible: return "incompatible";
+                    case TunGsoCoalescer::RejectionReason::Psh: return "psh";
+                    case TunGsoCoalescer::RejectionReason::Control: return "control";
+                    case TunGsoCoalescer::RejectionReason::Mtu: return "mtu";
+                    case TunGsoCoalescer::RejectionReason::None: return "none";
+                    }
+                    return "none";
+                }
+
+                static const char* FlushReasonName(TunGsoCoalescer::FlushReason reason, bool captured) noexcept {
+                    if (!captured) return "none";
+                    switch (reason) {
+                    case TunGsoCoalescer::FlushReason::Explicit: return "explicit";
+                    case TunGsoCoalescer::FlushReason::Cap: return "cap";
+                    case TunGsoCoalescer::FlushReason::Timeout: return "timeout";
+                    case TunGsoCoalescer::FlushReason::Incompatible: return "incompatible";
+                    case TunGsoCoalescer::FlushReason::ShortTail: return "short_tail";
+                    case TunGsoCoalescer::FlushReason::Psh: return "psh";
+                    case TunGsoCoalescer::FlushReason::Control: return "control";
+                    case TunGsoCoalescer::FlushReason::Ssmt: return "ssmt";
+                    case TunGsoCoalescer::FlushReason::Terminate: return "terminate";
+                    }
+                    return "none";
+                }
+
+                void RenderTunOutputJson(std::ostream& output) const {
+                    const ppp::tap::TunGsoFirstPushFailure::Snapshot first = first_push_failure.GetSnapshot();
+                    const bool captured = first.kind != ppp::tap::TunGsoFirstPushFailure::Kind::None;
+                    const bool mtu_terminal = captured && first.rejection == TunGsoCoalescer::RejectionReason::Mtu;
+                    const ppp::tap::TunGsoCoalescer::PacketShape empty_packet_shape;
+                    const ppp::tap::TunGsoCoalescer::PacketShape& packet_shape =
+                        mtu_terminal ? first.packet_shape : empty_packet_shape;
+                    const ppp::tap::TunGsoFirstPushFailure::Precursor& precursor = first.precursor;
+                    output << ",\"tun_output\":{\"invalid\":"
+                        << tun_output_invalid.load(std::memory_order_relaxed)
+                        << ",\"disposed\":" << tun_output_disposed.load(std::memory_order_relaxed)
+                        << ",\"already_tun_write_failed\":" << tun_output_write_failed.load(std::memory_order_relaxed)
+                        << ",\"first_latch\":{\"bare_write\":" << tun_write_latch_bare.load(std::memory_order_relaxed)
+                        << ",\"gso_disable_flush\":" << tun_write_latch_gso_disable_flush.load(std::memory_order_relaxed)
+                        << ",\"gso_hold_timer_flush\":" << tun_write_latch_gso_hold_timer_flush.load(std::memory_order_relaxed)
+                        << ",\"gso_ordinary_write\":" << tun_write_latch_gso_ordinary_write.load(std::memory_order_relaxed)
+                        << ",\"gso_coalescer_push\":" << tun_write_latch_gso_coalescer_push.load(std::memory_order_relaxed)
+                        << "},\"first_push_failure\":{\"semantic\":\"terminal\",\"terminal\":{\"stage\":\"terminal\",\"kind\":\""
+                        << FirstPushFailureKindName(first.kind)
+                        << "\",\"outcome\":\"" << (captured ? WriteOutcomeName(first.outcome) : "none")
+                        << "\",\"flush_reason\":\"" << FlushReasonName(first.flush_reason, captured)
+                        << "\",\"rejection_reason\":\"" << (captured ? RejectionReasonName(first.rejection) : "none")
+                        << "\",\"original_packet_bytes\":" << first.packet_bytes
+                        << ",\"requested_vnet_frame_bytes\":" << first.frame_bytes
+                        << ",\"written_bytes\":" << first.written_bytes
+                        << ",\"error_number\":" << first.error_number
+                        << ",\"segments\":" << first.segments
+                        << ",\"hold_ns\":" << first.hold_ns
+                        << ",\"monotonic_ns\":" << first.monotonic_ns
+                        << ",\"negative_fallback\":" << (first.negative_fallback ? "true" : "false")
+                        << ",\"packet_shape\":{\"parsed\":" << (packet_shape.parsed ? "true" : "false")
+                        << ",\"supplied_bytes\":" << packet_shape.supplied_bytes
+                        << ",\"ipv4_total_length\":" << packet_shape.ipv4_total_length
+                        << ",\"ipv4_ihl_bytes\":" << packet_shape.ipv4_ihl_bytes
+                        << ",\"tcp_data_offset_bytes\":" << packet_shape.tcp_data_offset_bytes
+                        << ",\"tcp_payload_bytes\":" << packet_shape.tcp_payload_bytes
+                        << ",\"ipv4_version\":" << static_cast<unsigned>(packet_shape.ipv4_version)
+                        << ",\"ipv4_protocol\":" << static_cast<unsigned>(packet_shape.ipv4_protocol)
+                        << ",\"ipv4_fragment_flags\":" << packet_shape.ipv4_fragment_flags
+                        << ",\"ipv4_df\":" << (packet_shape.ipv4_df ? "true" : "false")
+                        << ",\"tcp_flags\":" << static_cast<unsigned>(packet_shape.tcp_flags)
+                        << ",\"fixed_max_guard_bytes\":" << packet_shape.max_guard_bytes
+                        << ",\"excess_bytes\":" << packet_shape.excess_bytes
+                        << "}},\"precursor\":{\"stage\":\"" << (precursor.present ? "gso_negative" : "none")
+                        << "\",\"kind\":\"" << (precursor.present ? "gso" : "none")
+                        << "\",\"requested_vnet_frame_bytes\":" << precursor.requested_bytes
+                        << ",\"written_bytes\":" << precursor.written_bytes
+                        << ",\"error_number\":" << precursor.error_number
+                        << ",\"monotonic_ns\":" << precursor.monotonic_ns
+                        << "}},\"failure_timeline\":{\"push_returned_false_ns\":"
+                        << first_push_returned_false_ns.load(std::memory_order_relaxed)
+                        << ",\"fail_tun_write_latch_ns\":"
+                        << first_fail_tun_write_latch_ns.load(std::memory_order_relaxed)
+                        << ",\"dispose_from_tun_write_latch_ns\":"
+                        << first_dispose_from_tun_write_latch_ns.load(std::memory_order_relaxed)
+                        << ",\"push_false_without_terminal\":"
+                        << push_false_without_terminal.load(std::memory_order_relaxed)
+                        << "},\"vnet_input_close\":" << tun_vnet_input_close.load(std::memory_order_relaxed)
+                        << ",\"finalize\":" << tun_finalize.load(std::memory_order_relaxed) << '}';
+                }
+
+                static bool Initialize(GsoMergeabilityTelemetry& result) noexcept {
+                    const char* mergeability_flag = std::getenv("OPENPPP2_DATAPATH_GSO_MERGEABILITY");
+                    result.enabled = mergeability_flag != nullptr && *mergeability_flag == '1';
+                    const char* ledger_flag = std::getenv("OPENPPP2_DATAPATH_GSO_LEDGER");
+                    result.ledger_enabled = ledger_flag != nullptr && *ledger_flag == '1';
+                    const char* tun_output_flag = std::getenv("OPENPPP2_DATAPATH_TUN_OUTPUT_DIAGNOSTICS");
+                    result.tun_output_diagnostics_enabled = tun_output_flag != nullptr && *tun_output_flag == '1';
+                    if (result.tun_output_diagnostics_enabled) {
+                        ppp::diagnostics::datapath_perf::SetTunOutputRender(
+                            [](std::ostream& output) { Instance().RenderTunOutputJson(output); });
+                    }
+                    if (result.enabled) {
+                        ppp::diagnostics::datapath_perf::SetMergeabilityRender(
+                            [](std::ostream& output, const char*) {
+                                output << ",\"tun_gso_mergeability\":" << Instance().analyzer.RenderWindowJson();
+                            });
+                    }
+                    if (result.ledger_enabled) {
+                        ppp::diagnostics::datapath_perf::SetGsoLedgerRender(
+                            [](std::ostream& output, const char*) {
+                                output << ",\"tun_gso_ledger\":" << Instance().ledger.RenderWindowJson();
+                            });
+                    }
+                    return true;
+                }
+
+                static GsoMergeabilityTelemetry& Instance() {
+                    static GsoMergeabilityTelemetry instance;
+                    static const bool initialized = Initialize(instance);
+                    (void)initialized;
+                    return instance;
+                }
+            };
+
+            void RecordTunFinalizeDiagnostic() noexcept {
+                GsoMergeabilityTelemetry::Instance().CountTunFinalize();
+            }
+        }
+        ssize_t TapLinux::WriteTunFrame(int fd, const uint8_t* frame, size_t frame_size) noexcept {
+            ppp::diagnostics::datapath_perf::Scope write_scope;
+            const bool direct_write_accounting = ppp::diagnostics::datapath_perf::BeginTunDirectWrite();
+            const ssize_t bytes_transferred = ::write(fd, frame, frame_size);
+            ppp::diagnostics::datapath_perf::EndTunDirectWrite(direct_write_accounting);
+            ppp::diagnostics::datapath_perf::RecordTunDirectWrite(static_cast<int>(frame_size),
+                static_cast<int>(bytes_transferred), write_scope.Elapsed());
+            return bytes_transferred;
+        }
+
+        ssize_t TapLinux::WriteGsoFrameLocked(const uint8_t* frame, size_t frame_size) noexcept {
+            return WriteTunFrame(gso_write_fd_, frame, frame_size);
+        }
+
+        void TapLinux::FailTunWrite(TunWriteFailureSource source) noexcept {
+            if (tun_write_failed_.exchange(TRUE) == FALSE) {
+                GsoMergeabilityTelemetry& telemetry = GsoMergeabilityTelemetry::Instance();
+                telemetry.RecordFailTunWriteLatch();
+                telemetry.CountTunWriteLatch(static_cast<unsigned>(source));
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelWriteFailed);
+                telemetry.RecordDisposeFromTunWriteLatch();
+                Dispose();
+            }
+        }
+
+        void TapLinux::DisableGsoMergeLocked(int write_fd, TunGsoCoalescer::FlushReason reason) noexcept {
+            CancelGsoHoldTimerLocked();
+            gso_write_fd_ = write_fd;
+            const bool flushed = gso_coalescer_.DisableAndFlush(reason);
+            gso_merge_active_ = false;
+            if (!flushed) {
+                FailTunWrite(TunWriteFailureSource::GsoDisableFlush);
+            }
+        }
+
+        void TapLinux::ArmGsoHoldTimerLocked() noexcept {
+            if (gso_timer_armed_ || !gso_merge_active_ || gso_ssmt_disabled_) return;
+            gso_timer_armed_ = true;
+            const uint64_t generation = ++gso_timer_generation_;
+            gso_hold_timer_.expires_after(std::chrono::microseconds(100));
+            std::shared_ptr<ITap> self = shared_from_this();
+            gso_hold_timer_.async_wait([self, this, generation](const boost::system::error_code& ec) noexcept {
+                std::lock_guard<std::mutex> lock(gso_mutex_);
+                if (generation != gso_timer_generation_) return;
+                gso_timer_armed_ = false;
+                if (ec || !gso_merge_active_ || gso_ssmt_disabled_ || disposed_.load() != FALSE) return;
+                gso_write_fd_ = static_cast<int>(reinterpret_cast<std::intptr_t>(GetHandle()));
+                if (!gso_coalescer_.FlushExpired()) {
+                    gso_merge_active_ = false;
+                    FailTunWrite(TunWriteFailureSource::GsoHoldTimerFlush);
+                }
+            });
+        }
+
+        void TapLinux::CancelGsoHoldTimerLocked() noexcept {
+            if (!gso_timer_armed_) return;
+            gso_timer_armed_ = false;
+            ++gso_timer_generation_;
+            boost::system::error_code ec;
+            gso_hold_timer_.cancel(ec);
+        }
+
+        void TapLinux::OnInput(PacketInputEventArgs& e) noexcept {
+            if (!vnet_header_) {
+                ITap::OnInput(e);
+                return;
+            }
+            auto fail_vnet_input = [this](const char* message) noexcept {
+                GsoMergeabilityTelemetry::Instance().CountTunVnetInputClose();
+                ppp::telemetry::Log(Level::kInfo, "tap", "%s", message);
+                {
+                    std::lock_guard<std::mutex> lock(gso_mutex_);
+                    DisableGsoMergeLocked(static_cast<int>(reinterpret_cast<std::intptr_t>(GetHandle())));
+                }
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelReadFailed);
+                Dispose();
+            };
+            if (e.Packet == NULLPTR || e.PacketLength <= 0 || !vnet::IsStandardHeaderSize(vnet_header_size_)) {
+                fail_vnet_input("malformed VNET frame received; closing TUN");
+                return;
+            }
+
+            uint8_t* frame = static_cast<uint8_t*>(e.Packet);
+            const size_t frame_size = static_cast<size_t>(e.PacketLength);
+            virtio_net_hdr virtio{};
+            if (!vnet::ReadHeader(frame, frame_size, vnet_header_size_, virtio)) {
+                fail_vnet_input("malformed VNET frame received; closing TUN");
+                return;
+            }
+
+            if (virtio.gso_type == VIRTIO_NET_HDR_GSO_NONE) {
+                if (virtio.flags == 0 && le16toh(virtio.hdr_len) == 0 && le16toh(virtio.gso_size) == 0 &&
+                    le16toh(virtio.csum_start) == 0 && le16toh(virtio.csum_offset) == 0) {
+                    const size_t packet_size = frame_size - vnet_header_size_;
+                    // Input is borrowed until this callback returns; the read
+                    // loop keeps the original allocation for its next read.
+                    e.Packet = frame + vnet_header_size_;
+                    e.PacketLength = static_cast<int>(packet_size);
+                    ITap::OnInput(e);
+                    return;
+                }
+                if (!vnet::CompleteChecksumOnlyTcpV4(frame, frame_size, vnet_header_size_)) {
+                    fail_vnet_input("unsupported or malformed inbound VNET checksum-only frame; closing TUN");
+                    return;
+                }
+                const size_t packet_size = frame_size - vnet_header_size_;
+                e.Packet = frame + vnet_header_size_;
+                e.PacketLength = static_cast<int>(packet_size);
+                ITap::OnInput(e);
+                return;
+            }
+
+            vnet::TcpV4GsoFrame gso;
+            if (!vnet::ParseTcpV4Gso(frame, frame_size, vnet_header_size_, ITap::Mtu, gso)) {
+                fail_vnet_input("unsupported or malformed inbound VNET GSO frame; closing TUN");
+                return;
+            }
+
+            if (!vnet::CompleteTcpV4GsoChecksums(gso)) {
+                fail_vnet_input("failed to complete inbound TCPv4 GSO checksums; closing TUN");
+                return;
+            }
+            PacketInputEventArgs gso_event{
+                gso.ip, static_cast<int>(gso.packet_size), true
+            };
+            PacketInputEventHandler handler = GetPacketInput();
+            if (handler && handler(this, gso_event)) {
+                return;
+            }
+
+            for (size_t offset = 0; offset < gso.payload_size; offset += gso.gso_size) {
+                std::array<Byte, ITap::Mtu> segment{};
+                size_t segment_size = 0;
+                if (!vnet::BuildTcpV4GsoSegment(gso, offset, segment.data(), segment.size(), segment_size)) {
+                    fail_vnet_input("failed to build inbound TCPv4 GSO segment; closing TUN");
+                    return;
+                }
+                PacketInputEventArgs segment_event{ segment.data(), static_cast<int>(segment_size) };
+                ITap::OnInput(segment_event);
+            }
+        }
+
+        bool TapLinux::AsynchronousReadPacketLoops() noexcept {
+            if (!vnet_header_) {
+                return ITap::AsynchronousReadPacketLoops();
+            }
+            std::shared_ptr<boost::asio::posix::stream_descriptor> stream = GetStream();
+            if (NULLPTR == stream || !stream->is_open() || NULLPTR == vnet_read_buffer_ || read_capacity_ == 0) {
+                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::TunnelReadFailed);
+            }
+
+            std::shared_ptr<ITap> self = shared_from_this();
+            stream->async_read_some(boost::asio::buffer(vnet_read_buffer_.get(), read_capacity_),
+                [self, this, stream](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                    if (ec == boost::system::errc::operation_canceled) {
+                        return;
+                    }
+                    const int length = std::max<int>(ec ? -1 : sz, -1);
+                    if (length > 0) {
+                        ppp::diagnostics::datapath_perf::RecordTunRead(length);
+                        PacketInputEventArgs event{ vnet_read_buffer_.get(), length };
+                        OnInput(event);
+                    }
+                    if (disposed_.load() == FALSE) {
+                        AsynchronousReadPacketLoops();
+                    }
+                });
+            return true;
+        }
+
         bool TapLinux::Output(const std::shared_ptr<Byte>& packet, int packet_size) noexcept {
             return Output(packet.get(), packet_size);
+        }
+
+        bool TapLinux::SupportsTxGso() const noexcept {
+            std::lock_guard<std::mutex> lock(gso_mutex_);
+            return disposed_.load(std::memory_order_acquire) == FALSE &&
+                tun_write_failed_.load(std::memory_order_acquire) == FALSE &&
+                vnet_header_ && tx_gso_supported_ && !gso_ssmt_disabled_;
+        }
+
+        bool TapLinux::OutputGso(const std::shared_ptr<Byte>& packet, int packet_size,
+            TxGsoMetadata metadata) noexcept {
+            virtio_net_hdr header{};
+            if (!packet || packet_size < 1 ||
+                !vnet::BuildTcpV4GsoHeader(packet.get(), static_cast<size_t>(packet_size), metadata, header)) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                return false;
+            }
+            if (disposed_.load(std::memory_order_acquire) != FALSE ||
+                tun_write_failed_.load(std::memory_order_acquire) != FALSE) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                return false;
+            }
+
+            const int tun = static_cast<int>(reinterpret_cast<std::intptr_t>(GetHandle()));
+            std::lock_guard<std::mutex> lock(gso_mutex_);
+            if (!vnet_header_ || !tx_gso_supported_ || gso_ssmt_disabled_ || tun < 0) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                return false;
+            }
+
+            // Preserve ordering with ordinary packets retained by the edge
+            // coalescer. A flush failure is terminal and the super-packet is
+            // never replayed through the ordinary oversized path.
+            gso_write_fd_ = tun;
+            if (!gso_coalescer_.Flush(TunGsoCoalescer::FlushReason::Explicit)) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                FailTunWrite(TunWriteFailureSource::DirectGsoWrite);
+                return false;
+            }
+            CancelGsoHoldTimerLocked();
+
+            struct iovec iov[2];
+            iov[0].iov_base = &header;
+            iov[0].iov_len = sizeof(header);
+            iov[1].iov_base = packet.get();
+            iov[1].iov_len = static_cast<size_t>(packet_size);
+            const size_t expected = sizeof(header) + static_cast<size_t>(packet_size);
+            ppp::diagnostics::datapath_perf::Scope write_scope;
+            const bool direct_write_accounting = ppp::diagnostics::datapath_perf::BeginTunDirectWrite();
+            const ssize_t written = ::writev(tun, iov, 2);
+            ppp::diagnostics::datapath_perf::EndTunDirectWrite(direct_write_accounting);
+            ppp::diagnostics::datapath_perf::RecordTunDirectWrite(
+                static_cast<int>(expected), static_cast<int>(written), write_scope.Elapsed());
+            if (written != static_cast<ssize_t>(expected)) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                FailTunWrite(TunWriteFailureSource::DirectGsoWrite);
+                return false;
+            }
+            direct_gso_packets_.fetch_add(1, std::memory_order_relaxed);
+            direct_gso_bytes_.fetch_add(static_cast<uint64_t>(packet_size), std::memory_order_relaxed);
+            ppp::telemetry::Count("tap.ndi_gso.packets", 1);
+            ppp::telemetry::Count("tap.ndi_gso.bytes", packet_size);
+            return true;
         }
 
         bool TapLinux::Output(const void* packet, int packet_size) noexcept {
             // Windows virtual nics need to use Event to write to the kernel asynchronously,
             // Linux virtual nics can directly write to the kernel ::write function,
             // Can reduce a memory allocation and replication, improve throughput efficiency.
+            GsoMergeabilityTelemetry& mergeability = GsoMergeabilityTelemetry::Instance();
             if (NULLPTR == packet || packet_size < 1) {
+                mergeability.CountTunOutputInvalid();
                 return false;
             }
 
             int disposed = disposed_.load();
             if (disposed != FALSE) {
+                mergeability.CountTunOutputDisposed();
+                return false;
+            }
+            if (tun_write_failed_.load() != FALSE) {
+                mergeability.CountTunOutputWriteFailed();
                 return false;
             }
 
@@ -1502,8 +2353,68 @@ namespace ppp {
                 }
             }
 
-            ssize_t bytes_transferred = ::write(tun, (void*)packet, (size_t)packet_size);
-            return bytes_transferred > -1;
+            // Mergeability is a packet-input model; the ledger below is driven
+            // by actual coalescer events. Boundaries are applied before either
+            // can observe the triggering output packet.
+            mergeability.SynchronizeMeasurementBoundary();
+            if (mergeability.enabled && !mergeability.measurement_window_closed && !Ssmt()) {
+                mergeability.analyzer.Observe(static_cast<const uint8_t*>(packet), static_cast<size_t>(packet_size));
+            }
+            if (!vnet_header_) {
+                // Preserve the bare/default path: no GSO state and no feature lock.
+                const ssize_t written = WriteTunFrame(tun, static_cast<const uint8_t*>(packet), static_cast<size_t>(packet_size));
+                if (written != packet_size) {
+                    FailTunWrite(TunWriteFailureSource::BareWrite);
+                    return false;
+                }
+                return true;
+            }
+
+            std::lock_guard<std::mutex> lock(gso_mutex_);
+            if ((mergeability.ledger_enabled || mergeability.tun_output_diagnostics_enabled) &&
+                !gso_observer_hooked_ && !Ssmt()) {
+                GsoMergeabilityTelemetry* telemetry = &mergeability;
+                gso_coalescer_.SetObserver([this, telemetry](const TunGsoCoalescer::Event& event) {
+                    if (telemetry->ledger_enabled) telemetry->ledger.OnEvent(event);
+                    if (gso_push_observation_active_) telemetry->first_push_failure.OnEvent(event);
+                });
+                gso_observer_hooked_ = true;
+            }
+            if (gso_merge_active_ && !TapGsoMergeRequested()) {
+                DisableGsoMergeLocked(tun);
+            }
+            if (tun_write_failed_.load() != FALSE) {
+                mergeability.CountTunOutputWriteFailed();
+                return false;
+            }
+            gso_write_fd_ = tun;
+            if (!gso_merge_active_) {
+                // VNET framing remains mandatory after merging has been disabled.
+                // Do not call Push(): this write is physically synchronous.
+                const bool ok = gso_coalescer_.WriteOrdinaryFrame(static_cast<const uint8_t*>(packet), static_cast<size_t>(packet_size));
+                if (!ok) FailTunWrite(TunWriteFailureSource::GsoOrdinaryWrite);
+                return ok;
+            }
+
+            const bool was_pending = gso_coalescer_.has_pending();
+            gso_push_observation_active_ = mergeability.tun_output_diagnostics_enabled;
+            if (gso_push_observation_active_) mergeability.first_push_failure.BeginPush();
+            const bool ok = gso_coalescer_.Push(static_cast<const uint8_t*>(packet), static_cast<size_t>(packet_size));
+            const uint64_t push_returned_false_ns = !ok && gso_push_observation_active_
+                ? TunGsoCoalescer::NowNs() : 0;
+            if (gso_push_observation_active_) {
+                const bool terminal_observed = mergeability.first_push_failure.EndPush(ok);
+                if (!ok) {
+                    mergeability.RecordPushReturnedFalse(push_returned_false_ns);
+                    if (!terminal_observed) mergeability.CountPushFalseWithoutTerminal();
+                }
+                gso_push_observation_active_ = false;
+            }
+            if (ok && !was_pending && gso_coalescer_.has_pending()) ArmGsoHoldTimerLocked();
+            if (!gso_coalescer_.has_pending()) CancelGsoHoldTimerLocked();
+            if (!gso_coalescer_.enabled()) gso_merge_active_ = false;
+            if (!ok) FailTunWrite(TunWriteFailureSource::GsoCoalescerPush);
+            return ok;
         }
 
         bool TapLinux::Ssmt(const std::shared_ptr<boost::asio::io_context>& context) noexcept {
@@ -1516,20 +2427,51 @@ namespace ppp {
                 return false;
             }
 
+            {
+                std::lock_guard<std::mutex> lock(gso_mutex_);
+                gso_ssmt_disabled_ = true;
+                if (gso_merge_active_) {
+                    DisableGsoMergeLocked(static_cast<int>(reinterpret_cast<std::intptr_t>(GetHandle())), TunGsoCoalescer::FlushReason::Ssmt);
+                } else {
+                    CancelGsoHoldTimerLocked();
+                }
+            }
+
             ppp::string dev = GetId();
             if (dev.empty()) {
                 return false;
             }
 
-            std::shared_ptr<Byte> buffer = make_shared_alloc<Byte>(ITap::Mtu);
-            if (NULLPTR == buffer) {
+            SynchronizedObjectScope scope(syncobj_);
+            // Re-check under the lock: Finalize() holds syncobj_ while tearing
+            // down tun_ssmt_sds_, so a concurrent Ssmt() must not create a new
+            // descriptor (and re-arm a read loop) after disposal.
+            if (disposed_.load() != FALSE) {
                 return false;
             }
 
-            SynchronizedObjectScope scope(syncobj_);
             int tun = OpenDriver(dev.data());
             if (tun == -1) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6TransitTapOpenFailed);
+                return false;
+            }
+            struct ifreq driver_ifr;
+            memset(&driver_ifr, 0, sizeof(driver_ifr));
+            const bool got_secondary_ifr = ioctl(tun, TUNGETIFF, &driver_ifr) == 0;
+            const bool secondary_vnet = got_secondary_ifr && (driver_ifr.ifr_flags & IFF_VNET_HDR) != 0;
+            int header_readback = 0;
+            if (!got_secondary_ifr || secondary_vnet != vnet_header_ ||
+                (secondary_vnet && (ioctl(tun, TUNGETVNETHDRSZ, &header_readback) != 0 ||
+                    static_cast<size_t>(header_readback) != vnet_header_size_ ||
+                    !vnet::IsStandardHeaderSize(vnet_header_size_)))) {
+                ::close(tun);
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelDeviceConfigureFailed);
+                return false;
+            }
+            std::shared_ptr<Byte> buffer = make_shared_alloc<Byte>(read_capacity_);
+            if (NULLPTR == buffer) {
+                ::close(tun);
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                 return false;
             }
 
@@ -1570,7 +2512,7 @@ namespace ppp {
             }
 
             std::shared_ptr<ITap> self = shared_from_this();
-            sd->async_read_some(boost::asio::buffer(buffer.get(), ITap::Mtu),
+            sd->async_read_some(boost::asio::buffer(buffer.get(), read_capacity_),
                 [self, this, context, buffer, sd, fd](const boost::system::error_code& ec, std::size_t sz) noexcept {
                     if (ec != boost::system::errc::operation_canceled) {
                         int len = std::max<int>(ec ? -1 : sz, -1);
@@ -1708,6 +2650,30 @@ namespace ppp {
                 return NULLPTR;
             }
 
+            struct ifreq driver_ifr;
+            memset(&driver_ifr, 0, sizeof(driver_ifr));
+            if (ioctl(tun, TUNGETIFF, &driver_ifr) != 0) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelDeviceConfigureFailed);
+                return NULLPTR;
+            }
+            tap->vnet_header_ = (driver_ifr.ifr_flags & IFF_VNET_HDR) != 0;
+            if (tap->vnet_header_) {
+                int header_readback = 0;
+                if (ioctl(tun, TUNGETVNETHDRSZ, &header_readback) != 0 ||
+                    !vnet::IsStandardHeaderSize(static_cast<size_t>(header_readback)) ||
+                    !vnet::ReadCapacity(static_cast<size_t>(header_readback), tap->read_capacity_)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelDeviceConfigureFailed);
+                    return NULLPTR;
+                }
+                tap->vnet_header_size_ = static_cast<size_t>(header_readback);
+                tap->vnet_read_buffer_ = make_shared_alloc<Byte>(tap->read_capacity_);
+                if (NULLPTR == tap->vnet_read_buffer_) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    return NULLPTR;
+                }
+            }
+            tap->tx_gso_supported_ = tap->vnet_header_;
+            tap->gso_merge_active_ = tap->vnet_header_ && TapGsoMergeRequested();
             tap->promisc_ = promisc;
             tap->dns_addresses_ = dns_addresses;
 
@@ -1823,17 +2789,20 @@ namespace ppp {
             return DeleteAddAllRoutes2(rib, true);
         }
 
-        std::shared_ptr<ppp::net::native::RouteInformationTable> TapLinux::FindAllDefaultGatewayRoutes(const ppp::unordered_set<uint32_t>& bypass_gws) noexcept {
+        bool TapLinux::TryFindAllDefaultGatewayRoutes(
+            const ppp::unordered_set<uint32_t>& bypass_gws,
+            std::shared_ptr<ppp::net::native::RouteInformationTable>& routes) noexcept {
+            routes.reset();
             std::shared_ptr<ppp::net::native::RouteInformationTable> rib = make_shared_object<ppp::net::native::RouteInformationTable>();
             if (NULLPTR == rib) {
-                return NULLPTR;
+                return false;
             }
 
             uint32_t mid = inet_addr("128.0.0.0");
-            bool any = false;
             uint32_t address = 0;
+            bool query_succeeded = false;
             GetDefaultGateway(&address,
-                [&rib, mid, &any, &bypass_gws](const char* interface_name, uint32_t ip, uint32_t gw, uint32_t mask, int metric) noexcept {
+                [&rib, mid, &bypass_gws](const char* interface_name, uint32_t ip, uint32_t gw, uint32_t mask, int metric) noexcept {
                     if (metric != -1) {
                         bool ok = (ip == ppp::net::IPEndPoint::AnyAddress && mask == mid) ||
                             (ip == ppp::net::IPEndPoint::AnyAddress && mask == ppp::net::IPEndPoint::AnyAddress) ||
@@ -1861,10 +2830,24 @@ namespace ppp {
                     }
 
                     int prefix_mask = IPEndPoint::NetmaskToPrefix(mask); // cidr
-                    any |= rib->AddRoute(ip, prefix_mask, gw);
+                    rib->AddRoute(ip, prefix_mask, gw);
                     return false;
-                });
-            return any ? rib : NULLPTR;
+                },
+                &query_succeeded);
+            if (!query_succeeded) {
+                return false;
+            }
+            routes = std::move(rib);
+            return true;
+        }
+
+        std::shared_ptr<ppp::net::native::RouteInformationTable> TapLinux::FindAllDefaultGatewayRoutes(const ppp::unordered_set<uint32_t>& bypass_gws) noexcept {
+            std::shared_ptr<ppp::net::native::RouteInformationTable> routes;
+            if (!TryFindAllDefaultGatewayRoutes(bypass_gws, routes) ||
+                !routes || routes->GetAllRoutes().empty()) {
+                return NULLPTR;
+            }
+            return routes;
         }
 
 #if defined(_ANDROID)

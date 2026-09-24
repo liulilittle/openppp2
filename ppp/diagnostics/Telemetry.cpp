@@ -374,7 +374,7 @@ namespace ppp {
                         scheme_ = "https";
                     }
 
-                    ParseUrl(url, host_, port_, base_path_);
+                    ParseUrl(url, scheme_, host_, port_, base_path_);
                     logs_path_ = BuildSignalPath(base_path_, "logs");
                     metrics_path_ = BuildSignalPath(base_path_, "metrics");
                     traces_path_ = BuildSignalPath(base_path_, "traces");
@@ -444,6 +444,10 @@ namespace ppp {
                     if (host_.empty() || path.empty()) {
                         return {};
                     }
+                    // Omit scheme-default ports so HTTPS stays on 443, not OTLP 4318.
+                    if ((scheme_ == "https" && port_ == "443") || (scheme_ == "http" && port_ == "80")) {
+                        return scheme_ + "://" + host_ + path;
+                    }
                     return scheme_ + "://" + host_ + ":" + port_ + path;
                 }
 
@@ -497,7 +501,7 @@ namespace ppp {
                     closesocket(sock);
                 }
 
-                static void ParseUrl(const std::string& url, std::string& host, std::string& port, std::string& path) {
+                static void ParseUrl(const std::string& url, const std::string& scheme, std::string& host, std::string& port, std::string& path) {
                     const char* p = url.c_str();
                     if (strncmp(p, "http://", 7) == 0) p += 7;
                     else if (strncmp(p, "https://", 8) == 0) p += 8;
@@ -506,9 +510,29 @@ namespace ppp {
                     if (slash) { path.assign(slash); host.assign(p, slash - p); }
                     else       { path.clear(); host = p; }
 
-                    const char* colon = strrchr(host.c_str(), ':');
-                    if (colon) { port.assign(colon + 1); host.resize(colon - host.c_str()); }
-                    else       { port = "4318"; }
+                    // For IPv6 literals, only strip a port after the closing bracket.
+                    const char* colon = nullptr;
+                    if (!host.empty() && host.front() == '[') {
+                        const auto bracket = host.find(']');
+                        if (bracket != std::string::npos && bracket + 1 < host.size() && host[bracket + 1] == ':') {
+                            colon = host.c_str() + bracket + 1;
+                        }
+                    }
+                    else {
+                        colon = strrchr(host.c_str(), ':');
+                    }
+
+                    if (colon) {
+                        port.assign(colon + 1);
+                        host.resize(static_cast<size_t>(colon - host.c_str()));
+                    }
+                    else if (scheme == "https") {
+                        // Public HTTPS endpoints use 443 rather than the OTLP HTTP default.
+                        port = "443";
+                    }
+                    else {
+                        port = "4318";
+                    }
                 }
 
                 static std::string BuildAttributeJson(const std::vector<std::pair<std::string, std::string>>& attributes) noexcept {

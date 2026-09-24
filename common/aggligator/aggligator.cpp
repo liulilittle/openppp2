@@ -164,7 +164,7 @@ namespace aggligator
 
         void                                                close() noexcept;                                              // Close convergence (clear queues)
         std::shared_ptr<Byte>                               pack(Byte* packet, int packet_length, uint32_t seq, int& out) noexcept; // Add length+seq headers
-        bool                                                input(Byte* packet, int packet_length) noexcept;               // Process received TCP data (reassembly)
+        bool                                                input(Byte* packet, int packet_length, const std::shared_ptr<Byte>& owner = NULLPTR) noexcept;               // Process received TCP data (reassembly)
         bool                                                output(Byte* packet, int packet_length) noexcept;              // Send decapsulated UDP packet to external destination
     };
 
@@ -181,7 +181,7 @@ namespace aggligator
             , sending_(false)                                               // No ongoing async_write
             , next_(0)                                                      // Next heartbeat time (seconds)
         {
-
+            buffer_ = aggligator->make_shared_bytes(UINT16_MAX);            // Allocate per-connection receive buffer
         }
 
         ~connection() noexcept                                              // Destructor
@@ -323,7 +323,7 @@ namespace aggligator
 
             auto self = shared_from_this();                                 // Keep alive during async read
             // Read the 2-byte length prefix (big-endian)
-            boost::asio::async_read(*socket, boost::asio::buffer(buffer_, 2),
+            boost::asio::async_read(*socket, boost::asio::buffer(buffer_.get(), 2),
                 [self, this, socket](boost::system::error_code ec, std::size_t sz) noexcept
                 {
                     do
@@ -349,7 +349,8 @@ namespace aggligator
                             break;
                         }
 
-                        std::size_t length = buffer_[0] << 8 | buffer_[1];  // Compute payload length
+                        Byte* buf = buffer_.get();                                               // Raw pointer to receive buffer
+                        std::size_t length = buf[0] << 8 | buf[1];          // Compute payload length
                         if (length == 0)                                    // Heartbeat packet (zero length)
                         {
                             if (!recv())                                    // Continue to next packet
@@ -367,7 +368,7 @@ namespace aggligator
                         }
 
                         // Read the payload of specified length
-                        boost::asio::async_read(*socket, boost::asio::buffer(buffer_, length),
+                        boost::asio::async_read(*socket, boost::asio::buffer(buffer_.get(), length),
                             [self, this, length](boost::system::error_code ec, std::size_t sz) noexcept
                             {
                                 do
@@ -405,7 +406,7 @@ namespace aggligator
                                     }
 
                                     // Feed the received data into convergence for reassembly
-                                    bool ok = convergence->input(buffer_, length) && recv();
+                                    bool ok = convergence->input(buffer_.get(), length, buffer_) && recv();
                                     if (ok)
                                     {
                                         client->last_ = (uint32_t)(aggligator->now() / 1000);
@@ -588,7 +589,7 @@ namespace aggligator
 #if defined(_WIN32)                                                         // Windows QoS object
         std::shared_ptr<QoSS> qoss_;
 #endif
-        Byte buffer_[UINT16_MAX];                                           // Receive buffer (max 65507 bytes)
+        std::shared_ptr<Byte> buffer_;                                         // Receive buffer (max 65507 bytes, shared for zero-copy)
     };
 
     //----------------------------------------------------------------------------
@@ -1811,7 +1812,7 @@ namespace aggligator
     //----------------------------------------------------------------------------
     // Convergence::input: process received TCP data (reassemble in order)
     //----------------------------------------------------------------------------
-    bool aggligator::convergence::input(Byte* packet, int packet_length) noexcept
+    bool aggligator::convergence::input(Byte* packet, int packet_length, const std::shared_ptr<Byte>& owner) noexcept
     {
         if (NULLPTR == packet || packet_length < 4)                         // Need at least sequence number
         {
@@ -1904,10 +1905,16 @@ namespace aggligator
         recv_packet r;
         r.seq = seq;
         r.length = packet_length;
-        r.packet = aggligator->make_shared_bytes(packet_length);            // Copy data
+        if (owner) {
+            r.packet = ppp::wrap_shared_pointer(packet, owner);              // Zero-copy slice
+        } else {
+            r.packet = aggligator->make_shared_bytes(packet_length);         // Copy data
+            if (r.packet) {
+                memcpy(r.packet.get(), packet, packet_length);
+            }
+        }
         if (r.packet)
         {
-            memcpy(r.packet.get(), packet, packet_length);
             return recv_queue_.emplace(std::make_pair(seq, r)).second;      // Insert into map
         }
         else

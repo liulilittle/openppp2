@@ -14,16 +14,90 @@
 #include <ppp/net/asio/IAsynchronousWriteIoQueue.h>
 
 namespace ppp::configurations { class AppConfiguration; }
+#include <ppp/transmissions/IAuthenticatedCarrierBinding.h>
 #include <ppp/transmissions/ITransmissionQoS.h>
 #include <ppp/transmissions/ITransmissionStatistics.h>
+
+namespace ppp::cryptography::noise { class NoisePskHandshakeResult; }
 
 namespace ppp {
     namespace transmissions {
 
+        class NoisePskAuthenticatedCarrierBinding;
+
+        enum class AuthenticatedCarrierKind : std::uint8_t {
+            None,
+            Tcp,
+            WebSocket,
+            TlsWebSocket,
+        };
+
+        enum class AuthenticatedCarrierMethod : std::uint8_t {
+            None,
+            NoisePskV1,
+            TlsExporterV1,
+        };
+
+        /** Encodes transport-auth-v1 capability without adding a handshake frame. */
+        class TransportAuthHandshakeCapabilityCodec final {
+        public:
+            static Int128 EncodeClientNmux(Int128 value, bool mux, bool policy_enabled) noexcept {
+                const std::uint64_t high = static_cast<std::uint64_t>(value >> 64);
+                const std::uint64_t low = EncodeWord(static_cast<std::uint64_t>(value),
+                    ClientNmuxMagic, mux, policy_enabled);
+                return MAKE_OWORD(low, high);
+            }
+
+            static bool DecodeClientNmux(Int128 value, bool& supports_v1,
+                bool& policy_enabled) noexcept {
+                return DecodeWord(static_cast<std::uint64_t>(value), ClientNmuxMagic,
+                    supports_v1, policy_enabled);
+            }
+
+            static Int128 EncodeServerIvv(Int128 value, bool policy_enabled) noexcept {
+                const std::uint64_t high = static_cast<std::uint64_t>(value >> 64);
+                const std::uint64_t low = EncodeWord(static_cast<std::uint64_t>(value),
+                    ServerIvvMagic, (static_cast<std::uint64_t>(value) & 1ULL) != 0,
+                    policy_enabled);
+                return MAKE_OWORD(low, high);
+            }
+
+            static bool DecodeServerIvv(Int128 value, bool& supports_v1,
+                bool& policy_enabled) noexcept {
+                return DecodeWord(static_cast<std::uint64_t>(value), ServerIvvMagic,
+                    supports_v1, policy_enabled);
+            }
+
+        private:
+            static constexpr std::uint64_t ClientNmuxMagic = 0x5452414E5331ULL;
+            static constexpr std::uint64_t ServerIvvMagic = 0x5452414E5332ULL;
+
+            static std::uint64_t EncodeWord(std::uint64_t entropy,
+                std::uint64_t magic, bool bit0, bool policy_enabled) noexcept {
+                constexpr std::uint64_t payload_mask = 0x000000000000FFF8ULL;
+                return (magic << 16) | (entropy & payload_mask) |
+                    (policy_enabled ? 1ULL << 2 : 0ULL) | (1ULL << 1) |
+                    (bit0 ? 1ULL : 0ULL);
+            }
+
+            static bool DecodeWord(std::uint64_t value, std::uint64_t magic,
+                bool& supports_v1, bool& policy_enabled) noexcept {
+                supports_v1 = false;
+                policy_enabled = false;
+                if ((value >> 16) != magic) {
+                    return false;
+                }
+                supports_v1 = (value & (1ULL << 1)) != 0;
+                policy_enabled = (value & (1ULL << 2)) != 0;
+                return true;
+            }
+        };
+
         /**
          * @brief Base class for encrypted, handshaked, coroutine-aware transport I/O.
          */
-        class ITransmission : public ppp::net::asio::IAsynchronousWriteIoQueue {
+        class ITransmission : public ppp::net::asio::IAsynchronousWriteIoQueue,
+            public IAuthenticatedCarrierBinding {
             /** @brief Bridge helper that implements internal static read/write logic. */
             friend class ITransmissionBridge;
             /** @brief QoS helper requires direct access to transmission internals. */
@@ -75,8 +149,22 @@ namespace ppp {
             AppConfigurationPtr                                                                     GetConfiguration() noexcept { return configuration_; }
             /** @brief Gets mutable shared io_context reference. */
             ContextPtr&                                                                             GetContext() noexcept { return context_; }
+            /** @brief Gets immutable shared io_context reference. */
+            const ContextPtr&                                                                       GetContext() const noexcept { return context_; }
             /** @brief Gets mutable shared strand reference. */
             StrandPtr&                                                                              GetStrand() noexcept { return strand_; }
+            /** @brief Gets immutable shared strand reference. */
+            const StrandPtr&                                                                        GetStrand() const noexcept { return strand_; }
+            /** @brief Reports whether the authenticated OpenPPP2 handshake completed. */
+            virtual bool                                                                            IsHandshakeComplete() const noexcept { return handshaked_.load(std::memory_order_acquire); }
+            /** @brief Reports whether the peer advertised transport-auth-v1 support. */
+            bool                                                                                    PeerSupportsTransportAuthV1() const noexcept { return peer_supports_transport_auth_v1_.load(std::memory_order_acquire); }
+            /** @brief Reports whether the peer also enabled its transport-auth-v1 policy. */
+            bool                                                                                    PeerEnablesTransportAuthV1() const noexcept { return peer_enables_transport_auth_v1_.load(std::memory_order_acquire); }
+            /** @brief Marks accepted server ingress whose peer endpoint is loopback. */
+            void                                                                                    MarkServerLoopbackIngress() noexcept { server_loopback_ingress_.store(true, std::memory_order_release); }
+            /** @brief Reports conservative server-side loopback ingress provenance. */
+            bool                                                                                    IsServerLoopbackIngress() const noexcept { return server_loopback_ingress_.load(std::memory_order_acquire); }
 
         public:
             /** @brief Disposes transmission resources asynchronously. */
@@ -85,6 +173,32 @@ namespace ppp {
             virtual bool                                                                            ShiftToScheduler() noexcept = 0;
             /** @brief Returns remote TCP endpoint information. */
             virtual boost::asio::ip::tcp::endpoint                                                  GetRemoteEndPoint() noexcept = 0;
+            /** @brief Identifies the carrier represented by this transmission. */
+            virtual AuthenticatedCarrierKind                                                        GetAuthenticatedCarrierKind() const noexcept { return AuthenticatedCarrierKind::None; }
+            /** @brief Reports whether this carrier can safely half-close its send direction. */
+            virtual bool                                                                            SupportsSendHalfClose() const noexcept { return false; }
+            /** @brief Half-closes the carrier send direction without closing receive. */
+            virtual bool                                                                            ShutdownSend() noexcept { return false; }
+            /** @brief Reports a clean peer close of the carrier receive direction. */
+            virtual bool                                                                            IsReceiveClosed() const noexcept { return false; }
+            /** @brief Identifies the installed authenticated carrier mechanism. */
+            virtual AuthenticatedCarrierMethod                                                      GetAuthenticatedCarrierMethod() const noexcept;
+            /** @brief Reports current lifecycle-valid authenticated carrier availability. */
+            virtual bool                                                                            IsAuthenticatedCarrierBindingActive() const noexcept;
+            /** @brief Reports whether this transport exposes an authenticated session exporter. */
+            bool                                                                                    HasAuthenticatedSessionExporter() const noexcept override;
+            /** @brief Exports authenticated session-bound key material. */
+            bool                                                                                    ExportAuthenticatedSessionKey(
+                const char* label,
+                const std::uint8_t* context,
+                std::size_t context_length,
+                std::uint8_t* output,
+                std::size_t output_length) noexcept override;
+            /** @brief Installs the one-shot Noise carrier binding after application handshake. */
+            bool                                                                                    InstallNoiseAuthenticatedCarrierBinding(
+                ppp::cryptography::noise::NoisePskHandshakeResult&& result) noexcept;
+            /** @brief Synchronously invalidates and clears installed Noise carrier material. */
+            void                                                                                    InvalidateAuthenticatedCarrierBinding() noexcept;
 
         public:
             /**
@@ -182,6 +296,12 @@ namespace ppp {
             std::atomic_bool                                                                        frame_tn_{false};
             /** @brief Handshake completion state flag storage. */
             std::atomic_bool                                                                        handshaked_{false};
+            /** @brief Validated peer transport-auth-v1 capability state. */
+            std::atomic_bool                                                                        peer_supports_transport_auth_v1_{false};
+            /** @brief Validated peer transport-auth-v1 policy state. */
+            std::atomic_bool                                                                        peer_enables_transport_auth_v1_{false};
+            /** @brief Server-side accepted peer was loopback or could not be classified. */
+            std::atomic_bool                                                                        server_loopback_ingress_{false};
 
             /**
              * @brief One-shot guard ensuring Finalize() executes at most once.
@@ -195,6 +315,10 @@ namespace ppp {
             ContextPtr                                                                              context_;           // Asio io_context (never null after construction).
             /** @brief Strand for serialized asynchronous state transitions. */
             StrandPtr                                                                               strand_;            // Strand for thread‑safe state access.
+            /** @brief Serializes install/invalidate publication of Noise carrier state. */
+            mutable std::mutex                                                                      authenticated_carrier_mutex_;
+            /** @brief Carrier-local Noise authenticated exporter, when installed. */
+            std::shared_ptr<NoisePskAuthenticatedCarrierBinding>                                    noise_authenticated_carrier_binding_;
             /** @brief Active handshake timeout timer, if armed. */
             DeadlineTimerPtr                                                                        timeout_;           // Handshake timeout timer (reset after success).
             /** @brief Optional protocol-layer cipher instance. */

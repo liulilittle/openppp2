@@ -1,38 +1,56 @@
-# OpenPPP2 iOS Build
+# OpenPPP2 iOS platform surface
 
-This directory contains the iOS-native build surface for the shared OpenPPP2
-runtime.
+> [iOS app and Packet Tunnel guide](App/README.md)
 
-## Current scope
+**Status:** Experimental
 
-- Builds a static `openppp2_ios` archive target.
-- Treats iOS as `_IPHONE`, not `_MACOS`, so macOS `utun` code is not selected.
-- Provides `TapIos`, a callback-based `ITap` facade intended to be driven by
-  `NEPacketTunnelFlow` from a Network Extension.
-- Provides a small C bridge in `OpenPPP2PacketTunnelBridge.h`.
-- Packages an `OpenPPP2.xcframework` with a module map for Swift import.
+**Type:** iOS native runtime build, XCFramework, and Packet Tunnel integration
 
-## One-command build
+**Last verified:** 2026-07-22
+
+This directory contains the iOS-specific native runtime and the support needed by the app/Network Extension in `App/`. It is an internal platform integration surface, not a general-purpose Swift package or a released iOS distribution channel.
+
+## What the iOS build produces
+
+`CMakeLists.txt` builds the static C++ target `openppp2_ios` with:
+
+- iOS deployment target **15.0**;
+- `_IPHONE`/`IPHONE` compile definitions instead of the macOS path;
+- the callback-based `TapIos` implementation, because an iOS app receives packets through `NEPacketTunnelFlow` rather than a `utun` file descriptor;
+- the C bridge declared by `OpenPPP2PacketTunnelBridge.h`.
+
+The target writes archives to:
+
+- `bin/ios/libopenppp2_ios.a` for an iPhoneOS build;
+- `bin/ios-simulator/libopenppp2_ios.a` for an iPhoneSimulator build.
+
+A static archive is not a complete app link. The app/extension also needs iOS-compatible OpenSSL libraries and any selected non-header-only runtime dependencies.
+
+## Build the XCFramework
+
+Run this from the repository root on macOS with CMake and Xcode command-line tools available:
 
 ```sh
-ios/build-xcframework.sh
+./ios/build-xcframework.sh
 ```
 
-The script builds both SDKs and writes:
+The script builds an arm64 device archive, builds a simulator archive using the host architecture by default (`arm64` on Apple Silicon, otherwise `x86_64`), then creates:
 
-- `bin/ios/libopenppp2_ios.a`
-- `bin/ios-simulator/libopenppp2_ios.a`
-- `bin/OpenPPP2.xcframework`
+```text
+bin/OpenPPP2.xcframework
+```
 
-The simulator architecture defaults to the host architecture. Override it when
-needed:
+Use `IOS_DEVICE_ARCHS`, `IOS_SIMULATOR_ARCHS`, and `IOS_DEPLOYMENT_TARGET` only when the matching toolchain and dependencies are available. For example:
 
 ```sh
-IOS_SIMULATOR_ARCHS=x86_64 ios/build-xcframework.sh
-IOS_SIMULATOR_ARCHS=arm64 ios/build-xcframework.sh
+IOS_SIMULATOR_ARCHS=x86_64 ./ios/build-xcframework.sh
 ```
 
-## Manual device build
+If an XCFramework already exists, the script preserves it under a timestamped `bin/OpenPPP2.xcframework.previous.*` name before installing the new one.
+
+### Manual CMake configuration
+
+The build script is the reference workflow. A device configuration is equivalent to:
 
 ```sh
 cmake -S ios -B build/ios-device \
@@ -41,139 +59,35 @@ cmake -S ios -B build/ios-device \
   -DCMAKE_OSX_SYSROOT=iphoneos \
   -DCMAKE_OSX_ARCHITECTURES=arm64 \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
-```
-
-```sh
 cmake --build build/ios-device
 ```
 
-The archive is written to `bin/ios/libopenppp2_ios.a`.
+`OPENPPP2_IOS_EXTRA_INCLUDE_DIRS` is available for additional include paths. Do not use macOS headers/libraries as a substitute for iOS SDK artifacts.
 
-## Manual simulator build
+## Build OpenSSL for the app targets
 
-```sh
-cmake -S ios -B build/ios-simulator \
-  -G Ninja \
-  -DCMAKE_SYSTEM_NAME=iOS \
-  -DCMAKE_OSX_SYSROOT=iphonesimulator \
-  -DCMAKE_OSX_ARCHITECTURES=x86_64 \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
-
-cmake --build build/ios-simulator
-```
-
-The simulator archive is written to `bin/ios-simulator/libopenppp2_ios.a`.
-
-## Xcode integration
-
-Add `bin/OpenPPP2.xcframework` to the Packet Tunnel Extension target and link
-the target with `libc++`.
-
-Swift can import the C bridge as:
-
-```swift
-import OpenPPP2
-```
-
-`Examples/PacketTunnelProvider` contains a minimal `NEPacketTunnelProvider`
-adapter that connects `NEPacketTunnelFlow` to `TapIos`.
-
-## IPK packaging
-
-Normal iPad installation uses an `.ipa` signed with an Apple development or
-distribution certificate. An `.ipk` package is only useful for jailbreak-style
-package managers or other custom install environments, and it still needs a
-real `.app` bundle as input.
-
-After building an app bundle, package it as:
+`build-openssl.sh` is an optional local helper for the app build. It expects an OpenSSL source tarball and builds static outputs for `iphoneos-arm64` and `iphonesimulator-x86_64` by default.
 
 ```sh
-APP_BUNDLE=/path/to/OpenPPP2.app ios/package-ipk.sh
+OPENSSL_TARBALL=/path/to/openssl-source.tar.gz \
+  ./ios/build-openssl.sh
 ```
 
-The IPK script does not perform Apple code signing. For jailbreak-style
-environments that need a fake signature and have `ldid` installed:
+The outputs default to `bin/openssl-ios/`. A simulator with a different architecture needs compatible OpenSSL headers/libraries supplied through `OPENSSL_INCLUDE_DIR` and `OPENSSL_LIB_DIR` to the app build scripts. The helper's source-tarball default is machine-specific, so do not rely on it in portable documentation or CI.
 
-```sh
-FAKESIGN=1 APP_BUNDLE=/path/to/OpenPPP2.app ios/package-ipk.sh
-```
+## Packet Tunnel bridge boundary
 
-With explicit entitlements:
+The `OpenPPP2PacketTunnelBridge.h` API creates and owns an iOS TAP facade, accepts packet input from Swift, emits packet output through callbacks, and exposes start/stop, link-state, runtime-snapshot, diagnostic, telemetry, and optional P2P transport hooks. `TapIos` is driven by `NEPacketTunnelFlow` in a Network Extension.
 
-```sh
-FAKESIGN=1 \
-ENTITLEMENTS=/path/to/entitlements.plist \
-APP_BUNDLE=/path/to/OpenPPP2.app \
-ios/package-ipk.sh
-```
+This bridge is coupled to the checked-in host app and extension. It is not documented as a stable external ABI: changes require coordinated C++, bridge-header, module-map, Swift adapter, and device-tunnel testing.
 
-Useful overrides:
+## App, signing, and packaging
 
-```sh
-PACKAGE_ID=io.github.miaocchi.openppp2 \
-PACKAGE_VERSION=0.1.0 \
-PACKAGE_ARCH=iphoneos-arm64 \
-INSTALL_PREFIX=/Applications \
-APP_BUNDLE=/path/to/OpenPPP2.app \
-ios/package-ipk.sh
-```
+The actual host app and Network Extension live in [App/README.md](App/README.md). In particular:
 
-The package is written to `bin/ipk/`.
+- a normal device VPN install requires an Apple-signed app/extension with the appropriate Network Extension and App Group entitlements;
+- `App/build-unsigned.sh` can build/package an unsigned IPA container, but that does not make it installable as a normal iOS VPN app;
+- `package-ipa.sh` and `sign-and-package-ipa.sh` package an existing `.app` bundle; they do not remove the need for correct provisioning;
+- `package-ipk.sh` and fake-sign options are custom-install workflows, not normal App Store or device-distribution instructions.
 
-## IPA packaging
-
-An `.ipa` is a zip archive containing `Payload/<AppName>.app`. The helper below
-packages an existing `.app` bundle without Apple signing:
-
-```sh
-APP_BUNDLE=/path/to/OpenPPP2.app ios/package-ipa.sh
-```
-
-The unsigned IPA is written to `bin/ipa/OpenPPP2.ipa`.
-
-For jailbreak-style environments that need fake signing and have `ldid`
-installed:
-
-```sh
-FAKESIGN=1 APP_BUNDLE=/path/to/OpenPPP2.app ios/package-ipa.sh
-```
-
-With explicit entitlements:
-
-```sh
-FAKESIGN=1 \
-ENTITLEMENTS=/path/to/entitlements.plist \
-APP_BUNDLE=/path/to/OpenPPP2.app \
-ios/package-ipa.sh
-```
-
-## Self-signed IPA
-
-Self-signing can package and install a normal app when the target device trusts
-the provisioning profile. Packet Tunnel/VPN support additionally requires the
-`com.apple.developer.networking.networkextension` entitlement in that profile;
-without it the app may install but the tunnel extension will not start.
-
-List local code signing identities:
-
-```sh
-security find-identity -v -p codesigning
-```
-
-Sign an existing `.app` bundle and package it as an IPA:
-
-```sh
-APP_BUNDLE=/path/to/OpenPPP2.app \
-SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" \
-PROVISIONING_PROFILE=/path/to/profile.mobileprovision \
-ENTITLEMENTS=/path/to/entitlements.plist \
-ios/sign-and-package-ipa.sh
-```
-
-The signed IPA is written to `bin/ipa/OpenPPP2.ipa`.
-
-## Notes
-
-The static archive build compiles objects without resolving final third-party
-link dependencies. A complete app/extension link still needs iOS-built OpenSSL
-and any non-header-only Boost libraries used by the selected runtime surface.
+Treat all generated `build/` and `bin/` outputs as local build artifacts. Verify an actual connection, packet flow, and teardown on an entitled device before depending on a build.

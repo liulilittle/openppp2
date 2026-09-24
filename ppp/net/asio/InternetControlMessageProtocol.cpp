@@ -32,8 +32,7 @@ namespace ppp {
             InternetControlMessageProtocol::InternetControlMessageProtocol(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<boost::asio::io_context>& context) noexcept
                 : BufferAllocator(allocator)
                 , disposed_(false)
-                , executor_(context)
-                , buffer_(Executors::GetCachedBuffer(context)) {
+                , executor_(context) {
 
             }
 
@@ -202,6 +201,14 @@ namespace ppp {
                 std::shared_ptr<Timer>                                  timeout_;
                 IPEndPoint                                              destinationEP_;
                 UInt32                                                  identification_;
+                /**
+                 * @brief Per-request receive buffer and source endpoint.
+                 *
+                 * Each in-flight echo owns its own receive target so concurrent echo
+                 * requests never overwrite a shared owner-level buffer or endpoint.
+                 */
+                std::shared_ptr<Byte>                                   buffer_;
+                boost::asio::ip::udp::endpoint                          ep_;
 
                 struct {
                     std::shared_ptr<IPFrame>                            packet;
@@ -220,7 +227,15 @@ namespace ppp {
             public:
                 /** @brief Starts one asynchronous receive operation for reply matching. */
                 void                                                    RunOnce() noexcept {
-                    socket_->async_receive_from(boost::asio::buffer(owner_->buffer_.get(), PPP_BUFFER_SIZE), owner_->ep_,
+                    if (NULLPTR == buffer_) {
+                        buffer_ = ppp::make_shared_alloc<Byte>(PPP_BUFFER_SIZE);
+                        if (NULLPTR == buffer_) {
+                            Release();
+                            return;
+                        }
+                    }
+
+                    socket_->async_receive_from(boost::asio::buffer(buffer_.get(), PPP_BUFFER_SIZE), ep_,
                         std::bind(&InternetControlMessageProtocol_EchoAsynchronousContext::Process, shared_from_this(), std::placeholders::_1, std::placeholders::_2));
                 }
                 /**
@@ -233,7 +248,7 @@ namespace ppp {
                     if (ec == boost::system::errc::success || ec == boost::system::errc::resource_unavailable_try_again) {
                         while (bytes_transferred > 0) {
                             const std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = owner_->BufferAllocator;
-                            const std::shared_ptr<IPFrame> response_packet = IPFrame::Parse(allocator, owner_->buffer_.get(), static_cast<int>(bytes_transferred));
+                            const std::shared_ptr<IPFrame> response_packet = IPFrame::Parse(allocator, buffer_, buffer_.get(), static_cast<int>(bytes_transferred));
                             if (NULLPTR == response_packet) {
                                 break;
                             }
@@ -253,7 +268,7 @@ namespace ppp {
                                     break;
                                 }
 
-                                const std::shared_ptr<IPFrame> request_packet = IPFrame::Parse(allocator, payload->Buffer.get(), payload->Length);
+                                const std::shared_ptr<IPFrame> request_packet = IPFrame::Parse(allocator, payload->Buffer, payload->Buffer.get(), payload->Length);
                                 if (NULLPTR == request_packet) {
                                     break;
                                 }
@@ -315,6 +330,7 @@ namespace ppp {
 
                     Socket::Closesocket(socket_);
                     if (std::shared_ptr<InternetControlMessageProtocol> owner = owner_;  NULLPTR != owner_) {
+                        std::lock_guard<std::mutex> scope(owner->timeouts_syncobj_);
                         Dictionary::TryRemove(owner->timeouts_, this);
                     }
 
@@ -325,7 +341,19 @@ namespace ppp {
             /** @brief Marks instance disposed and removes all pending timeout callbacks. */
             void InternetControlMessageProtocol::Finalize() noexcept {
                 disposed_ = true;
-                Timer::ReleaseAllTimeouts(timeouts_);
+
+                /**
+                 * @brief Move the table out under the lock; the handlers are invoked
+                 *        lock-free because they re-enter timeouts_ via Release().
+                 */
+                TimeoutEventHandlerTable timeouts;
+                {
+                    std::lock_guard<std::mutex> scope(timeouts_syncobj_);
+                    timeouts = std::move(timeouts_);
+                    timeouts_.clear();
+                }
+
+                Timer::ReleaseAllTimeouts(timeouts);
             }
 
             /** @brief Returns a shared reference to this protocol object. */
@@ -457,16 +485,21 @@ namespace ppp {
                 context->destinationEP_ = destinationEP;
                 context->request_.frame = frame;
                 context->request_.packet = packet;
-                context->RunOnce();
 
-                auto r = timeouts_.emplace(context.get(), timeout_cb);
-                if (r.second) {
-                    return true;
+                bool emplaced;
+                {
+                    std::lock_guard<std::mutex> scope(timeouts_syncobj_);
+                    emplaced = timeouts_.emplace(context.get(), timeout_cb).second;
                 }
-                else {
+
+                if (!emplaced) {
                     context->Release();
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::IcmpProtocolEchoTimeoutEntryConflict, false);
                 }
+
+                /* Register before the first receive so a fast completion cannot outrun the insertion. */
+                context->RunOnce();
+                return true;
             }
 
             /** @brief Builds an ICMP echo-reply packet using request metadata. */

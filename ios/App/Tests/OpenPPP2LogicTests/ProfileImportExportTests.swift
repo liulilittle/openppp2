@@ -3,14 +3,17 @@ import XCTest
 
 final class ProfileImportExportTests: XCTestCase {
     private func sampleProfile(id: String, name: String) -> ConfigProfile {
-        ConfigProfile(
+        var options = LaunchOptions()
+        options.mtu = 1380
+        options.allowLan = true
+        return ConfigProfile(
             id: id,
             name: name,
             subtitle: "test",
             flag: "JP",
             json: "{\"client\":{\"server\":\"ppp://127.0.0.1:20000/\"}}",
             favorite: false,
-            options: LaunchOptions(),
+            options: options,
             history: []
         )
     }

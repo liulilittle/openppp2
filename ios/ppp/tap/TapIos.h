@@ -3,6 +3,10 @@
 #include <ppp/stdafx.h>
 #include <ppp/tap/ITap.h>
 
+namespace ppp::p2p {
+    class IP2PDatagramTransportFactory;
+}
+
 namespace ppp
 {
     namespace tap
@@ -43,6 +47,10 @@ namespace ppp
         public:
             void SetPacketOutput(PacketOutputEventHandler output) noexcept;
             bool Input(const void* packet, int packet_size) noexcept;
+            void SetP2PDatagramTransportFactory(
+                const std::shared_ptr<ppp::p2p::IP2PDatagramTransportFactory>& factory) noexcept;
+            std::shared_ptr<ppp::p2p::IP2PDatagramTransportFactory>
+                GetP2PDatagramTransportFactory() const noexcept;
 
         public:
             virtual bool IsReady() noexcept override;
@@ -56,6 +64,10 @@ namespace ppp
         private:
             std::atomic<bool>       opened_;
             PacketOutputEventHandler output_;
+            /** @brief Serialises output_ assignment/clear/copy (SetPacketOutput vs Dispose vs Output). */
+            mutable std::mutex      output_mutex_;
+            mutable std::mutex      p2p_factory_mutex_;
+            std::shared_ptr<ppp::p2p::IP2PDatagramTransportFactory> p2p_factory_;
         };
     }
 }

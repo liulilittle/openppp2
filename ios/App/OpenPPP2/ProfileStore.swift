@@ -79,6 +79,9 @@ final class ProfileStore {
                 updated.subscriptionUrl = url
                 updated.subscriptionNodeId = node.id
                 updated.subscriptionUpdatedAtMs = now
+                if let options = node.options {
+                    updated.options = options
+                }
                 list[index] = updated
             } else {
                 list.append(ConfigProfile(
@@ -91,7 +94,7 @@ final class ProfileStore {
                     subscriptionUrl: url,
                     subscriptionNodeId: node.id,
                     subscriptionUpdatedAtMs: now,
-                    options: LaunchOptions(),
+                    options: node.options ?? LaunchOptions(),
                     history: []
                 ))
             }
@@ -296,6 +299,10 @@ final class ProfileStore {
         geo["geosite-dat"] = options.geoSiteDat
         root["geo-rules"] = geo
 
+        var mux = root["mux"] as? [String: Any] ?? [:]
+        mux["mode"] = options.muxMode
+        root["mux"] = mux
+
         var client = root["client"] as? [String: Any] ?? [:]
         let bind = options.allowLan ? "0.0.0.0" : "127.0.0.1"
         var http = client["http-proxy"] as? [String: Any] ?? ["port": 8080]
@@ -306,6 +313,53 @@ final class ProfileStore {
         socks["port"] = options.socksProxyPort
         client["http-proxy"] = http
         client["socks-proxy"] = socks
+
+        var routing = client["routing"] as? [String: Any] ?? [:]
+        // Remove the deprecated routing.mode field.  Runtime mode is
+        // controlled exclusively by client.proxy-only and the --mode CLI
+        // flag; an old nested mode value must never re-enter as a runtime
+        // decision source.
+        routing.removeValue(forKey: "mode")
+        let profileProxyOnly = client["proxy-only"] as? Bool ?? false
+        // UI options are the user's active override and take precedence over the
+        // profile canonical value when non-empty.  An empty UI value means "not
+        // set by user"; keep the profile's existing canonical value in that case.
+        // routeMode==.global always forces an empty bypass regardless of UI or
+        // profile content.
+        let uiBypass = splitLines(options.bypassIpList)
+        let uiDnsRules = splitLines(options.dnsRulesList)
+
+        var ipRouting = routing["ip"] as? [String: Any] ?? [:]
+        if ipRouting["routes"] == nil, routing["routes"] == nil, let legacyRoutes = client["routes"] {
+            ipRouting["routes"] = legacyRoutes
+        }
+        if ipRouting["peer-routes"] == nil, routing["peer-routes"] == nil, let legacyPeerRoutes = client["peer-routes"] {
+            ipRouting["peer-routes"] = legacyPeerRoutes
+        }
+        // Canonical nested values are authoritative and remain mirrored for
+        // legacy native consumers that still read client.routes fields.
+        if let canonicalRoutes = ipRouting["routes"] {
+            client["routes"] = canonicalRoutes
+        }
+        if let canonicalPeerRoutes = ipRouting["peer-routes"] {
+            client["peer-routes"] = canonicalPeerRoutes
+        }
+        if options.routeMode == .global {
+            ipRouting["bypass"] = [String]()
+        } else if !uiBypass.isEmpty {
+            ipRouting["bypass"] = uiBypass
+        }
+        // ipRouting["bypass"] left unchanged when uiBypass is empty and routeMode != .global.
+        routing["ip"] = ipRouting
+
+        var dnsRouting = routing["dns"] as? [String: Any] ?? [:]
+        if !uiDnsRules.isEmpty {
+            dnsRouting["rules"] = uiDnsRules
+        }
+        // dnsRouting["rules"] left unchanged when uiDnsRules is empty.
+        routing["dns"] = dnsRouting
+        client["routing"] = routing
+        client["proxy-only"] = profileProxyOnly
         root["client"] = client
 
         var telemetryMap = root["telemetry"] as? [String: Any] ?? [:]

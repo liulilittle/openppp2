@@ -70,10 +70,6 @@ namespace ppp
         ProtectorNetwork::ProtectorNetwork(const ppp::string& dev) noexcept
             : dev_(dev)
         {
-#if defined(_ANDROID)
-            env_ = NULLPTR;
-            jni_ = NULLPTR;
-#endif
         }
 
         int ProtectorNetwork::Recvfd(const char* unix_path, int milliSecondsTimeout, bool sync, int& fd) noexcept
@@ -317,73 +313,118 @@ namespace ppp
                 ppp::telemetry::Count("protect.android.join.fail", 1);
                 return false;
             }
-            
-            std::shared_ptr<boost::asio::io_context> jni;
-            for (;;)
+
+            SynchronizedObjectScope scope(syncobj_);
+            std::shared_ptr<JniSession> replacement;
+            try
             {
-                SynchronizedObjectScope scope(syncobj_);
-                jni = std::move(jni_);
-                env_ = env;
-                jni_ = context;
-                break;
+                const std::uint64_t generation = next_generation_ + 1;
+                replacement = std::make_shared<JniSession>(generation, context, env);
+                next_generation_ = generation;
+            }
+            catch (...)
+            {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                ppp::telemetry::Count("protect.android.join.fail", 1);
+                return false;
             }
 
-            if (NULLPTR != jni)
+            // JNIEnv is thread-affine. Until the JNI owner is migrated to JavaVM,
+            // this context must be driven by exactly the thread that called JoinJNI.
+            // Serialize lifecycle changes until the previous generation drains.
+            std::shared_ptr<JniSession> previous = std::move(session_);
+            if (previous)
             {
-                ppp::threading::Executors::Exit(jni);
+                previous->requests.Deactivate();
+                ppp::threading::Executors::Exit(previous->context);
             }
-
+            session_ = std::move(replacement);
             return true;
         }
 
         bool ProtectorNetwork::DetachJNI() noexcept
         {
-            std::shared_ptr<boost::asio::io_context> jni;
-            for (;;)
-            {
-                SynchronizedObjectScope scope(syncobj_);
-                jni = std::move(jni_);
-                env_ = NULLPTR;
-                jni_ = NULLPTR;
-                break;
-            }
-
-            if (NULLPTR == jni)
+            SynchronizedObjectScope scope(syncobj_);
+            std::shared_ptr<JniSession> session = std::move(session_);
+            if (!session)
             {
                 return false;
             }
 
-            ppp::threading::Executors::Exit(jni);
+            // The object is already inactive for new admission. Cancel and wake
+            // pending requests, then wait for any in-flight JNI call to leave.
+            session->requests.Deactivate();
+            ppp::threading::Executors::Exit(session->context);
             return true;
         }
-        
+
         bool ProtectorNetwork::ProtectJNI(const std::shared_ptr<boost::asio::io_context>& context, int sockfd, YieldContext& y) noexcept
         {
-            bool ok = false;
-            auto self = shared_from_this();
-            boost::asio::post(*context, 
-                [self, this, context, &ok, &y, sockfd]() noexcept
+            std::shared_ptr<JniSession> session;
+            {
+                SynchronizedObjectScope scope(syncobj_);
+                if (session_ && session_->context == context)
                 {
-                    // Reverse-calling the Java class member static function protects the socket without passing through VPNService / Android-Ko.
-                    std::shared_ptr<boost::asio::io_context> jni;
-                    JNIEnv* env = NULLPTR;
-                    {
-                        SynchronizedObjectScope scope(syncobj_);
-                        jni = jni_;
-                        env = env_;
-                    }
+                    session = session_;
+                }
+            }
+            return ProtectJNISession(session, sockfd, y);
+        }
 
-                    if (NULLPTR != jni && NULLPTR != env)
-                    {
-                        ok = ProtectorNetwork::ProtectJNI(env, sockfd);
-                    }
+        bool ProtectorNetwork::ProtectJNISession(const std::shared_ptr<JniSession>& session, int sockfd, YieldContext& y) noexcept
+        {
+            if (!session || !session->context || session->context->stopped())
+            {
+                return false;
+            }
 
-                    // Wake up the coroutine waiting for this protect network socket service to prevent coroutines from getting stuck.
-                    y.R();
-                });
+            std::shared_ptr<ProtectorNetworkRequest> request =
+                session->requests.Create([yield = &y]() noexcept { yield->R(); });
+            if (!request)
+            {
+                return false;
+            }
+
+            std::weak_ptr<JniSession> weak_session = session;
+            std::weak_ptr<ProtectorNetworkRequest> weak_request = request;
+            try
+            {
+                boost::asio::post(*session->context,
+                    [weak_session, weak_request, sockfd]() noexcept
+                    {
+                        std::shared_ptr<JniSession> own_session = weak_session.lock();
+                        std::shared_ptr<ProtectorNetworkRequest> own_request = weak_request.lock();
+                        if (!own_request)
+                        {
+                            return;
+                        }
+                        if (!own_session || !own_session->requests.Begin(own_request))
+                        {
+                            own_request->Cancel();
+                            return;
+                        }
+
+                        // Use only the immutable token captured for this generation;
+                        // never consult the ProtectorNetwork object's current session.
+                        const bool result = ProtectorNetwork::ProtectJNI(own_session->env, sockfd);
+                        own_request->Complete(result);
+                        own_session->requests.Finish(own_request);
+                    });
+
+                // Asio accepts work on a stopped context. Convert an observed stop
+                // into cancellation instead of suspending with no runnable handler.
+                if (session->context->stopped())
+                {
+                    session->requests.Cancel(request);
+                }
+            }
+            catch (...)
+            {
+                session->requests.Cancel(request);
+            }
 
             y.Suspend();
-            return ok;
+            return request->Result();
         }
 #endif
 
@@ -402,17 +443,16 @@ namespace ppp
             }
 
 #if defined(_ANDROID)
-            // If JNIEnv is set, it means that PPP PRIVATE NETWORK™ 2 is embedded in the Android application as a DLL/SO,
-            // In the form of a JNI reverse call to the JAVA class member static function protect, otherwise it is a sendfd/recvfd structures.
-            // jni_ may be reassigned by JoinJNI/DetachJNI, so snapshot it while holding syncobj_.
-            std::shared_ptr<boost::asio::io_context> context;
+            // Snapshot one immutable generation; posted work must never re-read
+            // whichever JNI session JoinJNI may install later.
+            std::shared_ptr<JniSession> session;
             {
                 SynchronizedObjectScope scope(syncobj_);
-                context = jni_;
+                session = session_;
             }
-            if (NULLPTR != context)
+            if (session)
             {
-                return ProtectJNI(context, sockfd, y);
+                return ProtectJNISession(session, sockfd, y);
             }
 #endif
 

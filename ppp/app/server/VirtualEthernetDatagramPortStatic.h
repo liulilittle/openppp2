@@ -6,6 +6,7 @@
  */
 
 namespace ppp::configurations { class AppConfiguration; }
+#include <atomic>
 #include <ppp/threading/Executors.h>
 #include <ppp/transmissions/ITransmission.h>
 
@@ -153,14 +154,14 @@ namespace ppp {
                     int                                                 packet_length) noexcept; 
 
             private:
-                struct {
-                    bool                                                disposed_    : 1;
-                    bool                                                in_          : 1;
-                    bool                                                onlydns_     : 6;
-                    uint32_t                                            source_ip_   = 0;
-                    int                                                 source_port_ = 0;
-                    UInt64                                              timeout_     = 0;
-                };
+                // Lifecycle state is read by the manager GC thread (IsPortAging) while
+                // SendTo()/Finalize() run on the owning io_context thread; keep it atomic.
+                std::atomic<bool>                                       disposed_{false};
+                std::atomic<bool>                                       in_{false};
+                std::atomic<bool>                                       onlydns_{false};
+                uint32_t                                                source_ip_   = 0;
+                int                                                     source_port_ = 0;
+                std::atomic<UInt64>                                     timeout_{0};
                 boost::asio::ip::udp::socket                            socket_;
                 std::shared_ptr<VirtualEthernetSwitcher>                switcher_;
                 VirtualEthernetExchangerPtr                             exchanger_;
