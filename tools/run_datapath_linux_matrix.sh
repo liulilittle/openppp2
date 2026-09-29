@@ -25,6 +25,7 @@ TAP_GSO_SEGMENTS=""
 XTCP_GSO_RX=""
 XTCP_UNIX_BRIDGE=""
 XTCP_SNDBUF=""
+XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES=""
 XTCP_MEMORY_BRIDGE=false
 XTCP_NDI_TSO_TX=false
 XTCP_DIRECT_UPLOAD_GATHER_BYTES=""
@@ -74,6 +75,7 @@ iperf3 parallel flows, not OpenPPP2's client.concurrent setting.
   --xtcp-gso-rx VALUE        XTCP GSO receive override
   --xtcp-unix-bridge VALUE   XTCP Unix bridge override
   --xtcp-sndbuf BYTES        XTCP per-conn send buffer (bytes; default 64K upstream)
+  --xtcp-direct-download-chunk-bytes BYTES  XTCP direct-download chunk: 16384|32768
   --xtcp-memory-bridge       Enable the opt-in single-owner userspace bridge
   --xtcp-ndi-tso-tx         Enable the opt-in NDI TSO transmit capability
   --xtcp-direct-upload-gather-bytes BYTES  Direct upload writer gather cap; 0/1 disables (default: 32768)
@@ -120,6 +122,7 @@ while (($#)); do
     --xtcp-gso-rx) need_value "$@"; XTCP_GSO_RX="$2"; shift 2 ;;
     --xtcp-unix-bridge) need_value "$@"; XTCP_UNIX_BRIDGE="$2"; shift 2 ;;
     --xtcp-sndbuf) need_value "$@"; XTCP_SNDBUF="$2"; shift 2 ;;
+    --xtcp-direct-download-chunk-bytes) need_value "$@"; XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES="$2"; shift 2 ;;
     --xtcp-memory-bridge) XTCP_MEMORY_BRIDGE=true; shift ;;
     --xtcp-ndi-tso-tx) XTCP_NDI_TSO_TX=true; shift ;;
     --xtcp-direct-upload-gather-bytes) need_value "$@"; XTCP_DIRECT_UPLOAD_GATHER_BYTES="$2"; shift 2 ;;
@@ -142,6 +145,17 @@ fi
 [[ "$PAIRED_PERFORMANCE_GATE" == off || "$PAIRED_PERFORMANCE_GATE" == warn || "$PAIRED_PERFORMANCE_GATE" == fail ]] || { echo "--paired-performance-gate must be off, warn, or fail" >&2; exit 2; }
 [[ "$PAIRED_PERFORMANCE_THRESHOLD" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ && ! "$PAIRED_PERFORMANCE_THRESHOLD" =~ ^0*([.]0*)?$ ]] || { echo "--paired-performance-threshold must be positive" >&2; exit 2; }
 [[ -z "$XTCP_DIRECT_UPLOAD_GATHER_BYTES" || "$XTCP_DIRECT_UPLOAD_GATHER_BYTES" =~ ^[0-9]+$ ]] || { echo "--xtcp-direct-upload-gather-bytes must be a non-negative integer" >&2; exit 2; }
+if [[ -n "$XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES" ]]; then
+  [[ "$XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES" == 16384 || "$XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES" == 32768 ]] || { echo "--xtcp-direct-download-chunk-bytes must be 16384 or 32768" >&2; exit 2; }
+fi
+XTCP_DL_GSO_PROFILE_ENABLED=false
+[[ "${OPENPPP2_XTCP_DL_GSO_PERF_PROFILE:-}" == 1 ]] && XTCP_DL_GSO_PROFILE_ENABLED=true
+XTCP_TAP_GSO_SEGMENTS_EFFECTIVE="${TAP_GSO_SEGMENTS:-${OPENPPP2_TAP_GSO_SEGMENTS:-default}}"
+[[ "$XTCP_TAP_GSO_SEGMENTS_EFFECTIVE" == default && "$XTCP_DL_GSO_PROFILE_ENABLED" == true ]] && XTCP_TAP_GSO_SEGMENTS_EFFECTIVE=48
+XTCP_SNDBUF_EFFECTIVE="${XTCP_SNDBUF:-${OPENPPP2_XTCP_SNDBUF_BYTES:-default}}"
+[[ "$XTCP_SNDBUF_EFFECTIVE" == default && "$XTCP_DL_GSO_PROFILE_ENABLED" == true ]] && XTCP_SNDBUF_EFFECTIVE=2097152
+XTCP_DIRECT_DOWNLOAD_CHUNK_EFFECTIVE="${XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES:-${OPENPPP2_XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES:-16384}}"
+[[ "$XTCP_DIRECT_DOWNLOAD_CHUNK_EFFECTIVE" == 16384 && "$XTCP_DL_GSO_PROFILE_ENABLED" == true ]] && XTCP_DIRECT_DOWNLOAD_CHUNK_EFFECTIVE=32768
 if [[ "$STALL_DIAGNOSTICS" == true ]]; then
   DATAPATH_TELEMETRY=true
   XTCP_PERF=true
@@ -257,11 +271,12 @@ python3 "$ROOT/tools/datapath_matrix_metadata.py" --root "$ROOT" --ppp-bin "$PPP
 printf 'label=%s\nppp_bin=%s\nstacks=%s\nparallel=%s\ndirections=%s\nrounds=%s\nduration=%s\nomit=%s\niperf_timeout=%s\nclient_concurrent=%s\ntap_gso_modes=%s\ndatapath_telemetry=%s\nxtcp_perf=%s\nxtcp_cc=%s\nxtcp_shards=%s\nxtcp_send_retry_us=%s\ntap_gso_segments=%s\nxtcp_gso_rx=%s\nxtcp_unix_bridge=%s\nxtcp_sndbuf=%s\nxtcp_direct_upload_gather_bytes=%s\nxtcp_gro_bytes=%s\nxtcp_ingress_items=%s\nxtcp_ingress_bytes=%s\nxtcp_connector_batch_bytes=%s\nxtcp_write_cap_bytes=%s\nxtcp_global_queue_bytes=%s\nxtcp_memory_bridge=%s\nxtcp_ndi_tso_tx=%s\nnetem_delay_ms=%s\nstall_diagnostics=%s\ncpu_profile=%s\naffinity_cpus=%s\nsystem_cpu_stat=%s\nprocess_perf_stat=%s\npaired_performance_gate_mode=%s\npaired_performance_gate_threshold=%s\ntun_output_diagnostics=stall_diagnostics_xtcp_only\nxtcp_output_rejection_json=stall_diagnostics_xtcp_only\n' \
   "$LABEL" "$PPP_BIN" "$STACKS" "$PARALLEL" "$DIRECTIONS" "$ROUNDS" "$DURATION" "$OMIT" "$IPERF_TIMEOUT" \
   "${CLIENT_CONCURRENT:-per-P}" "$TAP_GSO_MODES" "$DATAPATH_TELEMETRY" "$XTCP_PERF" "${XTCP_CC:-${OPENPPP2_XTCP_CC:-default}}" "${XTCP_SHARDS:-${OPENPPP2_XTCP_SHARDS:-default}}" \
-  "${XTCP_SEND_RETRY_US:-${OPENPPP2_XTCP_LAB_SEND_RETRY_US:-default}}" "${TAP_GSO_SEGMENTS:-${OPENPPP2_TAP_GSO_SEGMENTS:-default}}" "${XTCP_GSO_RX:-${OPENPPP2_XTCP_GSO_RX:-default}}" "${XTCP_UNIX_BRIDGE:-${OPENPPP2_XTCP_UNIX_BRIDGE:-default}}" "${XTCP_SNDBUF:-${OPENPPP2_XTCP_SNDBUF_BYTES:-default}}" \
+  "${XTCP_SEND_RETRY_US:-${OPENPPP2_XTCP_LAB_SEND_RETRY_US:-default}}" "$XTCP_TAP_GSO_SEGMENTS_EFFECTIVE" "${XTCP_GSO_RX:-${OPENPPP2_XTCP_GSO_RX:-default}}" "${XTCP_UNIX_BRIDGE:-${OPENPPP2_XTCP_UNIX_BRIDGE:-default}}" "$XTCP_SNDBUF_EFFECTIVE" \
   "${XTCP_DIRECT_UPLOAD_GATHER_BYTES:-default}" "${OPENPPP2_XTCP_GRO_BYTES:-default}" "${OPENPPP2_XTCP_INGRESS_ITEMS:-default}" "${OPENPPP2_XTCP_INGRESS_BYTES:-default}" "${OPENPPP2_XTCP_CONNECTOR_BATCH_BYTES:-default}" \
   "${OPENPPP2_XTCP_WRITE_CAP_BYTES:-default}" "${OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES:-default}" "$XTCP_MEMORY_BRIDGE" "$XTCP_NDI_TSO_TX" "${NETEM_DELAY_MS:-none}" "$STALL_DIAGNOSTICS" "$CPU_PROFILE" "${AFFINITY_CPUS:-none}" \
   "$SYSTEM_CPU_STAT" "$PROCESS_PERF_STAT" "$PAIRED_PERFORMANCE_GATE" "$PAIRED_PERFORMANCE_THRESHOLD" >"$ARTIFACT_DIR/matrix-metadata.txt"
 while IFS= read -r metadata_line; do printf '%s\n' "$metadata_line"; done <"$ARTIFACT_DIR/version-fingerprint.txt" >>"$ARTIFACT_DIR/matrix-metadata.txt"
+printf 'xtcp_direct_download_chunk_bytes=%s\nxtcp_dl_gso_perf_profile=%s\n' "$XTCP_DIRECT_DOWNLOAD_CHUNK_EFFECTIVE" "$XTCP_DL_GSO_PROFILE_ENABLED" >>"$ARTIFACT_DIR/matrix-metadata.txt"
 
 run_cell() (
   set -euo pipefail
@@ -596,7 +611,7 @@ PY
   local -a tap_env=("OPENPPP2_TAP_GSO_MERGE_DISABLE=1")
   if [[ "$tap_gso" == on ]]; then
     tap_env=("OPENPPP2_TAP_GSO_MERGE=1")
-    [[ -n "${TAP_GSO_SEGMENTS:-}" ]] && tap_env+=("OPENPPP2_TAP_GSO_SEGMENTS=${TAP_GSO_SEGMENTS}")
+    [[ "$XTCP_TAP_GSO_SEGMENTS_EFFECTIVE" != default ]] && tap_env+=("OPENPPP2_TAP_GSO_SEGMENTS=${XTCP_TAP_GSO_SEGMENTS_EFFECTIVE}")
   fi
   local -a server_env=("${tap_env[@]}") client_env=("${tap_env[@]}")
   if [[ "$DATAPATH_TELEMETRY" == true ]]; then
@@ -611,8 +626,14 @@ PY
   if [[ -n "$XTCP_CC" && "$stack" == xtcp ]]; then
     client_env+=("OPENPPP2_XTCP_CC=${XTCP_CC}")
   fi
+  if [[ "$XTCP_DL_GSO_PROFILE_ENABLED" == true && "$stack" == xtcp ]]; then
+    client_env+=("OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1")
+  fi
   if [[ -n "$XTCP_SNDBUF" && "$stack" == xtcp ]]; then
     client_env+=("OPENPPP2_XTCP_SNDBUF_BYTES=${XTCP_SNDBUF}")
+  fi
+  if [[ "$stack" == xtcp ]]; then
+    client_env+=("OPENPPP2_XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES=${XTCP_DIRECT_DOWNLOAD_CHUNK_EFFECTIVE}")
   fi
   if [[ "$XTCP_MEMORY_BRIDGE" == true && "$stack" == xtcp ]]; then
     client_env+=("OPENPPP2_XTCP_MEMORY_BRIDGE=1")
@@ -649,11 +670,11 @@ PY
     client_env+=("OPENPPP2_DATAPATH_GSO_LEDGER=1")
   fi
 
-  ip netns exec "$ns_s" env -u OPENPPP2_TAP_GSO_MERGE -u OPENPPP2_TAP_GSO_MERGE_DISABLE \
+  ip netns exec "$ns_s" env -u OPENPPP2_TAP_GSO_MERGE -u OPENPPP2_TAP_GSO_MERGE_DISABLE -u OPENPPP2_TAP_GSO_SEGMENTS \
     -u OPENPPP2_DATAPATH_PERF_JSON -u OPENPPP2_DATAPATH_PERF_MEASUREMENT_BOUNDARIES -u OPENPPP2_XTCP_PERF_JSON \
     -u OPENPPP2_XTCP_SEND_ADMISSION_JSON -u OPENPPP2_XTCP_ACK_RELEASE_JSON -u OPENPPP2_DATAPATH_GSO_LEDGER \
     -u OPENPPP2_DATAPATH_TUN_OUTPUT_DIAGNOSTICS -u OPENPPP2_XTCP_OUTPUT_REJECTION_JSON \
-    -u OPENPPP2_XTCP_MEMORY_BRIDGE -u OPENPPP2_XTCP_NDI_TSO_TX \
+    -u OPENPPP2_XTCP_MEMORY_BRIDGE -u OPENPPP2_XTCP_NDI_TSO_TX -u OPENPPP2_XTCP_DL_GSO_PERF_PROFILE \
     -u OPENPPP2_XTCP_DIRECT_UPLOAD_GATHER_BYTES \
     "${server_env[@]}" stdbuf -oL -eL "$PPP_BIN" --mode=server --config="$state_dir/server.json" \
     >"$state_dir/server.log" 2>&1 & pids+=("$!")
@@ -665,11 +686,11 @@ PY
     client_cpu_prefix=(taskset -c "${CPU_LIST[0]}")
     iperf_cpu_prefix=(taskset -c "${CPU_LIST[0]}")
   fi
-  ip netns exec "$ns_c" env -u OPENPPP2_TAP_GSO_MERGE -u OPENPPP2_TAP_GSO_MERGE_DISABLE \
+  ip netns exec "$ns_c" env -u OPENPPP2_TAP_GSO_MERGE -u OPENPPP2_TAP_GSO_MERGE_DISABLE -u OPENPPP2_TAP_GSO_SEGMENTS \
     -u OPENPPP2_DATAPATH_PERF_JSON -u OPENPPP2_DATAPATH_PERF_MEASUREMENT_BOUNDARIES -u OPENPPP2_XTCP_PERF_JSON \
     -u OPENPPP2_XTCP_SEND_ADMISSION_JSON -u OPENPPP2_XTCP_ACK_RELEASE_JSON -u OPENPPP2_DATAPATH_GSO_LEDGER \
     -u OPENPPP2_DATAPATH_TUN_OUTPUT_DIAGNOSTICS -u OPENPPP2_XTCP_OUTPUT_REJECTION_JSON \
-    -u OPENPPP2_XTCP_MEMORY_BRIDGE -u OPENPPP2_XTCP_NDI_TSO_TX \
+    -u OPENPPP2_XTCP_MEMORY_BRIDGE -u OPENPPP2_XTCP_NDI_TSO_TX -u OPENPPP2_XTCP_DL_GSO_PERF_PROFILE \
     -u OPENPPP2_XTCP_DIRECT_UPLOAD_GATHER_BYTES \
     "${client_env[@]}" "${client_cpu_prefix[@]}" stdbuf -oL -eL "$PPP_BIN" --mode=client --config="$state_dir/client.json" \
     "--tcp-stack=${stack}" --stats-json="$state_dir/stats.ndjson" >"$state_dir/client.log" 2>&1 &

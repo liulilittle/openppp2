@@ -770,6 +770,13 @@ public:
         const char* cc = (cc_env != nullptr && cc_env[0] != '\0') ? cc_env : "kcc";
         unsigned long long sndbuf_value = 0;
         {
+            const char* profile = ::getenv("OPENPPP2_XTCP_DL_GSO_PERF_PROFILE");
+            if (profile != nullptr && profile[0] == '1' && profile[1] == '\0') {
+                // Opt-in throughput profile. This is a per-connection quota,
+                // not a preallocated buffer; at high flow counts its worst-case
+                // retained payload memory scales with active connections.
+                sndbuf_value = 2ull * 1024ull * 1024ull;
+            }
             const char* sndbuf_env = ::getenv("OPENPPP2_XTCP_SNDBUF_BYTES");
             if (sndbuf_env != nullptr && sndbuf_env[0] != '\0') {
                 const unsigned long long sndbuf = ::atoll(sndbuf_env);
