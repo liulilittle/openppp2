@@ -1,0 +1,11 @@
+--- a/src/buf/bufref.cpp
++++ b/src/buf/bufref.cpp
+@@ -14 +14,7 @@
+-            constexpr UInt32 kPoolBlocks[kPoolCount] = { 1024, 512, 128 };
++            // The small tiers carry ordinary TCP packets and their retransmit
++            // references. A 4-flow, 1 MiB-per-flow test can retain >2,500 MSS
++            // buffers at once, so the previous 1,536 small blocks exhausted
++            // both tiers and converted ACK ingress into packet loss. Keep the
++            // large-GRO tier bounded independently; the small tiers provide
++            // enough packet capacity for the configured send-buffer envelope.
++            constexpr UInt32 kPoolBlocks[kPoolCount] = { 8192, 4096, 128 };

@@ -1,8 +1,8 @@
 # PPP-DATAPATH-GSO-CONTRACT — Linux TapLinux 边缘 GSO 合并设计
 
-> Status: Implemented, opt-in (default-off)
-> Type: Design
-> Last verified: 2026-09-23 (contract text and implementation paths reviewed; performance evidence is dated inline)
+> Status: Implemented, default-off
+> Type: Design / Performance record
+> Last verified: 2026-09-30 (opt-in and kill-switch wiring)
 
 状态：**v1 已实现，默认关闭**。实现位于 `linux/ppp/tap/TapGsoCoalescer.h` 与
 `TapLinux`；只有 `OPENPPP2_TAP_GSO_MERGE=1` 才会尝试协商，

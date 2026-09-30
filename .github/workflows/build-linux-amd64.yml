@@ -199,6 +199,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             build-essential cmake zip unzip curl wget \
             libkrb5-dev libicu-dev libssl-dev libunwind-dev \
+            zlib1g-dev libzstd-dev \
             autoconf
 
       - name: Cache third-party libraries

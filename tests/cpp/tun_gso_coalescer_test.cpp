@@ -4,8 +4,10 @@
 #include <linux/ppp/tap/TapGsoCoalescer.h>
 
 #include <cerrno>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -81,18 +83,77 @@ BOOST_AUTO_TEST_CASE(cap_four_builds_one_tcpv4_gso_frame) {
     BOOST_TEST(be16(tcp + 16) == expected_partial);
 }
 
+BOOST_AUTO_TEST_CASE(retained_owner_payloads_are_written_as_iovecs) {
+    std::vector<uint8_t> frame;
+    const auto first = packet({.payload = 100, .seq = 1000});
+    const auto second = packet({.payload = 100, .seq = 1100});
+    auto first_storage = std::make_shared<std::vector<uint8_t>>(first);
+    auto second_storage = std::make_shared<std::vector<uint8_t>>(second);
+    const uint8_t* first_data = first_storage->data();
+    const uint8_t* second_data = second_storage->data();
+    std::weak_ptr<std::vector<uint8_t>> first_lifetime = first_storage;
+    std::weak_ptr<std::vector<uint8_t>> second_lifetime = second_storage;
+    bool vectored = false;
+    const auto vectored_writer = [&](const iovec* iov, int count, size_t total) -> ssize_t {
+        vectored = true;
+        BOOST_REQUIRE_EQUAL(count, 3);
+        BOOST_TEST(iov[1].iov_base == first_data + 40);
+        BOOST_TEST(iov[2].iov_base == second_data + 40);
+        frame.clear();
+        for (int i = 0; i < count; ++i) {
+            const auto* bytes = static_cast<const uint8_t*>(iov[i].iov_base);
+            frame.insert(frame.end(), bytes, bytes + iov[i].iov_len);
+        }
+        BOOST_REQUIRE_EQUAL(frame.size(), total);
+        return static_cast<ssize_t>(frame.size());
+    };
+    TunGsoCoalescer coalescer([](const uint8_t*, size_t n) { return static_cast<ssize_t>(n); },
+        {}, vectored_writer);
+
+    BOOST_REQUIRE(coalescer.PushOwned(first_storage->data(), first.size(),
+        ppp::tap::RetainedPacketOwner(first_storage), 1000));
+    BOOST_REQUIRE(coalescer.PushOwned(second_storage->data(), second.size(),
+        ppp::tap::RetainedPacketOwner(second_storage), 1001));
+    first_storage.reset();
+    second_storage.reset();
+    BOOST_REQUIRE(!first_lifetime.expired());
+    BOOST_REQUIRE(!second_lifetime.expired());
+    BOOST_REQUIRE(coalescer.Flush(TunGsoCoalescer::FlushReason::Explicit, 1002));
+    BOOST_TEST(vectored);
+    BOOST_TEST(frame[1] == VIRTIO_NET_HDR_GSO_TCPV4);
+    BOOST_TEST(be16(frame.data() + TunGsoCoalescer::kVirtioHeaderBytes + 2) == 240U);
+    BOOST_TEST(std::equal(first.begin() + 40, first.end(), frame.begin() + 50));
+    BOOST_TEST(std::equal(second.begin() + 40, second.end(), frame.begin() + 150));
+    BOOST_TEST(first_lifetime.expired());
+    BOOST_TEST(second_lifetime.expired());
+}
+
 BOOST_AUTO_TEST_CASE(runtime_segment_cap_can_reach_maximum_without_overflow) {
     ::setenv("OPENPPP2_TAP_GSO_SEGMENTS", "48", 1);
     Sink sink;
     TunGsoCoalescer c([&sink](const uint8_t* p, size_t n) { return sink(p, n); });
     for (size_t i = 0; i != TunGsoCoalescer::kMaxSegmentCap; ++i) {
-        const auto value = packet({.seq = static_cast<uint32_t>(1000 + i * 100)});
+        const auto value = packet({.payload = 1460, .seq = static_cast<uint32_t>(1000 + i * 1460)});
         BOOST_REQUIRE(c.Push(value.data(), value.size(), 1000 + i));
     }
+    BOOST_REQUIRE(c.Flush());
     ::unsetenv("OPENPPP2_TAP_GSO_SEGMENTS");
 
-    BOOST_REQUIRE_EQUAL(sink.writes.size(), 1U);
-    BOOST_TEST(sink.writes.front()[1] == VIRTIO_NET_HDR_GSO_TCPV4);
+    // 45 * 1460 + 40 exceeds IPv4's 16-bit total_length. Even with cap 48,
+    // the coalescer must flush the largest legal first frame and continue.
+    BOOST_REQUIRE_EQUAL(sink.writes.size(), 2U);
+    const auto verify_ipv4_length = [](const std::vector<uint8_t>& frame) {
+        BOOST_TEST(frame[1] == VIRTIO_NET_HDR_GSO_TCPV4);
+        BOOST_REQUIRE(frame.size() >= TunGsoCoalescer::kVirtioHeaderBytes + 20U);
+        const uint8_t* ip = frame.data() + TunGsoCoalescer::kVirtioHeaderBytes;
+        const size_t ipv4_total = be16(ip + 2);
+        BOOST_TEST(ipv4_total <= UINT16_MAX);
+        BOOST_TEST(frame.size() == TunGsoCoalescer::kVirtioHeaderBytes + ipv4_total);
+    };
+    verify_ipv4_length(sink.writes[0]);
+    verify_ipv4_length(sink.writes[1]);
+    BOOST_TEST(be16(sink.writes[0].data() + TunGsoCoalescer::kVirtioHeaderBytes + 2) == 64280U);
+    BOOST_TEST(be16(sink.writes[1].data() + TunGsoCoalescer::kVirtioHeaderBytes + 2) == 5880U);
 }
 
 BOOST_AUTO_TEST_CASE(xtcp_dl_profile_defaults_gso_cap_but_explicit_cap_wins) {
@@ -130,6 +191,26 @@ BOOST_AUTO_TEST_CASE(disabled_merge_writes_one_ordinary_vnet_frame_immediately) 
     BOOST_TEST(c.enabled());
 }
 
+BOOST_AUTO_TEST_CASE(partial_checksum_survives_singleton_ordinary_vnet_flush) {
+    Sink sink;
+    TunGsoCoalescer c([&sink](const uint8_t* p, size_t n) { return sink(p, n); });
+    auto value = packet();
+    auto storage = std::make_shared<std::vector<uint8_t>>(value);
+    ppp::tap::RetainedPacketOwner owner(std::shared_ptr<uint8_t>(storage, storage->data()), true);
+    BOOST_REQUIRE(c.PushOwned(value.data(), value.size(), std::move(owner), 1000));
+    BOOST_REQUIRE(c.Flush(TunGsoCoalescer::FlushReason::Explicit, 1001));
+    BOOST_REQUIRE_EQUAL(sink.writes.size(), 1U);
+    const auto& frame = sink.writes.front();
+    BOOST_TEST(frame[0] == VIRTIO_NET_HDR_F_NEEDS_CSUM);
+    BOOST_TEST(frame[1] == VIRTIO_NET_HDR_GSO_NONE);
+    BOOST_TEST(frame[6] == 20U);
+    BOOST_TEST(frame[7] == 0U);
+    BOOST_TEST(frame[8] == 16U);
+    BOOST_TEST(frame[9] == 0U);
+    BOOST_TEST(std::memcmp(frame.data() + TunGsoCoalescer::kVirtioHeaderBytes,
+        value.data(), value.size()) == 0);
+}
+
 BOOST_AUTO_TEST_CASE(hold_and_short_tail_flush) {
     Sink sink; TunGsoCoalescer c([&sink](const uint8_t* p, size_t n) { return sink(p, n); });
     auto a = packet(); BOOST_REQUIRE(c.Push(a.data(), a.size(), 1000));
@@ -144,6 +225,19 @@ BOOST_AUTO_TEST_CASE(hold_and_short_tail_flush) {
     BOOST_TEST(sink.writes.back()[1] == VIRTIO_NET_HDR_GSO_TCPV4);
 }
 
+BOOST_AUTO_TEST_CASE(configurable_hold_window) {
+    Sink sink;
+    TunGsoCoalescer c([&sink](const uint8_t* p, size_t n) { return sink(p, n); }, {}, {}, true, true, 200000);
+    BOOST_TEST(c.hold_ns() == 200000U);
+    auto a = packet();
+    BOOST_REQUIRE(c.Push(a.data(), a.size(), 1000));
+    BOOST_TEST(c.FlushExpired(200999));
+    BOOST_TEST(c.has_pending());
+    BOOST_REQUIRE(c.FlushExpired(201000));
+    BOOST_TEST(!c.has_pending());
+    BOOST_TEST(sink.writes.size() == 1U);
+}
+
 BOOST_AUTO_TEST_CASE(incompatible_packets_preserve_order_as_ordinary_frames) {
     Sink sink; TunGsoCoalescer c([&sink](const uint8_t* p, size_t n) { return sink(p, n); });
     auto first = packet(); auto psh = packet({.seq = 1100, .psh = true}); auto ctl = packet({.seq = 1200, .control = true});
@@ -151,8 +245,32 @@ BOOST_AUTO_TEST_CASE(incompatible_packets_preserve_order_as_ordinary_frames) {
     BOOST_REQUIRE(c.Push(first.data(), first.size(), 1)); BOOST_REQUIRE(c.Push(psh.data(), psh.size(), 2));
     BOOST_REQUIRE(c.Push(ctl.data(), ctl.size(), 3)); BOOST_REQUIRE(c.Push(flow.data(), flow.size(), 4)); BOOST_REQUIRE(c.Push(gap.data(), gap.size(), 5));
     BOOST_REQUIRE(c.Flush());
-    BOOST_TEST(sink.writes.size() == 5U);
-    for (const auto& write : sink.writes) BOOST_TEST(write[1] == VIRTIO_NET_HDR_GSO_NONE);
+    BOOST_TEST(sink.writes.size() == 4U);
+    BOOST_TEST(sink.writes[0][1] == VIRTIO_NET_HDR_GSO_TCPV4);
+    for (size_t i = 1; i < sink.writes.size(); ++i) BOOST_TEST(sink.writes[i][1] == VIRTIO_NET_HDR_GSO_NONE);
+}
+
+BOOST_AUTO_TEST_CASE(psh_is_merged_only_as_the_final_gso_segment) {
+    Sink sink; TunGsoCoalescer c([&sink](const uint8_t* p, size_t n) { return sink(p, n); });
+    const auto first = packet();
+    const auto psh = packet({.seq = 1100, .psh = true});
+    BOOST_REQUIRE(c.Push(first.data(), first.size(), 1));
+    BOOST_TEST(c.has_pending());
+    BOOST_REQUIRE(c.Push(psh.data(), psh.size(), 2));
+    BOOST_TEST(!c.has_pending());
+    BOOST_REQUIRE_EQUAL(sink.writes.size(), 1U);
+    const auto& gso = sink.writes.front();
+    BOOST_TEST(gso[1] == VIRTIO_NET_HDR_GSO_TCPV4);
+    BOOST_TEST((gso[TunGsoCoalescer::kVirtioHeaderBytes + 20U + 13U] & 0x08U) != 0U);
+    BOOST_TEST(gso.size() == TunGsoCoalescer::kVirtioHeaderBytes + 40U + 200U);
+
+    // A later segment starts a fresh run and cannot be merged past PSH.
+    const auto later = packet({.seq = 1200});
+    BOOST_REQUIRE(c.Push(later.data(), later.size(), 3));
+    BOOST_TEST(c.has_pending());
+    BOOST_REQUIRE(c.Flush());
+    BOOST_REQUIRE_EQUAL(sink.writes.size(), 2U);
+    BOOST_TEST(sink.writes.back()[1] == VIRTIO_NET_HDR_GSO_NONE);
 }
 
 BOOST_AUTO_TEST_CASE(ack_window_options_equivalent_changes_break_runs) {
@@ -172,6 +290,25 @@ BOOST_AUTO_TEST_CASE(negative_gso_write_falls_back_to_exact_original_byte_order)
     for (size_t i = 0; i != originals.size(); ++i) {
         BOOST_TEST(sink.writes[i + 1].size() == originals[i].size() + TunGsoCoalescer::kVirtioHeaderBytes);
         BOOST_TEST(std::memcmp(sink.writes[i + 1].data() + TunGsoCoalescer::kVirtioHeaderBytes, originals[i].data(), originals[i].size()) == 0);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(negative_gso_fallback_preserves_packet_trailing_bytes) {
+    Sink sink;
+    sink.gso_failure = Sink::GsoFailure::Negative;
+    TunGsoCoalescer c([&sink](const uint8_t* p, size_t n) { return sink(p, n); });
+    std::vector<std::vector<uint8_t>> originals;
+    for (int i = 0; i != 4; ++i) {
+        originals.push_back(packet({.seq = static_cast<uint32_t>(1000 + i * 100)}));
+        originals.back().insert(originals.back().end(), {0xA0, static_cast<uint8_t>(i), 0x5A});
+        BOOST_REQUIRE(c.Push(originals.back().data(), originals.back().size(), i));
+    }
+
+    BOOST_REQUIRE_EQUAL(sink.writes.size(), 5U);
+    for (size_t i = 0; i != originals.size(); ++i) {
+        BOOST_REQUIRE_EQUAL(sink.writes[i + 1].size(), originals[i].size() + TunGsoCoalescer::kVirtioHeaderBytes);
+        BOOST_TEST(std::memcmp(sink.writes[i + 1].data() + TunGsoCoalescer::kVirtioHeaderBytes,
+            originals[i].data(), originals[i].size()) == 0);
     }
 }
 
@@ -275,7 +412,7 @@ BOOST_AUTO_TEST_CASE(first_push_failure_records_terminal_partial_gso_write) {
     BOOST_TEST(!snapshot.precursor.present);
 }
 
-BOOST_AUTO_TEST_CASE(first_push_failure_carries_strict_rejection_for_terminal_ordinary_write) {
+BOOST_AUTO_TEST_CASE(first_push_failure_records_terminal_psh_ordinary_write) {
     Sink sink; sink.ordinary_negative = true;
     ppp::tap::TunGsoFirstPushFailure failure;
     TunGsoCoalescer c([&sink](const uint8_t* p, size_t n) { return sink(p, n); },
@@ -288,8 +425,8 @@ BOOST_AUTO_TEST_CASE(first_push_failure_carries_strict_rejection_for_terminal_or
     const auto snapshot = failure.GetSnapshot();
     BOOST_TEST(static_cast<int>(snapshot.kind) == static_cast<int>(ppp::tap::TunGsoFirstPushFailure::Kind::Ordinary));
     BOOST_TEST(static_cast<int>(snapshot.outcome) == static_cast<int>(TunGsoCoalescer::WriteOutcome::NegativeFailure));
-    BOOST_TEST(static_cast<int>(snapshot.rejection) == static_cast<int>(TunGsoCoalescer::RejectionReason::Psh));
-    BOOST_TEST(static_cast<int>(snapshot.flush_reason) == static_cast<int>(TunGsoCoalescer::FlushReason::Explicit));
+    BOOST_TEST(static_cast<int>(snapshot.rejection) == static_cast<int>(TunGsoCoalescer::RejectionReason::None));
+    BOOST_TEST(static_cast<int>(snapshot.flush_reason) == static_cast<int>(TunGsoCoalescer::FlushReason::Psh));
     BOOST_TEST(!snapshot.negative_fallback);
     BOOST_TEST(snapshot.error_number == ENOSPC);
     BOOST_TEST(snapshot.written_bytes == -1);

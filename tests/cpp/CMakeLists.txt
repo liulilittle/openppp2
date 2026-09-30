@@ -69,11 +69,7 @@ function(openppp2_add_cpp_test target)
             -fno-omit-frame-pointer)
         target_link_options(${target} PRIVATE -fsanitize=address,undefined)
     endif()
-    # xtcp_upload_budget_test overrides global operator new/delete to inject
-    # allocation failures. Clang's TSan runtime defines the same operators,
-    # so this deterministic allocator test cannot link with TSan enabled.
-    # Keep the test in the suite, but run this one target without TSan.
-    if(ENABLE_TSAN AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND NOT target STREQUAL "xtcp_upload_budget_test")
+    if(ENABLE_TSAN AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_definitions(${target} PRIVATE PPP_COROUTINES_TSAN_ENABLED=1)
         target_compile_options(${target} PRIVATE
             -fsanitize=thread

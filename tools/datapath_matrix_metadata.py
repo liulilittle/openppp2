@@ -136,6 +136,20 @@ def evaluate_performance_gate(records: list[dict], mode: str, threshold: float) 
     return {"mode": mode, "threshold": threshold, "status": status, "pairs": pairs, "failed_pairs": failed_pairs}
 
 
+def evaluate_qualification_status(records: list[dict], run_failed: bool = False) -> str:
+    """Aggregate cell qualification without dropping multi-CPU profile failures."""
+    if run_failed:
+        return "fail"
+    for record in records:
+        if record.get("status") != "pass":
+            return "fail"
+        cpu_measurement = record.get("cpu_measurement", {})
+        if cpu_measurement.get("profile", "none") != "none":
+            if record.get("qualification", {}).get("status") != "pass":
+                return "fail"
+    return "pass"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)

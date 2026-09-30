@@ -1,8 +1,8 @@
 # OpenPPP2 VMUX 完整审计报告
 
-> Status: Archived audit snapshot (2026-08-03)
-> Type: Audit
-> Last verified: 2026-08-03 (audit closeout; findings are historical)
+> Status: Final (historical audit; report dated 2026-08-02)
+> Type: Audit Report
+> Last verified: 2026-09-30 (report metadata and recorded audit baseline)
 
 > **Status: Final**
 > **Audit Result: Passed**

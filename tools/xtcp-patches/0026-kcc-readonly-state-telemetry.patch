@@ -1,0 +1,163 @@
+--- a/include/xtcp/cc/cc.h
++++ b/include/xtcp/cc/cc.h
+@@ -42,6 +42,24 @@
+             UInt32  is_app_limited = 0;
+         };
+ 
++        /** Read-only KCC model state; bandwidth is Q24 bytes/us. */
++        struct KccTelemetrySnapshot {
++            UInt64 max_bw_q24 = 0;
++            UInt64 full_bw_q24 = 0;
++            UInt64 total_delivered = 0;
++            UInt64 round_sample_delivered = 0;
++            UInt64 round_sample_interval_us = 0;
++            UInt64 last_sample_delivered = 0;
++            UInt64 last_sample_interval_us = 0;
++            UInt32 rtt_round = 0;
++            UInt32 min_rtt_us = 0;
++            UInt32 full_bw_count = 0;
++            UInt32 full_bw_reached = 0;
++            UInt32 mode = 0;  // 0=STARTUP, 1=PROBE_BW, 2=DRAIN
++            UInt32 sample_count = 0;
++            UInt32 has_seen_rtt = 0;
++        };
++
+         /**
+          * @brief CA events (kernel enum tcp_ca_event equivalent).
+          */
+@@ -69,6 +87,7 @@
+             void (*cong_control)(XtcpConnCc* sk, const RateSample* rs) = NULLPTR;
+             UInt32 (*reinit_ssthresh)(XtcpConnCc* sk) = NULLPTR;
+             Byte    flags = 0;
++            bool (*kcc_telemetry)(const XtcpConnCc* sk, KccTelemetrySnapshot& out) = NULLPTR;
+         };
+ 
+         /**
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -30,6 +30,7 @@
+         struct XtcpCongestionOps;
+         struct RateSample;
+         struct AckSample;
++        struct KccTelemetrySnapshot;
+     }
+     namespace core {
+         /**
+@@ -310,6 +311,7 @@
+  *         NULLPTR/empty selected the built-in Reno default.
+              */
+             bool SetCongestionControl(const char* name) noexcept;
++            bool GetKccTelemetry(cc::KccTelemetrySnapshot& out) const noexcept;
+ 
+             /**
+              * @brief Processes one incoming TCP segment (IP payload).
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -864,6 +864,12 @@
+             return true;
+         }
+ 
++        bool TcpConn::GetKccTelemetry(cc::KccTelemetrySnapshot& out) const noexcept {
++            out = {};
++            return NULLPTR != cc_ops_ && NULLPTR != cc_ops_->kcc_telemetry &&
++                cc_ops_->kcc_telemetry(&cc_, out);
++        }
++
+         void TcpConn::Transition(TcpState next) noexcept {
+             state_ = next;
+             // Closing states must keep being swept: the reclamation pass in
+--- a/include/xtcp/core/stack.h
++++ b/include/xtcp/core/stack.h
+@@ -12,6 +12,7 @@
+ #include <xtcp/core/ip.h>
+ #include <xtcp/core/scheduler.h>
+ #include <xtcp/core/tcp.h>
++#include <xtcp/cc/cc.h>
+ #include <xtcp/mimt/mimt.h>
+ #include <xtcp/core/syncookies.h>
+ #include <xtcp/qdisc/qdisc.h>
+@@ -503,6 +504,9 @@
+             out.inflight = it->second->conn->InflightBytes();
+             return true;
+         }
++        /** @brief Reads optional KCC state for one connection. */
++        bool ConnGetKccTelemetry(
++            UInt64 conn_id, cc::KccTelemetrySnapshot& out) const noexcept;
+         /**
+          * @brief Reads the latest SendData rejection snapshot for a connection.
+          * @return True when the connection exists; @a out is zeroed on failure.
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -1474,6 +1474,16 @@
+             it->second->conn->LastSendAdmission(out);
+     }
+ 
++    bool XtcpStack::ConnGetKccTelemetry(
++        UInt64 conn_id, cc::KccTelemetrySnapshot& out) const noexcept {
++        out = {};
++        Shard* shard = ShardOf(conn_id);
++        std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
++        auto it = shard->conns_.find(conn_id);
++        return it != shard->conns_.end() && NULLPTR != it->second->conn &&
++            it->second->conn->GetKccTelemetry(out);
++    }
++
+     core::AckReleaseTelemetrySnapshot XtcpStack::AckReleaseTelemetry() const noexcept {
+         core::AckReleaseTelemetrySnapshot total;
+         const auto add = [&total](const core::AckReleaseTelemetrySnapshot& value) noexcept {
+--- a/plugins/cc_kcc.cpp
++++ b/plugins/cc_kcc.cpp
+@@ -494,6 +494,31 @@
+         }
+     }
+ 
++    bool KccTelemetry(const XtcpConnCc* sk, KccTelemetrySnapshot& out) noexcept {
++        out = {};
++        if (NULLPTR == sk || NULLPTR == sk->ca_priv) {
++            return false;
++        }
++        const KccState* k = static_cast<const KccState*>(sk->ca_priv);
++        out.max_bw_q24 = k->max_bw;
++        out.full_bw_q24 = k->full_bw;
++        out.total_delivered = k->total_delivered;
++        out.round_sample_delivered = k->round_sample_delivered;
++        out.round_sample_interval_us = k->round_sample_interval_us;
++        out.last_sample_delivered = k->total_delivered >= k->prev_delivered
++            ? k->total_delivered - k->prev_delivered : 0;
++        out.last_sample_interval_us = k->last_ack_us >= k->prev_ack_us
++            ? k->last_ack_us - k->prev_ack_us : 0;
++        out.rtt_round = k->rtt_cnt;
++        out.min_rtt_us = kMinRttUninit == k->min_rtt_us ? 0 : k->min_rtt_us;
++        out.full_bw_count = k->full_bw_cnt;
++        out.full_bw_reached = k->full_bw_reached;
++        out.mode = k->mode;
++        out.sample_count = k->sample_cnt;
++        out.has_seen_rtt = k->has_seen_rtt;
++        return true;
++    }
++
+     UInt32 KccSsthresh(XtcpConnCc* sk) noexcept {
+         sk->snd_cwnd = kCwndMinTarget;
+         return kCwndMinTarget;
+@@ -513,6 +538,7 @@
+             KccMain,          /* cong_control */
+             NULLPTR,
+             0,
++            KccTelemetry,
+         };
+         return ops;
+     }
+--- a/tests/test_cc_kcc.cpp
++++ b/tests/test_cc_kcc.cpp
+@@ -203,3 +203,10 @@
+     CHECK(3 == ref.rtt_cnt);
++    xtcp::cc::KccTelemetrySnapshot telemetry;
++    CHECK(ops->kcc_telemetry != NULLPTR);
++    CHECK(ops->kcc_telemetry(&sk, telemetry));
++    CHECK(static_cast<UInt64>(max_bw) == telemetry.max_bw_q24);
++    CHECK(ref.rtt_cnt == telemetry.rtt_round);
++    CHECK(0 < telemetry.last_sample_delivered);
++    CHECK(0 < telemetry.last_sample_interval_us);
+     ops->release(&sk);
+ }
+ 

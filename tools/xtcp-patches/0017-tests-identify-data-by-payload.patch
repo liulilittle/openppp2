@@ -1,0 +1,100 @@
+--- a/tests/test_sack_recovery.cpp
++++ b/tests/test_sack_recovery.cpp
+@@ -47,9 +47,13 @@
+         if (0 == got) {
+             break;
+         }
+-        // Parse: IPv4 (20B) + TCP (>=20B). flags at tcp offset 13, seq at 4.
+-        const UInt32 tcp_off = 20;
+-        const bool data = (got > tcp_off + 13) && (0 != (out[tcp_off + 13] & 0x08));  // PSH
++        // PSH is advisory; payload length identifies data segments for loss injection.
++        const UInt32 ip_hlen = got >= 20 ? static_cast<UInt32>(out[0] & 0x0fU) * 4U : 0;
++        const UInt32 tcp_off = ip_hlen;
++        const UInt32 tcp_hlen = got >= tcp_off + 20 ? static_cast<UInt32>(out[tcp_off + 12] >> 4U) * 4U : 0;
++        const UInt32 ip_total = got >= 4 ? (static_cast<UInt32>(out[2]) << 8U) | out[3] : 0;
++        const bool data = ip_hlen >= 20 && tcp_hlen >= 20 && ip_total >= ip_hlen + tcp_hlen &&
++                          ip_total > ip_hlen + tcp_hlen;
+         bool drop = false;
+         if (data) {
+             const UInt32 seq = (static_cast<UInt32>(out[tcp_off + 4]) << 24) |
+--- a/tests/test_early_retx.cpp
++++ b/tests/test_early_retx.cpp
+@@ -34,6 +34,15 @@
+ 
+ static int g_failures = 0;
+ 
++static bool HasTcpPayload(const Byte* packet, UInt32 length) {
++    const UInt32 ip_hlen = length >= 20 ? static_cast<UInt32>(packet[0] & 0x0fU) * 4U : 0;
++    const UInt32 tcp_hlen = ip_hlen >= 20 && length >= ip_hlen + 20
++        ? static_cast<UInt32>(packet[ip_hlen + 12] >> 4U) * 4U : 0;
++    const UInt32 ip_total = length >= 4 ? (static_cast<UInt32>(packet[2]) << 8U) | packet[3] : 0;
++    return ip_hlen >= 20 && tcp_hlen >= 20 && ip_total >= ip_hlen + tcp_hlen &&
++           ip_total > ip_hlen + tcp_hlen;
++}
++
+ #define CHECK(cond)                                                       \
+     do {                                                                  \
+         if (!(cond)) {                                                    \
+@@ -153,7 +162,7 @@
+         std::vector<UInt32> flen;
+         while (0 != s.backend_a.TxPending()) {
+             const UInt32 n = s.backend_a.PollTx(out);
+-            if (0 < n && 20 < n && 0 != (out[33] & 0x08) && frames.size() < 4) {
++            if (0 < n && HasTcpPayload(out, n) && frames.size() < 4) {
+                 frames.emplace_back(out, out + n);
+                 flen.push_back(n);
+             } else if (0 < n) {
+@@ -196,7 +205,7 @@
+         std::vector<UInt32> flen;
+         while (0 != s.backend_a.TxPending()) {
+             const UInt32 n = s.backend_a.PollTx(out);
+-            if (0 < n && 20 < n && 0 != (out[33] & 0x08) && frames.size() < 4) {
++            if (0 < n && HasTcpPayload(out, n) && frames.size() < 4) {
+                 frames.emplace_back(out, out + n);
+                 flen.push_back(n);
+             } else if (0 < n) {
+@@ -240,7 +249,7 @@
+         std::vector<UInt32> flen;
+         while (0 != s.backend_a.TxPending()) {
+             const UInt32 n = s.backend_a.PollTx(out);
+-            if (0 < n && 20 < n && 0 != (out[33] & 0x08) && frames.size() < 4) {
++            if (0 < n && HasTcpPayload(out, n) && frames.size() < 4) {
+                 frames.emplace_back(out, out + n);
+                 flen.push_back(n);
+             } else if (0 < n) {
+@@ -285,7 +294,7 @@
+         std::vector<UInt32> flen;
+         while (0 != s.backend_a.TxPending()) {
+             const UInt32 n = s.backend_a.PollTx(out);
+-            if (0 < n && 20 < n && 0 != (out[33] & 0x08) && frames.size() < 4) {
++            if (0 < n && HasTcpPayload(out, n) && frames.size() < 4) {
+                 frames.emplace_back(out, out + n);
+                 flen.push_back(n);
+             } else if (0 < n) {
+--- a/tests/test_combo_stress.cpp
++++ b/tests/test_combo_stress.cpp
+@@ -37,6 +37,15 @@
+ 
+ static int g_failures = 0;
+ 
++static bool HasTcpPayload(const Byte* packet, UInt32 length) {
++    const UInt32 ip_hlen = length >= 20 ? static_cast<UInt32>(packet[0] & 0x0fU) * 4U : 0;
++    const UInt32 tcp_hlen = ip_hlen >= 20 && length >= ip_hlen + 20
++        ? static_cast<UInt32>(packet[ip_hlen + 12] >> 4U) * 4U : 0;
++    const UInt32 ip_total = length >= 4 ? (static_cast<UInt32>(packet[2]) << 8U) | packet[3] : 0;
++    return ip_hlen >= 20 && tcp_hlen >= 20 && ip_total >= ip_hlen + tcp_hlen &&
++           ip_total > ip_hlen + tcp_hlen;
++}
++
+ #define CHECK(cond)                                                       \
+     do {                                                                  \
+         if (!(cond)) {                                                    \
+@@ -87,7 +96,7 @@
+         if (0 == got) {
+             break;
+         }
+-        const bool data = (got > 33) && (0 != (out[33] & 0x08));
++        const bool data = HasTcpPayload(out, got);
+         bool drop = false;
+         if (data && 0 != drop_every) {
+             const UInt32 seq = (static_cast<UInt32>(out[24]) << 24) |

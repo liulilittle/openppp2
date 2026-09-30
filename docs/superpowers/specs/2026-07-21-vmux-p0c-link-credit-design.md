@@ -1,16 +1,16 @@
 # VMUX P0-C Link Exit + Byte Credit Design
 
-> Status: Archived
+> Status: Accepted
 > Type: Design
 > Last verified: 6b2e915
 
-> **Purpose:** Preserve the P0-C link-exit and byte-credit design snapshot.
-> **Audience:** Maintainers investigating VMUX design history.
-> **Status:** Archived worktree-specific design evidence; not current runtime guidance.
-> **Last verified against:** Preserved 2026-07-21 worktree record and archive placement, 2026-07-22.
-> **Parent index:** [Archived Designs](README.md) · **Related working record:** [status-bound specification](../../superpowers/specs/2026-07-21-vmux-p0c-link-credit-design.md)
+> **Purpose:** Preserve the status-bound P0-C link-exit and byte-credit specification.
+> **Audience:** Maintainers reviewing the recorded VMUX design decision.
+> **Status:** Accepted working specification; not a current release contract.
+> **Last verified against:** Saved `fix/vmux-failure-semantics-bounds` worktree record, 2026-07-21; boundary reviewed 2026-07-22.
+> **Parent index:** [Working Plan and Specification Records](../../archive/designs/README.md) · **Archived copy:** [historical design evidence](../../archive/designs/2026-07-21-vmux-p0c-link-credit-design.md)
 
-> **Archive notice:** Branch, worktree, implementation, and test claims below are historical evidence. Confirm the current checkout and tests before relying on them.
+> **Verification warning:** Branch, worktree, implementation, and test claims below are recorded evidence. Confirm the current checkout and tests before relying on them.
 
 **Recorded status (2026-07-21):** Approved for implementation (plan lock + user: implement through P1)
 **Recorded branch/worktree:** `fix/vmux-failure-semantics-bounds` @ `/tmp/openppp2-vmux-p0`

@@ -767,6 +767,9 @@ void TestDirectDownloadReservationIdentity() {
 
     CHECK(hooks && hooks->OnSecondLegPayload(reservation_b, payload) ==
         XtcpDirectResult::Accepted);
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1 + 8 * 1024, kAck));
     CHECK(WaitFor([&]() {
         return second_leg->DownloadCompletionCount(
             reservation_b, XtcpDirectCompletion::Accepted) == 1 &&

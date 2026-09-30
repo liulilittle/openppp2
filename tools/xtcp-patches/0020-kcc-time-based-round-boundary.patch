@@ -1,0 +1,88 @@
+diff --git a/plugins/cc_kcc.cpp b/plugins/cc_kcc.cpp
+--- a/plugins/cc_kcc.cpp
++++ b/plugins/cc_kcc.cpp
+@@ -101,4 +101,5 @@
+         UInt64  total_delivered = 0;
+         UInt64  prev_delivered = 0;
+         UInt64  next_rtt_delivered = 0;
++        UInt64  next_rtt_stamp_us = 0;
+         UInt64  congestion_window_bytes = 10 * 1460;
+@@ -351,17 +352,12 @@
+ 
+         // Model update.
+         const UInt64 interval_us = (now_us > k->prev_ack_us) ? (now_us - k->prev_ack_us) : 0;
+-        if (k->prev_delivered >= k->next_rtt_delivered) {
+-            // Rate samples may be emitted for every ACK, so a sample boundary
+-            // is not necessarily an RTT boundary. Advance the delivery marker
+-            // by the current flight size; the next round begins only after
+-            // approximately one flight has drained. This keeps the bandwidth
+-            // max-filter's 10-round horizon and STARTUP plateau counter tied
+-            // to delivery rounds instead of ACK/sample frequency.
+-            const UInt64 flight = (0 < sk->inflight)
+-                ? static_cast<UInt64>(sk->inflight)
+-                : 0;
+-            k->next_rtt_delivered = k->total_delivered + flight;
++        const UInt32 round_rtt_us = (k->min_rtt_us != kMinRttUninit && 0 < k->min_rtt_us)
++            ? k->min_rtt_us
++            : rtt_us;
++        if (0 == k->next_rtt_stamp_us || now_us >= k->next_rtt_stamp_us) {
++            const UInt64 round_us = (0 < round_rtt_us) ? round_rtt_us : 1;
++            k->next_rtt_stamp_us = now_us + round_us;
+             ++k->rtt_cnt;
+         }
+         UInt64 bw = 0;
+diff --git a/plugins/ref/kcc_core.c b/plugins/ref/kcc_core.c
+--- a/plugins/ref/kcc_core.c
++++ b/plugins/ref/kcc_core.c
+@@ -121,6 +121,7 @@
+ 	s64  total_delivered;
+ 	s64  prev_delivered;
+ 	s64  next_rtt_delivered;
++	s64  next_rtt_stamp_us;
+ 
+ 	/* Inputs */
+ 	u32  mss;
+@@ -324,14 +325,13 @@
+ 	s64 interval_us = now_us - (s64)k->prev_ack_us;
+ 	if (interval_us < 0) interval_us = 0;
+ 
+-	/* Round boundary */
++	/* A RateSample can be emitted more often than once per RTT. */
+ 	u32 prev_rtt_cnt = k->rtt_cnt;
+-	if (!(k->prev_delivered < k->next_rtt_delivered)) {
+-		/* Rate samples may be more frequent than delivery rounds (RTTs).
+-		 * Advance by one current flight so the bandwidth window ages in
+-		 * approximate RTTs rather than individual ACK samples. */
+-		const s64 flight = (k->flight_bytes > 0) ? k->flight_bytes : 0;
+-		k->next_rtt_delivered = k->total_delivered + flight;
++	const s64 round_rtt_us = (k->min_rtt_us != MIN_RTT_UNINIT && k->min_rtt_us > 0)
++		? k->min_rtt_us : rtt_us;
++	if (k->next_rtt_stamp_us == 0 || now_us >= k->next_rtt_stamp_us) {
++		const s64 round_us = (round_rtt_us > 0) ? round_rtt_us : 1;
++		k->next_rtt_stamp_us = now_us + round_us;
+ 		k->rtt_cnt++;
+ 	}
+ 
+diff --git a/tests/test_cc_kcc.cpp b/tests/test_cc_kcc.cpp
+--- a/tests/test_cc_kcc.cpp
++++ b/tests/test_cc_kcc.cpp
+@@ -116,15 +116,12 @@
+     constexpr UInt32 kDelivered = 1460;
+     constexpr UInt32 kFirstDelivered = 10 * kDelivered;
+     constexpr UInt32 kFlight = 20 * 1460;
+-    constexpr UInt32 kInterval = 1000;
++    constexpr UInt32 kInterval = 100;
+     UInt64 now_us = 1000000;
+ 
+-    // Twenty one small ACK samples carry one flight. The round counter must
+-    // not treat each sample as a separate RTT; it advances again only after
+-    // the delivery marker reaches the next flight boundary. The first sample
+-    // is deliberately much faster; later samples in the same round must not
+-    // evict that round's bandwidth maximum.
+-    for (UInt32 i = 0; i < 21; ++i) {
++    // Ten ACK samples occur within the 1ms RTT. They form one round, and the
++    // first sample's bandwidth maximum must survive later low samples.
++    for (UInt32 i = 0; i < 10; ++i) {
+         const UInt32 delivered = (0 == i) ? kFirstDelivered : kDelivered;
+         now_us += kInterval;
+         kcc_core_on_ack(&ref, static_cast<s64>(now_us), delivered, 1000,

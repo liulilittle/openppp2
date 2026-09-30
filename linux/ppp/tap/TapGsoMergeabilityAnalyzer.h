@@ -79,7 +79,6 @@ namespace ppp {
                 if (!classification.eligible) {
                     if (run_open_) FinalizeRun(classification.break_reason);
                     ineligible_packets_++;
-                    if (classification.break_reason == reason_psh) psh_rejected_packets_++;
                     simulated_writes_cap4_++;
                     theoretical_upper_bound_writes_cap8_++;
                     theoretical_upper_bound_writes_cap16_++;
@@ -94,17 +93,31 @@ namespace ppp {
                     const int reason = ContinuityBreakReason(packet, classification);
                     if (reason == -1) {
                         AppendSegment(classification, now_ns);
+                        if (classification.psh) {
+                            psh_boundary_packets_++;
+                            FinalizeRun(reason_psh);
+                            return;
+                        }
                         if (run_segments_ == TunGsoCoalescer::kSegmentCap) FinalizeRun(reason_cap);
                         return;
                     }
                     if (reason == reason_short_tail_completed) {
                         AppendSegment(classification, now_ns);
-                        FinalizeRun(reason_short_tail_completed);
+                        if (classification.psh) {
+                            psh_boundary_packets_++;
+                            FinalizeRun(reason_psh);
+                        } else {
+                            FinalizeRun(reason_short_tail_completed);
+                        }
                         return;
                     }
                     FinalizeRun(reason);
                 }
                 StartRun(packet, classification, now_ns);
+                if (classification.psh) {
+                    psh_boundary_packets_++;
+                    FinalizeRun(reason_psh);
+                }
             }
 
             /// Renders the current window (since the last ResetWindow) as JSON.
@@ -124,7 +137,7 @@ namespace ppp {
                 field("strict_eligible_packets", strict_eligible_packets_);
                 field("strict_eligible_bytes", strict_eligible_bytes_);
                 field("ineligible_packets", ineligible_packets_);
-                field("psh_rejected_packets", psh_rejected_packets_);
+                field("psh_boundary_packets", psh_boundary_packets_);
                 field("df_set_packets", df_set_packets_);
                 field("ip_id_incrementing", ip_id_incrementing_);
                 // This is an input-packet baseline, not a count of physical
@@ -286,6 +299,7 @@ namespace ppp {
                 result.eligible = true;
                 result.payload_bytes = strict_info.payload;
                 result.sequence = strict_info.seq;
+                result.psh = (flags & 0x08U) != 0;
                 return result;
             }
 
@@ -401,7 +415,7 @@ namespace ppp {
             uint64_t strict_eligible_packets_ = 0;
             uint64_t strict_eligible_bytes_ = 0;
             uint64_t ineligible_packets_ = 0;
-            uint64_t psh_rejected_packets_ = 0;
+            uint64_t psh_boundary_packets_ = 0;
             uint64_t df_set_packets_ = 0;
             uint64_t ip_id_incrementing_ = 0;
             uint64_t simulated_writes_cap4_ = 0;

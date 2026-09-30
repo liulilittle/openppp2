@@ -881,8 +881,18 @@ namespace ppp {
                 
                 // Layer 3: payload obfuscation using header-derived key.
                 ppp::diagnostics::datapath_perf::Scope payload_encrypt_scope;
-                payload = Transmission_Payload_Encrypt(APP, allocator, header_kf,
-                    payload.get(), datalen, payload_len, safest);
+                if (safest || APP->key.delta_encode) {
+                    payload = Transmission_Payload_Encrypt(APP, allocator, header_kf,
+                        payload.get(), datalen, payload_len, safest);
+                }
+                else {
+                    // The transport cipher returned an exclusively owned buffer. The
+                    // payload transform is in-place, so retain that owner instead of
+                    // allocating and copying the same bytes in Transmission_Payload_Encrypt.
+                    Transmission_Payload_Encrypt_Partial(APP, header_kf,
+                        payload.get(), datalen, safest);
+                    payload_len = datalen;
+                }
                 if (NULLPTR == payload) {
                     return NULLPTR;
                 }

@@ -4,6 +4,7 @@
 
 #include <wmmintrin.h>   // AES instruction set
 #include <emmintrin.h>   // SSE2 instruction set
+#include <algorithm>
 #include <string.h>
 #include <iostream>
 
@@ -124,6 +125,40 @@ namespace aesni {
         return block;
     }
 
+    // CFB decryption's AES inputs are known from the ciphertext: block i uses
+    // the IV for i=0 and ciphertext[i-1] otherwise. Encrypt four independent
+    // feedback blocks in an interleaved schedule to hide AESENC latency.
+    static inline void aes256_encrypt_blocks4(__m128i& b0, __m128i& b1,
+        __m128i& b2, __m128i& b3, const __m128i* round_key) noexcept {
+        b0 = _mm_xor_si128(b0, round_key[0]);
+        b1 = _mm_xor_si128(b1, round_key[0]);
+        b2 = _mm_xor_si128(b2, round_key[0]);
+        b3 = _mm_xor_si128(b3, round_key[0]);
+#define AES256_ENC_ROUND4(n) \
+        b0 = _mm_aesenc_si128(b0, round_key[n]); \
+        b1 = _mm_aesenc_si128(b1, round_key[n]); \
+        b2 = _mm_aesenc_si128(b2, round_key[n]); \
+        b3 = _mm_aesenc_si128(b3, round_key[n])
+        AES256_ENC_ROUND4(1);
+        AES256_ENC_ROUND4(2);
+        AES256_ENC_ROUND4(3);
+        AES256_ENC_ROUND4(4);
+        AES256_ENC_ROUND4(5);
+        AES256_ENC_ROUND4(6);
+        AES256_ENC_ROUND4(7);
+        AES256_ENC_ROUND4(8);
+        AES256_ENC_ROUND4(9);
+        AES256_ENC_ROUND4(10);
+        AES256_ENC_ROUND4(11);
+        AES256_ENC_ROUND4(12);
+        AES256_ENC_ROUND4(13);
+#undef AES256_ENC_ROUND4
+        b0 = _mm_aesenclast_si128(b0, round_key[14]);
+        b1 = _mm_aesenclast_si128(b1, round_key[14]);
+        b2 = _mm_aesenclast_si128(b2, round_key[14]);
+        b3 = _mm_aesenclast_si128(b3, round_key[14]);
+    }
+
     // AES-256-CFB Encryption
     void aes256_cfb_encrypt(uint8_t* ciphertext, const uint8_t* plaintext, size_t len, const uint8_t* iv, const __m128i* round_key) noexcept {
         __m128i feedback = _mm_loadu_si128((const __m128i*)iv); // Initialize feedback register
@@ -166,8 +201,28 @@ namespace aesni {
         size_t blocks = len / 16;    // Number of full blocks
         size_t remaining = len % 16; // Remaining bytes
 
-        // Process full blocks
-        for (size_t i = 0; i < blocks; i++) {
+        // CFB decryption blocks are parallelizable because each AES input is
+        // the previous ciphertext block, not the previous plaintext output.
+        size_t i = 0;
+        for (; i + 4 <= blocks; i += 4) {
+            const __m128i c0 = _mm_loadu_si128((const __m128i*)(ciphertext + (i + 0) * 16));
+            const __m128i c1 = _mm_loadu_si128((const __m128i*)(ciphertext + (i + 1) * 16));
+            const __m128i c2 = _mm_loadu_si128((const __m128i*)(ciphertext + (i + 2) * 16));
+            const __m128i c3 = _mm_loadu_si128((const __m128i*)(ciphertext + (i + 3) * 16));
+            __m128i b0 = feedback;
+            __m128i b1 = c0;
+            __m128i b2 = c1;
+            __m128i b3 = c2;
+            aes256_encrypt_blocks4(b0, b1, b2, b3, round_key);
+            _mm_storeu_si128((__m128i*)(plaintext + (i + 0) * 16), _mm_xor_si128(c0, b0));
+            _mm_storeu_si128((__m128i*)(plaintext + (i + 1) * 16), _mm_xor_si128(c1, b1));
+            _mm_storeu_si128((__m128i*)(plaintext + (i + 2) * 16), _mm_xor_si128(c2, b2));
+            _mm_storeu_si128((__m128i*)(plaintext + (i + 3) * 16), _mm_xor_si128(c3, b3));
+            feedback = c3;
+        }
+
+        // Process remaining full blocks with the simple scalar fallback.
+        for (; i < blocks; i++) {
             // Generate keystream
             __m128i keystream = aes256_encrypt_block(feedback, round_key);
             // Load current ciphertext block

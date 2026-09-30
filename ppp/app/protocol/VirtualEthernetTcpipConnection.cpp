@@ -46,6 +46,22 @@ namespace ppp {
                     return bytes;
                 }
 
+                int DirectUploadGatherWaitMilliseconds() noexcept {
+                    static const int milliseconds = []() noexcept {
+                        const char* value = std::getenv(
+                            "OPENPPP2_XTCP_DIRECT_UPLOAD_GATHER_WAIT_MS");
+                        if (!value || !*value) {
+                            return 1;
+                        }
+                        char* end = nullptr;
+                        const long parsed = std::strtol(value, &end, 10);
+                        return end && *end == '\0' && parsed >= 0 && parsed <= 2
+                            ? static_cast<int>(parsed)
+                            : 1;
+                    }();
+                    return milliseconds;
+                }
+
                 void AddDirectUploadQueueTelemetry(
                     const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>& telemetry,
                     std::size_t bytes) noexcept {
@@ -65,8 +81,8 @@ namespace ppp {
 
             static constexpr int kTransmissionBinaryHeaderSize = 3;
             static constexpr int kPlaintextBase94MaxTcpReadSize = (PPP_BUFFER_SIZE / 2) - kTransmissionBinaryHeaderSize;
-            static constexpr std::size_t kDirectUploadGatherDefaultBytes = 32 * 1024;
             static constexpr std::size_t kDirectUploadGatherCarrierMaxBytes = PPP_BUFFER_SIZE;
+            static constexpr std::size_t kDirectUploadGatherDefaultBytes = kDirectUploadGatherCarrierMaxBytes;
 
             static std::size_t GetDirectUploadGatherBytes(bool plaintext) noexcept {
                 static const std::size_t requested = []() noexcept {
@@ -660,7 +676,7 @@ namespace ppp {
                     download_waiter = direct_download_waiter_.Invalidate();
                 }
                 if (close_handler) {
-                    close_handler(client::xtcp::XtcpDirectCloseReason::Terminal);
+                    close_handler(XtcpDirectCloseReason::Terminal);
                 }
                 if (download_waiter) {
                     download_waiter->R();
@@ -1093,13 +1109,13 @@ namespace ppp {
             VirtualEthernetTcpipConnection::DirectIoResult
             VirtualEthernetTcpipConnection::SendDirectToPeer(
                 const Byte* data, std::uint32_t length,
-                client::xtcp::XtcpUploadBudget::Reservation&& credit) noexcept {
+                XtcpUploadBudget::Reservation&& credit) noexcept {
                 if (!data || length == 0 || !credit || credit.Bytes() != length ||
                     credit.Items() != 1 || disposed_ || !connected_) {
                     return DirectIoResult::Closed;
                 }
                 bool start_writer = false;
-                std::shared_ptr<client::xtcp::XtcpUploadChunk> payload;
+                std::shared_ptr<XtcpUploadChunk> payload;
                 {
                     std::lock_guard<std::mutex> lock(direct_sync_);
                     if (disposed_ || !connected_ || !transmission_ ||
@@ -1120,7 +1136,7 @@ namespace ppp {
                     try {
                         // Both global credit and the per-flow queue cap are
                         // secured before copying borrowed receive bytes.
-                        payload = std::make_shared<client::xtcp::XtcpUploadChunk>(data, length, std::move(credit));
+                        payload = std::make_shared<XtcpUploadChunk>(data, length, std::move(credit));
                         direct_upload_queue_.emplace_back(payload);
                     }
                     catch (...) {
@@ -1155,8 +1171,8 @@ namespace ppp {
             }
 
             void VirtualEthernetTcpipConnection::CompleteDirectDownload(
-                const client::xtcp::XtcpDirectReadReservation& reservation,
-                client::xtcp::XtcpDirectCompletion completion) noexcept {
+                const XtcpDirectReadReservation& reservation,
+                XtcpDirectCompletion completion) noexcept {
                 YieldContext* waiter = nullptr;
                 {
                     std::lock_guard<std::mutex> lock(direct_sync_);
@@ -1211,10 +1227,13 @@ namespace ppp {
                     std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry;
                 } writer_telemetry_scope(telemetry);
                 const std::size_t gather_limit = GetDirectUploadGatherBytes(configuration_->key.plaintext);
+                const int gather_wait_ms = DirectUploadGatherWaitMilliseconds();
+                bool gather_waited = false;
                 for (;;) {
-                    std::shared_ptr<client::xtcp::XtcpUploadChunk> payload;
+                    std::shared_ptr<XtcpUploadChunk> payload;
                     std::size_t payload_items = 0;
                     bool shutdown_send = false;
+                    bool wait_for_gather = false;
                     {
                         std::lock_guard<std::mutex> lock(direct_sync_);
                         if (direct_upload_queue_.empty()) {
@@ -1227,47 +1246,61 @@ namespace ppp {
                             }
                         }
                         else {
-                            payload = direct_upload_queue_.front();
-                            payload_items = 1;
-                            if (gather_limit > 1 && payload->bytes.size() < gather_limit &&
-                                direct_upload_queue_.size() > 1) {
-                                std::size_t gathered_bytes = payload->bytes.size();
-                                std::size_t gathered_items = 1;
-                                for (; gathered_items < direct_upload_queue_.size(); ++gathered_items) {
-                                    const std::shared_ptr<client::xtcp::XtcpUploadChunk>& candidate =
-                                        direct_upload_queue_[gathered_items];
-                                    if (!candidate || candidate->bytes.empty() ||
-                                        !payload->credit.SameBudget(candidate->credit) ||
-                                        candidate->bytes.size() > gather_limit - gathered_bytes) {
-                                        break;
+                            const bool queue_can_grow = gather_wait_ms > 0 && !gather_waited &&
+                                direct_send_close_state_ == DirectSendCloseState::Open &&
+                                direct_upload_bytes_ < gather_limit &&
+                                direct_upload_queue_.size() > 1 &&
+                                direct_upload_queue_.size() < 16;
+                            if (queue_can_grow) {
+                                wait_for_gather = true;
+                            }
+                            else {
+                                gather_waited = false;
+                                payload = direct_upload_queue_.front();
+                                payload_items = 1;
+                                if (gather_limit > 1 && payload->bytes.size() < gather_limit &&
+                                    direct_upload_queue_.size() > 1) {
+                                    std::size_t gathered_bytes = payload->bytes.size();
+                                    std::size_t gathered_items = 1;
+                                    for (; gathered_items < direct_upload_queue_.size(); ++gathered_items) {
+                                        const std::shared_ptr<XtcpUploadChunk>& candidate =
+                                            direct_upload_queue_[gathered_items];
+                                        if (!candidate || candidate->bytes.empty() ||
+                                            !payload->credit.SameBudget(candidate->credit) ||
+                                            candidate->bytes.size() > gather_limit - gathered_bytes) {
+                                            break;
+                                        }
+                                        gathered_bytes += candidate->bytes.size();
                                     }
-                                    gathered_bytes += candidate->bytes.size();
-                                }
-                                if (gathered_items > 1) {
-                                    try {
-                                        auto combined = std::make_shared<client::xtcp::XtcpUploadChunk>();
-                                        combined->bytes.reserve(gathered_bytes);
-                                        for (std::size_t i = 0; i < gathered_items; ++i) {
-                                            const std::vector<Byte>& item =
-                                                direct_upload_queue_[i]->bytes;
-                                            combined->bytes.insert(combined->bytes.end(), item.begin(), item.end());
+                                    if (gathered_items > 1) {
+                                        try {
+                                            auto combined = std::make_shared<XtcpUploadChunk>();
+                                            combined->bytes.reserve(gathered_bytes);
+                                            for (std::size_t i = 0; i < gathered_items; ++i) {
+                                                const std::vector<Byte>& item =
+                                                    direct_upload_queue_[i]->bytes;
+                                                combined->bytes.insert(combined->bytes.end(), item.begin(), item.end());
+                                            }
+                                            // All allocations/copies succeeded. Transfer the
+                                            // admitted credit before removing original chunks;
+                                            // keep it through Write(y), including on close.
+                                            for (std::size_t i = 0; i < gathered_items; ++i) {
+                                                const bool merged = combined->credit.Merge(
+                                                    std::move(direct_upload_queue_[i]->credit));
+                                                assert(merged); // SameBudget was checked above under this lock.
+                                                (void)merged;
+                                            }
+                                            payload = std::move(combined);
+                                            payload_items = gathered_items;
+                                            for (std::size_t i = 0; i < gathered_items; ++i) {
+                                                direct_upload_queue_.pop_front();
+                                            }
                                         }
-                                        // All allocations/copies succeeded. Transfer the
-                                        // admitted credit before removing original chunks;
-                                        // keep it through Write(y), including on close.
-                                        for (std::size_t i = 0; i < gathered_items; ++i) {
-                                            const bool merged = combined->credit.Merge(
-                                                std::move(direct_upload_queue_[i]->credit));
-                                            assert(merged); // SameBudget was checked above under this lock.
-                                            (void)merged;
-                                        }
-                                        payload = std::move(combined);
-                                        payload_items = gathered_items;
-                                        for (std::size_t i = 0; i < gathered_items; ++i) {
+                                        catch (...) {
                                             direct_upload_queue_.pop_front();
                                         }
                                     }
-                                    catch (...) {
+                                    else {
                                         direct_upload_queue_.pop_front();
                                     }
                                 }
@@ -1275,10 +1308,14 @@ namespace ppp {
                                     direct_upload_queue_.pop_front();
                                 }
                             }
-                            else {
-                                direct_upload_queue_.pop_front();
-                            }
                         }
+                    }
+                    if (wait_for_gather) {
+                        // Give adjacent queued TCP segments a bounded chance to join
+                        // this carrier write. Single-item queues bypass the wait.
+                        gather_waited = true;
+                        (void)ppp::coroutines::asio::async_sleep(y, gather_wait_ms);
+                        continue;
                     }
                     if (!payload) {
                         if (!shutdown_send) {
@@ -1327,8 +1364,8 @@ namespace ppp {
                         ppp::telemetry::Count("xtcp.direct.upload_writer_exits", 1);
                         return true;
                     }
-                    const bool sent = SendBufferToPeer(
-                        y, payload->bytes.data(), static_cast<int>(payload->bytes.size()));
+                    const bool sent = SendBufferToPeer(y, payload->bytes.data(),
+                        static_cast<int>(payload->bytes.size()));
                     DirectWritableHandler writable;
                     std::size_t completed_bytes = 0;
                     std::size_t completed_items = 0;
@@ -1354,6 +1391,7 @@ namespace ppp {
                     // Write(y) completed. Free the payload/credit before
                     // advertising local capacity to a resumed receiver.
                     payload.reset();
+                    gather_waited = false;
                     if (!sent) {
                         ppp::telemetry::Count("xtcp.direct.upload_writer_exits", 1);
                         Dispose();
@@ -1398,7 +1436,7 @@ namespace ppp {
                                 close_handler = direct_close_handler_;
                             }
                             if (close_handler) {
-                                close_handler(client::xtcp::XtcpDirectCloseReason::PeerEof);
+                                close_handler(XtcpDirectCloseReason::PeerEof);
                             }
                             return true;
                         }
@@ -1409,7 +1447,7 @@ namespace ppp {
                         const int chunk_length = std::min<int>(
                             static_cast<int>(DirectDownloadChunkBytes()), packet_length - offset);
                         const std::shared_ptr<Byte> chunk(packet, packet.get() + offset);
-                        client::xtcp::XtcpDirectReadReservation reservation;
+                        XtcpDirectReadReservation reservation;
                         reservation.length = static_cast<std::uint32_t>(chunk_length);
                         for (;;) {
                             DirectReadHandler handler;
@@ -1502,7 +1540,7 @@ namespace ppp {
                     download_waiter = direct_download_waiter_.Invalidate();
                 }
                 if (close_handler) {
-                    close_handler(client::xtcp::XtcpDirectCloseReason::Terminal);
+                    close_handler(XtcpDirectCloseReason::Terminal);
                 }
                 if (download_waiter) {
                     download_waiter->R();

@@ -1,0 +1,40 @@
+--- a/include/xtcp/core/stack.h
++++ b/include/xtcp/core/stack.h
+@@ -517,3 +517,6 @@
+         core::AckReleaseTelemetrySnapshot AckReleaseTelemetry() const noexcept;
++        /** Reads cumulative ACK-release telemetry for one connection. */
++        bool ConnAckReleaseTelemetry(
++            UInt64 conn_id, core::AckReleaseTelemetrySnapshot& out) const noexcept;
+         /**
+          * @brief Aggregates read-only super-MSS TSO gate telemetry.
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -1524,1 +1524,14 @@
+-    core::TsoGateTelemetrySnapshot XtcpStack::TsoGateTelemetry() const noexcept {
++    bool XtcpStack::ConnAckReleaseTelemetry(
++        UInt64 conn_id, core::AckReleaseTelemetrySnapshot& out) const noexcept {
++        out = {};
++        Shard* shard = ShardOf(conn_id);
++        std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
++        auto it = shard->conns_.find(conn_id);
++        if (it == shard->conns_.end() || NULLPTR == it->second->conn) {
++            return false;
++        }
++        out = it->second->conn->AckReleaseTelemetry();
++        return true;
++    }
++
++    core::TsoGateTelemetrySnapshot XtcpStack::TsoGateTelemetry() const noexcept {
+--- a/tests/test_pacing_flush.cpp
++++ b/tests/test_pacing_flush.cpp
+@@ -161,2 +161,10 @@
+     const xtcp::core::AckReleaseTelemetrySnapshot telemetry = stack_a.AckReleaseTelemetry();
++    xtcp::core::AckReleaseTelemetrySnapshot conn_telemetry;
++    CHECK(stack_a.ConnAckReleaseTelemetry(conn, conn_telemetry));
++    CHECK(conn_telemetry.pending_flush_attempts == telemetry.pending_flush_attempts);
++    CHECK(conn_telemetry.pending_flush_pacing == telemetry.pending_flush_pacing);
++    xtcp::core::AckReleaseTelemetrySnapshot missing_telemetry;
++    missing_telemetry.valid_acks = 99;
++    CHECK(!stack_a.ConnAckReleaseTelemetry(0, missing_telemetry));
++    CHECK(0 == missing_telemetry.valid_acks);
+     CHECK(telemetry.pending_flush_attempts >= 1);

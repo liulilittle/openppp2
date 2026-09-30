@@ -1,0 +1,106 @@
+diff --git a/plugins/cc_kcc.cpp b/plugins/cc_kcc.cpp
+index 0b1c7f4..f85fe18 100644
+--- a/plugins/cc_kcc.cpp
++++ b/plugins/cc_kcc.cpp
+@@ -330,8 +330,16 @@ namespace {
+         // Model update.
+         const UInt64 interval_us = (now_us > k->prev_ack_us) ? (now_us - k->prev_ack_us) : 0;
+         if (k->prev_delivered >= k->next_rtt_delivered) {
+-            // Reference kcc_update_model: the next round starts at the current total.
+-            k->next_rtt_delivered = k->total_delivered;
++            // Rate samples may be emitted for every ACK, so a sample boundary
++            // is not necessarily an RTT boundary. Advance the delivery marker
++            // by the current flight size; the next round begins only after
++            // approximately one flight has drained. This keeps the bandwidth
++            // max-filter's 10-round horizon and STARTUP plateau counter tied
++            // to delivery rounds instead of ACK/sample frequency.
++            const UInt64 flight = (0 < sk->inflight)
++                ? static_cast<UInt64>(sk->inflight)
++                : 0;
++            k->next_rtt_delivered = k->total_delivered + flight;
+             ++k->rtt_cnt;
+         }
+         UInt64 bw = 0;
+diff --git a/plugins/ref/kcc_core.c b/plugins/ref/kcc_core.c
+index f099ad4..9099e42 100644
+--- a/plugins/ref/kcc_core.c
++++ b/plugins/ref/kcc_core.c
+@@ -316,6 +316,10 @@ static void kcc_update_model(struct kcc_core *k, s64 now_us, s64 delivered, s64
+ 	/* Round boundary */
+ 	u32 prev_rtt_cnt = k->rtt_cnt;
+ 	if (!(k->prev_delivered < k->next_rtt_delivered)) {
+-		k->next_rtt_delivered = k->total_delivered;
++		/* Rate samples may be more frequent than delivery rounds (RTTs).
++		 * Advance by one current flight so the bandwidth window ages in
++		 * approximate RTTs rather than individual ACK samples. */
++		const s64 flight = (k->flight_bytes > 0) ? k->flight_bytes : 0;
++		k->next_rtt_delivered = k->total_delivered + flight;
+ 		k->rtt_cnt++;
+ 	}
+diff --git a/tests/test_cc_kcc.cpp b/tests/test_cc_kcc.cpp
+index 96ce0bf..fc1f4cd 100644
+--- a/tests/test_cc_kcc.cpp
++++ b/tests/test_cc_kcc.cpp
+@@ -99,6 +99,56 @@ static void TestKccDifferential() {
+     ops->release(&sk);
+ }
+ 
++static void TestKccRoundBoundaryTracksFlight() {
++    xtcp::cc::RegisterKcc();
++    const xtcp::cc::XtcpCongestionOps* ops = xtcp::cc::FindCongestionControl("kcc");
++    CHECK(NULLPTR != ops);
++
++    kcc_core ref;
++    kcc_core_init(&ref);
++    ref.mss = 1460;
++    ref.last_ack_us = 1000000;
++
++    xtcp::cc::XtcpConnCc sk;
++    ops->init(&sk);
++    sk.mss = 1460;
++    constexpr UInt32 kDelivered = 1460;
++    constexpr UInt32 kFlight = 20 * 1460;
++    constexpr UInt32 kInterval = 1000;
++    UInt64 now_us = 1000000;
++
++    // Twenty one small ACK samples carry one flight. The round counter must
++    // not treat each sample as a separate RTT; it advances again only after
++    // the delivery marker reaches the next flight boundary.
++    for (UInt32 i = 0; i < 21; ++i) {
++        now_us += kInterval;
++        kcc_core_on_ack(&ref, static_cast<s64>(now_us), kDelivered, 1000,
++                        kFlight, 0);
++        sk.inflight = kFlight;
++        xtcp::cc::RateSample rs;
++        rs.delivered = kDelivered;
++        rs.interval_us = kInterval;
++        rs.rtt_us = 1000;
++        rs.acked = kDelivered;
++        ops->cong_control(&sk, &rs);
++        CHECK(1 == ref.rtt_cnt);
++        CHECK(static_cast<UInt32>(kcc_core_cwnd_segs(&ref)) == sk.snd_cwnd);
++    }
++
++    now_us += kInterval;
++    kcc_core_on_ack(&ref, static_cast<s64>(now_us), kDelivered, 1000,
++                    kFlight, 0);
++    xtcp::cc::RateSample rs;
++    rs.delivered = kDelivered;
++    rs.interval_us = kInterval;
++    rs.rtt_us = 1000;
++    rs.acked = kDelivered;
++    ops->cong_control(&sk, &rs);
++    CHECK(2 == ref.rtt_cnt);
++    CHECK(static_cast<UInt32>(kcc_core_cwnd_segs(&ref)) == sk.snd_cwnd);
++    ops->release(&sk);
++}
++
+ static void TestKccRegistry() {
+     xtcp::cc::RegisterKcc();
+     const xtcp::cc::XtcpCongestionOps* ops = xtcp::cc::FindCongestionControl("kcc");
+@@ -168,4 +217,5 @@ int main() {
+     TestKccRegistry();
+     TestKccDifferential();
++    TestKccRoundBoundaryTracksFlight();
+     TestKccFullBwTransition();
+     if (0 < g_failures) {
