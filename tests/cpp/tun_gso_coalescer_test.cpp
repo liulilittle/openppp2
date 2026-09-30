@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace {
@@ -92,6 +93,27 @@ BOOST_AUTO_TEST_CASE(runtime_segment_cap_can_reach_maximum_without_overflow) {
 
     BOOST_REQUIRE_EQUAL(sink.writes.size(), 1U);
     BOOST_TEST(sink.writes.front()[1] == VIRTIO_NET_HDR_GSO_TCPV4);
+}
+
+BOOST_AUTO_TEST_CASE(xtcp_dl_profile_defaults_gso_cap_but_explicit_cap_wins) {
+    const char* old_profile = std::getenv("OPENPPP2_XTCP_DL_GSO_PERF_PROFILE");
+    const std::string saved_profile = old_profile != nullptr ? old_profile : "";
+    const bool had_profile = old_profile != nullptr;
+    const char* old_cap = std::getenv("OPENPPP2_TAP_GSO_SEGMENTS");
+    const std::string saved_cap = old_cap != nullptr ? old_cap : "";
+    const bool had_cap = old_cap != nullptr;
+
+    BOOST_REQUIRE_EQUAL(::unsetenv("OPENPPP2_TAP_GSO_SEGMENTS"), 0);
+    BOOST_REQUIRE_EQUAL(::setenv("OPENPPP2_XTCP_DL_GSO_PERF_PROFILE", "1", 1), 0);
+    BOOST_TEST(TunGsoCoalescer::SegmentCap() == TunGsoCoalescer::kMaxSegmentCap);
+
+    BOOST_REQUIRE_EQUAL(::setenv("OPENPPP2_TAP_GSO_SEGMENTS", "8", 1), 0);
+    BOOST_TEST(TunGsoCoalescer::SegmentCap() == 8U);
+
+    if (had_cap) ::setenv("OPENPPP2_TAP_GSO_SEGMENTS", saved_cap.c_str(), 1);
+    else ::unsetenv("OPENPPP2_TAP_GSO_SEGMENTS");
+    if (had_profile) ::setenv("OPENPPP2_XTCP_DL_GSO_PERF_PROFILE", saved_profile.c_str(), 1);
+    else ::unsetenv("OPENPPP2_XTCP_DL_GSO_PERF_PROFILE");
 }
 
 BOOST_AUTO_TEST_CASE(disabled_merge_writes_one_ordinary_vnet_frame_immediately) {

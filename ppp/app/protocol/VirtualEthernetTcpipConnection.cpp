@@ -9,6 +9,7 @@
 #include <ppp/diagnostics/TelemetryFwd.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <vector>
 
@@ -27,6 +28,24 @@ namespace ppp {
     namespace app {
         namespace protocol {
             namespace {
+                size_t DirectDownloadChunkBytes() noexcept {
+                    static const size_t bytes = []() noexcept {
+                        const char* value = ::getenv(
+                            "OPENPPP2_XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES");
+                        if (value != nullptr && value[0] != '\0') {
+                            return std::strcmp(value, "32768") == 0
+                                ? static_cast<size_t>(32 * 1024)
+                                : static_cast<size_t>(16 * 1024);
+                        }
+                        const char* profile = ::getenv(
+                            "OPENPPP2_XTCP_DL_GSO_PERF_PROFILE");
+                        return profile != nullptr && profile[0] == '1' && profile[1] == '\0'
+                            ? static_cast<size_t>(32 * 1024)
+                            : static_cast<size_t>(16 * 1024);
+                    }();
+                    return bytes;
+                }
+
                 void AddDirectUploadQueueTelemetry(
                     const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>& telemetry,
                     std::size_t bytes) noexcept {
@@ -1388,7 +1407,7 @@ namespace ppp {
                     }
                     for (int offset = 0; offset < packet_length;) {
                         const int chunk_length = std::min<int>(
-                            static_cast<int>(kDirectDownloadChunkBytes), packet_length - offset);
+                            static_cast<int>(DirectDownloadChunkBytes()), packet_length - offset);
                         const std::shared_ptr<Byte> chunk(packet, packet.get() + offset);
                         client::xtcp::XtcpDirectReadReservation reservation;
                         reservation.length = static_cast<std::uint32_t>(chunk_length);

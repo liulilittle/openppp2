@@ -838,3 +838,9 @@ P1 direct GRO 扫描排除了较大默认：12KiB 三轮 975/1010/1039 Mbps；13
 - 原子 108-cell 的 qualification 不代表性能稳定：`XTCP/GSO-on/P1/UL` 三轮为 655.76、30.20、734.58 Mbps；低值轮有 52 次 retransmit、`direct_upload_rejected=1`、`resume_requested=1`、`resume_effective=0`，仍需继续定位 upload receive/direct queue 的间歇性退化。
 
 零窗口修复消除了已复现的 P4 DL watchdog，Route3 strict qualification 装置也已在修复 revision 上原子 108/108 pass；但性能门禁仍失败：P1/P4 双向未达稳定 1.2×，P16 DL 也未达每轮 1.2×，且 NDI TSO 仍为负收益。raw child TCP 的 capability-gated 协议级 half-close 已实现并通过单测/E2E；vmux 平台尾包排空限制及 P64 DL wedge 仍未解决。Route1–3 均不得标记完成。
+
+### 11.10 P4 DL/GSO-on 的有界性能 profile（2026-09-30）
+
+默认 P4 DL/GSO-on 复测 XTCP/native 中位约`0.852×`。新增显式 opt-in `OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1`：若没有单独覆盖，XTCP 使用每连接 2MiB snd_buf、32KiB direct-download chunk，TUN GSO cap 为 48；保守默认保持不变。矩阵 runner 仅对 XTCP client 启用 snd_buf/chunk profile，并对两端使用一致的 GSO cap。
+
+20秒×3 screen 的 XTCP/native=`1.196/1.186/1.242×`。随后45秒×3严格门禁复核 qualification 6/6通过，但 ratio=`1.1325/1.2199/1.1900×`（median=`1.1900×`），未达到稳定1.20×验收。XTCP吞吐约`1.95–1.96Gbps`；native约`1.61–1.73Gbps`，轮间基线变化影响配对比值。将 snd_buf 单变量提高到4MiB并未改善，ratio median=`1.174×`，因此不采用。2MiB额度随活动连接数线性增长，该 profile 仅适合连接数受控、内存预算充分且自行验收的部署。Artifacts（本地、未追踪）：`artifacts/diag-p4dl-gsoon-profile-client-cpu8-20s-r3-20260929/`、`artifacts/diag-p4dl-gsoon-profile-client-cpu8-45s-r3-20260930/`、`artifacts/diag-p4dl-gsoon-profile-sndbuf4m-client-cpu8-20s-r3-20260930/`。

@@ -29,9 +29,9 @@ public:
     static constexpr size_t kMaxSegmentCap = 48;
     static constexpr size_t kMaxPacketBytes = 1500;
     // XTCP-SHARED-PATH-001 follow-up: the merge cap is runtime-tunable
-    // (OPENPPP2_TAP_GSO_SEGMENTS, default 4 = historical behavior, up to 48 =
-    // ~64KB super-frames) so the lab can push GSO frames end-to-end without
-    // touching the strict-v1 admission rules.
+    // (OPENPPP2_TAP_GSO_SEGMENTS, default 4; up to 48 = ~64KB super-frames).
+    // The opt-in XTCP DL throughput profile selects 48 only when no explicit
+    // cap is supplied; it leaves the conservative default unchanged otherwise.
     static size_t SegmentCap() noexcept {
         const char* env = ::getenv("OPENPPP2_TAP_GSO_SEGMENTS");
         if (env != nullptr && env[0] != '\0') {
@@ -39,6 +39,10 @@ public:
             if (value >= 1 && value <= static_cast<long long>(kMaxSegmentCap)) {
                 return static_cast<size_t>(value);
             }
+        }
+        const char* profile = ::getenv("OPENPPP2_XTCP_DL_GSO_PERF_PROFILE");
+        if (profile != nullptr && profile[0] == '1' && profile[1] == '\0') {
+            return kMaxSegmentCap;
         }
         return kSegmentCap;
     }
