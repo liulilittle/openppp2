@@ -3,6 +3,7 @@
 #include <ppp/app/client/xtcp/XtcpFirstLegHooks.h>
 #include <ppp/app/runtime/RuntimeXtcpStats.h>
 #include <ppp/tap/TxGsoMetadata.h>
+#include <ppp/tap/RetainedPacketOwner.h>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -78,6 +79,12 @@ public:
     // stack's BufRef reaches the TAP write queue zero-copy.
     using OutputHandler = std::function<bool(std::shared_ptr<std::uint8_t>&&, int,
         std::optional<ppp::tap::TxGsoMetadata>)>;
+    // Optional synchronous borrowed path; the consumer must finish using the
+    // packet before returning. Intended for Linux's synchronous TUN output.
+    using BorrowedOutputHandler = std::function<bool(const std::uint8_t*, int,
+        std::optional<ppp::tap::TxGsoMetadata>)>;
+    using RetainedOutputHandler = std::function<bool(const std::uint8_t*, int,
+        ppp::tap::RetainedPacketOwner&&)>;
     using ListenerEndpointHandler = std::function<boost::asio::ip::tcp::endpoint()>;
     // Invoking this handler transfers a non-negative fd to the handler,
     // regardless of whether the handler returns true or false.
@@ -98,7 +105,9 @@ public:
         ExternalAcceptHandler external_accept,
         ExternalCancelHandler external_cancel,
         std::shared_ptr<XtcpOutputRejectionDiagnostics> output_rejection_diagnostics = nullptr,
-        bool tx_gso_supported = false) noexcept;
+        bool tx_gso_supported = false,
+        BorrowedOutputHandler borrowed_output = {},
+        RetainedOutputHandler retained_output = {}) noexcept;
     ~XtcpRuntime() noexcept;
 
     bool Start() noexcept;

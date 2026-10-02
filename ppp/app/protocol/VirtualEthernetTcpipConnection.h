@@ -11,9 +11,10 @@
 
 namespace ppp::configurations { class AppConfiguration; }
 namespace ppp::diagnostics::datapath_perf { class Scope; }
+namespace ppp::app::runtime { class XtcpDirectQueueTelemetry; }
 #include <ppp/net/Firewall.h>
 #include <ppp/transmissions/ITransmission.h>
-#include <ppp/app/runtime/XtcpFirstLegHooks.h>
+#include <ppp/app/protocol/XtcpDirectIo.h>
 #include <ppp/app/protocol/DirectReadWaiterState.h>
 #include <ppp/app/protocol/VirtualEthernetLogger.h>
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
@@ -54,9 +55,9 @@ namespace ppp {
                     Closed,
                 };
                 typedef ppp::function<DirectIoResult(
-                    client::xtcp::XtcpDirectReadReservation&,
+                    XtcpDirectReadReservation&,
                     const std::shared_ptr<Byte>&)>                              DirectReadHandler;
-                typedef ppp::function<void(client::xtcp::XtcpDirectCloseReason)> DirectCloseHandler;
+                typedef ppp::function<void(XtcpDirectCloseReason)> DirectCloseHandler;
                 typedef ppp::function<void()>                                  DirectWritableHandler;
 
 #if defined(_LINUX)
@@ -198,10 +199,10 @@ namespace ppp {
                 virtual bool                                                    SendBufferToPeer(YieldContext& y, const void* packet, int packet_length) noexcept;
                 bool                                                            StartDirectBridge(const DirectReadHandler& on_data, const DirectCloseHandler& on_close, const DirectWritableHandler& on_writable) noexcept;
                 DirectIoResult                                                  SendDirectToPeer(const Byte* data, std::uint32_t length,
-                    client::xtcp::XtcpUploadBudget::Reservation&& credit) noexcept;
+                    XtcpUploadBudget::Reservation&& credit) noexcept;
                 void                                                            CompleteDirectDownload(
-                    const client::xtcp::XtcpDirectReadReservation& reservation,
-                    client::xtcp::XtcpDirectCompletion completion) noexcept;
+                    const XtcpDirectReadReservation& reservation,
+                    XtcpDirectCompletion completion) noexcept;
                 void                                                            SetDirectQueueTelemetry(
                     const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>& telemetry) noexcept;
                 void                                                            CloseDirectSend() noexcept;
@@ -342,7 +343,6 @@ namespace ppp {
                 static constexpr size_t                                         kDirectQueueLowPackets = kDirectQueueMaxPackets / 2;
                 static constexpr size_t                                         kDirectQueueMaxBytes = 32 * 1024 * 1024;
                 static constexpr size_t                                         kDirectQueueLowBytes = kDirectQueueMaxBytes / 2;
-                static constexpr size_t                                         kDirectDownloadChunkBytes = 16 * 1024;
                 static constexpr int                                            kDirectCloseDrainPollMilliseconds = 5;
                 enum class DirectSendCloseState : uint8_t {
                     Open,
@@ -351,7 +351,7 @@ namespace ppp {
                     Disposed,
                 };
                 std::mutex                                                      direct_sync_;
-                std::deque<std::shared_ptr<client::xtcp::XtcpUploadChunk>>        direct_upload_queue_;
+                std::deque<std::shared_ptr<XtcpUploadChunk>>                      direct_upload_queue_;
                 size_t                                                          direct_upload_bytes_ = 0;
                 size_t                                                          direct_upload_packets_ = 0;
                 bool                                                            direct_bridge_started_ = false;

@@ -15,9 +15,12 @@
 #include <vector>
 
 namespace {
+#if !defined(PPP_COROUTINES_TSAN_ENABLED)
 thread_local bool fail_next_allocation = false;
+#endif
 }
 
+#if !defined(PPP_COROUTINES_TSAN_ENABLED)
 void* operator new(std::size_t bytes) {
     if (fail_next_allocation) {
         fail_next_allocation = false;
@@ -28,6 +31,7 @@ void* operator new(std::size_t bytes) {
 }
 void operator delete(void* value) noexcept { std::free(value); }
 void operator delete(void* value, std::size_t) noexcept { std::free(value); }
+#endif
 
 namespace {
 
@@ -383,6 +387,7 @@ void TestConcurrentReservation() {
     Check(accepted.load() > 0);
 }
 
+#if !defined(PPP_COROUTINES_TSAN_ENABLED)
 void TestChunkConstructorException() {
     using ppp::app::client::xtcp::XtcpUploadChunk;
 
@@ -403,6 +408,7 @@ void TestChunkConstructorException() {
     Check(budget->Snapshot().bytes == 0);
     Check(budget->Snapshot().items == 0);
 }
+#endif
 
 void TestSharedFlowQueues() {
     using ppp::app::client::xtcp::XtcpUploadChunk;
@@ -458,7 +464,9 @@ int main() {
     TestHandlerReplacement();
     TestTokenWaiterSkipsHeadThatDoesNotFit();
     TestChunkLifetime();
+#if !defined(PPP_COROUTINES_TSAN_ENABLED)
     TestChunkConstructorException();
+#endif
     TestSharedFlowQueues();
     TestGatherKeepsOriginalCredit();
     TestConcurrentReservation();

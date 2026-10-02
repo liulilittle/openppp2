@@ -15,7 +15,12 @@ RUNNER = ROOT / "tools" / "run_datapath_linux_matrix.sh"
 sys.path.insert(0, str(ROOT / "tools"))
 from datapath_cpu_accounting import build_measurement, iperf_payload_bytes, parse_perf_csv, proc_stat_delta, softirq_delta
 from datapath_cpu_isolation import apply, cpumask_for_cpu, normalize_cpulist, normalize_cpumask, readback, restore, snapshot
-from datapath_matrix_metadata import collect_version_fingerprint, evaluate_performance_gate, flatten_version_fingerprint
+from datapath_matrix_metadata import (
+    collect_version_fingerprint,
+    evaluate_performance_gate,
+    evaluate_qualification_status,
+    flatten_version_fingerprint,
+)
 from datapath_qualifier import PROCESS_CORES_MAX, PROCESS_CORES_MIN, qualify_cell
 
 
@@ -54,7 +59,89 @@ def test_runner_help() -> None:
     assert "--paired-performance-threshold RATIO" in completed.stdout
     assert "default: 1.20" in completed.stdout
     assert "--xtcp-direct-upload-gather-bytes BYTES" in completed.stdout
-    assert "0/1 disables (default: 32768)" in completed.stdout
+    assert "0/1 disables (default: 65536)" in completed.stdout
+    assert "--xtcp-direct-upload-gather-wait-ms MS" in completed.stdout
+    assert "default: 1; 0 disables" in completed.stdout
+    assert "--xtcp-shard-route NAME" in completed.stdout
+    assert "source-port-bit6" in completed.stdout
+    assert "source-port-xor-1-2-8" in completed.stdout
+    assert "--xtcp-direct-download-chunk-bytes BYTES" in completed.stdout
+    assert "16384|32768" in completed.stdout
+    assert "--process-syscall-perf" in completed.stdout
+    assert "--process-perf-record" in completed.stdout
+    assert "--tcp-info-sampling" in completed.stdout
+    assert "Sample client and target ss -tinp once per second" in completed.stdout
+    assert "--veth-gso MODE" in completed.stdout
+    assert "default|off (default: default)" in completed.stdout
+    assert "--transport-cipher NAME" in completed.stdout
+    assert "aes-128-cfb|aes-256-cfb" in completed.stdout
+    assert "--xtcp-no-memory-bridge" in completed.stdout
+    assert "--xtcp-tap-gso-psh-boundary MODE" in completed.stdout
+    assert "off|on (default: off)" in completed.stdout
+    assert "--xtcp-tap-gso-retained-writev MODE" in completed.stdout
+    assert "on|off (default: on)" in completed.stdout
+    invalid("--veth-gso", "on")
+    invalid("--transport-cipher", "aes-256-gcm")
+    invalid("--xtcp-memory-bridge", "off")
+    invalid("--xtcp-tap-gso-psh-boundary", "maybe")
+    invalid("--xtcp-tap-gso-retained-writev", "maybe")
+    invalid("--xtcp-shard-route", "unknown")
+    invalid("--xtcp-shard-route", "source-port-bit6")
+    invalid("--xtcp-shards", "1", "--xtcp-shard-route", "source-port-bit6")
+    invalid("--xtcp-direct-download-chunk-bytes", "65536")
+    valid_route = subprocess.run(
+        [str(RUNNER), "--artifacts", "/tmp/datapath-matrix-plan", "--dry-run",
+         "--stacks", "xtcp", "--parallel", "16", "--directions", "dl",
+         "--xtcp-shards", "2", "--xtcp-shard-route", "source-port-bit6"],
+        check=True, text=True, capture_output=True,
+    )
+    assert "stack=xtcp" in valid_route.stdout
+    valid_xor_route = subprocess.run(
+        [str(RUNNER), "--artifacts", "/tmp/datapath-matrix-plan", "--dry-run",
+         "--stacks", "xtcp", "--parallel", "16", "--directions", "dl",
+         "--xtcp-shards", "2", "--xtcp-shard-route", "source-port-xor-1-2-8"],
+        check=True, text=True, capture_output=True,
+    )
+    assert "stack=xtcp" in valid_xor_route.stdout
+    valid_download_chunk = subprocess.run(
+        [str(RUNNER), "--artifacts", "/tmp/datapath-matrix-plan", "--dry-run",
+         "--stacks", "xtcp", "--parallel", "1", "--directions", "dl",
+         "--xtcp-direct-download-chunk-bytes", "32768"],
+        check=True, text=True, capture_output=True,
+    )
+    assert "stack=xtcp" in valid_download_chunk.stdout
+    valid_transport_cipher = plan(
+        "--stacks", "native,xtcp", "--parallel", "1", "--directions", "ul",
+        "--transport-cipher", "aes-128-cfb",
+    )
+    assert len(valid_transport_cipher) == 2
+    assert all(field(line, "transport_cipher") == "aes-128-cfb" for line in valid_transport_cipher)
+    gso_options = plan(
+        "--stacks", "native,xtcp", "--parallel", "1", "--directions", "dl",
+        "--xtcp-tap-gso-psh-boundary", "on",
+        "--xtcp-tap-gso-retained-writev", "off",
+    )
+    assert len(gso_options) == 2
+    assert all(field(line, "xtcp_tap_gso_psh_boundary") == "on" for line in gso_options)
+    assert all(field(line, "xtcp_tap_gso_retained_writev") == "off" for line in gso_options)
+
+
+def test_tcp_info_sampling_planner_flag() -> None:
+    lines = plan(
+        "--stacks", "xtcp", "--parallel", "4", "--directions", "dl",
+        "--tcp-info-sampling",
+    )
+    assert len(lines) == 1
+    assert field(lines[0], "tcp_info_sampling") == "true"
+
+
+def test_veth_gso_planner_flag() -> None:
+    lines = plan(
+        "--stacks", "xtcp", "--parallel", "1", "--directions", "dl",
+        "--veth-gso", "off",
+    )
+    assert len(lines) == 1
+    assert field(lines[0], "veth_gso_mode") == "off"
 
 
 def test_performance_gate() -> None:
@@ -86,6 +173,24 @@ def test_performance_gate() -> None:
     lwip_only = evaluate_performance_gate([record("lwip", 100)], "fail", 1.20)
     assert lwip_only["status"] == "fail"
     assert lwip_only["failed_pairs"][0]["reason"] == "incomplete_pair"
+
+
+def test_matrix_qualification_aggregates_every_cpu_profile() -> None:
+    cpuset_failure = {
+        "status": "pass",
+        "cpu_measurement": {"profile": "client-cpuset"},
+        "qualification": {"status": "fail"},
+    }
+    cpuset_pass = {
+        "status": "pass",
+        "cpu_measurement": {"profile": "client-cpuset"},
+        "qualification": {"status": "pass"},
+    }
+    no_cpu_profile = {"status": "pass", "cpu_measurement": {"profile": "none"}}
+
+    assert evaluate_qualification_status([cpuset_failure]) == "fail"
+    assert evaluate_qualification_status([cpuset_pass, no_cpu_profile]) == "pass"
+    assert evaluate_qualification_status([cpuset_pass], run_failed=True) == "fail"
 
 
 def test_version_fingerprint() -> None:
@@ -293,6 +398,33 @@ def test_qualifier() -> None:
         assert passed["process_cores"] <= PROCESS_CORES_MAX
         assert passed["details"]["migration_warning_present"] is True
 
+        # A multi-CPU cpuset permits task-clock across its verified CPU set
+        # and normal migrations within that set; it must not be scored as a
+        # single-core cell.
+        cpuset = base_record(profile="client-cpuset", task_clock_ns=32_000_000_000, migrations=143)
+        cpuset["cpu_measurement"]["cpu_list"] = [8, 9]
+        cpuset_result = qualify_cell(cpuset, state)
+        assert cpuset_result["status"] == "pass", cpuset_result
+        assert cpuset_result["process_cores"] == 1.6
+        assert cpuset_result["details"]["process_cores_limit"] == PROCESS_CORES_MAX * 2
+        assert cpuset_result["checks"]["ppp_zero_migrations"] is True
+        assert cpuset_result["details"]["ppp_migration_policy"] == "within_verified_cpuset"
+
+        cpuset_overcommitted = base_record(profile="client-cpuset", task_clock_ns=41_000_000_000)
+        cpuset_overcommitted["cpu_measurement"]["cpu_list"] = [8, 9]
+        assert "process_cores_ok" in qualify_cell(cpuset_overcommitted, state)["failed_checks"]
+
+        cpuset_unverified = base_record(profile="client-cpuset", task_clock_ns=32_000_000_000, migrations=143)
+        cpuset_unverified["cpu_measurement"]["cpu_list"] = [8, 9]
+        cpuset_unverified["cpu_measurement"]["affinity_verified"] = False
+        unverified_result = qualify_cell(cpuset_unverified, state)
+        assert unverified_result["status"] == "fail", unverified_result
+        assert "ppp_zero_migrations" in unverified_result["failed_checks"]
+
+        cpuset_invalid = base_record(profile="client-cpuset", task_clock_ns=32_000_000_000)
+        cpuset_invalid["cpu_measurement"]["cpu_list"] = [8, 8]
+        assert "cpuset_cpu_list_valid" in qualify_cell(cpuset_invalid, state)["failed_checks"]
+
         # Task-clock twice the wall time -> process cores ~2 -> fail.
         failed = qualify_cell(base_record(task_clock_ns=40_000_000_000), state)
         assert failed["status"] == "fail", failed
@@ -415,9 +547,11 @@ def main() -> None:
     assert field(lines[11], "cell_path") == "round-2/native-gso-off-p1-ul"
     assert field(lines[0], "cpu_profile") == "none"
     assert field(lines[0], "affinity_cpus") == "none"
-    assert field(lines[0], "xtcp_memory_bridge") == "false"
+    assert field(lines[0], "xtcp_memory_bridge") == "true"
+    assert field(lines[0], "xtcp_memory_bridge_override") == "default"
     assert field(lines[0], "xtcp_ndi_tso_tx") == "false"
     assert field(lines[0], "xtcp_direct_upload_gather_bytes") == "default"
+    assert field(lines[0], "xtcp_direct_upload_gather_wait_ms") == "1"
     assert field(lines[0], "paired_performance_gate") == "off"
     assert field(lines[0], "paired_performance_threshold") == "1.20"
 
@@ -426,8 +560,17 @@ def main() -> None:
         "--xtcp-memory-bridge", "--xtcp-ndi-tso-tx",
     )
     assert field(laboratory_features[0], "xtcp_memory_bridge") == "true"
+    assert field(laboratory_features[0], "xtcp_memory_bridge_override") == "true"
     assert field(laboratory_features[0], "xtcp_ndi_tso_tx") == "true"
     assert field(laboratory_features[0], "xtcp_direct_upload_gather_bytes") == "default"
+
+
+    bridge_disabled = plan(
+        "--stacks", "xtcp", "--tap-gso", "on", "--parallel", "1", "--directions", "ul",
+        "--xtcp-no-memory-bridge",
+    )
+    assert field(bridge_disabled[0], "xtcp_memory_bridge") == "false"
+    assert field(bridge_disabled[0], "xtcp_memory_bridge_override") == "false"
 
     default_modes = plan(
         "--parallel",
@@ -469,6 +612,8 @@ def main() -> None:
     assert field(cpu_profile[0], "affinity_cpus") == affinity
     invalid("--cpu-profile", "client-vnet-isolated")
     invalid("--process-perf-stat")
+    invalid("--process-syscall-perf")
+    invalid("--process-perf-record")
     invalid("--system-cpu-stat")
     invalid("--cpu-profile", "client-vnet-isolated", "--affinity-cpus", "999999")
     invalid("--cpu-profile", "client-vnet-isolated", "--affinity-cpus", "01,1")
@@ -476,16 +621,30 @@ def main() -> None:
     single = plan("--stacks", "native", "--tap-gso", "off", "--parallel", "1", "--directions", "ul", "--cpu-profile", "client-single-core", "--affinity-cpus", str(available_cpus[0]))
     assert field(single[0], "cpu_profile") == "client-single-core"
     assert field(single[0], "affinity_cpus") == str(available_cpus[0])
+    syscall_profile = plan("--stacks", "xtcp", "--tap-gso", "on", "--parallel", "1", "--directions", "dl", "--cpu-profile", "client-single-core", "--affinity-cpus", str(available_cpus[0]), "--process-syscall-perf")
+    assert field(syscall_profile[0], "cpu_profile") == "client-single-core"
+    process_profile = plan("--stacks", "xtcp", "--tap-gso", "on", "--parallel", "1", "--directions", "dl", "--cpu-profile", "client-single-core", "--affinity-cpus", str(available_cpus[0]), "--process-perf-record")
+    assert field(process_profile[0], "cpu_profile") == "client-single-core"
     invalid("--cpu-profile", "client-single-core")
     invalid("--cpu-profile", "client-single-core", "--affinity-cpus", affinity)
     invalid("--paired-performance-gate", "error")
     invalid("--paired-performance-threshold", "0")
     invalid("--paired-performance-threshold", "not-a-ratio")
+    invalid("--tap-gso-hold-us", "9")
+    invalid("--tap-gso-hold-us", "1001")
     gather = plan("--stacks", "xtcp", "--tap-gso", "off", "--parallel", "1", "--directions", "ul", "--xtcp-direct-upload-gather-bytes", "49152")
     assert field(gather[0], "xtcp_direct_upload_gather_bytes") == "49152"
     invalid("--xtcp-direct-upload-gather-bytes", "not-a-byte-count")
+    gather_wait = plan("--stacks", "xtcp", "--tap-gso", "off", "--parallel", "1", "--directions", "ul", "--xtcp-direct-upload-gather-wait-ms", "1")
+    assert field(gather_wait[0], "xtcp_direct_upload_gather_wait_ms") == "1"
+    gather_wait_disabled = plan("--stacks", "xtcp", "--tap-gso", "off", "--parallel", "1", "--directions", "ul", "--xtcp-direct-upload-gather-wait-ms", "0")
+    assert field(gather_wait_disabled[0], "xtcp_direct_upload_gather_wait_ms") == "0"
+    invalid("--xtcp-direct-upload-gather-wait-ms", "3")
     test_runner_help()
+    test_tcp_info_sampling_planner_flag()
+    test_veth_gso_planner_flag()
     test_performance_gate()
+    test_matrix_qualification_aggregates_every_cpu_profile()
     test_version_fingerprint()
     test_cpu_accounting()
     test_cpu_isolation()

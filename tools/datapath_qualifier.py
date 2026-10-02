@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict single-core qualification for datapath matrix cells.
+"""CPU-profile-aware qualification for datapath matrix cells.
 
 `qualify_cell()` returns a stable dict with a binary PASS/FAIL and the
 individual invariants that are relevant to the requested stack. The process
@@ -7,8 +7,10 @@ core count is computed directly from perf task-clock divided by the formal
 wall-clock duration (never from Mbps / ns-per-byte); the ns-per-byte
 derivation is only exposed for sanity checking. For the strict same-core
 profile this enforces PPP process cores <= 1.02, selected-CPU capacity <= 1.02
-cores, and zero PPP/iperf migrations. PPP alone need not consume 0.9 cores
-because it shares the selected CPU with iperf.
+cores, and zero PPP/iperf migrations. A multi-CPU client-cpuset profile allows
+up to 1.02 process cores per explicitly selected CPU; migrations are expected
+inside that pinned set. PPP alone need not consume 0.9 cores in the same-core
+profile because it shares the selected CPU with iperf.
 """
 
 from __future__ import annotations
@@ -113,19 +115,41 @@ def qualify_cell(record: dict[str, Any], state_dir: Path) -> dict[str, Any]:
     process_cores = None
     if isinstance(task_clock_ns, int) and wall_ns:
         process_cores = task_clock_ns / wall_ns
-    same_core = measurement.get("profile") == "client-single-core"
-    checks["process_cores_ok"] = process_cores is not None and process_cores <= PROCESS_CORES_MAX and (
+    profile = measurement.get("profile")
+    same_core = profile == "client-single-core"
+    cpu_list = measurement.get("cpu_list")
+    cpuset_size = (
+        len(cpu_list)
+        if profile == "client-cpuset"
+        and isinstance(cpu_list, list)
+        and cpu_list
+        and all(isinstance(cpu, int) and cpu >= 0 for cpu in cpu_list)
+        and len(set(cpu_list)) == len(cpu_list)
+        else None
+    )
+    process_cores_limit = PROCESS_CORES_MAX * (cpuset_size or 1)
+    checks["cpuset_cpu_list_valid"] = profile != "client-cpuset" or cpuset_size is not None
+    checks["process_cores_ok"] = process_cores is not None and process_cores <= process_cores_limit and (
         same_core or process_cores >= PROCESS_CORES_MIN
     )
     details["process_cores"] = process_cores
+    details["process_cores_limit"] = process_cores_limit
+    details["cpuset_size"] = cpuset_size
     details["process_task_clock_ns"] = task_clock_ns
     warnings: list[str] = []
     if same_core and process_cores is not None and process_cores < PROCESS_CORES_MIN:
         warnings.append("ppp_process_cores_below_0.9_same_core_contention")
 
     migrations = process_perf.get("cpu_migrations")
-    checks["ppp_zero_migrations"] = migrations == 0
+    allow_cpuset_migrations = profile == "client-cpuset" and cpuset_size is not None and cpuset_size > 1
+    checks["ppp_zero_migrations"] = migrations == 0 or (
+        allow_cpuset_migrations
+        and isinstance(migrations, int)
+        and migrations >= 0
+        and bool(measurement.get("affinity_verified"))
+    )
     details["ppp_cpu_migrations"] = migrations
+    details["ppp_migration_policy"] = "within_verified_cpuset" if allow_cpuset_migrations else "zero_required"
 
     iperf_perf = measurement.get("iperf_perf") or {}
     iperf_migrations = iperf_perf.get("cpu_migrations")

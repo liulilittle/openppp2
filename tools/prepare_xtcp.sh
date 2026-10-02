@@ -54,14 +54,29 @@ cleanup() {
 trap cleanup EXIT
 
 STAMP="$(patch_stamp)"
+LATEST_PATCH=""
+for patch_file in "${PATCH_DIR}"/*.patch; do
+    [[ -e "${patch_file}" ]] || continue
+    LATEST_PATCH="${patch_file}"
+done
 
 if [[ -f "${MARKER}" ]] &&
    [[ "$(<"${MARKER}")" == "${REVISION}" ]] &&
    [[ -f "${DESTINATION}/CMakeLists.txt" ]] &&
    [[ -f "${DESTINATION}/include/xtcp/core/stack.h" ]]; then
     if [[ -f "${PATCH_MARKER}" ]] && [[ "$(<"${PATCH_MARKER}")" == "${STAMP}" ]]; then
-        echo "XTCP ${REVISION} is ready at ${DESTINATION}"
-        exit 0
+        if [[ -z "${LATEST_PATCH}" ]] ||
+           patch -d "${DESTINATION}" -p1 --reverse --dry-run -s <"${LATEST_PATCH}" 2>/dev/null; then
+            echo "XTCP ${REVISION} is ready at ${DESTINATION}"
+            exit 0
+        fi
+        if patch -d "${DESTINATION}" -p1 --forward --dry-run -s <"${LATEST_PATCH}" 2>/dev/null; then
+            echo "warning: XTCP patch marker matches, but $(basename "${LATEST_PATCH}") is missing; rebuilding patch tree" >&2
+            rebuild=1
+        else
+            echo "error: XTCP patch marker matches, but latest patch state is inconsistent at ${DESTINATION}" >&2
+            exit 1
+        fi
     fi
     # Right revision but the patch set drifted. In-place re-patching is
     # unreliable by design: a patch's "already applied" reverse-probe only

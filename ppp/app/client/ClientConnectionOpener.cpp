@@ -27,6 +27,7 @@
 #include <cstdlib>
 
 #if defined(_LINUX)
+#include <linux/ppp/tap/TapLinux.h>
 #include <linux/ppp/net/ProtectorNetwork.h>
 #endif
 
@@ -88,6 +89,46 @@ namespace ppp {
                     const std::shared_ptr<xtcp::XtcpOutputRejectionDiagnostics> output_rejection_diagnostics =
                         output_rejection_enabled
                             ? make_shared_object<xtcp::XtcpOutputRejectionDiagnostics>(true) : nullptr;
+                    xtcp::XtcpRuntime::BorrowedOutputHandler borrowed_output;
+#if defined(__linux__)
+                    // Linux TAP Output(const void*, size) consumes the bytes
+                    // synchronously (write/writev or copies them into the
+                    // coalescer before returning), so no shared owner is needed.
+                    borrowed_output = [weak, output_rejection_diagnostics](const Byte* packet, int size,
+                        std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();
+                        bool accepted = false;
+                        if (owner && !gso) {
+                            accepted = owner->Output(packet, size);
+                        }
+                        if (output_rejection_diagnostics != nullptr) {
+                            output_rejection_diagnostics->Record(static_cast<bool>(owner),
+                                owner && owner->IsDisposed(), owner && owner->GetTap() != nullptr,
+                                accepted);
+                        }
+                        return accepted;
+                    };
+                    xtcp::XtcpRuntime::RetainedOutputHandler retained_output;
+                    retained_output = [weak, output_rejection_diagnostics](const Byte* packet, int size,
+                        ppp::tap::RetainedPacketOwner&& retained) noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();
+                        bool accepted = false;
+                        if (owner && !owner->IsDisposed()) {
+                            const std::shared_ptr<ppp::tap::ITap> tap = owner->GetTap();
+                            const std::shared_ptr<ppp::tap::TapLinux> linux_tap =
+                                std::dynamic_pointer_cast<ppp::tap::TapLinux>(tap);
+                            accepted = linux_tap
+                                ? linux_tap->OutputRetained(packet, size, std::move(retained))
+                                : owner->Output(packet, size);
+                        }
+                        if (output_rejection_diagnostics != nullptr) {
+                            output_rejection_diagnostics->Record(static_cast<bool>(owner),
+                                owner && owner->IsDisposed(), owner && owner->GetTap() != nullptr,
+                                accepted);
+                        }
+                        return accepted;
+                    };
+#endif
                     std::shared_ptr<xtcp::XtcpRuntime> runtime =
                         make_shared_object<xtcp::XtcpRuntime>(
                             owner_->GetContext(),
@@ -147,7 +188,9 @@ namespace ppp {
                                 }
                             },
                             output_rejection_diagnostics,
-                            owner_->SupportsTxGso());
+                            owner_->SupportsTxGso(),
+                            std::move(borrowed_output),
+                            std::move(retained_output));
                     if (NULLPTR == runtime || !runtime->Start()) {
                         return ppp::diagnostics::SetLastError(
                             ppp::diagnostics::ErrorCode::RuntimeInitializationFailed);

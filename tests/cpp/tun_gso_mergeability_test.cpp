@@ -198,14 +198,14 @@ BOOST_AUTO_TEST_CASE(short_tail_then_new_run) {
     BOOST_TEST(json.find("\"2\":{\"runs\":1") != std::string::npos);
 }
 
-// 13: PSH never starts or completes a strict-v1 frame, including after a run.
-BOOST_AUTO_TEST_CASE(psh_rejected_before_continuation) {
+// 13: PSH is eligible and ends its run immediately, including after a run.
+BOOST_AUTO_TEST_CASE(psh_is_eligible_and_ends_run) {
     TunGsoMergeabilityAnalyzer a;
     a.ObserveAt(build({}).data(), 1500, 1000);
     a.ObserveAt(build({.seq = 2460, .psh = true}).data(), 1500, 2000);
     BOOST_TEST(sum_break_reason(a, "psh") == 1);
-    BOOST_TEST(json_int(a, "psh_rejected_packets") == 1);
-    BOOST_TEST(json_int(a, "strict_eligible_packets") == 1);
+    BOOST_TEST(json_int(a, "psh_boundary_packets") == 1);
+    BOOST_TEST(json_int(a, "strict_eligible_packets") == 2);
 }
 
 // 14+15: SYN packets are control traffic; IPv6/UDP packets are non-IPv4/non-TCP.
@@ -277,8 +277,8 @@ BOOST_AUTO_TEST_CASE(production_coalescer_correspondence) {
     const auto psh_first = build({.psh = true});
     BOOST_REQUIRE(coalescer.Push(psh_first.data(), psh_first.size(), 20));
     analyzer.ObserveAt(psh_first.data(), psh_first.size(), 20);
-    BOOST_TEST(json_int(analyzer, "psh_rejected_packets") == 1U);
-    BOOST_TEST(json_int(analyzer, "strict_eligible_packets") == 4U);
+    BOOST_TEST(json_int(analyzer, "psh_boundary_packets") == 1U);
+    BOOST_TEST(json_int(analyzer, "strict_eligible_packets") == 5U);
 
     Sink short_sink;
     ppp::tap::TunGsoCoalescer short_coalescer([&short_sink](const uint8_t* frame, size_t size) { return short_sink(frame, size); });
@@ -289,10 +289,10 @@ BOOST_AUTO_TEST_CASE(production_coalescer_correspondence) {
     BOOST_REQUIRE(short_coalescer.Push(short_psh.data(), short_psh.size(), 1));
     short_analyzer.ObserveAt(full.data(), full.size(), 0);
     short_analyzer.ObserveAt(short_psh.data(), short_psh.size(), 1);
-    BOOST_TEST(short_sink.gso_writes == 0U);
-    BOOST_TEST(short_sink.ordinary_writes == 2U);
+    BOOST_TEST(short_sink.gso_writes == 1U);
+    BOOST_TEST(short_sink.ordinary_writes == 0U);
     BOOST_TEST(sum_break_reason(short_analyzer, "psh") == 1U);
-    BOOST_TEST(json_int(short_analyzer, "psh_rejected_packets") == 1U);
+    BOOST_TEST(json_int(short_analyzer, "psh_boundary_packets") == 1U);
 
     TunGsoMergeabilityAnalyzer mtu_analyzer;
     const auto mtu = build({.payload = 1461});

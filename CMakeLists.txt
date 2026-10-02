@@ -181,8 +181,15 @@ ELSE()
     CHECK_CXX_COMPILER_FLAG("-std=c++1z" COMPILER_SUPPORTS_CXX1Z)
 ENDIF()
 
-# If the current compiler environment is detected to support AES.
-OPTION(ENABLE_SIMD "Enable x86/x64 SIMD AES-NI implementation" OFF)
+# AES-NI is safe to compile into x86_64 binaries: the EVP wrapper checks CPUID
+# before attaching the accelerated backend and transparently falls back to
+# OpenSSL when unavailable. Other architectures default off; x86_64 remains
+# explicitly opt-out with -DENABLE_SIMD=OFF for generic builds.
+SET(ENABLE_SIMD_DEFAULT OFF)
+IF(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|X86_64|amd64|AMD64)$")
+    SET(ENABLE_SIMD_DEFAULT ON)
+ENDIF()
+OPTION(ENABLE_SIMD "Enable x86/x64 SIMD AES-NI implementation" ${ENABLE_SIMD_DEFAULT})
 
 # Enable SSEA SIMD acceleration (SSSE3/SSE4.1/SSE4.2/AVX/AVX2) for the
 # ssea-simd codec/transform suite.  Requires ENABLE_SIMD=ON as a prerequisite.

@@ -743,9 +743,19 @@ namespace ppp {
         static thread_local bool                tun_gso_force_bare_ = false;
         static bool                             ifc_ctl_sock_compatible_route = false;
 
+        static bool TapGsoMergeDisableRequested() noexcept {
+            // Environment is process-start configuration, not an externally
+            // mutable runtime control. Cache the value because OutputInternal
+            // consults this guard for every packet on the GSO path.
+            static const bool disabled = []() noexcept {
+                const char* disable = std::getenv("OPENPPP2_TAP_GSO_MERGE_DISABLE");
+                return disable != NULLPTR && *disable == '1';
+            }();
+            return disabled;
+        }
+
         static bool TapGsoMergeRequested() noexcept {
-            const char* disable = std::getenv("OPENPPP2_TAP_GSO_MERGE_DISABLE");
-            if (disable != NULLPTR && *disable == '1') return false;
+            if (TapGsoMergeDisableRequested()) return false;
             const char* enable = std::getenv("OPENPPP2_TAP_GSO_MERGE");
             return enable != NULLPTR && *enable == '1';
         }
@@ -755,12 +765,25 @@ namespace ppp {
             return enable != NULLPTR && enable[0] == '1' && enable[1] == '\0';
         }
 
+        static bool TapGsoPshBoundaryRequested() noexcept {
+            const char* enable = std::getenv("OPENPPP2_TAP_GSO_PSH_BOUNDARY");
+            return enable != NULLPTR && enable[0] == '1' && enable[1] == '\0';
+        }
+
+        static bool TapGsoRetainedWritevRequested() noexcept {
+            const char* disable = std::getenv("OPENPPP2_TAP_GSO_RETAINED_WRITEV_DISABLE");
+            return disable == NULLPTR || disable[0] != '1' || disable[1] != '\0';
+        }
+
         TapLinux::TapLinux(const std::shared_ptr<boost::asio::io_context>& context, const ppp::string& dev, void* tun, uint32_t address, uint32_t gw, uint32_t mask, bool hosted_network)
             : ITap(context, dev, tun, address, gw, mask, hosted_network)
             , promisc_(false)
             , disposed_(FALSE)
             , gso_hold_timer_(*context)
-            , gso_coalescer_([this](const uint8_t* frame, size_t frame_size) noexcept { return WriteGsoFrameLocked(frame, frame_size); }) {
+            , gso_coalescer_([this](const uint8_t* frame, size_t frame_size) noexcept { return WriteGsoFrameLocked(frame, frame_size); }, {},
+                [this](const iovec* iovecs, int count, size_t frame_size) noexcept {
+                    return WriteGsoIovLocked(iovecs, count, frame_size);
+                }, TapGsoPshBoundaryRequested(), TapGsoRetainedWritevRequested()) {
 
         }
 
@@ -2096,6 +2119,16 @@ namespace ppp {
             return WriteTunFrame(gso_write_fd_, frame, frame_size);
         }
 
+        ssize_t TapLinux::WriteGsoIovLocked(const iovec* iovecs, int count, size_t frame_size) noexcept {
+            ppp::diagnostics::datapath_perf::Scope write_scope;
+            const bool direct_write_accounting = ppp::diagnostics::datapath_perf::BeginTunDirectWrite();
+            const ssize_t written = ::writev(gso_write_fd_, iovecs, count);
+            ppp::diagnostics::datapath_perf::EndTunDirectWrite(direct_write_accounting);
+            ppp::diagnostics::datapath_perf::RecordTunDirectWrite(static_cast<int>(frame_size),
+                static_cast<int>(written), write_scope.Elapsed());
+            return written;
+        }
+
         void TapLinux::FailTunWrite(TunWriteFailureSource source) noexcept {
             if (tun_write_failed_.exchange(TRUE) == FALSE) {
                 GsoMergeabilityTelemetry& telemetry = GsoMergeabilityTelemetry::Instance();
@@ -2121,7 +2154,7 @@ namespace ppp {
             if (gso_timer_armed_ || !gso_merge_active_ || gso_ssmt_disabled_) return;
             gso_timer_armed_ = true;
             const uint64_t generation = ++gso_timer_generation_;
-            gso_hold_timer_.expires_after(std::chrono::microseconds(100));
+            gso_hold_timer_.expires_after(std::chrono::nanoseconds(gso_coalescer_.hold_ns()));
             std::shared_ptr<ITap> self = shared_from_this();
             gso_hold_timer_.async_wait([self, this, generation](const boost::system::error_code& ec) noexcept {
                 std::lock_guard<std::mutex> lock(gso_mutex_);
@@ -2253,7 +2286,7 @@ namespace ppp {
         }
 
         bool TapLinux::Output(const std::shared_ptr<Byte>& packet, int packet_size) noexcept {
-            return Output(packet.get(), packet_size);
+            return packet && Output(packet.get(), packet_size);
         }
 
         bool TapLinux::SupportsTxGso() const noexcept {
@@ -2325,6 +2358,16 @@ namespace ppp {
         }
 
         bool TapLinux::Output(const void* packet, int packet_size) noexcept {
+            return OutputInternal(packet, packet_size, nullptr);
+        }
+
+        bool TapLinux::OutputRetained(const void* packet, int packet_size,
+            RetainedPacketOwner&& owner) noexcept {
+            return OutputInternal(packet, packet_size, &owner);
+        }
+
+        bool TapLinux::OutputInternal(const void* packet, int packet_size,
+            RetainedPacketOwner* owner) noexcept {
             // Windows virtual nics need to use Event to write to the kernel asynchronously,
             // Linux virtual nics can directly write to the kernel ::write function,
             // Can reduce a memory allocation and replication, improve throughput efficiency.
@@ -2343,7 +2386,6 @@ namespace ppp {
                 mergeability.CountTunOutputWriteFailed();
                 return false;
             }
-
             // https://man7.org/linux/man-pages/man2/write.2.html
             int tun = static_cast<int>(reinterpret_cast<std::intptr_t>(GetHandle()));
             if (Ssmt()) {
@@ -2380,7 +2422,11 @@ namespace ppp {
                 });
                 gso_observer_hooked_ = true;
             }
-            if (gso_merge_active_ && !TapGsoMergeRequested()) {
+            // GSO activation is fixed when this Tap is created. Keep only the
+            // intentional runtime kill switch on the per-packet output path;
+            // re-reading the startup enable flag here adds getenv work for
+            // every emitted segment but cannot activate a previously bare Tap.
+            if (gso_merge_active_ && TapGsoMergeDisableRequested()) {
                 DisableGsoMergeLocked(tun);
             }
             if (tun_write_failed_.load() != FALSE) {
@@ -2391,7 +2437,8 @@ namespace ppp {
             if (!gso_merge_active_) {
                 // VNET framing remains mandatory after merging has been disabled.
                 // Do not call Push(): this write is physically synchronous.
-                const bool ok = gso_coalescer_.WriteOrdinaryFrame(static_cast<const uint8_t*>(packet), static_cast<size_t>(packet_size));
+                const bool ok = gso_coalescer_.WriteOrdinaryFrame(static_cast<const uint8_t*>(packet),
+                    static_cast<size_t>(packet_size), owner != nullptr && owner->ChecksumPartial());
                 if (!ok) FailTunWrite(TunWriteFailureSource::GsoOrdinaryWrite);
                 return ok;
             }
@@ -2399,7 +2446,10 @@ namespace ppp {
             const bool was_pending = gso_coalescer_.has_pending();
             gso_push_observation_active_ = mergeability.tun_output_diagnostics_enabled;
             if (gso_push_observation_active_) mergeability.first_push_failure.BeginPush();
-            const bool ok = gso_coalescer_.Push(static_cast<const uint8_t*>(packet), static_cast<size_t>(packet_size));
+            const bool ok = owner != nullptr
+                ? gso_coalescer_.PushOwned(static_cast<const uint8_t*>(packet),
+                    static_cast<size_t>(packet_size), std::move(*owner))
+                : gso_coalescer_.Push(static_cast<const uint8_t*>(packet), static_cast<size_t>(packet_size));
             const uint64_t push_returned_false_ns = !ok && gso_push_observation_active_
                 ? TunGsoCoalescer::NowNs() : 0;
             if (gso_push_observation_active_) {

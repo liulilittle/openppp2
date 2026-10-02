@@ -1,0 +1,85 @@
+diff --git a/plugins/cc_kcc.cpp b/plugins/cc_kcc.cpp
+--- a/plugins/cc_kcc.cpp
++++ b/plugins/cc_kcc.cpp
+@@ -129,6 +129,15 @@
+             if (0 == bw) {
+                 return;
+             }
++            // Rate samples can arrive several times within one delivery
++            // round. Keep the best sample for that round instead of letting
++            // each ACK overwrite one of the ten RTT-window entries.
++            if (0 < bw_sample_count && bw_samples[bw_sample_cur].rtt_cnt == cnt_rtt) {
++                if (bw > bw_samples[bw_sample_cur].val) {
++                    bw_samples[bw_sample_cur].val = bw;
++                }
++                return;
++            }
+             if (0 == bw_sample_count) {
+                 bw_sample_count = 1;
+                 bw_sample_cur = 0;
+diff --git a/plugins/ref/kcc_core.c b/plugins/ref/kcc_core.c
+--- a/plugins/ref/kcc_core.c
++++ b/plugins/ref/kcc_core.c
+@@ -137,6 +137,15 @@
+ 
+ static void kcc_bw_update(struct kcc_core *k, s64 bw, u32 rtt_cnt) {
+ 	if (bw <= 0) return;
++	/* Rate samples can arrive several times within one delivery round.
++	 * Keep the best sample for that round rather than letting each ACK
++	 * overwrite one of the ten RTT-window entries. */
++	if (k->bw_sample_count > 0 &&
++	    k->bw_samples[k->bw_sample_cur].rtt_cnt == rtt_cnt) {
++		if (bw > k->bw_samples[k->bw_sample_cur].val)
++			k->bw_samples[k->bw_sample_cur].val = bw;
++		return;
++	}
+ 	if (k->bw_sample_count == 0) {
+ 		k->bw_sample_count = 1;
+ 		k->bw_sample_cur = 0;
+diff --git a/tests/test_cc_kcc.cpp b/tests/test_cc_kcc.cpp
+--- a/tests/test_cc_kcc.cpp
++++ b/tests/test_cc_kcc.cpp
+@@ -73,4 +73,5 @@
+         rs.rtt_us = rtt_us;
+         rs.acked = acked;
+         rs.lost = lost;
++        sk.inflight = flight;
+         ops->cong_control(&sk, &rs);
+@@ -113,23 +114,28 @@
+     ops->init(&sk);
+     sk.mss = 1460;
+     constexpr UInt32 kDelivered = 1460;
++    constexpr UInt32 kFirstDelivered = 10 * kDelivered;
+     constexpr UInt32 kFlight = 20 * 1460;
+     constexpr UInt32 kInterval = 1000;
+     UInt64 now_us = 1000000;
+ 
+     // Twenty one small ACK samples carry one flight. The round counter must
+     // not treat each sample as a separate RTT; it advances again only after
+-    // the delivery marker reaches the next flight boundary.
++    // the delivery marker reaches the next flight boundary. The first sample
++    // is deliberately much faster; later samples in the same round must not
++    // evict that round's bandwidth maximum.
+     for (UInt32 i = 0; i < 21; ++i) {
++        const UInt32 delivered = (0 == i) ? kFirstDelivered : kDelivered;
+         now_us += kInterval;
+-        kcc_core_on_ack(&ref, static_cast<s64>(now_us), kDelivered, 1000,
++        kcc_core_on_ack(&ref, static_cast<s64>(now_us), delivered, 1000,
+                         kFlight, 0);
+         sk.inflight = kFlight;
+         xtcp::cc::RateSample rs;
+-        rs.delivered = kDelivered;
++        rs.delivered = delivered;
+         rs.interval_us = kInterval;
+         rs.rtt_us = 1000;
+         rs.acked = kDelivered;
+         ops->cong_control(&sk, &rs);
+         CHECK(1 == ref.rtt_cnt);
++        CHECK((static_cast<s64>(kFirstDelivered) << 24) / kInterval == ref.max_bw);
+         CHECK(static_cast<UInt32>(kcc_core_cwnd_segs(&ref)) == sk.snd_cwnd);
+@@ -145,4 +151,5 @@
+     rs.acked = kDelivered;
+     ops->cong_control(&sk, &rs);
+     CHECK(2 == ref.rtt_cnt);
++    CHECK((static_cast<s64>(kFirstDelivered) << 24) / kInterval == ref.max_bw);
+     CHECK(static_cast<UInt32>(kcc_core_cwnd_segs(&ref)) == sk.snd_cwnd);

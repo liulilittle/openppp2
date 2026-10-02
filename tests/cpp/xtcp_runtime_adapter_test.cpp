@@ -179,6 +179,76 @@ void TestProductionNdiOwnership() {
     CHECK(repeated_output_snapshot.first_actual_output_rejected_monotonic_ns == first_rejected_ns);
 }
 
+void TestSynchronousBorrowedNdiOutput() {
+    bool accept = false;
+    const Byte* observed = nullptr;
+    ppp::app::client::xtcp::XtcpNdiBackend backend(
+        [](std::shared_ptr<Byte>&&, int, std::optional<ppp::tap::TxGsoMetadata>) noexcept {
+            return false;
+        }, false,
+        [&accept, &observed](const Byte* data, int size,
+            std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
+            CHECK(size == 1);
+            CHECK(!gso);
+            observed = data;
+            return accept;
+        });
+
+    xtcp::buf::BufRef owned = xtcp::buf::BufRef::Acquire(64);
+    CHECK(!owned.IsEmpty());
+    owned.Data()[0] = 0x6b;
+    owned.SetLen(1);
+    xtcp::buf::BufRef stack_ref = owned.Clone();
+    xtcp::ndi::Packet packet;
+    packet.data = owned.Data();
+    packet.len = owned.Len();
+    packet.owned = std::move(owned);
+
+    CHECK(!backend.Tx(std::move(packet)));
+    CHECK(observed == stack_ref.Data());
+    CHECK(!packet.owned.IsEmpty());
+    CHECK(stack_ref.UseCount() == 2);
+
+    accept = true;
+    CHECK(backend.Tx(std::move(packet)));
+    CHECK(packet.owned.IsEmpty());
+    CHECK(stack_ref.UseCount() == 1);
+    CHECK(stack_ref.Data()[0] == 0x6b);
+}
+
+void TestNdiDiagnosticsCanBeDisabled() {
+    bool accepted = false;
+    ppp::app::client::xtcp::XtcpNdiBackend backend(
+        [&accepted](std::shared_ptr<Byte>&& buffer, int length,
+            std::optional<ppp::tap::TxGsoMetadata>) noexcept {
+            accepted = buffer != nullptr && length == 1 && buffer.get()[0] == 0x37;
+            return accepted;
+        });
+    backend.SetDiagnosticsEnabled(false);
+
+    xtcp::buf::BufRef owned = xtcp::buf::BufRef::Acquire(64);
+    CHECK(!owned.IsEmpty());
+    owned.Data()[0] = 0x37;
+    owned.SetLen(1);
+    xtcp::ndi::Packet packet;
+    packet.data = owned.Data();
+    packet.len = owned.Len();
+    packet.eth_type = 0x0800;
+    packet.owned = std::move(owned);
+
+    CHECK(backend.Tx(std::move(packet)));
+    CHECK(accepted);
+    const auto stats = backend.SnapshotTxStats();
+    CHECK(stats.attempts == 0);
+    CHECK(stats.accepted == 0);
+    CHECK(stats.rejected == 0);
+    CHECK(stats.tx_calls == 0);
+    CHECK(stats.tx_bytes == 0);
+    CHECK(stats.gso_packets == 0);
+    CHECK(stats.gso_bytes == 0);
+    CHECK(stats.gso_rejected == 0);
+}
+
 void TestProductionNdiTsoMetadata() {
     const char* previous = std::getenv("OPENPPP2_XTCP_NDI_TSO_TX");
     const bool had_previous = previous != nullptr;
@@ -265,6 +335,45 @@ void TestProductionNdiTsoMetadata() {
     else {
         unsetenv("OPENPPP2_XTCP_NDI_TSO_TX");
     }
+}
+
+void TestPartialChecksumCapabilityIsExplicitAndRetained() {
+    const char* previous = std::getenv("OPENPPP2_XTCP_TUN_CSUM_PARTIAL");
+    const bool had_previous = previous != nullptr;
+    const std::string previous_value = previous ? previous : "";
+    const char* previous_tso = std::getenv("OPENPPP2_XTCP_NDI_TSO_TX");
+    const bool had_previous_tso = previous_tso != nullptr;
+    const std::string previous_tso_value = previous_tso ? previous_tso : "";
+    unsetenv("OPENPPP2_XTCP_NDI_TSO_TX");
+    setenv("OPENPPP2_XTCP_TUN_CSUM_PARTIAL", "1", 1);
+
+    bool retained_partial = false;
+    using Backend = ppp::app::client::xtcp::XtcpNdiBackend;
+    Backend backend([](std::shared_ptr<Byte>&&, int,
+        std::optional<ppp::tap::TxGsoMetadata>) noexcept { return true; }, true, {},
+        [&retained_partial](const Byte*, int, ppp::tap::RetainedPacketOwner&& owner) noexcept {
+            retained_partial = owner.ChecksumPartial();
+            return true;
+        });
+    CHECK(0 != (backend.Caps() & xtcp::ndi::kCapChecksumPartialTx));
+    CHECK(0 == (backend.Caps() & xtcp::ndi::kCapTsoTx));
+
+    xtcp::buf::BufRef owned = xtcp::buf::BufRef::Acquire(40);
+    CHECK(!owned.IsEmpty());
+    std::memset(owned.Data(), 0, 40);
+    owned.Meta().checksum_partial = true;
+    xtcp::ndi::Packet packet;
+    packet.data = owned.Data();
+    packet.len = 40;
+    packet.eth_type = 0x0800;
+    packet.owned = std::move(owned);
+    CHECK(backend.Tx(std::move(packet)));
+    CHECK(retained_partial);
+
+    if (had_previous) setenv("OPENPPP2_XTCP_TUN_CSUM_PARTIAL", previous_value.c_str(), 1);
+    else unsetenv("OPENPPP2_XTCP_TUN_CSUM_PARTIAL");
+    if (had_previous_tso) setenv("OPENPPP2_XTCP_NDI_TSO_TX", previous_tso_value.c_str(), 1);
+    else unsetenv("OPENPPP2_XTCP_NDI_TSO_TX");
 }
 
 struct RejectedPacket final {
@@ -500,7 +609,10 @@ int main() {
     TestExternalLoopbackGate();
     TestIPv4PolicyHelpers();
     TestProductionNdiOwnership();
+    TestSynchronousBorrowedNdiOutput();
+    TestNdiDiagnosticsCanBeDisabled();
     TestProductionNdiTsoMetadata();
+    TestPartialChecksumCapabilityIsExplicitAndRetained();
     TestRuntimeOutputRejectionPacketShapes();
     xtcp::buf::ShutdownPools();
     TestRuntimeRejectsNullContext();

@@ -3,6 +3,7 @@
 #include <functional>
 #include <optional>
 #include <ppp/tap/TxGsoMetadata.h>
+#include <ppp/tap/RetainedPacketOwner.h>
 #include <memory>
 #include <mutex>
 
@@ -24,8 +25,15 @@ public:
     // Byte == unsigned char == std::uint8_t.
     using OutputHandler = std::function<bool(std::shared_ptr<std::uint8_t>&&, int,
         std::optional<ppp::tap::TxGsoMetadata>)>;
+    // Synchronous, borrowed output used only by transports that consume the
+    // bytes before returning. On false, the caller retains its BufRef.
+    using BorrowedOutputHandler = std::function<bool(const std::uint8_t*, int,
+        std::optional<ppp::tap::TxGsoMetadata>)>;
+    using RetainedOutputHandler = std::function<bool(const std::uint8_t*, int,
+        ppp::tap::RetainedPacketOwner&&)>;
 
-    explicit XtcpNdiBackend(OutputHandler output, bool tx_gso_supported = false) noexcept;
+    explicit XtcpNdiBackend(OutputHandler output, bool tx_gso_supported = false,
+        BorrowedOutputHandler borrowed_output = {}, RetainedOutputHandler retained_output = {}) noexcept;
 
     bool Tx(::xtcp::ndi::Packet&& packet) noexcept override;
     UInt32 TxBatch(::xtcp::ndi::Packet* packets, UInt32 count) noexcept override;
@@ -34,6 +42,7 @@ public:
 
     bool Inject(::xtcp::buf::BufRef&& packet) noexcept;
     void Stop() noexcept;
+    void SetDiagnosticsEnabled(bool enabled) noexcept;
 
     /** @brief Snapshot of the A2-0 output-path diagnostics (cumulative). */
     struct TxStats final {
@@ -56,10 +65,15 @@ public:
 
 private:
     mutable std::mutex sync_;
-    OutputHandler output_;
+    std::shared_ptr<OutputHandler> output_;
+    std::shared_ptr<BorrowedOutputHandler> borrowed_output_;
+    std::shared_ptr<RetainedOutputHandler> retained_output_;
     ::xtcp::ndi::RxHandler rx_handler_;
     bool stopped_ = false;
+    std::atomic<bool> tx_stopped_{false};
     bool tx_gso_enabled_ = false;
+    bool tx_checksum_partial_enabled_ = false;
+    std::atomic<bool> diagnostics_enabled_{true};
     // A2-0 output-path diagnostics. Written on the stack owner thread only;
     // read via SnapshotTxStats().
     std::atomic<std::uint64_t> tx_calls_{0};

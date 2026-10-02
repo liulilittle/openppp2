@@ -69,14 +69,14 @@ BOOST_AUTO_TEST_CASE(successful_events_render_a_vnet_local_ledger) {
 
     const std::string json = ledger.RenderWindowJson();
     BOOST_TEST(json.find("\"framing_domain\":\"vnet_gso_coalescer_only_not_global\"") != std::string::npos);
-    BOOST_TEST(JsonInt(json, "eligible_packets") == 5U);
+    BOOST_TEST(JsonInt(json, "eligible_packets") == 6U);
     BOOST_TEST(JsonInt(json, "merged_packets") == 4U);
     BOOST_TEST(JsonInt(json, "gso_full_writes") == 1U);
     BOOST_TEST(JsonInt(json, "gso_segments") == 4U);
     BOOST_TEST(JsonInt(json, "ordinary_full_writes") == 3U);
     BOOST_TEST(JsonInt(json, "timeout") == 1U);
     BOOST_TEST(JsonInt(json, "cap") == 1U);
-    BOOST_TEST(json.find("\"packet_rejections\":{\"incompatible\":0,\"psh\":1,\"control\":1") != std::string::npos);
+    BOOST_TEST(json.find("\"packet_rejections\":{\"incompatible\":0,\"psh\":0,\"control\":1") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(negative_fallback_and_partial_delivery_are_not_reported_as_merges) {

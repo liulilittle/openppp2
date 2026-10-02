@@ -98,6 +98,9 @@ int main() {
         vmux::vmux_net::vmux_linklayer_ptr base_link;
         vmux::vmux_net_test_access::AttachEstablished(*mux, base_transport, base_link);
         vmux::vmux_net_test_access::MarkEstablished(*mux);
+        // Keep the baseline carrier from being selected as the preferred idle
+        // victim; each churn cycle is intended to drain the surplus carrier.
+        base_link->queued_bytes_ = 64;
         Require(mux->get_runtime_state().active_links == 1,
                 "base carrier was not published");
         Require(vmux::vmux_net_test_access::ContainerCounts(*mux) ==

@@ -90,6 +90,7 @@ namespace ppp
         public: 
             virtual bool                                                            Output(const std::shared_ptr<Byte>& packet, int packet_size) noexcept override;
             virtual bool                                                            Output(const void* packet, int packet_size) noexcept override;
+            bool                                                                    OutputRetained(const void* packet, int packet_size, RetainedPacketOwner&& owner) noexcept;
             virtual bool                                                            SupportsTxGso() const noexcept override;
             virtual bool                                                            OutputGso(const std::shared_ptr<Byte>& packet, int packet_size, TxGsoMetadata metadata) noexcept override;
 
@@ -155,6 +156,8 @@ namespace ppp
             bool                                                                    Ssmt(const std::shared_ptr<boost::asio::io_context>& context, int fd, const std::shared_ptr<Byte>& buffer, const std::shared_ptr<boost::asio::posix::stream_descriptor>& sd) noexcept;
             ssize_t                                                                 WriteTunFrame(int fd, const uint8_t* frame, size_t frame_size) noexcept;
             ssize_t                                                                 WriteGsoFrameLocked(const uint8_t* frame, size_t frame_size) noexcept;
+            ssize_t                                                                 WriteGsoIovLocked(const iovec* iovecs, int count, size_t frame_size) noexcept;
+            bool                                                                    OutputInternal(const void* packet, int packet_size, RetainedPacketOwner* owner) noexcept;
             enum class TunWriteFailureSource : uint8_t { BareWrite, GsoDisableFlush, GsoHoldTimerFlush, GsoOrdinaryWrite, GsoCoalescerPush, DirectGsoWrite };
             void                                                                    FailTunWrite(TunWriteFailureSource source) noexcept;
             void                                                                    DisableGsoMergeLocked(int write_fd, TunGsoCoalescer::FlushReason reason = TunGsoCoalescer::FlushReason::Terminate) noexcept;

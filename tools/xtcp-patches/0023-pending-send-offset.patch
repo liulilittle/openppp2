@@ -1,0 +1,527 @@
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -15,6 +15,7 @@
+ #include <xtcp/core/timer.h>
+ #include <xtcp/core/tfo.h>
+ #include <atomic>
++#include <cstddef>
+ #include <deque>
+ #include <functional>
+ #include <map>
+@@ -367,7 +368,7 @@
+              */
+             UInt32 PendingSendBytes() const noexcept {
+                 std::lock_guard<std::recursive_mutex> scope(syncobj_);
+-                return static_cast<UInt32>(pending_send_.size());
++                return static_cast<UInt32>(PendingSendSizeNoLock());
+             }
+             /**
+  * @brief Initiates active close (sends FIN).
+@@ -500,7 +501,7 @@
+                         (0 < keepalive_probes_) ? keepalive_intvl_ : keepalive_idle_;
+                     consider(last_rx_ + idle_us);
+                 }
+-                if (0 < pending_send_.size()) {
++                if (0 < PendingSendSizeNoLock()) {
+                     // A zero peer window cannot be opened by the pacing clock.
+                     // Wake only for the actual recovery timers (persist/RTO/...)
+                     // instead of returning a stale pacing deadline and spinning
+@@ -972,6 +973,7 @@
+                 UInt32   srtt       = 0;
+                 UInt32   rttvar     = 0;
+                 std::vector<Byte>              pending_send;  /**< Buffered application bytes */
++                std::size_t pending_send_offset = 0; /**< Consumed prefix in the retained buffer */
+                 std::deque<SentSeg>            retrans_queue; /**< In-flight, unacknowledged segments */
+             };
+             /**
+@@ -1094,6 +1096,15 @@
+             void SetSndWscale(Byte factor) noexcept { snd_wscale_ = (14 < factor) ? 14 : factor; }
+ 
+         private:
++            std::size_t PendingSendSizeNoLock() const noexcept {
++                return pending_send_.size() - pending_send_offset_;
++            }
++            bool PendingSendEmptyNoLock() const noexcept {
++                return pending_send_.size() == pending_send_offset_;
++            }
++            void AppendPendingSendNoLock(const Byte* data, UInt32 len) noexcept;
++            void ConsumePendingSendFrontNoLock() noexcept;
++            void RequeuePendingSendNoLock(std::vector<Byte>& data, std::size_t offset) noexcept;
+             void Transition(TcpState next) noexcept;
+             void SendSegment(UInt32 seq, UInt32 ack, UInt16 flags, const Byte* payload, UInt32 payload_len) noexcept;
+             Byte BuildSackRanges(UInt32* out, Byte max_pairs) const noexcept;
+@@ -1204,6 +1215,7 @@
+             static constexpr UInt32 kDefaultSndBuf = 65536;  /**< 64 KiB per-conn quota */
+             UInt32      snd_buf_ = kDefaultSndBuf;
+             std::vector<Byte> pending_send_;  /**< App data queued while SYN/SYN+ACK is in flight (full client semantics) */
++            std::size_t pending_send_offset_ = 0; /**< Avoid copying the unsent suffix after a partial flush */
+             SendAdmissionSnapshot last_send_admission_;  /**< Updated only by rejected SendData calls. */
+             std::atomic<UInt64> ack_release_valid_acks_{0};
+             std::atomic<UInt64> ack_release_advance_events_{0};
+
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -2434,7 +2434,7 @@
+                     persist_deadline_ = 0;
+                     persist_interval_ = persist_base_;  // restore user-configured base
+                 }
+-                if (0 < pending_send_.size()) {
++                if (0 < PendingSendSizeNoLock()) {
+                     FlushPendingSend(now);
+                 }
+                 return;
+@@ -2540,7 +2540,7 @@
+                 } else {
+                     rto_deadline_ = 0;
+                 }
+-                const bool pending_before_ack_flush = !pending_send_.empty();
++                const bool pending_before_ack_flush = !PendingSendEmptyNoLock();
+                 const TimePoint deadline_before_ack_flush = pacing_deadline_;
+                 const UInt64 flush_packets_before =
+                     ack_release_tx_sink_packets_.load(std::memory_order_relaxed);
+@@ -2780,7 +2780,7 @@
+                     persist_deadline_ = 0;
+                     persist_interval_ = persist_base_;  // restore user-configured base
+                 }
+-                if (0 < pending_send_.size()) {
++                if (0 < PendingSendSizeNoLock()) {
+                     FlushPendingSend(now);
+                 }
+                 // Duplicate ACK on the frontier.
+@@ -2806,7 +2806,7 @@
+                     const UInt32 oseg = static_cast<UInt32>(retrans_queue_.size());
+                     if (2 <= oseg && oseg < 4) {
+                         const UInt32 inflight = snd_nxt_ - snd_una_;
+-                        const bool no_inject = pending_send_.empty() ||
++                        const bool no_inject = PendingSendEmptyNoLock() ||
+                             snd_wnd_ <= inflight ||
+                             cc_.snd_cwnd * peer_mss_ <= inflight;
+                         if (no_inject) {
+@@ -3041,7 +3041,7 @@
+                 snapshot.reason = reason;
+                 snapshot.state = state_;
+                 snapshot.attempted_len = len;
+-                snapshot.pending_send = static_cast<UInt32>(pending_send_.size());
++                snapshot.pending_send = static_cast<UInt32>(PendingSendSizeNoLock());
+                 snapshot.inflight = snd_nxt_ - snd_una_;
+                 snapshot.snd_buf = snd_buf_;
+                 snapshot.snd_wnd = snd_wnd_;
+@@ -3056,10 +3056,10 @@
+             // while the SYN/SYN+ACK handshake is in flight and flushed once
+             // the connection reaches Established.
+             if (TcpState::kSynSent == state_ || TcpState::kSynRcvd == state_) {
+-                if (snd_buf_ < pending_send_.size() + len) {
++                if (snd_buf_ < PendingSendSizeNoLock() + len) {
+                     return reject(SendAdmissionReason::kSndBufQuota);
+                 }
+-                pending_send_.insert(pending_send_.end(), data, data + len);
++                AppendPendingSendNoLock(data, len);
+                 timers_dirty_.store(true, std::memory_order_relaxed);
+                 return true;
+             }
+@@ -3078,7 +3078,7 @@
+             // Send window = min(congestion window, peer window, local quota).
+             const UInt64 cwnd_bytes = static_cast<UInt64>(cc_.snd_cwnd) * peer_mss_;
+             if (len > payload_cap) {
+-                if (snd_buf_ < pending_send_.size() + len + inflight) {
++                if (snd_buf_ < PendingSendSizeNoLock() + len + inflight) {
+                     return reject(SendAdmissionReason::kSndBufQuota);
+                 }
+                 // TSO direct-send (backends with kCapTsoTx): hand the whole
+@@ -3093,7 +3093,7 @@
+                 // payload size. This remains safe when timestamps reduce the
+                 // cap below PeerMss(): a later fresh-TS RTO rebuild uses the
+                 // same cap and still fits the path MTU.
+-                const bool tso_direct = tso_tx_ && pending_send_.empty() &&
++                const bool tso_direct = tso_tx_ && PendingSendEmptyNoLock() &&
+                     retrans_queue_.empty() && !fast_recovery_ &&
+                     inflight + len <= snd_wnd_ &&
+                     inflight + len <= cwnd_bytes &&
+@@ -3102,7 +3102,7 @@
+                 tso_gate_direct_candidates_.fetch_add(1, std::memory_order_relaxed);
+                 if (!tso_tx_) {
+                     tso_gate_direct_disabled_.fetch_add(1, std::memory_order_relaxed);
+-                } else if (!pending_send_.empty()) {
++                } else if (!PendingSendEmptyNoLock()) {
+                     tso_gate_direct_pending_.fetch_add(1, std::memory_order_relaxed);
+                 } else if (!retrans_queue_.empty()) {
+                     tso_gate_direct_outstanding_.fetch_add(1, std::memory_order_relaxed);
+@@ -3120,7 +3120,7 @@
+                     // segments by FlushPendingSend (the direct-send variant
+                     // was reverted: it could overrun the window and corrupt
+                     // recovery under loss - see discover.md).
+-                    pending_send_.insert(pending_send_.end(), data, data + len);
++                    AppendPendingSendNoLock(data, len);
+                     timers_dirty_.store(true, std::memory_order_relaxed);
+                     // RFC 1122 zero-window probing applies to super-MSS buffers
+                     // too: while the peer advertises zero, arm probes so a lost
+@@ -3169,12 +3169,12 @@
+             // behind a 1-byte persist probe or a drained pipe (RFC 1122
+             // 4.2.3.4: transmit immediately when inflight < MSS).
+             const bool nagle = (!nodelay_ && len < peer_mss_ && inflight >= peer_mss_);
+-            if (!pending_send_.empty() || inflight + len > limit || pipe_gated || nagle ||
++            if (!PendingSendEmptyNoLock() || inflight + len > limit || pipe_gated || nagle ||
+                 (0 < cc_.pacing_rate && now < pacing_deadline_)) {
+-                if (snd_buf_ < pending_send_.size() + len + inflight) {
++                if (snd_buf_ < PendingSendSizeNoLock() + len + inflight) {
+                     return reject(SendAdmissionReason::kSndBufQuota);
+                 }
+-                pending_send_.insert(pending_send_.end(), data, data + len);
++                AppendPendingSendNoLock(data, len);
+                 timers_dirty_.store(true, std::memory_order_relaxed);
+                 // RFC 1122 zero-window probing: while the peer advertises a
+                 // zero window, schedule probes so a lost window-update ACK
+@@ -3188,7 +3188,7 @@
+             // Hard memory bound: the direct-send path must also count the
+             // buffered bytes (pending + inflight + this send <= snd_buf_),
+             // otherwise buffering bypasses the per-connection quota.
+-            if (snd_buf_ < pending_send_.size() + len + inflight) {
++            if (snd_buf_ < PendingSendSizeNoLock() + len + inflight) {
+                 return reject(SendAdmissionReason::kSndBufQuota);
+             }
+             const UInt32 seq = snd_nxt_;
+@@ -3207,11 +3207,11 @@
+                 // buffer as the window frees and re-queues on repeated
+                 // exhaustion (FlushPendingSend packet.IsEmpty()). cwr_pending_
+                 // stays set so the flush still emits the CWR.
+-                pending_send_.insert(pending_send_.end(), data, data + len);
++                AppendPendingSendNoLock(data, len);
+                 timers_dirty_.store(true, std::memory_order_relaxed);
+                 return true;
+             }
+-            if (len > payload_cap && tso_tx_ && pending_send_.empty() && retrans_queue_.empty() &&
++            if (len > payload_cap && tso_tx_ && PendingSendEmptyNoLock() && retrans_queue_.empty() &&
+                 !fast_recovery_ && inflight + len <= snd_wnd_ && inflight + len <= cwnd_bytes &&
+                 (0 == cc_.pacing_rate || now >= pacing_deadline_) &&
+                 len + 40 <= xtcp::buf::kMaxPoolPayload) {
+@@ -3257,7 +3257,7 @@
+             // arms). The probe fires after ~2xRTT (well before the RTO),
+             // retransmitting the tail - avoiding the RTO's window cut and
+             // latency penalty for a single lost tail segment.
+-            if (!fast_recovery_ && 0 < srtt_ && 0 == pending_send_.size()) {
++            if (!fast_recovery_ && 0 < srtt_ && 0 == PendingSendSizeNoLock()) {
+                 TimePoint tlp = now + static_cast<TimePoint>(2ull * srtt_);
+                 if (tlp < now + 10000) {
+                     tlp = now + 10000;  // 10ms floor
+@@ -3317,7 +3317,7 @@
+                     if (front_data.Len() > ip_hdr_len + tcp_hdr_len) {
+                         probe_byte = front_data.Data()[ip_hdr_len + tcp_hdr_len];  // the missing byte
+                     }
+-                } else if (!pending_send_.empty()) {
++                } else if (!PendingSendEmptyNoLock()) {
+                     // All previously sent bytes were ACKed: probe the FIRST
+                     // buffered byte. It is CONSUMED from pending_send_ - the
+                     // window-reopen flush then continues from byte 2. A probe
+@@ -3325,7 +3325,7 @@
+                     // delivered [0x00 x n] + payload once the window reopened
+                     // (n phantom bytes that were never application data).
+                     probe_seq = snd_nxt_;
+-                    probe_byte = pending_send_[0];
++                    probe_byte = pending_send_[pending_send_offset_];
+                     consume_pending = true;
+                 }
+                 if (0 != probe_seq || consume_pending) {
+@@ -3335,7 +3335,7 @@
+                                                             Md5Key(), Md5KeyLen(), NULLPTR, 0, NULLPTR, ecn_active_);
+                     if (!packet.IsEmpty()) {
+                         if (consume_pending) {
+-                            pending_send_.erase(pending_send_.begin());  // probe consumes the first byte
++                            ConsumePendingSendFrontNoLock();  // probe consumes the first byte
+                             // The probe byte is REAL data (consumed above), so it
+                             // must be recoverable: queue it in retrans_queue_ like
+                             // any other segment (mirror of SendData below). A
+@@ -3501,7 +3501,7 @@
+                 OnPersistTimer(now);  // re-locks (recursive); zero-window probe
+                 ++fired;
+             }
+-            if (0 < pending_send_.size()) {
++            if (0 < PendingSendSizeNoLock()) {
+                 FlushPendingSend(now);  // buffered sends ride the freed window
+             }
+             // Keepalive (Linux TCP_KEEPIDLE semantics): probe when idle,
+@@ -3569,7 +3569,7 @@
+             const bool closing = (TcpState::kClosed == state_ || TcpState::kLastAck == state_ ||
+                                   TcpState::kFinWait2 == state_ || TcpState::kTimeWait == state_);
+             if (0 == ack_deadline_ && 0 == rto_deadline_ && 0 == persist_deadline_ &&
+-                0 == tlp_deadline_ && 0 == pending_send_.size() && 0 == keepalive_idle_ &&
++                0 == tlp_deadline_ && 0 == PendingSendSizeNoLock() && 0 == keepalive_idle_ &&
+                 0 == mtu_probe_deadline_ && !closing) {
+                 timers_dirty_.store(false, std::memory_order_relaxed);
+             }
+@@ -3579,7 +3579,7 @@
+         void TcpConn::Flush(TimePoint now) noexcept {
+             // Sends buffered data after a window update; on SynSent/SynRcvd
+             // the queued app data is flushed on Established (FlushPendingSend).
+-            if (0 < pending_send_.size()) {
++            if (0 < PendingSendSizeNoLock()) {
+                 FlushPendingSend(now);
+             }
+             // Window-driven resend is handled by the caller retrying SendData
+@@ -3587,20 +3587,69 @@
+             (void)now;
+         }
+ 
++        void TcpConn::AppendPendingSendNoLock(const Byte* data, UInt32 len) noexcept {
++            if (0 == len) {
++                return;
++            }
++            const std::size_t pending = PendingSendSizeNoLock();
++            if (0 == pending) {
++                pending_send_.clear();
++                pending_send_offset_ = 0;
++            } else if (pending_send_offset_ >= 64u * 1024u && pending_send_offset_ >= pending) {
++                // Amortize prefix compaction: this only copies the live suffix
++                // after at least as many bytes have already been consumed.
++                pending_send_.erase(pending_send_.begin(),
++                                    pending_send_.begin() + pending_send_offset_);
++                pending_send_offset_ = 0;
++            }
++            pending_send_.insert(pending_send_.end(), data, data + len);
++        }
++
++        void TcpConn::ConsumePendingSendFrontNoLock() noexcept {
++            if (PendingSendEmptyNoLock()) {
++                return;
++            }
++            ++pending_send_offset_;
++            if (PendingSendEmptyNoLock()) {
++                pending_send_.clear();
++                pending_send_offset_ = 0;
++            }
++        }
++
++        void TcpConn::RequeuePendingSendNoLock(std::vector<Byte>& data,
++                                                std::size_t offset) noexcept {
++            if (offset >= data.size()) {
++                return;
++            }
++            if (PendingSendEmptyNoLock()) {
++                pending_send_.clear();
++                pending_send_.swap(data);
++                pending_send_offset_ = offset;
++                return;
++            }
++            // A synchronous sink may reenter SendData while this flush owns
++            // the old buffer. Preserve TCP byte order by placing that older
++            // unsent suffix before the newly queued bytes.
++            pending_send_.insert(pending_send_.begin() + pending_send_offset_,
++                                 data.begin() + offset, data.end());
++        }
++
+         void TcpConn::FlushPendingSend(TimePoint now) noexcept {
+-            if (pending_send_.empty() || (TcpState::kEstablished != state_ && TcpState::kCloseWait != state_)) {
++            if (PendingSendEmptyNoLock() || (TcpState::kEstablished != state_ && TcpState::kCloseWait != state_)) {
+                 return;
+             }
+             ack_release_pending_flush_attempts_.fetch_add(1, std::memory_order_relaxed);
+             std::vector<Byte> data;
+             data.swap(pending_send_);
++            std::size_t off = pending_send_offset_;
++            pending_send_offset_ = 0;
+             // Pacing burst budget (bytes) for the current pacing tick. A tick
+             // grants ~1ms of wire time (the Linux fq/TSO autosize quantum) so
+             // a paced connection wakes ~1000x/s and drains a burst per wake,
+             // instead of one MSS per host event-loop iteration - the latter
+             // pins throughput at MSS / loop-iteration regardless of RTT/cwnd.
+             UInt64 pacing_budget = 0;
+-            for (UInt32 off = 0; off < data.size();) {
++            for (; off < data.size();) {
+                 const bool tso_candidate = data.size() - off > DataPayloadCap();
+                 bool tso_gate_classified = false;
+                 if (tso_candidate) {
+@@ -3630,11 +3679,7 @@
+                             tso_gate_flush_pacing_.fetch_add(1, std::memory_order_relaxed);
+                             tso_gate_classified = true;
+                         }
+-                        if (0 == off) {
+-                            pending_send_.swap(data);  // zero-copy handback
+-                        } else {
+-                            pending_send_.assign(data.begin() + off, data.end());
+-                        }
++                        RequeuePendingSendNoLock(data, off);
+                         return;
+                     }
+                     UInt64 quantum = cc_.pacing_rate / 1000;  // ~1ms of data
+@@ -3672,7 +3717,7 @@
+                             tso_gate_flush_fast_recovery_.fetch_add(1, std::memory_order_relaxed);
+                             tso_gate_classified = true;
+                         }
+-                        pending_send_.assign(data.begin() + off, data.end());
++                        RequeuePendingSendNoLock(data, off);
+                         return;  // pipe full: the ACK clock reopens it
+                     }
+                     limit = (snd_wnd_ < snd_buf_) ? snd_wnd_ : snd_buf_;
+@@ -3688,7 +3733,7 @@
+                         tso_gate_flush_window_cwnd_.fetch_add(1, std::memory_order_relaxed);
+                         tso_gate_classified = true;
+                     }
+-                    pending_send_.assign(data.begin() + off, data.end());
++                    RequeuePendingSendNoLock(data, off);
+                     // RFC 1122 s4.2.2.17: data buffered behind a zero window
+                     // MUST be probed - a lost window-update ACK must not
+                     // deadlock the flow. The handshake-completion flush can
+@@ -3769,7 +3814,7 @@
+                                                         Md5Key(), Md5KeyLen(), NULLPTR, 0, NULLPTR, ecn_active_);
+                 if (packet.IsEmpty()) {
+                     ack_release_pending_flush_packet_allocation_.fetch_add(1, std::memory_order_relaxed);
+-                    pending_send_.insert(pending_send_.begin(), data.begin() + off, data.end());
++                    RequeuePendingSendNoLock(data, off);
+                     return;
+                 }
+                 if (tso_flush) {
+@@ -3806,7 +3851,7 @@
+                 }
+                 off += n;
+                 if (tso_flush && off < data.size()) {
+-                    pending_send_.assign(data.begin() + off, data.end());
++                    RequeuePendingSendNoLock(data, off);
+                     timers_dirty_.store(true, std::memory_order_relaxed);
+                     return;
+                 }
+@@ -3818,7 +3863,7 @@
+         }
+ 
+         void TcpConn::MaybeFinishClose(TimePoint now) noexcept {
+-            if (!close_pending_ || !pending_send_.empty()) {
++            if (!close_pending_ || !PendingSendEmptyNoLock()) {
+                 return;
+             }
+             // The buffered data drained: send the FIN that Close() deferred.
+@@ -3867,7 +3912,9 @@
+             // so each segment's payload is cloned into an independent pool
+             // reference - the checkpoint and the source connection stay
+             // valid independently.
+-            ckpt.pending_send = pending_send_;
++            ckpt.pending_send.assign(pending_send_.begin() + pending_send_offset_,
++                                     pending_send_.end());
++            ckpt.pending_send_offset = 0;
+             ckpt.retrans_queue.clear();
+             for (const SentSeg& s : retrans_queue_) {
+                 SentSeg c;
+@@ -3897,6 +3944,8 @@
+             srtt_ = ckpt.srtt;
+             rttvar_ = ckpt.rttvar;
+             pending_send_ = ckpt.pending_send;
++            pending_send_offset_ = (ckpt.pending_send_offset <= pending_send_.size())
++                ? ckpt.pending_send_offset : pending_send_.size();
+             retrans_queue_.clear();
+             for (const SentSeg& s : ckpt.retrans_queue) {
+                 SentSeg c;
+@@ -3913,7 +3962,7 @@
+                 // In-flight segments survived the migration: the RTO must
+                 // drive their retransmission on this (possibly new) connection.
+                 ArmRetransmit(NowUs());
+-            } else if (0 < pending_send_.size()) {
++            } else if (0 < PendingSendSizeNoLock()) {
+                 // Buffered data with nothing in flight: a fresh send window.
+                 if (0 == snd_wnd_ && 0 == persist_deadline_) {
+                     persist_deadline_ = NowUs() + persist_interval_;
+@@ -4189,7 +4238,7 @@
+                                   kWindowScaleOffer, Md5Key(), Md5KeyLen(), NULLPTR, 0, NULLPTR,
+                                   false, false, 0, 0, no_sack_permitted_);
+                 snd_nxt_ = iss_ + 1;
+-                pending_send_.insert(pending_send_.end(), data, data + len);
++                AppendPendingSendNoLock(data, len);
+                 timers_dirty_.store(true, std::memory_order_relaxed);
+             }
+             ArmRetransmit(NowUs());  // RFC 793: the fast-open SYN is retransmitted on timeout
+@@ -4259,6 +4308,7 @@
+             // the handshake is still in flight - data was never flushed).
+             if (TcpState::kSynSent == state_) {
+                 pending_send_.clear();
++                pending_send_offset_ = 0;
+                 Transition(TcpState::kClosed);
+                 NotifyStateChanged();  // the app must see the close
+                 return;
+@@ -4271,6 +4321,7 @@
+                 // be dead on arrival: both sides would retransmit for
+                 // minutes before converging.
+                 pending_send_.clear();
++                pending_send_offset_ = 0;
+                 SendSegment(snd_nxt_, rcv_nxt_, kFlagRst | kFlagAck, NULLPTR, 0);
+                 Transition(TcpState::kClosed);
+                 NotifyStateChanged();  // the app must see the close
+@@ -4279,7 +4330,7 @@
+                 // RFC 793: the FIN must follow all buffered data, so flush
+                 // any window-constrained sends first (the FIN's seq then
+                 // lands after them on the wire).
+-                if (0 < pending_send_.size()) {
++                if (0 < PendingSendSizeNoLock()) {
+                     FlushPendingSend(NowUs());
+                 }
+                 // Bug(close): a zero window (or pacing/cwnd limit) can leave
+@@ -4287,7 +4338,7 @@
+                 // them: FinWait1/LastAck never flush pending_send_, so the
+                 // data would be silently dropped. Defer the FIN and let
+                 // MaybeFinishClose send it once the buffer drains.
+-                if (0 == pending_send_.size()) {
++                if (0 == PendingSendSizeNoLock()) {
+                     SendSegment(snd_nxt_, rcv_nxt_, kFlagFin | kFlagAck, NULLPTR, 0);
+                     ++snd_nxt_;
+                     Transition(TcpState::kFinWait1);
+@@ -4306,7 +4357,7 @@
+                 }
+                 break;
+             case TcpState::kCloseWait:
+-                if (0 == pending_send_.size()) {
++                if (0 == PendingSendSizeNoLock()) {
+                     SendSegment(snd_nxt_, rcv_nxt_, kFlagFin | kFlagAck, NULLPTR, 0);
+                     ++snd_nxt_;
+                     Transition(TcpState::kLastAck);
+@@ -4338,6 +4389,7 @@
+                 return;
+             }
+             pending_send_.clear();
++            pending_send_offset_ = 0;
+             SendSegment(snd_nxt_, rcv_nxt_, kFlagRst | kFlagAck, NULLPTR, 0);
+             Transition(TcpState::kClosed);
+         }
+@@ -4793,7 +4845,7 @@
+                         // (no probe, RTO only re-arms). Mirror the SendData
+                         // arming pattern.
+                         if (0 == snd_wnd_ &&
+-                            (0 < retrans_queue_.size() || 0 < pending_send_.size()) &&
++                            (0 < retrans_queue_.size() || 0 < PendingSendSizeNoLock()) &&
+                             (0 == persist_deadline_ || now < persist_deadline_)) {
+                             persist_deadline_ = now + persist_interval_;
+                             timers_dirty_.store(true, std::memory_order_relaxed);
+@@ -5325,7 +5377,7 @@
+                         cc_.snd_wnd = snd_wnd_;
+                     }
+                     OnAckReceived(hdr.ack, hdr.IsEce(), now, NULLPTR);
+-                    if (0 < pending_send_.size()) {
++                    if (0 < PendingSendSizeNoLock()) {
+                         FlushPendingSend(now);
+                     }
+                 }
+
+--- a/tests/test_scheduler.cpp
++++ b/tests/test_scheduler.cpp
+@@ -162,6 +162,26 @@
+     conn2.OnSegment(seg, sizeof(seg), 4000);
+     CHECK(105 == conn2.SndUna());
+     CHECK(0 == conn2.InflightBytes());
++
++    // A partially flushed send retains its consumed prefix in-place. A
++    // migration checkpoint must expose/copy only the live suffix and restore
++    // the same logical byte count, not the full backing vector.
++    std::vector<xtcp::buf::BufRef> pending_sink;
++    xtcp::core::TcpConn pending_conn(
++        xtcp::core::TcpState::kEstablished, local, remote, 300, 400,
++        [&pending_sink](xtcp::buf::BufRef&& p) { pending_sink.push_back(std::move(p)); });
++    std::vector<Byte> pending_data(32000, 0x5A);
++    CHECK(pending_conn.SendData(pending_data.data(), static_cast<UInt32>(pending_data.size()), 1000));
++    pending_conn.FlushPendingSend(2000);
++    CHECK(0 < pending_conn.PendingSendBytes());
++    const xtcp::core::TcpConn::ConnCheckpoint pending_ckpt = pending_conn.MakeCheckpoint();
++    CHECK(pending_ckpt.pending_send_offset == 0);
++    CHECK(pending_ckpt.pending_send.size() == pending_conn.PendingSendBytes());
++    xtcp::core::TcpConn pending_restored(
++        xtcp::core::TcpState::kClosed, local, remote, 300, 400,
++        [&pending_sink](xtcp::buf::BufRef&& p) { pending_sink.push_back(std::move(p)); });
++    pending_restored.ApplyCheckpoint(pending_ckpt);
++    CHECK(pending_ckpt.pending_send.size() == pending_restored.PendingSendBytes());
+ }
+ 
+ int main() {
+

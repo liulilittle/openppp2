@@ -1,0 +1,20 @@
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -3756,9 +3756,15 @@
+                 // forever (Linux tcp_push only Nagles fresh sends, never the
+                 // ACK-clock refill).
+                 const UInt32 seq = snd_nxt_;
++                // Preserve PUSH at the end of this buffered byte range, not
++                // on every MSS-sized segment. Besides matching TCP push
++                // semantics, this keeps adjacent data segments eligible for
++                // downstream VNET GSO coalescing.
++                const UInt16 data_flags = kFlagAck |
++                    ((off + n == data.size()) ? kFlagPsh : 0) |
++                    (cwr_pending_ ? kFlagCwr : 0);
+                 buf::BufRef packet = BuildSegmentPacket(local_, remote_, seq, rcv_nxt_,
+-                                                        kFlagAck | kFlagPsh |
+-                                                            (cwr_pending_ ? kFlagCwr : 0), data.data() + off, n,
++                                                        data_flags, data.data() + off, n,
+                                                         AdvertisedWindow(), rcv_wscale_,
+                                                         Md5Key(), Md5KeyLen(), NULLPTR, 0, NULLPTR, ecn_active_);
+                 if (packet.IsEmpty()) {

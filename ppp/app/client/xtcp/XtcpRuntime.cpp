@@ -36,6 +36,7 @@
 #include <limits>
 #include <mutex>
 #include <new>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -241,7 +242,9 @@ XtcpRuntime::XtcpRuntime(
     ExternalAcceptHandler,
     ExternalCancelHandler,
     std::shared_ptr<XtcpOutputRejectionDiagnostics>,
-    bool) noexcept {}
+    bool,
+    BorrowedOutputHandler,
+    RetainedOutputHandler) noexcept {}
 XtcpRuntime::~XtcpRuntime() noexcept = default;
 bool XtcpRuntime::Start() noexcept { return false; }
 void XtcpRuntime::MarkReady() noexcept {}
@@ -305,7 +308,7 @@ constexpr std::size_t kGsoRxMtu = 1500;
 constexpr std::size_t kGsoRxDirectMtu = 24 * 1024;
 constexpr std::size_t kGsoRxBridgeMtu = 12 * 1024;
 constexpr std::size_t kDirectReadBudget = 32 * 1024 * 1024;
-constexpr std::size_t kDirectReadFlowBudget = 16 * 1024;
+constexpr std::size_t kDirectReadFlowBudget = 32 * 1024;
 // Per-flow bridge queue cap for XTCP -> connector data. Rejecting a segment
 // makes the stack advertise backpressure; write completion explicitly reopens
 // the receive window after both per-flow and global queues reach low watermarks.
@@ -638,6 +641,13 @@ public:
         // Perf diagnostic (strand-only): when Send admission rejected this
         // chunk, when the chunk finally went through; feeds send_stall_us.
         std::uint64_t send_stall_start_us = 0;
+        // Cumulative payload bytes accepted by XTCP Send(). Used only to select
+        // the data-bearing connection for optional perf snapshots.
+        std::uint64_t perf_payload_bytes = 0;
+        bool perf_tracking = false;
+        // Cumulative payload bytes accepted by the direct upload leg. This is
+        // the opposite payload direction and is sampled only when perf JSON is on.
+        std::uint64_t perf_direct_upload_bytes = 0;
         // Timestamp carried only while OPENPPP2_XTCP_PERF_JSON is active.
         std::uint64_t direct_send_accepted_us = 0;
         // XTCP-KCC-PACING-001: consecutive SendData rejections back the retry
@@ -667,9 +677,13 @@ public:
         ExternalAcceptHandler external_accept,
         ExternalCancelHandler external_cancel,
         std::shared_ptr<XtcpOutputRejectionDiagnostics> output_rejection_diagnostics,
-        bool tx_gso_supported) noexcept
+        bool tx_gso_supported,
+        BorrowedOutputHandler borrowed_output,
+        RetainedOutputHandler retained_output) noexcept
         : context_(context),
-          output_(std::move(output)), tx_gso_supported_(tx_gso_supported),
+          output_(std::move(output)), borrowed_output_(std::move(borrowed_output)),
+          retained_output_(std::move(retained_output)),
+          tx_gso_supported_(tx_gso_supported),
           listener_endpoint_(std::move(listener_endpoint)),
           external_accept_(std::move(external_accept)), external_cancel_(std::move(external_cancel)),
           output_rejection_diagnostics_(std::move(output_rejection_diagnostics)) {}
@@ -724,6 +738,7 @@ public:
             std::make_shared<ppp::app::runtime::XtcpDirectQueueTelemetry>(),
             std::memory_order_release);
         const std::weak_ptr<Impl> weak = shared_from_this();
+        Impl* const self = this;
         counted_output_ = [weak, handler = output_](std::shared_ptr<Byte>&& data, int length,
             std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
             if (!handler) {
@@ -753,6 +768,72 @@ public:
             }
             return true;
         };
+        if (borrowed_output_) {
+            counted_borrowed_output_ = [self, handler = borrowed_output_](const Byte* data, int length,
+                std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
+                if (!handler || data == nullptr || length < 1) {
+                    return false;
+                }
+                const bool measure_duration = self->perf_json_enabled_.load(std::memory_order_relaxed);
+                if (self->output_rejection_diagnostics_ &&
+                    self->output_rejection_diagnostics_->Enabled()) {
+                    self->output_rejection_diagnostics_->RecordOversizeOutputAttempt(data, length);
+                }
+                const auto started = measure_duration ? std::chrono::steady_clock::now()
+                    : std::chrono::steady_clock::time_point{};
+                const bool accepted = handler(data, length, gso);
+                if (measure_duration) {
+                    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - started).count();
+                    self->stats_.output_handler_duration_ns_sum.fetch_add(
+                        static_cast<std::uint64_t>(std::max<std::int64_t>(elapsed, 0)),
+                        std::memory_order_relaxed);
+                    self->stats_.output_handler_duration_calls.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (!accepted && self->output_rejection_diagnostics_ &&
+                    self->output_rejection_diagnostics_->Enabled()) {
+                    self->output_rejection_diagnostics_->RecordRejectedPacketShape(data, length);
+                }
+                if (accepted) {
+                    self->stats_.output_packets.fetch_add(1, std::memory_order_relaxed);
+                    self->stats_.output_bytes.fetch_add(static_cast<std::uint64_t>(length),
+                        std::memory_order_relaxed);
+                }
+                return accepted;
+            };
+        }
+        if (retained_output_) {
+            counted_retained_output_ = [self, handler = retained_output_](const Byte* data, int length,
+                ppp::tap::RetainedPacketOwner&& owner) noexcept {
+                if (!handler || data == nullptr || length < 1) return false;
+                const bool measure_duration = self->perf_json_enabled_.load(std::memory_order_relaxed);
+                if (self->output_rejection_diagnostics_ &&
+                    self->output_rejection_diagnostics_->Enabled()) {
+                    self->output_rejection_diagnostics_->RecordOversizeOutputAttempt(data, length);
+                }
+                const auto started = measure_duration ? std::chrono::steady_clock::now()
+                    : std::chrono::steady_clock::time_point{};
+                const bool accepted = handler(data, length, std::move(owner));
+                if (measure_duration) {
+                    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - started).count();
+                    self->stats_.output_handler_duration_ns_sum.fetch_add(
+                        static_cast<std::uint64_t>(std::max<std::int64_t>(elapsed, 0)),
+                        std::memory_order_relaxed);
+                    self->stats_.output_handler_duration_calls.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (!accepted && self->output_rejection_diagnostics_ &&
+                    self->output_rejection_diagnostics_->Enabled()) {
+                    self->output_rejection_diagnostics_->RecordRejectedPacketShape(data, length);
+                }
+                if (accepted) {
+                    self->stats_.output_packets.fetch_add(1, std::memory_order_relaxed);
+                    self->stats_.output_bytes.fetch_add(static_cast<std::uint64_t>(length),
+                        std::memory_order_relaxed);
+                }
+                return accepted;
+            };
+        }
         // XTCP-SHARED-PATH-001 S1: shard 数 (env OPENPPP2_XTCP_SHARDS, 默认 1)。
         // 每 shard = 独立 strand/stack/backend/ingress budget/handoff/poll timer/
         // flow 表; Submit 按 4-tuple hash 路由, 同一 flow (含 SYN) 永远同 shard。
@@ -804,7 +885,8 @@ public:
             s.index = i;
             s.strand = std::make_shared<Strand>(context_->get_executor());
             s.backend = std::unique_ptr<XtcpNdiBackend>(
-                new (std::nothrow) XtcpNdiBackend(counted_output_, tx_gso_supported_));
+                new (std::nothrow) XtcpNdiBackend(counted_output_, tx_gso_supported_,
+                    counted_borrowed_output_, counted_retained_output_));
             if (!s.backend) {
                 for (std::size_t j = 0; j < i; ++j) {
                     shards_[j].backend->Stop();
@@ -880,6 +962,12 @@ public:
             }
         }
         StartPerfDump();
+        const bool collect_ndi_diagnostics = perf_json_enabled_.load(std::memory_order_relaxed);
+        for (Shard& s : shards_) {
+            if (s.backend) {
+                s.backend->SetDiagnosticsEnabled(collect_ndi_diagnostics);
+            }
+        }
         for (Shard& s : shards_) {
             SchedulePoll(s, generation_.load(std::memory_order_acquire));
         }
@@ -941,6 +1029,9 @@ public:
     bool Submit(const void* packet, int packet_length) noexcept {
         if (packet == nullptr || packet_length < 1 || !ready_.load(std::memory_order_acquire)) {
             stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+            if (perf_json_enabled_.load(std::memory_order_relaxed)) {
+                stats_.ingress_drop_not_ready.fetch_add(1, std::memory_order_relaxed);
+            }
             return false;
         }
         const std::uint64_t generation = generation_.load(std::memory_order_acquire);
@@ -950,8 +1041,27 @@ public:
         // 里重解析并按原语义静默丢弃。
         ParsedPacket parsed;
         const bool has_parsed = ParsePacket(packet, packet_length, parsed);
+        static const unsigned source_port_route = []() noexcept {
+            const char* value = ::getenv("OPENPPP2_XTCP_SHARD_ROUTE");
+            if (value == nullptr) {
+                return 0u;
+            }
+            if (std::strcmp(value, "source-port-bit6") == 0) {
+                return 1u;
+            }
+            if (std::strcmp(value, "source-port-xor-1-2-8") == 0) {
+                return 2u;
+            }
+            return 0u;
+        }();
         const std::size_t index = has_parsed && shard_count_ > 1
-            ? FlowKeyHash{}(parsed.key) % shards_.size() : 0;
+            ? (source_port_route != 0 && shard_count_ == 2
+                ? (source_port_route == 1
+                    ? static_cast<std::size_t>((parsed.key.remote_port >> 6) & 1u)
+                    : static_cast<std::size_t>(((parsed.key.remote_port >> 1) ^
+                        (parsed.key.remote_port >> 2) ^
+                        (parsed.key.remote_port >> 8)) & 1u))
+                : FlowKeyHash{}(parsed.key) % shards_.size()) : 0;
         Shard& s = shards_[index];
         // Preserve large GRO chunks for multi-flow traffic, bounded by the
         // largest XTCP pool tier. Single-flow traffic keeps MSS-sized chunks.
@@ -970,6 +1080,9 @@ public:
                 static_cast<std::size_t>(packet_length), gso_rx_target, splits, 64);
             if (split_count == 0) {
                 stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+                if (perf_json_enabled_.load(std::memory_order_relaxed)) {
+                    stats_.ingress_drop_split_invalid.fetch_add(1, std::memory_order_relaxed);
+                }
                 return false;
             }
             std::size_t admitted = 0;
@@ -983,6 +1096,9 @@ public:
                     s.budget.Release(splits[k].Len());
                 }
                 stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+                if (perf_json_enabled_.load(std::memory_order_relaxed)) {
+                    stats_.ingress_drop_split_budget.fetch_add(1, std::memory_order_relaxed);
+                }
                 s.dropped.fetch_add(1, std::memory_order_relaxed);
                 return false;
             }
@@ -1011,6 +1127,9 @@ public:
         }
         if (!s.budget.TryAdmit(generation, static_cast<std::size_t>(packet_length))) {
             stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+            if (perf_json_enabled_.load(std::memory_order_relaxed)) {
+                stats_.ingress_drop_budget.fetch_add(1, std::memory_order_relaxed);
+            }
             s.dropped.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
@@ -1022,6 +1141,9 @@ public:
         if (owned.IsEmpty()) {
             s.budget.Release(static_cast<std::size_t>(packet_length));
             stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+            if (perf_json_enabled_.load(std::memory_order_relaxed)) {
+                stats_.ingress_drop_buffer.fetch_add(1, std::memory_order_relaxed);
+            }
             return false;
         }
         std::memcpy(owned.Data(), packet, static_cast<std::size_t>(packet_length));
@@ -1056,6 +1178,9 @@ public:
                 for (HandoffItem& item : abandoned) {
                     s.budget.Release(item.packet.IsEmpty() ? 0 : item.packet.Len());
                     stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+                    if (perf_json_enabled_.load(std::memory_order_relaxed)) {
+                        stats_.ingress_drop_post.fetch_add(1, std::memory_order_relaxed);
+                    }
                 }
                 return false;
             }
@@ -1102,7 +1227,7 @@ public:
         snapshot.output_bytes = stats_.output_bytes.load(std::memory_order_relaxed);
         for (const Shard& shard : shards_) {
             if (shard.backend) {
-                if (shard.backend->Caps() == ::xtcp::ndi::kCapTsoTx) {
+                if (0 != (shard.backend->Caps() & ::xtcp::ndi::kCapTsoTx)) {
                     snapshot.ndi_gso_enabled = true;
                 }
                 const XtcpNdiBackend::TxStats ndi = shard.backend->SnapshotTxStats();
@@ -1613,6 +1738,12 @@ private:
     struct Stats final {
         std::atomic<std::uint64_t> ingress_submitted{0};
         std::atomic<std::uint64_t> ingress_dropped{0};
+        std::atomic<std::uint64_t> ingress_drop_not_ready{0};
+        std::atomic<std::uint64_t> ingress_drop_split_invalid{0};
+        std::atomic<std::uint64_t> ingress_drop_split_budget{0};
+        std::atomic<std::uint64_t> ingress_drop_budget{0};
+        std::atomic<std::uint64_t> ingress_drop_buffer{0};
+        std::atomic<std::uint64_t> ingress_drop_post{0};
         std::atomic<std::uint64_t> ingress_injected{0};
         std::atomic<std::uint64_t> flows_opened{0};
         std::atomic<std::uint64_t> flows_closed{0};
@@ -1636,7 +1767,11 @@ private:
         std::atomic<std::uint64_t> recv_cb_bytes{0};
         std::atomic<std::uint64_t> write_queue_highwater{0};
         std::atomic<std::uint64_t> stack_send_calls{0};
+        std::atomic<std::uint64_t> stack_send_duration_ns_sum{0};
+        std::atomic<std::uint64_t> stack_send_duration_calls{0};
         std::atomic<std::uint64_t> stack_send_rejected{0};
+        std::atomic<std::uint64_t> output_handler_duration_ns_sum{0};
+        std::atomic<std::uint64_t> output_handler_duration_calls{0};
         std::atomic<std::uint64_t> send_retry_armed{0};
         std::atomic<std::uint64_t> send_retry_fired{0};
         std::atomic<std::uint64_t> send_stall_us_sum{0};
@@ -1687,6 +1822,12 @@ private:
         void Reset() noexcept {
             ingress_submitted.store(0, std::memory_order_relaxed);
             ingress_dropped.store(0, std::memory_order_relaxed);
+            ingress_drop_not_ready.store(0, std::memory_order_relaxed);
+            ingress_drop_split_invalid.store(0, std::memory_order_relaxed);
+            ingress_drop_split_budget.store(0, std::memory_order_relaxed);
+            ingress_drop_budget.store(0, std::memory_order_relaxed);
+            ingress_drop_buffer.store(0, std::memory_order_relaxed);
+            ingress_drop_post.store(0, std::memory_order_relaxed);
             ingress_injected.store(0, std::memory_order_relaxed);
             flows_opened.store(0, std::memory_order_relaxed);
             flows_closed.store(0, std::memory_order_relaxed);
@@ -1708,7 +1849,11 @@ private:
             recv_cb_bytes.store(0, std::memory_order_relaxed);
             write_queue_highwater.store(0, std::memory_order_relaxed);
             stack_send_calls.store(0, std::memory_order_relaxed);
+            stack_send_duration_ns_sum.store(0, std::memory_order_relaxed);
+            stack_send_duration_calls.store(0, std::memory_order_relaxed);
             stack_send_rejected.store(0, std::memory_order_relaxed);
+            output_handler_duration_ns_sum.store(0, std::memory_order_relaxed);
+            output_handler_duration_calls.store(0, std::memory_order_relaxed);
             send_retry_armed.store(0, std::memory_order_relaxed);
             send_retry_fired.store(0, std::memory_order_relaxed);
             send_stall_us_sum.store(0, std::memory_order_relaxed);
@@ -1814,6 +1959,7 @@ private:
         std::shared_ptr<Strand> strand;
         std::unique_ptr<XtcpNdiBackend> backend;
         std::unique_ptr<::xtcp::XtcpStack> stack;
+        std::ofstream perf_flow_out;
         XtcpIngressBudget budget{IngressMaxItems(), IngressMaxBytes()};
         std::mutex handoff_sync;
         std::vector<HandoffItem> handoff;
@@ -1928,6 +2074,12 @@ private:
             {
                 std::lock_guard<std::mutex> lock(s.handoff_sync);
                 if (s.handoff.empty()) {
+                    // Keep only small-burst capacity on the shard. Isolated
+                    // packets can reuse it without retaining a large peak
+                    // allocation after an exceptional ingress burst.
+                    if (local.capacity() <= 256) {
+                        s.handoff.swap(local);
+                    }
                     s.handoff_posted.store(false, std::memory_order_release);
                     return;
                 }
@@ -2005,6 +2157,7 @@ private:
             return;
         }
         flow->shard = s.index;
+        flow->perf_tracking = perf_json_enabled_.load(std::memory_order_relaxed);
         flow->deferred_syn = std::move(packet);
         if (flow->deferred_syn.IsEmpty()) {
             return;
@@ -2209,6 +2362,9 @@ private:
             if (result == XtcpDirectResult::Accepted) {
                 stats_.direct_upload_accepted_chunks.fetch_add(1, std::memory_order_relaxed);
                 stats_.direct_upload_accepted_bytes.fetch_add(length, std::memory_order_relaxed);
+                if (flow->perf_tracking) {
+                    flow->perf_direct_upload_bytes += length;
+                }
                 flow->receive_rejected = false;
                 flow->resume_capacity_available = false;
                 if (flow->resume_pending) {
@@ -2348,9 +2504,23 @@ private:
             ? flow->direct_read_queue.front().reservation.length
             : static_cast<UInt32>(flow->pending_read.size());
         stats_.stack_send_calls.fetch_add(1, std::memory_order_relaxed);
+        const bool measure_stack_send = perf_json_enabled_.load(std::memory_order_relaxed);
+        const auto stack_send_started = measure_stack_send ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
         const bool accepted = flow->connection_id != 0 && s.stack &&
             s.stack->Send(flow->connection_id, send_data, send_length);
+        if (measure_stack_send) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - stack_send_started).count();
+            stats_.stack_send_duration_ns_sum.fetch_add(
+                static_cast<std::uint64_t>(std::max<std::int64_t>(elapsed, 0)),
+                std::memory_order_relaxed);
+            stats_.stack_send_duration_calls.fetch_add(1, std::memory_order_relaxed);
+        }
         if (accepted) {
+            if (flow->perf_tracking) {
+                flow->perf_payload_bytes += send_length;
+            }
             if (flow->send_stall_start_us != 0) {
                 stats_.send_stall_us_sum.fetch_add(
                     NowUs() - std::exchange(flow->send_stall_start_us, 0),
@@ -2818,6 +2988,10 @@ private:
     // default; when unset there is no timer and no I/O.
     struct PerfPrev final {
         std::uint64_t stack_send_calls = 0;
+        std::uint64_t stack_send_duration_ns_sum = 0;
+        std::uint64_t stack_send_duration_calls = 0;
+        std::uint64_t output_handler_duration_ns_sum = 0;
+        std::uint64_t output_handler_duration_calls = 0;
         std::uint64_t stack_send_rejected = 0;
         std::uint64_t send_retry_armed = 0;
         std::uint64_t send_retry_fired = 0;
@@ -2832,6 +3006,12 @@ private:
         std::uint64_t ingress_enqueued = 0;
         std::uint64_t ingress_dispatched = 0;
         std::uint64_t ingress_dropped = 0;
+        std::uint64_t ingress_drop_not_ready = 0;
+        std::uint64_t ingress_drop_split_invalid = 0;
+        std::uint64_t ingress_drop_split_budget = 0;
+        std::uint64_t ingress_drop_budget = 0;
+        std::uint64_t ingress_drop_buffer = 0;
+        std::uint64_t ingress_drop_post = 0;
         std::uint64_t ingress_injected = 0;
         std::uint64_t on_receive_rejected = 0;
         std::uint64_t on_receive_rejected_bytes = 0;
@@ -2879,6 +3059,16 @@ private:
             if (!self->perf_out_.is_open()) {
                 return;
             }
+            try {
+                for (std::size_t i = 0; i < self->shards_.size(); ++i) {
+                    const std::string path = self->perf_json_path_ + ".shard-" +
+                        std::to_string(i) + ".jsonl";
+                    self->shards_[i].perf_flow_out.open(path, std::ios::app);
+                }
+            }
+            catch (...) {
+                // Per-shard flow sampling is optional; keep aggregate perf output.
+            }
             self->ArmPerfDump();
         });
     }
@@ -2887,8 +3077,16 @@ private:
         if (!running_.load(std::memory_order_acquire)) {
             return;
         }
+        std::chrono::milliseconds perf_interval(1000);
+        const char* perf_interval_env = ::getenv("OPENPPP2_XTCP_PERF_INTERVAL_MS");
+        if (perf_interval_env != nullptr && perf_interval_env[0] != '\0') {
+            const long interval_ms = ::atol(perf_interval_env);
+            if (interval_ms >= 10 && interval_ms <= 1000) {
+                perf_interval = std::chrono::milliseconds(interval_ms);
+            }
+        }
         perf_dump_timer_ = std::make_shared<boost::asio::steady_timer>(*context_);
-        perf_dump_timer_->expires_after(std::chrono::milliseconds(1000));
+        perf_dump_timer_->expires_after(perf_interval);
         const std::shared_ptr<Impl> self = shared_from_this();
         perf_dump_timer_->async_wait(boost::asio::bind_executor(*shards_[0].strand,
             [self](const boost::system::error_code& ec) noexcept {
@@ -2914,22 +3112,125 @@ private:
         }
         Shard& s0 = shards_[0];
         PerfPrev now_prev;
-        // Sample the first live connection's TCP internals (real cwnd /
-        // inflight / peer window) so the DL analysis uses stack truth.
-        // S1: TCP/flow/NDI 诊断采样取 shard 0 (诊断口径, 不影响数据面)。
-        tcp_sample_ = {};
+        // Sample a bounded set of payload-carrying flows in either direction.
+        // perf_payload_bytes covers connector->stack payload; direct upload
+        // bytes cover stack->connector payload. A single "largest flow"
+        // snapshot can switch between near-equal iperf streams each second,
+        // making TCP state appear to jump even when each flow is stable.
+        // Keep the per-flow sample list diagnostic-only and bounded.
+        constexpr std::size_t kTcpFlowSamples = 4;
+        std::array<const Flow*, kTcpFlowSamples> tcp_flow_candidates{};
         for (const auto& entry : s0.flows) {
-            const std::shared_ptr<Flow>& flow = entry.second;
-            if (!flow->closing && flow->connection_id != 0 && s0.stack) {
-                s0.stack->ConnStats(flow->connection_id, tcp_sample_.inflight,
-                    tcp_sample_.cwnd, tcp_sample_.ssthresh, tcp_sample_.snd_wnd,
-                    tcp_sample_.retx, tcp_sample_.rto_deadline, tcp_sample_.dup_acks,
-                    tcp_sample_.fast_rec, tcp_sample_.front_seq, tcp_sample_.snd_una,
-                    tcp_sample_.local_port, tcp_sample_.remote_port);
-                break;
+            const Flow* flow = entry.second.get();
+            if (flow->closing || flow->connection_id == 0 || !s0.stack ||
+                (flow->perf_payload_bytes == 0 && flow->perf_direct_upload_bytes == 0)) {
+                continue;
+            }
+            std::size_t position = 0;
+            while (position < kTcpFlowSamples && tcp_flow_candidates[position] != nullptr &&
+                std::max(tcp_flow_candidates[position]->perf_payload_bytes,
+                    tcp_flow_candidates[position]->perf_direct_upload_bytes) >=
+                std::max(flow->perf_payload_bytes, flow->perf_direct_upload_bytes)) {
+                ++position;
+            }
+            if (position == kTcpFlowSamples) {
+                continue;
+            }
+            for (std::size_t i = kTcpFlowSamples - 1; i > position; --i) {
+                tcp_flow_candidates[i] = tcp_flow_candidates[i - 1];
+            }
+            tcp_flow_candidates[position] = flow;
+        }
+
+        tcp_sample_ = {};
+        const UInt64 tcp_sample_payload_bytes = tcp_flow_candidates[0] != nullptr
+            ? tcp_flow_candidates[0]->perf_payload_bytes : 0;
+        const UInt64 tcp_sample_direct_upload_bytes = tcp_flow_candidates[0] != nullptr
+            ? tcp_flow_candidates[0]->perf_direct_upload_bytes : 0;
+        std::array<TcpSample, kTcpFlowSamples> tcp_flow_samples{};
+        for (std::size_t i = 0; i < kTcpFlowSamples && tcp_flow_candidates[i] != nullptr; ++i) {
+            const Flow& flow = *tcp_flow_candidates[i];
+            TcpSample& sample = tcp_flow_samples[i];
+            s0.stack->ConnStats(flow.connection_id, sample.inflight,
+                sample.cwnd, sample.ssthresh, sample.snd_wnd,
+                sample.retx, sample.rto_deadline, sample.dup_acks,
+                sample.fast_rec, sample.front_seq, sample.snd_una,
+                sample.local_port, sample.remote_port);
+            ::xtcp::XtcpStack::ConnInfo conn_info;
+            if (s0.stack->ConnGetInfo(flow.connection_id, conn_info)) {
+                sample.rtt_us = conn_info.rtt_us;
+                // ConnInfo::pacing_bps is historically named but is bytes/s.
+                // Keep the exported perf JSON key truthful by converting below.
+                sample.pacing_bytes_per_sec = conn_info.pacing_bps;
+            }
+            s0.stack->ConnAckReleaseTelemetry(flow.connection_id, sample.ack_release);
+            s0.stack->ConnGetKccTelemetry(flow.connection_id, sample.kcc);
+            if (i == 0) {
+                tcp_sample_ = sample;
             }
         }
+        char tcp_flows_buf[4096] = {};
+        std::size_t tcp_flows_written = 0;
+        for (std::size_t i = 0; i < kTcpFlowSamples && tcp_flow_candidates[i] != nullptr; ++i) {
+            const TcpSample& sample = tcp_flow_samples[i];
+            const UInt64 pacing_bps = sample.pacing_bytes_per_sec >
+                std::numeric_limits<UInt64>::max() / 8
+                ? std::numeric_limits<UInt64>::max()
+                : sample.pacing_bytes_per_sec * 8;
+            const int written = std::snprintf(tcp_flows_buf + tcp_flows_written,
+                sizeof(tcp_flows_buf) - tcp_flows_written,
+                "%s{\"payload_sent_bytes\":%llu,\"direct_upload_accepted_bytes\":%llu,"
+                "\"local_port\":%u,\"remote_port\":%u,"
+                "\"cwnd_mss\":%u,\"inflight\":%u,\"snd_wnd\":%u,\"ssthresh\":%u,"
+                "\"rtt_us\":%u,\"pacing_bps\":%llu,"
+                "\"kcc_mode\":%u,\"kcc_round\":%u,\"kcc_min_rtt_us\":%u,"
+                "\"kcc_max_bw_q24\":%llu,\"kcc_full_bw_q24\":%llu,"
+                "\"kcc_full_bw_count\":%u,\"kcc_full_bw_reached\":%u,"
+                "\"kcc_last_sample_delivered\":%llu,\"kcc_last_sample_interval_us\":%llu,"
+                "\"kcc_round_sample_delivered\":%llu,\"kcc_round_sample_interval_us\":%llu,"
+                "\"retx\":%u,\"dup_acks\":%u,\"fast_rec\":%u,"
+                "\"ack_valid\":%llu,\"ack_advance_bytes\":%llu,"
+                "\"flush_attempts\":%llu,\"flush_tx_bytes\":%llu,"
+                "\"flush_pacing\":%llu,\"flush_window_cwnd\":%llu,"
+                "\"flush_fast_recovery\":%llu,\"flush_packet_allocation\":%llu}",
+                i == 0 ? "" : ",",
+                (unsigned long long)tcp_flow_candidates[i]->perf_payload_bytes,
+                (unsigned long long)tcp_flow_candidates[i]->perf_direct_upload_bytes,
+                sample.local_port, sample.remote_port, sample.cwnd, sample.inflight,
+                sample.snd_wnd, sample.ssthresh, sample.rtt_us,
+                (unsigned long long)pacing_bps,
+                sample.kcc.mode, sample.kcc.rtt_round, sample.kcc.min_rtt_us,
+                (unsigned long long)sample.kcc.max_bw_q24,
+                (unsigned long long)sample.kcc.full_bw_q24,
+                sample.kcc.full_bw_count, sample.kcc.full_bw_reached,
+                (unsigned long long)sample.kcc.last_sample_delivered,
+                (unsigned long long)sample.kcc.last_sample_interval_us,
+                (unsigned long long)sample.kcc.round_sample_delivered,
+                (unsigned long long)sample.kcc.round_sample_interval_us,
+                sample.retx, sample.dup_acks, sample.fast_rec,
+                (unsigned long long)sample.ack_release.valid_acks,
+                (unsigned long long)sample.ack_release.ack_advance_bytes,
+                (unsigned long long)sample.ack_release.pending_flush_attempts,
+                (unsigned long long)sample.ack_release.tx_sink_bytes,
+                (unsigned long long)sample.ack_release.pending_flush_pacing,
+                (unsigned long long)sample.ack_release.pending_flush_window_cwnd,
+                (unsigned long long)sample.ack_release.pending_flush_fast_recovery_pipe,
+                (unsigned long long)sample.ack_release.pending_flush_packet_allocation);
+            if (written < 0 || static_cast<std::size_t>(written) >= sizeof(tcp_flows_buf) - tcp_flows_written) {
+                tcp_flows_written = sizeof(tcp_flows_buf);
+                break;
+            }
+            tcp_flows_written += static_cast<std::size_t>(written);
+        }
         now_prev.stack_send_calls = stats_.stack_send_calls.load(std::memory_order_relaxed);
+        now_prev.stack_send_duration_ns_sum =
+            stats_.stack_send_duration_ns_sum.load(std::memory_order_relaxed);
+        now_prev.stack_send_duration_calls =
+            stats_.stack_send_duration_calls.load(std::memory_order_relaxed);
+        now_prev.output_handler_duration_ns_sum =
+            stats_.output_handler_duration_ns_sum.load(std::memory_order_relaxed);
+        now_prev.output_handler_duration_calls =
+            stats_.output_handler_duration_calls.load(std::memory_order_relaxed);
         now_prev.stack_send_rejected = stats_.stack_send_rejected.load(std::memory_order_relaxed);
         now_prev.send_retry_armed = stats_.send_retry_armed.load(std::memory_order_relaxed);
         now_prev.send_retry_fired = stats_.send_retry_fired.load(std::memory_order_relaxed);
@@ -2944,6 +3245,14 @@ private:
         now_prev.ingress_enqueued = stats_.ingress_enqueued.load(std::memory_order_relaxed);
         now_prev.ingress_dispatched = stats_.ingress_dispatched.load(std::memory_order_relaxed);
         now_prev.ingress_dropped = stats_.ingress_dropped.load(std::memory_order_relaxed);
+        now_prev.ingress_drop_not_ready = stats_.ingress_drop_not_ready.load(std::memory_order_relaxed);
+        now_prev.ingress_drop_split_invalid =
+            stats_.ingress_drop_split_invalid.load(std::memory_order_relaxed);
+        now_prev.ingress_drop_split_budget =
+            stats_.ingress_drop_split_budget.load(std::memory_order_relaxed);
+        now_prev.ingress_drop_budget = stats_.ingress_drop_budget.load(std::memory_order_relaxed);
+        now_prev.ingress_drop_buffer = stats_.ingress_drop_buffer.load(std::memory_order_relaxed);
+        now_prev.ingress_drop_post = stats_.ingress_drop_post.load(std::memory_order_relaxed);
         now_prev.ingress_injected = stats_.ingress_injected.load(std::memory_order_relaxed);
         now_prev.on_receive_rejected = stats_.on_receive_rejected.load(std::memory_order_relaxed);
         now_prev.on_receive_rejected_bytes =
@@ -3053,6 +3362,18 @@ private:
         const PerfPrev& p = perf_prev_;
         const std::uint64_t send_calls = now_prev.stack_send_calls >= p.stack_send_calls
             ? now_prev.stack_send_calls - p.stack_send_calls : 0;
+        const std::uint64_t stack_send_duration_ns =
+            now_prev.stack_send_duration_ns_sum >= p.stack_send_duration_ns_sum
+                ? now_prev.stack_send_duration_ns_sum - p.stack_send_duration_ns_sum : 0;
+        const std::uint64_t stack_send_duration_calls =
+            now_prev.stack_send_duration_calls >= p.stack_send_duration_calls
+                ? now_prev.stack_send_duration_calls - p.stack_send_duration_calls : 0;
+        const std::uint64_t output_handler_duration_ns =
+            now_prev.output_handler_duration_ns_sum >= p.output_handler_duration_ns_sum
+                ? now_prev.output_handler_duration_ns_sum - p.output_handler_duration_ns_sum : 0;
+        const std::uint64_t output_handler_duration_calls =
+            now_prev.output_handler_duration_calls >= p.output_handler_duration_calls
+                ? now_prev.output_handler_duration_calls - p.output_handler_duration_calls : 0;
         const std::uint64_t send_rejected = now_prev.stack_send_rejected >= p.stack_send_rejected
             ? now_prev.stack_send_rejected - p.stack_send_rejected : 0;
         const std::uint64_t stall_us = now_prev.send_stall_us_sum >= p.send_stall_us_sum
@@ -3452,10 +3773,21 @@ private:
         char line[8192];
         char ndi_buf[4096];
         const int ndi_written = std::snprintf(ndi_buf, sizeof(ndi_buf),
-            "%s%s%s\"ndi\":{\"pps\":%llu,\"out_p50_us\":%.0f,\"out_p95_us\":%.0f,\"out_p99_us\":%.0f,"
+            "%s%s%s\"ingress_drop_reason\":{\"not_ready\":%llu,\"split_invalid\":%llu,"
+            "\"split_budget\":%llu,\"budget\":%llu,\"buffer\":%llu,\"post\":%llu},"
+            "\"ndi\":{\"pps\":%llu,\"out_p50_us\":%.0f,\"out_p95_us\":%.0f,\"out_p99_us\":%.0f,"
             "\"iv_p50_us\":%.0f,\"iv_p95_us\":%.0f,\"batch_avg\":%.1f,\"batch_max\":%u},"
             "\"ndi_gso\":{\"packets\":%llu,\"bytes\":%llu,\"rejected\":%llu},",
-            ack_release_buf, admission_buf, output_rejection_buf, (unsigned long long)ndi_pps_,
+            ack_release_buf, admission_buf, output_rejection_buf,
+            (unsigned long long)counter_delta(now_prev.ingress_drop_not_ready, p.ingress_drop_not_ready),
+            (unsigned long long)counter_delta(now_prev.ingress_drop_split_invalid,
+                p.ingress_drop_split_invalid),
+            (unsigned long long)counter_delta(now_prev.ingress_drop_split_budget,
+                p.ingress_drop_split_budget),
+            (unsigned long long)counter_delta(now_prev.ingress_drop_budget, p.ingress_drop_budget),
+            (unsigned long long)counter_delta(now_prev.ingress_drop_buffer, p.ingress_drop_buffer),
+            (unsigned long long)counter_delta(now_prev.ingress_drop_post, p.ingress_drop_post),
+            (unsigned long long)ndi_pps_,
             ndi_out_p50_us_, ndi_out_p95_us_, ndi_out_p99_us_,
             ndi_iv_p50_us_, ndi_iv_p95_us_,
             ndi_batch_avg_, (unsigned)ndi_batch_max_,
@@ -3467,6 +3799,9 @@ private:
         }
         const int line_written = std::snprintf(line, sizeof(line),
             "{\"send\":{\"calls\":%llu,\"rejected\":%llu,\"stall_ms\":%.3f,\"events\":%llu},"
+            "\"boundary_timing_ns\":{\"xtcp_send_calls\":%llu,\"xtcp_send_total_ns\":%llu,"
+            "\"xtcp_send_avg_ns\":%.1f,\"output_calls\":%llu,"
+            "\"output_total_ns\":%llu,\"output_avg_ns\":%.1f},"
             "\"conn\":{\"rd_calls\":%llu,\"rd_bytes\":%llu,\"avg_rd\":%.0f,"
             "\"wr_ops\":%llu,\"wr_bytes\":%llu,\"avg_wr\":%.0f,\"q_high\":%llu,"
             "\"wr_cyc_p50_us\":%.0f,\"wr_cyc_p95_us\":%.0f,"
@@ -3474,8 +3809,11 @@ private:
             "\"rej\":%llu,\"rej_bytes\":%llu},"
             "\"recv\":{\"calls\":%llu,\"bytes\":%llu,\"avg_seg\":%.0f},"
             "\"out\":{\"pkts\":%llu,\"bytes\":%llu,\"avg_pkt\":%.0f},"
-            "\"tcp\":{\"cwnd_mss\":%u,\"inflight\":%u,\"snd_wnd\":%u,\"ssthresh\":%u,"
+            "\"tcp\":{\"payload_sent_bytes\":%llu,\"direct_upload_accepted_bytes\":%llu,"
+            "\"local_port\":%u,\"remote_port\":%u,"
+            "\"cwnd_mss\":%u,\"inflight\":%u,\"snd_wnd\":%u,\"ssthresh\":%u,"
             "\"retx\":%u,\"dup_acks\":%u,\"fast_rec\":%u},"
+            "\"tcp_flows\":[%s],"
             "\"owner\":{\"posts\":%llu,\"dispatched\":%llu,\"dropped\":%llu,\"injected\":%llu,"
             "\"q_p50_us\":%.0f,\"q_p95_us\":%.0f},"
             "\"shards\":[%s],"
@@ -3499,6 +3837,14 @@ private:
             static_cast<double>(stall_us) / 1000.0,
             (unsigned long long)(now_prev.send_stall_events >= p.send_stall_events
                 ? now_prev.send_stall_events - p.send_stall_events : 0),
+            (unsigned long long)stack_send_duration_calls,
+            (unsigned long long)stack_send_duration_ns,
+            stack_send_duration_calls != 0
+                ? static_cast<double>(stack_send_duration_ns) / stack_send_duration_calls : 0.0,
+            (unsigned long long)output_handler_duration_calls,
+            (unsigned long long)output_handler_duration_ns,
+            output_handler_duration_calls != 0
+                ? static_cast<double>(output_handler_duration_ns) / output_handler_duration_calls : 0.0,
             (unsigned long long)rd_calls, (unsigned long long)rd_bytes,
             rd_calls != 0 ? static_cast<double>(rd_bytes) / rd_calls : 0.0,
             (unsigned long long)wr_ops, (unsigned long long)wr_bytes,
@@ -3516,9 +3862,12 @@ private:
             recv_calls != 0 ? static_cast<double>(recv_bytes) / recv_calls : 0.0,
             (unsigned long long)out_pkts, (unsigned long long)out_bytes,
             out_pkts != 0 ? static_cast<double>(out_bytes) / out_pkts : 0.0,
+            (unsigned long long)tcp_sample_payload_bytes,
+            (unsigned long long)tcp_sample_direct_upload_bytes,
+            tcp_sample_.local_port, tcp_sample_.remote_port,
             tcp_sample_.cwnd, tcp_sample_.inflight, tcp_sample_.snd_wnd,
             tcp_sample_.ssthresh, tcp_sample_.retx, tcp_sample_.dup_acks,
-            tcp_sample_.fast_rec,
+            tcp_sample_.fast_rec, tcp_flows_buf,
             (unsigned long long)(now_prev.ingress_enqueued >= p.ingress_enqueued
                 ? now_prev.ingress_enqueued - p.ingress_enqueued : 0),
             (unsigned long long)(now_prev.ingress_dispatched >= p.ingress_dispatched
@@ -3580,6 +3929,127 @@ private:
         perf_out_.put('\n');
         perf_out_.flush();
         perf_prev_ = now_prev;
+
+        // Capture every shard on its owning strand. Reading another shard's
+        // flow map here would race its packet path.
+        const std::shared_ptr<Impl> self = shared_from_this();
+        for (std::size_t i = 0; i < shards_.size(); ++i) {
+            boost::asio::post(*shards_[i].strand, [self, i]() noexcept {
+                self->WriteShardFlowPerfLine(self->shards_[i]);
+            });
+        }
+    }
+
+    void WriteShardFlowPerfLine(Shard& shard) noexcept {
+        if (!running_.load(std::memory_order_acquire) ||
+            !perf_json_enabled_.load(std::memory_order_relaxed) ||
+            !shard.stack || !shard.perf_flow_out.is_open()) {
+            return;
+        }
+
+        constexpr std::size_t kMaxFlowSamples = 64;
+        std::array<const Flow*, kMaxFlowSamples> candidates{};
+        std::size_t candidate_count = 0;
+        std::size_t active_payload_flows = 0;
+        for (const auto& entry : shard.flows) {
+            const Flow* flow = entry.second.get();
+            if (flow->closing || flow->connection_id == 0 ||
+                (flow->perf_payload_bytes == 0 && flow->perf_direct_upload_bytes == 0)) {
+                continue;
+            }
+            ++active_payload_flows;
+            const std::uint64_t bytes = std::max(flow->perf_payload_bytes,
+                flow->perf_direct_upload_bytes);
+            std::size_t position = 0;
+            while (position < candidate_count &&
+                std::max(candidates[position]->perf_payload_bytes,
+                    candidates[position]->perf_direct_upload_bytes) >= bytes) {
+                ++position;
+            }
+            if (position >= kMaxFlowSamples) {
+                continue;
+            }
+            const std::size_t new_count = std::min(candidate_count + 1, kMaxFlowSamples);
+            for (std::size_t j = new_count - 1; j > position; --j) {
+                candidates[j] = candidates[j - 1];
+            }
+            candidates[position] = flow;
+            candidate_count = new_count;
+        }
+
+        char line[65536] = {};
+        std::size_t offset = 0;
+        const auto now_us = static_cast<unsigned long long>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        int written = std::snprintf(line, sizeof(line),
+            "{\"timestamp_monotonic_us\":%llu,\"shard\":%zu,"
+            "\"active_payload_flows\":%zu,\"sampled_flow_count\":%zu,"
+            "\"truncated\":%s,\"flows\":[",
+            now_us, shard.index, active_payload_flows, candidate_count,
+            active_payload_flows > candidate_count ? "true" : "false");
+        if (written < 0 || static_cast<std::size_t>(written) >= sizeof(line)) {
+            return;
+        }
+        offset = static_cast<std::size_t>(written);
+
+        for (std::size_t i = 0; i < candidate_count; ++i) {
+            const Flow& flow = *candidates[i];
+            TcpSample sample;
+            shard.stack->ConnStats(flow.connection_id, sample.inflight,
+                sample.cwnd, sample.ssthresh, sample.snd_wnd,
+                sample.retx, sample.rto_deadline, sample.dup_acks,
+                sample.fast_rec, sample.front_seq, sample.snd_una,
+                sample.local_port, sample.remote_port);
+            ::xtcp::XtcpStack::ConnInfo conn_info;
+            if (shard.stack->ConnGetInfo(flow.connection_id, conn_info)) {
+                sample.rtt_us = conn_info.rtt_us;
+                sample.pacing_bytes_per_sec = conn_info.pacing_bps;
+            }
+            shard.stack->ConnAckReleaseTelemetry(flow.connection_id, sample.ack_release);
+            const std::uint64_t pacing_bps = sample.pacing_bytes_per_sec >
+                std::numeric_limits<std::uint64_t>::max() / 8
+                ? std::numeric_limits<std::uint64_t>::max()
+                : sample.pacing_bytes_per_sec * 8;
+            written = std::snprintf(line + offset, sizeof(line) - offset,
+                "%s{\"local_port\":%u,\"remote_port\":%u,"
+                "\"payload_sent_bytes\":%llu,\"direct_upload_accepted_bytes\":%llu,"
+                "\"cwnd_mss\":%u,\"inflight\":%u,\"snd_wnd\":%u,"
+                "\"snd_una\":%u,\"front_seq\":%u,\"rto_deadline_us\":%llu,"
+                "\"rtt_us\":%u,\"pacing_bps\":%llu,\"retx\":%u,"
+                "\"dup_acks\":%u,\"fast_rec\":%u,\"ack_valid\":%llu,"
+                "\"ack_advance_bytes\":%llu,\"flush_attempts\":%llu,"
+                "\"flush_pacing\":%llu,\"flush_window_cwnd\":%llu,"
+                "\"flush_fast_recovery\":%llu}",
+                i == 0 ? "" : ",", sample.local_port, sample.remote_port,
+                static_cast<unsigned long long>(flow.perf_payload_bytes),
+                static_cast<unsigned long long>(flow.perf_direct_upload_bytes),
+                sample.cwnd, sample.inflight, sample.snd_wnd,
+                sample.snd_una, sample.front_seq,
+                static_cast<unsigned long long>(sample.rto_deadline),
+                sample.rtt_us,
+                static_cast<unsigned long long>(pacing_bps), sample.retx,
+                sample.dup_acks, sample.fast_rec,
+                static_cast<unsigned long long>(sample.ack_release.valid_acks),
+                static_cast<unsigned long long>(sample.ack_release.ack_advance_bytes),
+                static_cast<unsigned long long>(sample.ack_release.pending_flush_attempts),
+                static_cast<unsigned long long>(sample.ack_release.pending_flush_pacing),
+                static_cast<unsigned long long>(sample.ack_release.pending_flush_window_cwnd),
+                static_cast<unsigned long long>(sample.ack_release.pending_flush_fast_recovery_pipe));
+            if (written < 0 || static_cast<std::size_t>(written) >= sizeof(line) - offset) {
+                return;
+            }
+            offset += static_cast<std::size_t>(written);
+        }
+
+        written = std::snprintf(line + offset, sizeof(line) - offset, "]}");
+        if (written < 0 || static_cast<std::size_t>(written) >= sizeof(line) - offset) {
+            return;
+        }
+        offset += static_cast<std::size_t>(written);
+        shard.perf_flow_out.write(line, static_cast<std::streamsize>(offset));
+        shard.perf_flow_out.put('\n');
+        shard.perf_flow_out.flush();
     }
 
 #if defined(PPP_XTCP_HAS_TIMER_DEADLINE)
@@ -3692,6 +4162,10 @@ private:
     // S1: 每 shard 的 teardown 在自己的 strand 上执行 (与其余在途 handler
     // 串行); 全部 shard 完成后由最后一个 shard 调 DoStopFinalize 收尾。
     void DoStopShard(Shard& s) noexcept {
+        if (s.perf_flow_out.is_open()) {
+            s.perf_flow_out.flush();
+            s.perf_flow_out.close();
+        }
         if (s.poll_timer) {
             boost::system::error_code ec;
             s.poll_timer->cancel(ec);
@@ -3736,6 +4210,10 @@ private:
     std::shared_ptr<boost::asio::io_context> context_;
     OutputHandler output_;
     OutputHandler counted_output_;
+    BorrowedOutputHandler borrowed_output_;
+    BorrowedOutputHandler counted_borrowed_output_;
+    RetainedOutputHandler retained_output_;
+    RetainedOutputHandler counted_retained_output_;
     bool tx_gso_supported_ = false;
     ListenerEndpointHandler listener_endpoint_;
     ExternalAcceptHandler external_accept_;
@@ -3781,6 +4259,10 @@ private:
         UInt16 local_port = 0;
         UInt16 remote_port = 0;
         UInt64 rto_deadline = 0;
+        UInt32 rtt_us = 0;
+        UInt64 pacing_bytes_per_sec = 0;
+        ::xtcp::cc::KccTelemetrySnapshot kcc;
+        ::xtcp::core::AckReleaseTelemetrySnapshot ack_release;
     };
     TcpSample tcp_sample_;
     XtcpNdiBackend::TxStats ndi_stats_;
@@ -3815,12 +4297,14 @@ XtcpRuntime::XtcpRuntime(
     ExternalAcceptHandler external_accept,
     ExternalCancelHandler external_cancel,
     std::shared_ptr<XtcpOutputRejectionDiagnostics> output_rejection_diagnostics,
-    bool tx_gso_supported) noexcept {
+    bool tx_gso_supported,
+    BorrowedOutputHandler borrowed_output,
+    RetainedOutputHandler retained_output) noexcept {
     try {
         impl_ = std::make_shared<Impl>(context, std::move(output),
             std::move(listener_endpoint), std::move(external_accept),
             std::move(external_cancel), std::move(output_rejection_diagnostics),
-            tx_gso_supported);
+            tx_gso_supported, std::move(borrowed_output), std::move(retained_output));
     }
     catch (...) {}
 }
