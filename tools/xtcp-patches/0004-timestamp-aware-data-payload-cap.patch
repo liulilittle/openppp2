@@ -1,10 +1,21 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -123,0 +124 @@
+@@ -122,6 +122,7 @@
+         test_ts_paws
+         test_ts_wrap
+         test_ts_both_sides
 +        test_rto_timestamp_mtu
+         test_ts_ooo_drain
+         test_urgent
+         test_conn_info
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -487,0 +488,14 @@
+@@ -524,6 +524,20 @@
+                 cc_.mss = mss;
+             }
+             UInt16 PeerMss() const noexcept { return peer_mss_; }
 +            /**
 +             * @brief Maximum data payload that can safely enter retransmission state.
 +             * @note Keeps peer_mss_ intact for congestion-control/window accounting,
@@ -19,18 +30,37 @@
 +                const UInt32 wire_cap = kMaxWirePacketBytes - ip_hdr_len - 20 - option_len;
 +                return static_cast<UInt16>((peer_mss_ < wire_cap) ? peer_mss_ : wire_cap);
 +            }
-@@ -520 +534 @@
+             /** @brief TCP_MAXSEG ceiling (Linux semantics); 0 = unset. */
+             void SetUserMss(UInt32 mss) noexcept { user_mss_ = mss; }
+             UInt32 UserMss() const noexcept { return user_mss_; }
+@@ -556,7 +570,7 @@
+                     }
+                     peer_mss_ = static_cast<UInt16>(new_mss);
+                     cc_.mss = peer_mss_;
 -                    ResplitRetransQueue(static_cast<UInt16>(new_mss));
 +                    ResplitRetransQueue(DataPayloadCap());
-@@ -1007 +1021 @@
+                     mtu_probe_deadline_ = MtuNowUs() + mtu_probe_interval_;
+                     timers_dirty_.store(true, std::memory_order_relaxed);
+                 }
+@@ -1158,7 +1172,7 @@
+             void UpdateRto(UInt32 sample_us) noexcept;
+             void ArmRetransmit(TimePoint now, UInt32 interval_us = 0) noexcept;
+             void RetransmitFront(TimePoint now, bool fresh_ts = false) noexcept;
 -            void ResplitRetransQueue(UInt16 new_mss) noexcept;
 +            void ResplitRetransQueue(UInt16 payload_cap) noexcept;
+             void OnAckReceived(UInt32 ack, bool ece, TimePoint now, const TcpOpts* opts) noexcept;
+             void RackDetectLoss(TimePoint now) noexcept;
+             UInt32 PipeBytes() const noexcept;
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -1262 +1262 @@
+@@ -1665,14 +1665,15 @@
+             }
+         }
+ 
 -        void TcpConn::ResplitRetransQueue(UInt16 new_mss) noexcept {
 +        void TcpConn::ResplitRetransQueue(UInt16 payload_cap) noexcept {
-@@ -1264,6 +1264,7 @@
+             // RFC 1191 path-MTU reduction: an in-flight segment larger than
 -            // the new MSS must be re-segmented, or every retransmit re-sends
 -            // the oversized frame (DF is set, tcp_fsm.cpp BuildSegmentPacket)
 -            // and the router drops it - burning the retry budget until the
@@ -44,24 +74,50 @@
 +            // kMaxDataRetries. Re-chunk the queue here so RetransmitFront
 +            // always emits a payload that leaves room for rebuilt options.
 +            if (retrans_queue_.empty() || 0 == payload_cap) {
-@@ -1276 +1277 @@
+                 return;
+             }
+             std::deque<SentSeg> resplit;
+@@ -1681,11 +1682,11 @@
+                 retrans_queue_.pop_front();
+                 // The pipe sums are rebuilt wholesale at the end of this
+                 // function, so no per-segment subtraction is needed here.
 -                if (seg.len <= new_mss) {
 +                if (seg.len <= payload_cap) {
-@@ -1280 +1281 @@
+                     resplit.push_back(std::move(seg));
+                     continue;
+                 }
 -                // Rebuild the payload split at the new MSS boundary. The
 +                // Rebuild the payload split at the effective data boundary. The
-@@ -1300,5 +1300,0 @@
+                 // stored packet holds IP+TCP headers + payload; rebuild each
+                 // chunk as a fresh segment (retries budget is preserved so a
+                 // split cannot extend the connection lifetime beyond the
+@@ -1705,11 +1706,6 @@
+                     resplit.push_back(std::move(seg));
+                     continue;
+                 }
 -                const UInt32 cap = Md5Enabled() ? ((new_mss > 20) ? (new_mss - 20) : 0) : new_mss;
 -                if (0 == cap) {
 -                    resplit.push_back(std::move(seg));
 -                    continue;
 -                }
-@@ -1320,2 +1316,2 @@
+                 const UInt32 avail = orig.Len() - tcp_off;
+                 // All-or-nothing per segment: build every chunk first, commit
+                 // only when all succeed. A mid-split allocation failure would
+@@ -1725,8 +1721,8 @@
+                         break;
+                     }
+                     UInt32 chunk = seg.len - off;
 -                    if (chunk > cap) {
 -                        chunk = cap;
 +                    if (chunk > payload_cap) {
 +                        chunk = payload_cap;
-@@ -2943,8 +2939,5 @@
+                     }
+                     if (chunk > avail - off) {
+                         chunk = avail - off;
+@@ -4631,14 +4627,11 @@
+             // here cost one extra vDSO call per application send on the
+             // pacing path (profile: clock_gettime was the top self item).
+             MaybeMarkAppLimited(inflight, now);
 -            // Segment at the source: one application send may exceed the MSS,
 -            // but the wire packet must not (DF + MSS negotiation). Buffered
 -            // bytes are flushed in MSS-sized segments below, so the tx
@@ -75,7 +131,13 @@
 +            // congestion-control/window unit; DataPayloadCap only bounds the
 +            // data carried by each retransmission-queue entry.
 +            const UInt32 payload_cap = DataPayloadCap();
-@@ -2965,3 +2958,5 @@
+             // Send window = min(congestion window, peer window, local quota).
+             const UInt64 cwnd_bytes = static_cast<UInt64>(cc_.snd_cwnd) * peer_mss_;
+             if (len > payload_cap) {
+@@ -4653,9 +4646,11 @@
+                 // bytes ahead of it, a clean send window, cwnd and pacing
+                 // clock, and the pool must hold the super-segment (its max
+                 // class is 32KB; anything bigger falls back to buffering).
 -                // The Emit-side TSO gate re-validates the caps and qdisc.
 -                const bool tso_direct = tso_tx_ && pending_send_.empty() &&
 -                    retrans_queue_.empty() && !fast_recovery_ &&
@@ -84,7 +146,13 @@
 +                // ordinary capped segments so a later RTO rebuild is safe.
 +                const bool tso_direct = tso_tx_ && payload_cap == peer_mss_ &&
 +                    pending_send_.empty() && retrans_queue_.empty() && !fast_recovery_ &&
-@@ -3514,14 +3509,5 @@
+                     inflight + len <= snd_wnd_ &&
+                     inflight + len <= cwnd_bytes &&
+                     (0 == cc_.pacing_rate || now >= pacing_deadline_) &&
+@@ -5290,20 +5285,11 @@
+                 if (n > limit - inflight) {
+                     n = limit - inflight;
+                 }
 -                // One segment per flush step: MSS-sized on the wire (DF +
 -                // peer MSS negotiation). MD5 connections cap at MSS-20 so the
 -                // option is never rebuilt by tx-boundary segmentation.
@@ -104,17 +172,11 @@
 +                const UInt32 payload_cap = DataPayloadCap();
 +                if (n > payload_cap) {
 +                    n = payload_cap;
---- a/tests/test_tcp_retransmit.cpp
-+++ b/tests/test_tcp_retransmit.cpp
-@@ -172 +172,2 @@
--    // Fill the quota with MSS-sized sends (1460 + 1460 + 1176).
-+    // Without negotiated timestamps, the normal IPv4 MSS remains a full
-+    // 1460-byte payload in a 1500-byte wire packet.
-@@ -173,0 +175,3 @@
-+    CHECK(1 == log.size());
-+    CHECK(1500 == log.front().Len());
-+    // Fill the remaining quota with MSS-sized sends (1460 + 1176).
---- /dev/null
+                 }
+                 // No Nagle gate here: this is the ACK-driven flush path, and
+                 // Nagle (RFC 896) applies only at the application send entry.
+diff --git a/tests/test_rto_timestamp_mtu.cpp b/tests/test_rto_timestamp_mtu.cpp
+--- a/tests/test_rto_timestamp_mtu.cpp
 +++ b/tests/test_rto_timestamp_mtu.cpp
 @@ -0,0 +1,255 @@
 +/**
@@ -372,3 +434,20 @@
 +                                    : "RTO_TIMESTAMP_MTU: ALL PASSED\n", g_failures);
 +    return g_failures == 0 ? 0 : 1;
 +}
+diff --git a/tests/test_tcp_retransmit.cpp b/tests/test_tcp_retransmit.cpp
+--- a/tests/test_tcp_retransmit.cpp
++++ b/tests/test_tcp_retransmit.cpp
+@@ -169,8 +169,12 @@
+ 
+     Byte data[2048];
+     std::memset(data, 0xBB, sizeof(data));
+-    // Fill the quota with MSS-sized sends (1460 + 1460 + 1176).
++    // Without negotiated timestamps, the normal IPv4 MSS remains a full
++    // 1460-byte payload in a 1500-byte wire packet.
+     CHECK(conn.SendData(data, 1460, 1000));
++    CHECK(1 == log.size());
++    CHECK(1500 == log.front().Len());
++    // Fill the remaining quota with MSS-sized sends (1460 + 1176).
+     CHECK(conn.SendData(data, 1460, 1000));
+     CHECK(conn.SendData(data, 1176, 1000));
+     CHECK(4096 == conn.InflightBytes());

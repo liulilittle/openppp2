@@ -43,6 +43,29 @@ namespace ppp {
              * @return Shared output buffer on success, or null on failure.
              */
             virtual std::shared_ptr<Byte>                       Decrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, Byte* data, int datalen, int& outlen) noexcept;
+            /**
+             * @brief Encrypts input bytes into caller-owned memory instead of a new buffer.
+             * @param output Destination; must not overlap @p data.
+             * @param output_capacity Destination size; at least @p datalen + EncryptToSlack.
+             * @param data Input plaintext bytes.
+             * @param datalen Number of input bytes.
+             * @param outlen Receives output byte length, or a negative value on failure.
+             * @return True on success.
+             */
+            virtual bool                                        EncryptTo(Byte* output, int output_capacity, Byte* data, int datalen, int& outlen) noexcept;
+
+            /** @brief Extra destination bytes EncryptTo() may need beyond the input length (one cipher block). */
+            static constexpr int                                EncryptToSlack = 32;
+            /**
+             * @brief Whether DecryptInPlace() is available for the active backend.
+             * @details True for RC4, the AES-NI path and length-preserving OpenSSL ciphers.
+             */
+            virtual bool                                        CanDecryptInPlace() const noexcept;
+            /**
+             * @brief Decrypts @p datalen bytes of @p data in place, yielding the bytes Decrypt() would return.
+             * @return True on success; only valid when CanDecryptInPlace() is true.
+             */
+            virtual bool                                        DecryptInPlace(Byte* data, int datalen) noexcept;
 
         public:
             /**

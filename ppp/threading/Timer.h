@@ -129,6 +129,14 @@ namespace ppp {
              */
             static bool                                                             Timeout(int milliseconds, ppp::coroutines::YieldContext& y) noexcept;
             /**
+             * @brief Cancellable coroutine sleep.
+             * @param milliseconds Timeout value.
+             * @param y Yield context used to suspend/resume.
+             * @param cancel_timer Receives the timer before suspending; `cancel()` it (on its executor) to wake the sleeper with false.
+             * @return true if the full wait elapsed.
+             */
+            static bool                                                             Timeout(int milliseconds, ppp::coroutines::YieldContext& y, std::shared_ptr<boost::asio::steady_timer>& cancel_timer) noexcept;
+            /**
              * @brief Creates a one-shot timer and invokes a callback on expiration.
              * @param milliseconds Timeout value.
              * @param handler Callback to invoke on expiration.

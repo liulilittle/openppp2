@@ -16,6 +16,12 @@
 namespace ppp {
     namespace net {
         namespace asio {
+            void websocket::AbortHandshake() noexcept {
+                auto self = shared_from_this();
+                ppp::threading::Executors::Post(context_, strand_, [self, this]() noexcept {
+                    Socket::Closesocket(websocket_.next_layer());
+                });
+            }
             /**
              * @brief Asynchronously closes and disposes the WebSocket transport.
              */

@@ -75,7 +75,7 @@ namespace ppp {
                                        ppp::coroutines::YieldContext& y)> do_send_to;
 
                     /** @brief Deregister this port from the session table on finalize. Matches exchanger->ReleaseDatagramPort. */
-                    ppp::function<void(const boost::asio::ip::udp::endpoint& source)> release_port;
+                    ppp::function<void(const boost::asio::ip::udp::endpoint& source, const VirtualEthernetDatagramPort* expected)> release_port;
 
                     /** @brief Local interface address used to bind the relay socket. Matches switcher->GetInterfaceIP(). */
                     ppp::function<boost::asio::ip::address()> get_interface_ip;

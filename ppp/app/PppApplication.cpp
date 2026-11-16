@@ -90,8 +90,8 @@ int PppApplication::Run(int argc, char** argv) noexcept {
         ZeroMemory(&pi, sizeof(pi));
 
         if (CreateProcessA(NULLPTR, command_line.data(), NULLPTR, NULLPTR, FALSE, 0, NULLPTR, NULLPTR, &si, &pi)) {
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
+            ::CloseHandle(pi.hProcess);
+            ::CloseHandle(pi.hThread);
         }
 #else
         execvp(*argv, argv);

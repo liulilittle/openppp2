@@ -64,6 +64,21 @@ namespace ppp {
                 if (interface_index <= 0) {
                     return false;
                 }
+                WSAPROTOCOL_INFOW protocol_info{};
+                int protocol_info_size = sizeof(protocol_info);
+                if (::getsockopt(socket, SOL_SOCKET, SO_PROTOCOL_INFOW,
+                        reinterpret_cast<char*>(&protocol_info), &protocol_info_size) == 0 &&
+                    protocol_info.iAddressFamily == AF_INET6) {
+                    // IPV6_UNICAST_IF takes the index in host byte order,
+                    // unlike its IPv4 counterpart.
+                    const DWORD host_index = static_cast<DWORD>(interface_index);
+                    return ::setsockopt(
+                        socket,
+                        IPPROTO_IPV6,
+                        IPV6_UNICAST_IF,
+                        reinterpret_cast<const char*>(&host_index),
+                        sizeof(host_index)) == 0;
+                }
                 const DWORD network_index = htonl(static_cast<DWORD>(interface_index));
                 return ::setsockopt(
                     socket,

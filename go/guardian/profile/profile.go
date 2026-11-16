@@ -14,7 +14,7 @@ func profilePath(dir, name string) string {
 }
 
 func listProfiles(dir string) ([]ProfileInfo, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(dir)
@@ -55,7 +55,7 @@ func readProfile(path string) ([]byte, os.FileInfo, error) {
 }
 
 func writeFileAtomic(path string, content []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "guardian-*.tmp")

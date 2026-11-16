@@ -415,9 +415,9 @@ flowchart TD
 
 ## 相关文档
 
-- [`IPV6_LEASE_MANAGEMENT.md`](../../guides/IPV6_LEASE_MANAGEMENT.md)
-- [`IPV6_TRANSIT_PLANE.md`](../../guides/IPV6_TRANSIT_PLANE.md)
-- [`IPV6_NDP_PROXY.md`](../../guides/IPV6_NDP_PROXY.md)
-- [`IPV6_CLIENT_ASSIGNMENT.md`](../../guides/IPV6_CLIENT_ASSIGNMENT.md)
+- [`IPV6.md`](../../guides/IPV6.md)
+- [`IPV6.md`](../../guides/IPV6.md)
+- [`IPV6.md`](../../guides/IPV6.md)
+- [`IPV6.md`](../../guides/IPV6.md)
 - [`LINKLAYER_PROTOCOL.md`](../../reference/LINKLAYER_PROTOCOL.md)
 - [`PLATFORMS.md`](../../guides/PLATFORMS.md)

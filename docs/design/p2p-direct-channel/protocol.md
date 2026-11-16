@@ -2,27 +2,33 @@
 
 > **Purpose:** Define the authenticated P2P direct-channel wire protocol.
 > **Audience:** Protocol, networking, and security maintainers.
-> **Status:** Current design evidence; not an enabled production data path.
-> **Last verified against:** P2P integration and fail-closed production capability gate, 2026-07-22.
+> **Status:** Current production protocol; cross-platform runtime acceptance remains incomplete.
+> **Last verified against:** P2P v2 isolated tests and production capability wiring, 2026-10-07.
 > **Parent index:** [Design Documents](../README.md)
 
-> Status: Draft
+> Status: Implemented; production entry wired
 > Type: Design
-> Last verified: 8c8a888
+> Last verified: 2026-10-07; isolated implementation acceptance and production gate wiring.
 
 ## Scope And Eligibility
 
-This document specifies a future experimental protected UDP channel. It does
-not describe an enabled production data path. The offer-v1 crypto and exchanger
-data path are implemented behind a fail-closed production capability gate;
-current releases remain relay-only.
+This document specifies the authenticated protected UDP channel used by the
+production v2 path. The relay path remains authoritative whenever capability
+negotiation, socket protection, authentication, or probing fails.
+
+The v2 implementation is wired into the production client and server source.
+`ppp/p2p/P2PCapabilityGate.h` defaults to enabled and each production build
+system injects `OPENPPP2_P2P_V2_PRODUCTION=1`; the server v2 offer path in
+`ppp/app/server/VirtualEthernetP2PV2.cpp` checks it before creating offers.
+Set `ENABLE_P2P_V2_PRODUCTION=OFF` only for an emergency build rollback.
 
 A peer advertises `p2p.direct.v1` only when all of these are true:
 
 - the experimental configuration flag is enabled;
 - the authenticated relay session exposes a session exporter;
 - socket protection is available for the platform;
-- the final authenticated-control production gate is enabled (it is currently false);
+- the final authenticated-control production gate is enabled by default through
+  `ENABLE_P2P_V2_PRODUCTION`;
 - the peer implements this version and its required cipher and parser rules.
 
 Missing capability, missing exporter, a disabled production gate, raw TCP,
@@ -31,6 +37,98 @@ peer ignores the optional capability and offer fields. No downgrade can enable
 an older or unbound direct protocol.
 
 ## Version And Messages
+
+### Version 2 Isolation Implementation
+
+Version 2 is explicitly negotiated through INFO `supported-versions` and
+`offer-v2`; a selected v2 session cannot fall back to the v1 wire protocol.
+The production gate is `ProductionAuthenticatedControlV1Ready = true` in release
+builds. A build may set `ENABLE_P2P_V2_PRODUCTION=OFF` for emergency rollback;
+runtime `p2p.enabled=false` still selects relay mode.
+The v1 layout and TTL semantics below remain unchanged.
+
+The v2 common offer is 193 bytes, the recipient encoding 270 bytes, and the
+typed exporter context 145 bytes (v1 remains 113). Independent exporter,
+HKDF, HMAC and AEAD domains bind identities, sessions, epoch, key generation,
+predecessor hash and both frozen candidate revisions. Revisions are nonzero
+uint64 decimal strings with no leading zero. Each peer advertises at most two
+canonical IPv4 endpoints: host and STUN from the same protected transport.
+The relay's observed endpoint is excluded. Latest registration changes do
+not rewrite active or pending snapshots.
+
+The client holds at most sixteen peer contexts keyed by virtual IPv4 address.
+Each peer has independent channel keys, probes, liveness and renew/report
+timers. All peers share one protected UDP transport, STUN gatherer, local
+candidate revision history and socket recovery. STUN maintenance retries
+gathering every fifteen seconds without rewriting frozen peer snapshots.
+Server status replies echo the peer virtual IPv4 address so key-active
+confirmation is applied to the corresponding context.
+
+`p2p.stun.request-profile` defaults to `standard`, a 20-byte Binding Request.
+Explicit `tailnode` selects a 40-byte request with SOFTWARE `tailnode` and a
+CRC32 FINGERPRINT for Tailscale STUN compatibility. Configuration trims and
+lowercases this value; unknown values normalize to `standard`. SOFTWARE and
+FINGERPRINT provide compatibility and packet integrity checking, not an
+authenticated identity or permission to enable direct traffic.
+
+Both peers prime all four candidate pairs simultaneously. Each authenticated
+Probe has one original transmission and one identical-byte retry after two
+seconds, within a four-second probe window. Only the stable initiator
+nominates the first authenticated ACK pair. The responder caches ACKs until
+Commit and only promotes after bilateral Ready on the chosen pair. Commit
+also has at most two transmissions, two seconds apart. Probe/ACK are 158
+bytes, Commit/ACK 190 bytes, and migration challenge/ACK 126 bytes. A delayed
+CommitACK answers the cached authenticated Commit, even when a ProbeACK is
+the last received packet.
+
+Setup ends ten seconds after first receipt; keys expire sixty seconds after
+first receipt and request refresh at forty seconds. Duplicate offers and
+retransmissions cannot move these deadlines. At most current, pending and
+previous slots exist, with independent sequences and replay windows.
+Previous is receive-only until the earlier of promotion plus five seconds
+and its original expiry. Matching authenticated new-key data can replace a
+lost CommitACK only after bilateral Ready. Sequence exhaustion forbids reuse;
+refresh starts at `UINT32_MAX-4096`, and v2 RX rejects sequence wrap. An
+authenticated numerically larger sequence remains valid even when it advances
+by more than half the uint32 range; it discards older replay-window entries
+without resetting the sender's key or counter. Failed authentication never
+commits the proposed receive-window change. Older out-of-window packets and
+duplicates remain rejected.
+
+Source and session control buckets are 4/s burst 8 and 8/s burst 16, with
+256 entries per table and sixty-second idle reclamation. A known offer hash
+and matching registered/selected peer endpoint select that peer's independent
+ingress buckets; this routing check does not replace packet authentication.
+Unknown sources and STUN share the client-level admission budget. Peer control
+egress has an independent 8/s burst 16 session bucket per context, bounded by
+the sixteen-peer context cap. STUN-shaped packets
+also pass admission before copying or posting. Selected-path data is exempt
+from control rate limits. New endpoints must pass noncommitting AEAD/replay
+validation before one bounded migration challenge; migration and Commit are
+serialized. Application data is limited to the registered virtual IPv4 peer
+pair; Internet and IPv6 traffic remain on relay.
+
+The client keeps a per-peer queue of at most 32 distinct deferred control
+datagrams, deduplicated by destination and bytes. Expiry is bounded by two
+seconds and the applicable offer/key deadline. Queue overflow or expiry
+cancels probing and clears queued output; an uncommitted refresh preserves a
+healthy current key. A transport send failure resets direct state and starts
+shared socket recovery. This queue behavior is isolated implementation
+evidence from `ppp/app/client/VEthernetP2PV2.cpp`, not evidence that the
+production path is enabled.
+
+The server merges renew requests and accepts idempotent bilateral key-active
+reports. Exporter generation has a ten-second bound; pending coordination is
+retained for at most sixty seconds after generation, independently of client
+setup. Lost-current zero-predecessor recovery waits for the server's
+conservative old-key deadline. Socket failures close and clear direct state
+immediately, then rebuild with 1/2/4/8/10-second backoff. These rules have
+isolated tests. A root-linked test additionally runs the actual Exchanger
+recovery implementation: nine cases passed in normal, ASan/UBSan/LSan and
+separate TSan builds. Registration, transport and relay output are injected
+dependencies. Real INFO delivery, native socket protection, real NAT and
+device transitions still require additional acceptance; capability or probe
+failure keeps the production runtime on relay.
 
 Version 1 uses a versioned relay offer plus protected UDP control and data
 messages. Every parsed message is length checked before field access. Reserved
@@ -103,9 +201,9 @@ direct send failure tears down the direct attempt and sends the current packet
 through relay.
 
 The codec, session-owned key boundary, protected transport, and TAP forwarding
-are implemented. The advertised production capability remains disabled while
-cross-NAT and platform evidence is incomplete, so default and current release
-behavior remains relay-only.
+are implemented. Release builds advertise the production capability by
+default; incomplete cross-NAT or platform evidence does not disable the gate,
+because capability, socket-protection, and probe failures fall back to relay.
 
 `ttl_seconds` is an integer from 1 through 30. It is authenticated by the relay
 offer. A client starts a local steady-clock deadline when the offer is received;

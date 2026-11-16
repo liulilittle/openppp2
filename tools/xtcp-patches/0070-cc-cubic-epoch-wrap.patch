@@ -1,0 +1,137 @@
+diff -ruN a/plugins/cc_cubic.cpp b/plugins/cc_cubic.cpp
+--- a/plugins/cc_cubic.cpp
++++ b/plugins/cc_cubic.cpp
+@@ -16,6 +16,7 @@
+     constexpr Double kCubicC = 0.4;
+     constexpr Double kCubicBeta = 0.7;
+     constexpr UInt32 kCubicCwndMin = 2;
++    constexpr Double kCubicCntMax = 1000000.0;  /* per-ACK growth bound (segments) */
+ 
+     struct CubicState {
+         UInt32  wmax = 0;          /* W_max: window before the last reduction */
+@@ -42,7 +43,13 @@
+     void CubicInit(XtcpConnCc* sk) noexcept {
+         CubicState* c = Priv(sk);
+         if (NULLPTR != c) {
++            // A (re)init starts a fresh plugin epoch (connection migration
++            // restore re-runs init after resetting sk->delivered to 0): drop
++            // every bookkeeping field, not just the epoch base, so no stale
++            // recovery_base / cnt / wmax from the previous epoch survives.
++            *c = CubicState();
+             c->epoch_base = sk->delivered;  /* RFC 8312: t counts from here */
++            c->recovery_base = sk->delivered;
+             c->initialized = 1;
+         }
+     }
+@@ -108,6 +115,12 @@
+         // acknowledged again.
+         if (0 != c->in_recovery) {
+             const UInt64 recov_bytes = static_cast<UInt64>(c->loss_cwnd) * sk->mss;
++            // sk->delivered is monotonic except across a delivered reset
++            // (migration restore). Re-anchor instead of letting the unsigned
++            // difference wrap to ~1.8e19.
++            if (sk->delivered < c->recovery_base) {
++                c->recovery_base = sk->delivered;
++            }
+             if (sk->delivered - c->recovery_base >= recov_bytes) {
+                 c->in_recovery = 0;
+             } else {
+@@ -120,6 +133,12 @@
+         if (1 > sk->snd_cwnd) {
+             sk->snd_cwnd = 1;
+         }
++        // Same guard for the epoch: delivered below the base means the
++        // delivered counter was reset under us - start a new epoch here.
++        if (sk->delivered < c->epoch_base) {
++            c->epoch_base = sk->delivered;
++            c->cnt = 0;
++        }
+         const UInt64 round_bytes = (0 < c->wmax)
+             ? static_cast<UInt64>(c->wmax) * sk->mss
+             : static_cast<UInt64>(sk->snd_cwnd) * sk->mss;
+@@ -138,11 +157,19 @@
+         const Double increment = (target - static_cast<Double>(sk->snd_cwnd)) /
+                                  static_cast<Double>(sk->snd_cwnd);
+         c->cnt += increment * (static_cast<Double>(acked) / static_cast<Double>(sk->mss));
+-        while (c->cnt >= 1.0) {
+-            c->cnt -= 1.0;
+-            if (sk->snd_cwnd < 0x7FFFFFFF) {
+-                ++sk->snd_cwnd;
+-            }
++        // Bound the accumulator (also rejects NaN/inf) and apply the whole
++        // part once: a per-segment decrement loop never terminates when cnt
++        // is so large that cnt - 1.0 == cnt.
++        if (!(c->cnt >= 0.0)) {
++            c->cnt = 0;
++        } else if (c->cnt > kCubicCntMax) {
++            c->cnt = kCubicCntMax;
++        }
++        const UInt32 whole = static_cast<UInt32>(c->cnt);  /* floor, cnt >= 0 */
++        c->cnt -= static_cast<Double>(whole);
++        if (0 < whole) {
++            const UInt64 grown = static_cast<UInt64>(sk->snd_cwnd) + whole;
++            sk->snd_cwnd = (grown > 0x7FFFFFFFull) ? 0x7FFFFFFFu : static_cast<UInt32>(grown);
+         }
+         if (sk->snd_cwnd < kCubicCwndMin) {
+             sk->snd_cwnd = kCubicCwndMin;
+diff -ruN a/tests/test_cc_bbr.cpp b/tests/test_cc_bbr.cpp
+--- a/tests/test_cc_bbr.cpp
++++ b/tests/test_cc_bbr.cpp
+@@ -140,6 +140,49 @@
+     ops->release(&sk);
+ }
+ 
++static void TestCubicDeliveredReset() {
++    // A delivered counter that falls below the epoch/recovery base (reset
++    // by a migration restore while ca_priv persists) must not wrap the
++    // unsigned difference: the old code drove cnt to ~1e50 and spun forever
++    // in the decrement loop.
++    xtcp::cc::RegisterCubic();
++    const xtcp::cc::XtcpCongestionOps* ops = xtcp::cc::FindCongestionControl("cubic");
++    CHECK(NULLPTR != ops);
++    xtcp::cc::XtcpConnCc sk;
++    ops->init(&sk);
++    sk.mss = 1460;
++    sk.snd_cwnd = 100;
++    sk.delivered = 1000000;
++    sk.snd_ssthresh = ops->ssthresh(&sk);   // epoch_base = recovery_base = 1000000
++    sk.snd_cwnd = sk.snd_ssthresh;
++    // Leave recovery, then reset delivered underneath the plugin state.
++    sk.delivered = 1000000 + 100ull * 1460;
++    ops->cong_avoid(&sk, 0, 1460);
++    sk.delivered = 0;
++    const UInt32 before = sk.snd_cwnd;
++    for (int i = 0; i < 100; ++i) {
++        ops->cong_avoid(&sk, 0, 1460);      // must terminate
++    }
++    CHECK(sk.snd_cwnd >= before);
++    CHECK(sk.snd_cwnd <= before + 100);
++    // Recovery-base wrap: loss, then delivered reset while in recovery.
++    sk.delivered = 5000000;
++    sk.snd_ssthresh = ops->ssthresh(&sk);
++    sk.snd_cwnd = sk.snd_ssthresh;
++    sk.delivered = 0;
++    const UInt32 b2 = sk.snd_cwnd;
++    ops->cong_avoid(&sk, 0, 1460);
++    CHECK(sk.snd_cwnd == b2);               // still in recovery, no growth
++    // Absurd forward jump: growth per ACK stays bounded.
++    sk.delivered = 0x4000000000000000ull;
++    sk.snd_cwnd = 50;
++    sk.snd_ssthresh = 10;
++    ops->cong_avoid(&sk, 0, 1460);
++    CHECK(sk.snd_cwnd >= 50);
++    CHECK(sk.snd_cwnd <= 50 + 1000000 + 1);
++    ops->release(&sk);
++}
++
+ static void TestBbrFullBwTransition() {
+     // PIN: full-bw detection must exit STARTUP after 3 consecutive PLATEAU
+     // rounds (growth < 25%/round resets the counter - BBR paper Fig. 3).
+@@ -208,6 +251,7 @@
+     TestRegistry();
+     TestBbrFidelityDifferential();
+     TestCubicSample();
++    TestCubicDeliveredReset();
+     TestBbrFullBwTransition();
+     if (0 < g_failures) {
+         std::fprintf(stderr, "test_cc_bbr: %d failure(s)\n", g_failures);

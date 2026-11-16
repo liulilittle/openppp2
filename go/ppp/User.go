@@ -168,6 +168,12 @@ func (my *ManagedServer) server_load_user_by_guid(guid string) (int, *_vpn_user,
 }
 
 func (my *ManagedServer) server_on_authentication(ws *io.WebSocket, guid string, node int) (int, *_vpn_user) {
+	// The request may only speak for the node bound to this websocket.
+	if !node_matches_session(ws, node) {
+		LOG_ERROR.Println("authentication packet dropped: node does not match the session")
+		return -1, nil
+	}
+
 	// Verify that the user's primary key GUID is formatted correctly!
 	if !StringAuxiliary.IsGuid(guid) {
 		return -1, nil

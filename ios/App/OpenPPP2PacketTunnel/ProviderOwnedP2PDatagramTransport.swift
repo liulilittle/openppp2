@@ -70,11 +70,48 @@ private final class ProviderOwnedP2PDatagramHandle {
         let port: UInt16
     }
 
+    private final class EndpointSession {
+        let session: NWUDPSession
+        var pendingPackets = 0
+        var pendingBytes = 0
+        private let readAdmission = NSLock()
+        private var pendingReadPackets = 0
+        private var pendingReadBytes = 0
+
+        init(session: NWUDPSession) {
+            self.session = session
+        }
+
+        func reserveRead(bytes: Int) -> Bool {
+            guard bytes > 0, bytes <= 65507 else { return false }
+            readAdmission.lock()
+            defer { readAdmission.unlock() }
+            guard pendingReadPackets < ProviderOwnedP2PDatagramHandle.maxPendingPackets,
+                  bytes <= ProviderOwnedP2PDatagramHandle.maxPendingBytes - pendingReadBytes else {
+                return false
+            }
+            pendingReadPackets += 1
+            pendingReadBytes += bytes
+            return true
+        }
+
+        func releaseRead(bytes: Int) {
+            readAdmission.lock()
+            defer { readAdmission.unlock() }
+            pendingReadPackets -= 1
+            pendingReadBytes -= bytes
+        }
+    }
+
+    private static let maxPendingPackets = 32
+    private static let maxPendingBytes = 64 * 1024
+
     private weak var provider: NEPacketTunnelProvider?
     private let receive: openppp2_ios_p2p_receive_fn
     private let receiveContext: UnsafeMutableRawPointer
     private let queue = DispatchQueue(label: "io.github.openppp2.p2p.provider-udp")
-    private var sessions: [EndpointKey: NWUDPSession] = [:]
+    private let queueKey = DispatchSpecificKey<UInt8>()
+    private var sessions: [EndpointKey: EndpointSession] = [:]
     private var started = false
     private var closed = false
 
@@ -86,10 +123,18 @@ private final class ProviderOwnedP2PDatagramHandle {
         self.provider = provider
         self.receive = receive
         self.receiveContext = receiveContext
+        queue.setSpecific(key: queueKey, value: 1)
+    }
+
+    private func serialized<Result>(_ operation: () -> Result) -> Result {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            return operation()
+        }
+        return queue.sync(execute: operation)
     }
 
     func start() -> Bool {
-        queue.sync {
+        serialized {
             guard !closed, !started else { return false }
             started = true
             return true
@@ -97,59 +142,83 @@ private final class ProviderOwnedP2PDatagramHandle {
     }
 
     func send(address: Data, port: UInt16, packet: Data) -> Bool {
-        queue.sync {
+        serialized {
             guard started, !closed, let provider,
+                  !packet.isEmpty, packet.count <= 65507,
                   let host = Self.numericHost(address) else {
                 return false
             }
 
             let key = EndpointKey(address: address, port: port)
-            let session: NWUDPSession
+            let state: EndpointSession
             if let existing = sessions[key] {
-                session = existing
+                state = existing
             } else {
                 let endpoint = NWHostEndpoint(
                     hostname: host,
                     port: String(port)
                 )
-                session = provider.createUDPSession(to: endpoint, from: nil)
-                session.setReadHandler({ [weak self] datagrams, error in
-                    guard let self else { return }
+                state = EndpointSession(session: provider.createUDPSession(to: endpoint, from: nil))
+                state.session.setReadHandler({ [weak self, weak state] datagrams, error in
+                    guard let self, let state else { return }
                     if error != nil {
-                        self.deliverError()
+                        self.deliverError(source: key, session: state)
                         return
                     }
                     for datagram in datagrams ?? [] {
-                        self.deliver(datagram, source: key)
+                        self.deliver(datagram, source: key, session: state)
                     }
                 }, maxDatagrams: 32)
-                sessions[key] = session
+                sessions[key] = state
             }
 
-            session.writeDatagram(packet) { [weak self] error in
-                if error != nil {
-                    self?.deliverError()
-                }
+            let bytes = packet.count
+            guard state.pendingPackets < Self.maxPendingPackets,
+                  bytes <= Self.maxPendingBytes - state.pendingBytes else {
+                return false
+            }
+            state.pendingPackets += 1
+            state.pendingBytes += bytes
+            state.session.writeDatagram(packet) { [weak self, weak state] error in
+                guard let self, let state else { return }
+                self.completeWrite(source: key, session: state, bytes: bytes, failed: error != nil)
             }
             return true
         }
     }
 
     func close() {
-        queue.sync {
+        serialized {
             guard !closed else { return }
             closed = true
             started = false
-            for session in sessions.values {
-                session.cancel()
-            }
+            let cancelled = Array(sessions.values)
             sessions.removeAll()
+            for state in cancelled {
+                state.pendingPackets = 0
+                state.pendingBytes = 0
+                state.session.cancel()
+            }
         }
     }
 
-    private func deliver(_ packet: Data, source: EndpointKey) {
-        queue.async { [weak self] in
-            guard let self, !self.closed else { return }
+    private func completeWrite(source: EndpointKey, session: EndpointSession, bytes: Int, failed: Bool) {
+        queue.async { [weak self, weak session] in
+            // The session instance is a generation token for late completion callbacks.
+            guard let self, let session, !self.closed, self.sessions[source] === session else { return }
+            session.pendingPackets -= 1
+            session.pendingBytes -= bytes
+            if failed {
+                self.deliverError(source: source, session: session)
+            }
+        }
+    }
+
+    private func deliver(_ packet: Data, source: EndpointKey, session: EndpointSession) {
+        guard session.reserveRead(bytes: packet.count) else { return }
+        queue.async { [weak self, session] in
+            defer { session.releaseRead(bytes: packet.count) }
+            guard let self, !self.closed, self.sessions[source] === session else { return }
             source.address.withUnsafeBytes { addressBuffer in
                 packet.withUnsafeBytes { packetBuffer in
                     self.receive(
@@ -166,9 +235,9 @@ private final class ProviderOwnedP2PDatagramHandle {
         }
     }
 
-    private func deliverError() {
-        queue.async { [weak self] in
-            guard let self, !self.closed else { return }
+    private func deliverError(source: EndpointKey, session: EndpointSession) {
+        queue.async { [weak self, weak session] in
+            guard let self, let session, !self.closed, self.sessions[source] === session else { return }
             self.receive(self.receiveContext, 1, nil, 0, 0, nil, 0)
         }
     }
@@ -240,7 +309,7 @@ private func openPPP2P2PProviderSend(
     _ packetSize: Int32
 ) -> Int32 {
     guard let opaque, let address, let packet,
-          (addressSize == 4 || addressSize == 16), packetSize > 0 else {
+          (addressSize == 4 || addressSize == 16), packetSize > 0, packetSize <= 65507 else {
         return 0
     }
     let handle = Unmanaged<ProviderOwnedP2PDatagramHandle>

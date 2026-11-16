@@ -1,42 +1,19 @@
 <script>
-  import { Download, Search, Trash2 } from 'lucide-svelte'
+  import { Download, Search, Trash2, Pause, Play, Copy } from 'lucide-svelte'
+  import { t } from '../lib/i18n.js'
+  import { downloadText, redactText } from '../lib/security.js'
   export let state
   export let runtime
-  let query = ''
-  let severity = 'all'
-  $: events = state.events.filter((event) =>
-    (severity === 'all' || event.severity === severity) && event.message.toLowerCase().includes(query.trim().toLowerCase()),
-  )
-
-  function exportLogs() {
-    const text = events.map((event) => `${event.time}\t${event.severity}\t${event.message}`).join('\n')
-    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = 'openppp2-client.log'
-    anchor.click()
-    URL.revokeObjectURL(url)
-  }
+  let query='', severity='all', session='all', paused=false, frozen=[], error='', container
+  $: events=(paused ? frozen : state.events).filter((event) => (severity === 'all' || event.severity === severity) && (session === 'all' || String(event.sessionId) === session) && event.message.toLowerCase().includes(query.toLowerCase()))
+  $: sessions=[...new Set(state.events.map((event) => event.sessionId).filter((id) => id != null))]
+  $: text=redactText(events.map((event) => `${event.time}\t${event.severity}\t${event.message}`).join('\n'),state.subscription.sources?.map((s) => s.url))
+  $: if(!paused && container && events.length) requestAnimationFrame(() => { if(container) container.scrollTop=container.scrollHeight })
+  function toggle() { if(!paused) frozen=structuredClone(state.events); paused=!paused }
+  async function copy() { try { await navigator.clipboard.writeText(text) } catch(cause) { error=String(cause) } }
 </script>
-
-<div class="page">
-  <section class="panel log-panel">
-    <div class="panel-head"><h1 class="panel-title">日志</h1><div class="toolbar"><button class="icon-button" on:click={exportLogs} title="导出日志"><Download size={15} /></button><button class="icon-button" on:click={() => runtime.clearEvents()} title="清空日志"><Trash2 size={15} /></button></div></div>
-    <div class="filters"><label><Search size={14} /><input bind:value={query} placeholder="搜索日志" /></label><select class="select-input" bind:value={severity}><option value="all">全部级别</option><option value="info">信息</option><option value="success">成功</option><option value="error">错误</option></select></div>
-    <div class="log-list mono">
-      {#if events.length}{#each events as event (event.id)}<div class="log-row {event.severity}"><time>{event.time}</time><span>{event.severity}</span><code>{event.message}</code></div>{/each}{:else}<div class="empty">没有匹配的日志</div>{/if}
-    </div>
-  </section>
+<div class="page"><div class="page-heading"><h1>{$t('Logs','日志')}</h1><div class="toolbar"><button class="icon-button" title={$t(paused ? 'Resume' : 'Pause',paused ? '继续' : '暂停')} aria-label={$t(paused ? 'Resume' : 'Pause',paused ? '继续' : '暂停')} on:click={toggle}>{#if paused}<Play size={16}/>{:else}<Pause size={16}/>{/if}</button><button class="icon-button" title={$t('Copy','复制')} aria-label={$t('Copy','复制')} on:click={copy}><Copy size={16}/></button><button class="icon-button" title={$t('Export','导出')} aria-label={$t('Export','导出')} on:click={() => downloadText('openppp2-client.log',text)}><Download size={16}/></button><button class="icon-button" title={$t('Clear','清空')} aria-label={$t('Clear','清空')} on:click={() => { runtime.clearEvents(); frozen=[] }}><Trash2 size={16}/></button></div></div>
+  <div class="toolbar filters"><label class="search"><Search size={15}/><input class="text-input" bind:value={query} placeholder={$t('Search logs','搜索日志')} aria-label={$t('Search logs','搜索日志')}/></label><select class="select-input" bind:value={severity} aria-label={$t('Severity','级别')}><option value="all">{$t('All levels','全部级别')}</option><option value="info">{$t('Info','信息')}</option><option value="success">{$t('Success','成功')}</option><option value="error">{$t('Error','错误')}</option></select><select class="select-input" bind:value={session} aria-label={$t('Session','会话')}><option value="all">{$t('All sessions','全部会话')}</option>{#each sessions as id}<option value={String(id)}>#{id}</option>{/each}</select></div>
+  {#if error}<div role="alert" class="error-line">{error}</div>{/if}<div class="log-list mono" bind:this={container}>{#each events as event (event.id)}<div class="log-row"><time>{event.time}</time><span>{event.severity}</span><code class:error-line={event.severity === 'error'}>{event.message}</code></div>{:else}<div class="empty">{$t('No matching logs','没有匹配的日志')}</div>{/each}</div>
 </div>
-
-<style>
-  .log-panel { min-height: 520px; }
-  .filters { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
-  .filters label { max-width: 420px; flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 7px; color: var(--text-3); background: #0d1014; }
-  .filters input { width: 100%; height: 32px; border: 0; outline: 0; color: var(--text); background: transparent; }
-  .filters select { width: 112px; padding-top: 0; padding-bottom: 0; }
-  .log-list { padding: 8px 16px; font-size: 11px; }
-  .log-row { min-height: 27px; display: grid; grid-template-columns: 72px 62px 1fr; align-items: center; gap: 10px; }
-  .log-row time { color: #607994; }.log-row span { color: var(--text-3); }.log-row code { color: #cfd8e3; overflow-wrap: anywhere; }
-  .log-row.error code { color: #f38f8a; }.log-row.success code { color: #fff; }
-</style>
+<style>.filters .select-input { width:140px; } .search { display:flex; align-items:center; gap:8px; flex:1; min-width:180px; } .log-list { height:calc(100vh - 230px); min-height:260px; overflow:auto; padding:16px 0; border-top:1px solid var(--border); } .log-row { display:grid; grid-template-columns:72px 65px minmax(0,1fr); gap:12px; padding:7px 0; font-size:12px; } time, .log-row > span { color:var(--text-3); } code { overflow-wrap:anywhere; }</style>

@@ -4,8 +4,57 @@
 import argparse
 import hashlib
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
+
+
+def is_mountpoint(path: str, mountinfo: str = "/proc/self/mountinfo") -> bool:
+    """True when PATH is a mount point, including a same-filesystem bind mount.
+
+    os.path.ismount() compares st_dev with the parent and misses a bind mount
+    whose source lives on the same filesystem (e.g. /etc/netns backed by a
+    directory under /home on the root filesystem)."""
+    target = os.path.realpath(path)
+    try:
+        lines = Path(mountinfo).read_text().splitlines()
+    except OSError:
+        return os.path.ismount(path)
+    for line in lines:
+        fields = line.split()
+        if len(fields) > 4 and fields[4].encode().decode("unicode_escape") == target:
+            return True
+    return os.path.ismount(path)
+
+
+def check_isolation() -> None:
+    """Fail closed before the runner can create links or launch processes."""
+    root = Path(os.environ.get("OPENPPP2_M3_ISOLATION_ROOT", "/nonexistent"))
+    for kind in ("net", "mnt"):
+        initial = os.environ.get("OPENPPP2_M3_INITIAL_" + kind.upper())
+        if not initial or os.readlink("/proc/self/ns/" + kind) == initial:
+            raise SystemExit("runner requires run_m3_isolated.sh (fresh net and mount namespaces)")
+    for mountpoint, backing in (("/etc/netns", "etc-netns"), ("/run/netns", "run-netns")):
+        if not is_mountpoint(mountpoint) or not os.path.samefile(mountpoint, root / backing):
+            raise SystemExit("private namespace backing mount missing")
+    if not is_mountpoint("/sys"):
+        raise SystemExit("private sysfs mount missing")
+
+
+def runtime_policy_metadata(records: list[dict]) -> dict:
+    keys = ("shard_policy_requested", "shard_policy_reason", "shard_count", "worker_count",
+            "ingress_backend", "effective_cpus", "online_cpus", "quota_cpus", "allowed_cpus",
+            "cpu_affinity_known", "cpu_quota_known", "affinity_reason", "affinity_strict",
+            "affinity_pinned_workers", "worker_cpus", "worker_bindings")
+    samples = [record["xtcp"] for record in records if isinstance(record.get("xtcp"), dict)]
+    if not samples:
+        return {"status": "unavailable", "effective": None}
+    effective = {key: samples[-1].get(key) for key in keys}
+    status = "unavailable" if effective["shard_count"] is None else (
+        "reported" if all(effective[key] is not None for key in keys) else "partial")
+    return {"status": status,
+            "effective": effective}
 
 
 def _git(root: Path, *arguments: str) -> bytes:
@@ -35,6 +84,33 @@ def collect_version_fingerprint(root: Path, ppp_bin: Path) -> dict:
     with ppp_bin.open("rb") as binary_file:
         for chunk in iter(lambda: binary_file.read(1024 * 1024), b""):
             binary_sha256.update(chunk)
+
+    frozen_manifest = os.environ.get("OPENPPP2_FROZEN_SOURCE_MANIFEST")
+    if frozen_manifest:
+        manifest_path = Path(frozen_manifest)
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        files = manifest["files"]
+        if not files:
+            raise ValueError("empty frozen source manifest")
+        for name, expected in files.items():
+            path = (root / name).resolve()
+            if not path.is_relative_to(root.resolve()) or not path.is_file():
+                raise ValueError(f"invalid frozen source path: {name}")
+            if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raise ValueError(f"frozen source mismatch: {name}")
+        if binary_sha256.hexdigest() != manifest["binary_sha256"]:
+            raise ValueError("frozen binary mismatch")
+        return {
+            "ppp_binary": {"path": str(ppp_bin.resolve()),
+                           "sha256": binary_sha256.hexdigest(),
+                           "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+            "git": manifest["git"],
+            "xtcp": manifest["xtcp"],
+            "frozen_source": {"manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+                              "file_count": len(files),
+                              "archive_sha256": manifest["archive_sha256"]},
+        }
 
     changed_paths = [
         path for path in _git(root, "diff", "--name-only", "-z", "HEAD", "--").split(b"\0") if path
@@ -143,6 +219,8 @@ def evaluate_qualification_status(records: list[dict], run_failed: bool = False)
     for record in records:
         if record.get("status") != "pass":
             return "fail"
+        if record.get("fairness", {}).get("zero_rate_flows", 0) > 0:
+            return "fail"
         cpu_measurement = record.get("cpu_measurement", {})
         if cpu_measurement.get("profile", "none") != "none":
             if record.get("qualification", {}).get("status") != "pass":
@@ -151,6 +229,9 @@ def evaluate_qualification_status(records: list[dict], run_failed: bool = False)
 
 
 def main() -> None:
+    if sys.argv[1:] == ["--check-isolation"]:
+        check_isolation()
+        return
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--ppp-bin", type=Path, required=True)

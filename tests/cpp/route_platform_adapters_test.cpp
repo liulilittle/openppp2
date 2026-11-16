@@ -208,6 +208,101 @@ BOOST_AUTO_TEST_CASE(darwin_restore_returns_immediately_when_exact_route_exists)
     BOOST_TEST(mutations == 0);
 }
 
+#if defined(_MACOS)
+BOOST_AUTO_TEST_CASE(darwin_restore_empty_table_requires_live_interface_identity) {
+    route::RouteSnapshotRecord record;
+    record.platform = route::RouteSnapshotPlatform::Darwin;
+    record.route = route::RouteSpec{ 0u, 0x0a000001u, 0, "en0" };
+    record.identity.interface_index = 7;
+    record.identity.interface_name = "en0";
+    record.identity.link_identity = "00:11:22:33:44:55";
+    std::string encoded;
+    BOOST_REQUIRE(route::SerializeRouteSnapshot(record, encoded));
+    route::RouteSnapshotPtr target;
+    BOOST_REQUIRE(route::DarwinRoutePlatform::DeserializeSnapshot(encoded, target));
+
+    int identity_checks = 0;
+    int mutations = 0;
+    bool route_created = false;
+    route::DarwinRouteOperations operations;
+    operations.exact_default_exists = [&route_created](
+        const route::RouteSnapshotPtr&, bool& exists) noexcept {
+        exists = route_created;
+        return true;
+    };
+    operations.interface_identity_matches = [&identity_checks](
+        const route::RouteSnapshotIdentity&) noexcept {
+        ++identity_checks;
+        return false;
+    };
+    operations.remove_conflicting_default = [&mutations](
+        const route::RouteSnapshotPtr&, route::RouteSnapshotPtr&) noexcept {
+        ++mutations;
+        return true;
+    };
+    operations.restore_default = [&mutations, &route_created](
+        const route::RouteSnapshotPtr&) noexcept {
+        ++mutations;
+        route_created = true;
+        return true;
+    };
+
+    route::DarwinRoutePlatform platform(std::move(operations));
+    BOOST_TEST(!platform.RestoreDefault(target));
+    BOOST_TEST(identity_checks == 1);
+    BOOST_TEST(mutations == 0);
+}
+
+BOOST_AUTO_TEST_CASE(darwin_restore_empty_table_writes_only_after_identity_match) {
+    route::RouteSnapshotRecord record;
+    record.platform = route::RouteSnapshotPlatform::Darwin;
+    record.route = route::RouteSpec{ 0u, 0x0a000001u, 0, "en0" };
+    record.identity.interface_index = 7;
+    record.identity.interface_name = "en0";
+    record.identity.link_identity = "00:11:22:33:44:55";
+    std::string encoded;
+    BOOST_REQUIRE(route::SerializeRouteSnapshot(record, encoded));
+    route::RouteSnapshotPtr target;
+    BOOST_REQUIRE(route::DarwinRoutePlatform::DeserializeSnapshot(encoded, target));
+
+    int identity_checks = 0;
+    int mutations = 0;
+    bool route_created = false;
+    route::DarwinRouteOperations operations;
+    operations.exact_default_exists = [&route_created](
+        const route::RouteSnapshotPtr&, bool& exists) noexcept {
+        exists = route_created;
+        return true;
+    };
+    operations.interface_identity_matches = [&identity_checks](
+        const route::RouteSnapshotIdentity& identity) noexcept {
+        ++identity_checks;
+        return identity.interface_index == 7 &&
+            identity.interface_name == "en0" &&
+            identity.link_identity == "00:11:22:33:44:55";
+    };
+    operations.remove_conflicting_default = [&mutations](
+        const route::RouteSnapshotPtr&, route::RouteSnapshotPtr&) noexcept {
+        ++mutations;
+        return true;
+    };
+    operations.restore_default = [&mutations, &route_created](
+        const route::RouteSnapshotPtr&) noexcept {
+        ++mutations;
+        route_created = true;
+        return true;
+    };
+
+    route::DarwinRoutePlatform platform(std::move(operations));
+    BOOST_TEST(platform.RestoreDefault(target));
+    BOOST_TEST(identity_checks == 1);
+    BOOST_TEST(mutations == 1);
+    BOOST_TEST(platform.RestoreDefault(target));
+    BOOST_TEST(identity_checks == 1);
+    BOOST_TEST(mutations == 1);
+}
+#endif
+
 BOOST_AUTO_TEST_CASE(darwin_restore_replaces_conflict_and_confirms_exact_target) {
     std::vector<std::string> calls;
     int query_count = 0;
@@ -668,4 +763,37 @@ BOOST_AUTO_TEST_CASE(mobile_adapter_builds_deduplicated_all_route_plan) {
         });
     BOOST_TEST(platform.ApplyAll(specs));
     BOOST_TEST(applied.size() == specs.size());
+}
+
+BOOST_AUTO_TEST_CASE(windows_session_gateways_resolve_after_default_routes_are_removed) {
+    int queries = 0;
+    const auto unreachable = [&queries](uint32_t) noexcept {
+        ++queries;
+        return -1; // GetBestInterface: ERROR_NETWORK_UNREACHABLE
+    };
+    const uint32_t tap_gateway = htonl(0x0a490001u);
+    const uint32_t physical_gateway = htonl(0xc0000201u);
+    BOOST_TEST(route::ResolveWindowsRouteInterfaceIndex(
+        tap_gateway, tap_gateway, 17, physical_gateway, 3, unreachable) == 17);
+    BOOST_TEST(route::ResolveWindowsRouteInterfaceIndex(
+        physical_gateway, tap_gateway, 17, physical_gateway, 3, unreachable) == 3);
+    BOOST_TEST(queries == 0);
+}
+
+BOOST_AUTO_TEST_CASE(windows_invalid_session_interface_does_not_fall_back_to_another_adapter) {
+    int queries = 0;
+    const auto wrong_adapter = [&queries](uint32_t) noexcept { ++queries; return 99; };
+    BOOST_TEST(route::ResolveWindowsRouteInterfaceIndex(
+        10, 10, -1, 20, 3, wrong_adapter) == -1);
+    BOOST_TEST(route::ResolveWindowsRouteInterfaceIndex(
+        20, 10, 17, 20, 0, wrong_adapter) == -1);
+    BOOST_TEST(queries == 0);
+}
+
+BOOST_AUTO_TEST_CASE(windows_other_gateways_use_the_system_lookup) {
+    uint32_t queried = 0;
+    const auto lookup = [&queried](uint32_t gateway) noexcept { queried = gateway; return 8; };
+    BOOST_TEST(route::ResolveWindowsRouteInterfaceIndex(30, 10, 17, 20, 3, lookup) == 8);
+    BOOST_TEST(queried == 30u);
+    BOOST_TEST(route::ResolveWindowsRouteInterfaceIndex(30, 10, 17, 20, 3, {}) == -1);
 }

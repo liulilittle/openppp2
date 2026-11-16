@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createTauriRuntime } from '../src/lib/runtime/tauri.js'
 
-function fakeBridge() {
+function fakeBridge(overrides = {}, responses = {}) {
   const calls = []
   const eventHandlers = new Map()
   const bootstrap = {
@@ -15,11 +15,13 @@ function fakeBridge() {
     launchOptions: { mux: 2, muxMode: 'compat' },
     settings: { autostart: false, closeToTray: true, disconnectOnExit: true, language: '简体中文', appearance: '深色', pppPath: '' },
   }
+  Object.assign(bootstrap, overrides)
   return {
     calls,
     bridge: {
       core: { invoke: async (command, args) => {
         calls.push([command, args])
+        if (Object.hasOwn(responses, command)) return responses[command](args)
         if (command === 'client_bootstrap') return bootstrap
         if (command === 'subscription_refresh') return bootstrap.subscription
         if (command === 'client_probe_latency') return { 'real-1': 17 }
@@ -78,6 +80,28 @@ test('tauri runtime invokes commands and derives connection state only from even
   fake.emit({ type: 'exited', payload: { code: 7, success: false } })
   assert.equal(state.connection.status, 'error')
   assert.equal(state.connection.exitCode, 7)
+})
+
+test('tauri runtime keeps forced recovery visible and exposes an explicit retry action', async () => {
+  const fake = fakeBridge({}, {
+    client_retry_recovery: () => ({ networkRecoveryPending: true, proxyRecoveryPending: true, message: 'retry later' }),
+  })
+  const runtime = createTauriRuntime(fake.bridge)
+  let state
+  runtime.subscribe((next) => { state = next })
+  await runtime.ready
+  fake.emit({
+    type: 'exited',
+    payload: { code: null, success: false, recoveryPending: true },
+    connection: { sessionId: 1, pid: null, status: 'recovery_pending', recoveryPending: true },
+  })
+  assert.equal(state.connection.status, 'recovery_pending')
+  assert.equal(state.connection.recoveryPending, true)
+  assert.equal(state.connection.lastError, 'network recovery is pending')
+  const result = await runtime.retryRecovery()
+  assert.equal(result.networkRecoveryPending, true)
+  assert.equal(state.connection.status, 'recovery_pending')
+  assert.equal(fake.calls.at(-1)[0], 'client_retry_recovery')
 })
 
 test('tauri runtime merges latency only for known nodes and reprobes after refresh', async () => {
@@ -144,4 +168,84 @@ test('tauri runtime persists manual profiles and launch options through backend 
   await runtime.deleteManualNode('manual:1')
   assert.equal(fake.calls.at(-1)[0], 'client_delete_manual_node')
   assert.equal(state.subscription.nodes.length, 0)
+})
+
+test('structured state wins over text and stale session events are ignored', async () => {
+  const fake=fakeBridge(), runtime=createTauriRuntime(fake.bridge)
+  let state
+  const unsubscribe=runtime.subscribe((next) => state=next)
+  await runtime.ready
+  fake.emit({sessionId:2,type:'state',payload:{},connection:{sessionId:2,pid:123,status:'reconnecting',phase:'reconnecting',stats:null}})
+  assert.equal(state.connection.status,'reconnecting')
+  fake.emit({sessionId:1,type:'exited',payload:{success:false,code:7},connection:{sessionId:1,pid:null,status:'error'}})
+  assert.equal(state.connection.status,'reconnecting')
+  fake.emit({sessionId:2,type:'telemetry',payload:{message:'session established',signal:'connected'},connection:{sessionId:2,status:'reconnecting',stats:null}})
+  assert.equal(state.connection.status,'reconnecting')
+  fake.emit({sessionId:2,type:'exited',payload:{success:false,code:1},connection:{sessionId:2,pid:null,status:'disconnected',stats:null}})
+  assert.equal(state.connection.status,'disconnected')
+  assert.equal(state.connection.lastError, '')
+  await unsubscribe()
+})
+
+test('late connect response cannot revive an exited session and disconnect settles without a child', async () => {
+  let finishConnect
+  const fake = fakeBridge({}, { client_connect: () => new Promise((resolve) => { finishConnect = resolve }) })
+  const runtime = createTauriRuntime(fake.bridge)
+  let state
+  const unsubscribe = runtime.subscribe((next) => { state = next })
+  await runtime.ready
+  const connecting = runtime.connect('real-1')
+  fake.emit({ sessionId: 3, type: 'exited', payload: { code: 1, success: false }, connection: { sessionId: 3, pid: null, status: 'error', stats: null } })
+  finishConnect({ sessionId: 3, pid: 42 })
+  await connecting
+  assert.equal(state.connection.status, 'error')
+  assert.equal(state.connection.pid, null)
+  await runtime.disconnect()
+  assert.equal(state.connection.status, 'disconnected')
+  assert.equal(state.connection.pid, null)
+  await unsubscribe()
+})
+
+test('bootstrap restores proxy addresses and inspects configured kernel; history retains a minute', async () => {
+  const fake = fakeBridge({ settings: { pppPath: 'C:\\ppp.exe' }, network: { httpProxy: '127.0.0.1:18081', socksProxy: '127.0.0.1:18082' } }, {
+    client_kernel_info: () => ({ version: '2.1.5' }),
+  })
+  const runtime = createTauriRuntime(fake.bridge)
+  let state
+  const unsubscribe = runtime.subscribe((next) => { state = next })
+  await runtime.ready
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(state.stats.httpProxy, '127.0.0.1:18081')
+  assert.equal(state.stats.socksProxy, '127.0.0.1:18082')
+  assert.equal(state.kernel.version, '2.1.5')
+  const end = Math.floor(Date.now() / 1000) * 1000
+  for (let offset = 59_000; offset >= 0; offset -= 500) {
+    fake.emit({ type: 'stats', payload: { sampledAt: end - offset, rxRateMbps: 8, txRateMbps: 2 } })
+  }
+  assert.equal(state.history.length, 60)
+  assert.ok(state.history.at(-1).time - state.history[0].time >= 58_000)
+  await unsubscribe()
+})
+
+test('policy methods call the backend commands and track the enabled flag', async () => {
+  const fake = fakeBridge({ policyDir: 'C:\\data\\policy', policyEnabled: false }, {
+    policy_set_enabled: (args) => args.enabled,
+    policy_explain: () => ({ exitCode: 0, report: { route: { action: 'direct' } } }),
+  })
+  const runtime = createTauriRuntime(fake.bridge)
+  let latest
+  runtime.subscribe((state) => { latest = state })
+  await runtime.ready
+  assert.equal(latest.policyDir, 'C:\\data\\policy')
+  assert.equal(latest.policyEnabled, false)
+  assert.equal(await runtime.policySetEnabled(true), true)
+  assert.equal(latest.policyEnabled, true)
+  const draft = { version: 2 }
+  const result = await runtime.policyExplain(draft, 'default proxy\n', 'example.com', 'tcp', 0)
+  assert.equal(result.report.route.action, 'direct')
+  assert.deepEqual(fake.calls.find(([name]) => name === 'policy_explain')[1],
+    { policy: draft, rules: 'default proxy\n', target: 'example.com', network: 'tcp', port: null })
+  await runtime.policyInit('split-cn', ' ', 'https://rules.example.test/geosite.dat')
+  assert.deepEqual(fake.calls.find(([name]) => name === 'policy_init')[1],
+    { template: 'split-cn', geoip: ' ', geosite: 'https://rules.example.test/geosite.dat' })
 })

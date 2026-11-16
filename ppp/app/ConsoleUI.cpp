@@ -23,6 +23,7 @@
 #include <ppp/app/PppApplication.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
+#include <ppp/app/tui/TuiRuntimeAdapter.h>
 #include <ppp/threading/Executors.h>
 
 #include <cstdlib>
@@ -911,6 +912,67 @@ void ConsoleUI::AppendTelemetryEventLine(const char* line) noexcept {
             render_cv_.notify_one();
         }
     }
+}
+
+void ConsoleUI::SetRuntimeSnapshot(const runtime::RuntimeSnapshot& snapshot) noexcept {
+    std::lock_guard<std::mutex> scope(lock_);
+    runtime_snapshot_ = snapshot;
+    if (p2p_priority_handler_ && !snapshot.p2p_priority.empty()) {
+        p2p_priority_ = snapshot.p2p_priority;
+    }
+    runtime_snapshot_.p2p_priority = p2p_priority_;
+}
+
+void ConsoleUI::SetP2PPriorityHandler(P2PPriorityHandler handler) noexcept {
+    std::lock_guard<std::mutex> scope(lock_);
+    p2p_priority_handler_ = std::move(handler);
+}
+
+void ConsoleUI::SetP2PPeerPriorityHandler(P2PPeerPriorityHandler handler) noexcept {
+    std::lock_guard<std::mutex> scope(lock_);
+    p2p_peer_priority_handler_ = std::move(handler);
+}
+
+bool ConsoleUI::SetP2PPriority(const ppp::string& priority) noexcept {
+    if (priority != "ipv4-first" && priority != "ipv6-first" && priority != "relay-first") return false;
+    P2PPriorityHandler handler;
+    {
+        std::lock_guard<std::mutex> scope(lock_);
+        handler = p2p_priority_handler_;
+    }
+    if (handler && !handler(priority)) return false;
+    {
+        std::lock_guard<std::mutex> scope(lock_);
+        p2p_priority_ = priority;
+        runtime_snapshot_.p2p_priority = priority;
+    }
+    MarkDirty();
+    return true;
+}
+
+bool ConsoleUI::SetP2PPeerPriority(const ppp::string& peer_uuid, const ppp::string& priority) noexcept {
+    if (priority != "ipv4-first" && priority != "ipv6-first" && priority != "relay-first") return false;
+    ppp::string normalized;
+    normalized.reserve(peer_uuid.size());
+    for (char ch : peer_uuid) {
+        if (ch == '-') continue;
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'))) return false;
+        normalized.push_back(static_cast<char>(ch >= 'A' && ch <= 'F' ? ch + ('a' - 'A') : ch));
+    }
+    if (normalized.size() != 32u) return false;
+    P2PPeerPriorityHandler handler;
+    {
+        std::lock_guard<std::mutex> scope(lock_);
+        handler = p2p_peer_priority_handler_;
+    }
+    if (handler && !handler(normalized, priority)) return false;
+    MarkDirty();
+    return true;
+}
+
+ppp::string ConsoleUI::GetP2PPriority() noexcept {
+    std::lock_guard<std::mutex> scope(lock_);
+    return p2p_priority_;
 }
 
 void ConsoleUI::ClearTelemetryEventLines() noexcept {
@@ -1883,6 +1945,8 @@ void ConsoleUI::ExecuteCommand(const ppp::string& command_line) noexcept {
             AppendLine("  openppp2 reload           - Reload configuration (restart)");
             AppendLine("  openppp2 exit             - Exit the application");
             AppendLine("  openppp2 info             - Print full runtime environment snapshot");
+            AppendLine("  openppp2 peer status      - Print detailed peer status");
+            AppendLine("  openppp2 peer set <uuid> ipv4-first|ipv6-first|relay-first - Set peer P2P priority");
             AppendLine("  openppp2 clear            - Clear command output section");
             AppendLine("  openppp2 telemetry ...    - Telemetry filter controls (status/help/log/metric/span/level/all/quiet/clear)");
             AppendLine("");
@@ -1930,6 +1994,36 @@ void ConsoleUI::ExecuteCommand(const ppp::string& command_line) noexcept {
                     AppendLine(line);
                 }
             }
+            return;
+        }
+
+        if ("peer" == openppp2_sub || 0u == openppp2_sub.find("peer ")) {
+            const ppp::string peer_command = openppp2_sub == "peer"
+                ? ppp::string("status") : ppp::LTrim(openppp2_sub.substr(5u));
+            if (peer_command == "status") {
+                runtime::RuntimeSnapshot snapshot;
+                {
+                    std::lock_guard<std::mutex> scope(lock_);
+                    snapshot = runtime_snapshot_;
+                }
+                for (const auto& line : tui::BuildPeerStatusLines(snapshot)) AppendLine(line.c_str());
+                return;
+            }
+            if (peer_command.size() > 4u && peer_command.compare(0u, 4u, "set ") == 0) {
+                const ppp::string args = ppp::LTrim(peer_command.substr(4u));
+                const auto split = args.find(' ');
+                if (split != ppp::string::npos) {
+                    const ppp::string uuid = args.substr(0u, split);
+                    const ppp::string priority = ppp::LTrim(args.substr(split + 1u));
+                    if (priority == "ipv4-first" || priority == "ipv6-first" || priority == "relay-first") {
+                        AppendLine(SetP2PPeerPriority(uuid, priority)
+                            ? "Peer " + uuid + " priority set to " + priority
+                            : "Peer priority update rejected (unknown UUID or invalid UUID)");
+                        return;
+                    }
+                }
+            }
+            AppendLine("Usage: openppp2 peer status | openppp2 peer set <uuid> ipv4-first|ipv6-first|relay-first");
             return;
         }
 

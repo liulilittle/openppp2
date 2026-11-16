@@ -1,4 +1,5 @@
 #include <windows/ppp/ipv6/IPv6Auxiliary.h>
+#include <ppp/app/client/WindowsIPv6Snapshot.h>
 #include <ppp/ipv6/IPv6Packet.h>
 #include <ppp/ipv6/IPv6ClientPolicy.h>
 #include <ppp/diagnostics/Error.h>
@@ -7,6 +8,9 @@
 #include <ws2tcpip.h>
 #include <netioapi.h>
 #include <iphlpapi.h>
+
+#include <cstdlib>
+#include <cstring>
 
 #include <windows/ppp/tap/TapWindows.h>
 #include <windows/ppp/win32/network/NetworkInterface.h>
@@ -18,6 +22,21 @@ namespace ppp {
                 namespace {
                     using GatewayNeighborIdentity = ppp::ipv6::client_policy::GatewayNeighborIdentity;
                     using OwnershipMutation = ppp::ipv6::client_policy::OwnershipMutation;
+
+                    static ppp::vector<ppp::string> FilterIPv6Dns(
+                        const ppp::vector<ppp::string>& values) noexcept {
+                        ppp::vector<ppp::string> result;
+                        result.reserve(values.size());
+                        for (const ppp::string& value : values) {
+                            boost::system::error_code ec;
+                            const auto address = boost::asio::ip::make_address(value.data(), ec);
+                            if (!ec && address.is_v6() && !address.is_unspecified() &&
+                                !address.is_multicast()) {
+                                result.emplace_back(value);
+                            }
+                        }
+                        return result;
+                    }
 
                     static bool IsWintunContext(const ::ppp::ipv6::auxiliary::ClientContext& context) noexcept {
                         auto tap = dynamic_cast<ppp::tap::TapWindows*>(context.Tap);
@@ -277,12 +296,101 @@ namespace ppp {
                         const NETIO_STATUS delete_status = ::DeleteUnicastIpAddressEntry(&existing);
                         return delete_status == NO_ERROR || delete_status == ERROR_NOT_FOUND;
                     }
+
+                    static bool SameIPv6(const SOCKADDR_INET& value,
+                        const boost::asio::ip::address_v6& expected) noexcept {
+                        if (value.si_family != AF_INET6 || expected.is_unspecified()) return false;
+                        const auto bytes = expected.to_bytes();
+                        return std::memcmp(&value.Ipv6.sin6_addr, bytes.data(), bytes.size()) == 0 &&
+                            value.Ipv6.sin6_scope_id == static_cast<ULONG>(expected.scope_id());
+                    }
+
+                    static bool DeleteOwnedSubnetRoute(
+                        int interface_index, const boost::asio::ip::address_v6& prefix,
+                        int prefix_length, const boost::asio::ip::address_v6& gateway,
+                        std::uint64_t interface_luid) noexcept {
+                        if (interface_index < 0 || prefix_length < 0 || prefix_length > 128 ||
+                            interface_luid == 0) return false;
+                        PMIB_IPFORWARD_TABLE2 table = nullptr;
+                        const NETIO_STATUS table_status = ::GetIpForwardTable2(AF_INET6, &table);
+                        if (table_status == ERROR_NOT_FOUND || table_status == ERROR_NO_DATA) return true;
+                        if (table_status != NO_ERROR || table == nullptr) return false;
+                        bool found = false;
+                        bool result = true;
+                        bool conflict = false;
+                        const auto expected_prefix = prefix.to_bytes();
+                        for (ULONG i = 0; i < table->NumEntries; ++i) {
+                            MIB_IPFORWARD_ROW2& row = table->Table[i];
+                            if (row.InterfaceLuid.Value != interface_luid ||
+                                row.InterfaceIndex != static_cast<NET_IFINDEX>(interface_index) ||
+                                row.DestinationPrefix.PrefixLength != static_cast<UCHAR>(prefix_length) ||
+                                row.DestinationPrefix.Prefix.si_family != AF_INET6) continue;
+                            const auto actual_prefix = reinterpret_cast<const std::uint8_t*>(
+                                &row.DestinationPrefix.Prefix.Ipv6.sin6_addr);
+                            const int whole = prefix_length / 8;
+                            const int remainder = prefix_length % 8;
+                            if (std::memcmp(actual_prefix, expected_prefix.data(), static_cast<std::size_t>(whole)) != 0 ||
+                                (remainder != 0 &&
+                                 (actual_prefix[whole] & static_cast<std::uint8_t>(0xffu << (8 - remainder))) !=
+                                  (expected_prefix[whole] & static_cast<std::uint8_t>(0xffu << (8 - remainder))))) continue;
+                            if (!SameIPv6(row.NextHop, gateway)) {
+                                conflict = true;
+                                continue;
+                            }
+                            found = true;
+                            const NETIO_STATUS status = ::DeleteIpForwardEntry2(&row);
+                            if (status != NO_ERROR && status != ERROR_NOT_FOUND) result = false;
+                            break;
+                        }
+                        ::FreeMibTable(table);
+                        // No row is an already-restored state. A matching row
+                        // owned by another interface or gateway is never touched.
+                        return result && !conflict;
+                    }
+
+                    static ppp::vector<std::string> CurrentIPv6Dns(int interface_index) noexcept {
+                        ppp::vector<std::string> result;
+                        auto current = ppp::win32::network::GetNetworkInterfaceByInterfaceIndex(interface_index);
+                        if (!current) return result;
+                        for (const auto& value : current->DnsAddresses) {
+                            boost::system::error_code ec;
+                            const auto address = boost::asio::ip::make_address(value.data(), ec);
+                            if (!ec && address.is_v6() && !address.is_unspecified() && !address.is_multicast()) {
+                                result.emplace_back(address.to_string());
+                            }
+                        }
+                        return result;
+                    }
+
+                    static ppp::vector<std::string> ValidSnapshotDns(
+                        const std::vector<std::string>& values) noexcept {
+                        ppp::vector<std::string> result;
+                        for (const auto& value : values) {
+                            boost::system::error_code ec;
+                            const auto address = boost::asio::ip::make_address(value, ec);
+                            if (!ec && address.is_v6() && !address.is_unspecified() && !address.is_multicast()) {
+                                result.emplace_back(address.to_string());
+                            }
+                        }
+                        return result;
+                    }
                 }
 
                 void CaptureClientOriginalState(const ::ppp::ipv6::auxiliary::ClientContext& context, bool nat_mode, ::ppp::ipv6::auxiliary::ClientState& state) noexcept {
                     (void)nat_mode;
-                    if (auto current_ni = ppp::win32::network::GetNetworkInterfaceByInterfaceIndex(context.InterfaceIndex); NULLPTR != current_ni) {
-                        state.OriginalDnsServers = current_ni->DnsAddresses;
+                    ppp::win32::network::NetworkDnsSnapshot snapshot;
+                    if (ppp::win32::network::CaptureDnsSnapshot(context.InterfaceIndex, snapshot)) {
+                        state.OriginalDnsAutomatic = snapshot.DnsAutomatic;
+                        state.OriginalDnsServers.reserve(snapshot.DnsAddresses.size());
+                        for (const auto& address : snapshot.DnsAddresses) {
+                            if (address.is_v6() && !address.is_unspecified() &&
+                                !address.is_multicast()) {
+                                state.OriginalDnsServers.emplace_back(address.to_string());
+                            }
+                        }
+                    }
+                    else if (auto current_ni = ppp::win32::network::GetNetworkInterfaceByInterfaceIndex(context.InterfaceIndex); NULLPTR != current_ni) {
+                        state.OriginalDnsServers = FilterIPv6Dns(current_ni->DnsAddresses);
                     }
                 }
 
@@ -378,15 +486,17 @@ namespace ppp {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::IPv6GatewayMissing);
                     }
 
+                    // Record the exact target before the OS call. netsh can report an
+                    // error after partially applying a route, so cleanup must remain
+                    // retryable even when AddIPv6Route returns false.
+                    state.SubnetRoutePrefix = prefix_str;
+                    state.SubnetRoutePrefixLength = prefix_length;
+                    state.SubnetRouteGateway = gateway_str;
+                    state.SubnetRouteApplied = true;
                     if (!ppp::win32::network::AddIPv6Route(context.InterfaceIndex, prefix_str, prefix_length, gateway_str, 0)) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientRouteApplyFailed);
                         return false;
                     }
-
-                    state.SubnetRouteApplied = true;
-                    state.SubnetRoutePrefix = prefix_str;
-                    state.SubnetRoutePrefixLength = prefix_length;
-                    state.SubnetRouteGateway = gateway_str;
                     return true;
                 }
 
@@ -395,13 +505,27 @@ namespace ppp {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::IPv6ClientDnsApplyFailed);
                     }
 
+                    // Keep the snapshot live across both an apply failure and a later
+                    // teardown retry. A failed netsh invocation may have changed part of
+                    // the resolver list before returning an error.
+                    state.DnsApplied = true;
+                    state.DnsServers = dns_servers;
                     if (!ppp::win32::network::SetDnsAddressesV6(context.InterfaceIndex, dns_servers)) {
-                        ppp::win32::network::SetDnsAddressesV6(context.InterfaceIndex, state.OriginalDnsServers);
+                        // Restore the captured resolver mode on a partial
+                        // apply.  An automatic/DHCP snapshot must clear the
+                        // static list instead of replaying its transient
+                        // resolver addresses as a new static configuration.
+                        const ppp::vector<ppp::string> restore_dns =
+                            state.OriginalDnsAutomatic
+                                ? ppp::vector<ppp::string>()
+                                : state.OriginalDnsServers;
+                        if (ppp::win32::network::SetDnsAddressesV6(context.InterfaceIndex, restore_dns)) {
+                            state.DnsApplied = false;
+                            state.DnsServers.clear();
+                        }
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::IPv6ClientDnsApplyFailed);
                     }
 
-                    state.DnsApplied = true;
-                    state.DnsServers = dns_servers;
                     ppp::tap::TapWindows::DnsFlushResolverCache();
                     return true;
                 }
@@ -415,11 +539,19 @@ namespace ppp {
                     }
 
                     if (state.SubnetRouteApplied && !state.SubnetRoutePrefix.empty()) {
-                        ppp::win32::network::DeleteIPv6Route(
+                        if (ppp::win32::network::DeleteIPv6Route(
                             context.InterfaceIndex,
                             state.SubnetRoutePrefix,
                             state.SubnetRoutePrefixLength,
-                            state.SubnetRouteGateway);
+                            state.SubnetRouteGateway)) {
+                            state.SubnetRouteApplied = false;
+                            state.SubnetRoutePrefix.clear();
+                            state.SubnetRoutePrefixLength = 0;
+                            state.SubnetRouteGateway.clear();
+                        }
+                        else {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientRouteApplyFailed);
+                        }
                     }
 
                     if (state.GatewayNeighborOwned && !state.DefaultRouteGateway.empty()) {
@@ -457,9 +589,97 @@ namespace ppp {
                     }
 
                     if (state.DnsApplied) {
-                        ppp::win32::network::SetDnsAddressesV6(context.InterfaceIndex, state.OriginalDnsServers);
-                        ppp::tap::TapWindows::DnsFlushResolverCache();
+                        // Compare against both the values OpenPPP2 wrote and
+                        // the original snapshot.  A different current list
+                        // belongs to another actor and must remain untouched;
+                        // keep the state pending so a later retry can report
+                        // or resolve the conflict explicitly.
+                        bool restore_allowed = false;
+                        bool already_restored = false;
+                        if (auto current_ni = ppp::win32::network::GetNetworkInterfaceByInterfaceIndex(context.InterfaceIndex); NULLPTR != current_ni) {
+                            const auto current_dns = FilterIPv6Dns(current_ni->DnsAddresses);
+                            if (current_dns == state.OriginalDnsServers) {
+                                already_restored = true;
+                            }
+                            else if (current_dns == FilterIPv6Dns(state.DnsServers)) {
+                                restore_allowed = true;
+                            }
+                        }
+                        ppp::vector<ppp::string> restore_dns = state.OriginalDnsAutomatic
+                            ? ppp::vector<ppp::string>()
+                            : state.OriginalDnsServers;
+                        if (already_restored ||
+                            (restore_allowed && ppp::win32::network::SetDnsAddressesV6(context.InterfaceIndex, restore_dns))) {
+                            state.DnsApplied = false;
+                            state.DnsServers.clear();
+                            state.OriginalDnsServers.clear();
+                            state.OriginalDnsAutomatic = false;
+                            ppp::tap::TapWindows::DnsFlushResolverCache();
+                        }
+                        else {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientDnsApplyFailed);
+                        }
                     }
+                }
+
+                bool RecoverClientSnapshot(
+                    const ::ppp::app::client::WindowsIPv6Snapshot& snapshot) noexcept {
+                    if (snapshot.interface_index == 0 || snapshot.interface_guid.empty() ||
+                        snapshot.interface_luid.empty()) return false;
+                    auto current = ppp::win32::network::GetNetworkInterfaceByInterfaceIndex(
+                        static_cast<int>(snapshot.interface_index));
+                    if (!current || current->Guid.empty() || current->InterfaceLuid.empty() ||
+                        _stricmp(current->Guid.data(), snapshot.interface_guid.data()) != 0 ||
+                        stl::transform<std::string>(current->InterfaceLuid) != snapshot.interface_luid) return false;
+
+                    boost::system::error_code ec;
+                    const auto address = boost::asio::ip::make_address_v6(snapshot.address, ec);
+                    if (snapshot.address_owned && !ec && !address.is_unspecified()) {
+                        MIB_UNICASTIPADDRESS_ROW expected{};
+                        if (!BuildUnicastAddressRow(static_cast<int>(snapshot.interface_index), address, expected)) return false;
+                        const auto owned = ToUnicastAddressIdentity(expected);
+                        if (!DeleteOwnedUnicastAddress(static_cast<int>(snapshot.interface_index), address, owned)) return false;
+                    }
+
+                    if (snapshot.neighbor_owned) {
+                        const auto gateway = boost::asio::ip::make_address_v6(snapshot.gateway, ec);
+                        if (ec || gateway.is_unspecified()) return false;
+                        const int neighbor_index = snapshot.neighbor_interface_index == 0
+                            ? static_cast<int>(snapshot.interface_index)
+                            : static_cast<int>(snapshot.neighbor_interface_index);
+                        const std::uint64_t neighbor_luid = snapshot.neighbor_interface_luid == 0
+                            ? current->InterfaceLuid.empty() ? 0 : std::strtoull(current->InterfaceLuid.c_str(), nullptr, 0)
+                            : snapshot.neighbor_interface_luid;
+                        if (!DeleteOwnedWintunGatewayNeighbor(static_cast<int>(snapshot.interface_index),
+                            neighbor_luid, neighbor_index, gateway)) return false;
+                    }
+
+                    if (snapshot.subnet_owned && !snapshot.subnet_prefix.empty()) {
+                        const auto prefix = boost::asio::ip::make_address_v6(snapshot.subnet_prefix, ec);
+                        const auto gateway = boost::asio::ip::make_address_v6(snapshot.subnet_gateway, ec);
+                        if (ec || prefix.is_unspecified() || gateway.is_unspecified()) return false;
+                        const auto luid = current->InterfaceLuid.empty() ? 0ull :
+                            std::strtoull(current->InterfaceLuid.c_str(), nullptr, 0);
+                        if (!DeleteOwnedSubnetRoute(static_cast<int>(snapshot.interface_index), prefix,
+                            snapshot.subnet_prefix_length, gateway, luid)) return false;
+                    }
+
+                    if (snapshot.dns_applied) {
+                        const auto current_dns = CurrentIPv6Dns(static_cast<int>(snapshot.interface_index));
+                        const auto applied_dns = ValidSnapshotDns(snapshot.dns_servers);
+                        const auto original_dns = ValidSnapshotDns(snapshot.original_dns_servers);
+                        if (current_dns != original_dns) {
+                            if (current_dns != applied_dns) return false;
+                            ppp::vector<ppp::string> restore;
+                            if (!snapshot.original_dns_automatic) {
+                                for (const auto& value : original_dns) restore.emplace_back(value.data(), value.size());
+                            }
+                            if (!ppp::win32::network::SetDnsAddressesV6(
+                                    static_cast<int>(snapshot.interface_index), restore)) return false;
+                            if (CurrentIPv6Dns(static_cast<int>(snapshot.interface_index)) != original_dns) return false;
+                        }
+                    }
+                    return true;
                 }
             }
         }

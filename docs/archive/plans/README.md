@@ -22,6 +22,7 @@ This section preserves historical material. Every entry is archived and is not c
 - [Client Route/DNS Decoupling Implementation Plan](2026-07-14-client-route-dns-decoupling.md)
 - [Grafana Log Filtering Implementation Plan](2026-07-15-grafana-log-filtering.md)
 - [Standalone Subscription Manager Implementation Plan](2026-07-15-standalone-subscription-manager.md)
+- [VMUX Failure Semantics and Resource Bounds Implementation Plan](2026-07-21-vmux-failure-semantics-and-bounds.md)
 - [P2P Networking Plan](P2P_NETWORKING_PLAN.md)
 - [Proxy-only mode test plan](PROXY_MODE_TEST_PLAN.md)
 - [OpenPPP2 Proxy-only 模式完整计划](PROXY_ONLY_MODE_PLAN.md)

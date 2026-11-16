@@ -28,6 +28,9 @@ type BinaryInfo struct {
 	Arch    string    `json:"arch"`
 	AddedAt time.Time `json:"addedAt"`
 	Active  bool      `json:"active"`
+
+	// execOK allows running the file to detect its version (never serialized).
+	execOK bool
 }
 
 type Manager struct {
@@ -53,7 +56,15 @@ func (m *Manager) List() ([]BinaryInfo, error) {
 	return items, nil
 }
 
+// Register records srcPath. Any existing file may be registered, but it is
+// only executed for version detection when it is a plausibly named, executable
+// regular file inside the configured binaries directory.
 func (m *Manager) Register(srcPath string) (*BinaryInfo, error) {
+	return m.register(srcPath, false)
+}
+
+// register adds the binary; trusted marks paths found by auto-discovery.
+func (m *Manager) register(srcPath string, trusted bool) (*BinaryInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if srcPath == "" {
@@ -72,7 +83,7 @@ func (m *Manager) Register(srcPath string) (*BinaryInfo, error) {
 	if existing, ok := m.items[id]; ok {
 		return &existing, nil
 	}
-	info := BinaryInfo{ID: id, Path: cleanPath, SHA256: sha, Size: stat.Size(), Arch: detectArch(cleanPath), Version: "", AddedAt: time.Now(), Active: len(m.items) == 0}
+	info := BinaryInfo{ID: id, Path: cleanPath, SHA256: sha, Size: stat.Size(), Arch: detectArch(cleanPath), Version: "", AddedAt: time.Now(), Active: len(m.items) == 0, execOK: m.mayExecute(cleanPath, stat, trusted)}
 	if info.Active {
 		m.activeID = id
 	}
@@ -80,7 +91,7 @@ func (m *Manager) Register(srcPath string) (*BinaryInfo, error) {
 
 	// Version detection is slow — do it in background
 	go func() {
-		ver := detectVersion(info.Path)
+		ver := detectVersion(info.Path, info.execOK)
 		m.mu.Lock()
 		if item, ok := m.items[id]; ok {
 			item.Version = ver
@@ -100,7 +111,7 @@ func (m *Manager) DetectVersionAsync(id string) {
 		if !ok {
 			return
 		}
-		ver := detectVersion(info.Path)
+		ver := detectVersion(info.Path, info.execOK)
 		m.mu.Lock()
 		if info, ok := m.items[id]; ok {
 			info.Version = ver
@@ -164,7 +175,7 @@ func (m *Manager) AutoDiscover(dir string) ([]BinaryInfo, error) {
 
 	registered := make([]BinaryInfo, 0, len(discovered))
 	for _, item := range discovered {
-		info, err := m.Register(item.Path)
+		info, err := m.register(item.Path, true)
 		if err != nil {
 			return nil, err
 		}
@@ -215,4 +226,25 @@ func isPPPBinaryName(name string) bool {
 		base = strings.TrimSuffix(lower, ext)
 	}
 	return base == "ppp" || strings.HasPrefix(base, "ppp-")
+}
+
+// mayExecute decides whether a registered file may be run to read its version.
+func (m *Manager) mayExecute(path string, stat os.FileInfo, trusted bool) bool {
+	if !stat.Mode().IsRegular() || stat.Mode()&0o111 == 0 || !isPPPBinaryName(filepath.Base(path)) {
+		return false
+	}
+	return trusted || m.insideBinariesDir(path)
+}
+
+func (m *Manager) insideBinariesDir(path string) bool {
+	root, err := filepath.Abs(m.binariesDir)
+	if err != nil {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, abs)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

@@ -1,0 +1,23 @@
+{
+  "client": {
+    "policy": {
+      "version": 2,
+      "rules": {"path": "example.rules"},
+      "ipv6": "block",
+      "dns": {
+        "mode": "auto",
+        "resolvers": {
+          "local": {"via": "direct", "servers": ["doh.pub"]},
+          "remote": {"via": "proxy", "servers": ["cloudflare"]}
+        }
+      },
+      "rule-sets": {
+        "sample-domains": {
+          "format": "geosite-text",
+          "source": {"path": "example-geosite.txt"}
+        }
+      },
+      "updates": {"enabled": false}
+    }
+  }
+}

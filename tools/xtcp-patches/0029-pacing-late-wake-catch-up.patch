@@ -1,0 +1,29 @@
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -5433,7 +5433,24 @@
+                     if (quantum > UINT64_C(64) * 1024) {
+                         quantum = UINT64_C(64) * 1024;
+                     }
+-                    pacing_budget = quantum;
++                    // Late-wake catch-up: the tick that just expired was due
++                    // at pacing_deadline_, but the host timer may fire much
++                    // later (Windows waitable timers round up to ~15.6ms).
++                    // Re-arming from `now` alone discards that wire time and
++                    // pins throughput at quantum / timer-granularity. Credit
++                    // the elapsed lateness at the pacing rate, bounded so an
++                    // idle gap cannot turn into an unbounded line-rate burst
++                    // (cwnd / peer window below still cap the actual burst).
++                    UInt64 catch_up = 0;
++                    if (0 != pacing_deadline_ && now > pacing_deadline_) {
++                        static constexpr UInt64 kPacingMaxCatchUpUs = 20000;  // > one 15.6ms tick
++                        UInt64 late_us = now - pacing_deadline_;
++                        if (late_us > kPacingMaxCatchUpUs) {
++                            late_us = kPacingMaxCatchUpUs;
++                        }
++                        catch_up = (cc_.pacing_rate * late_us) / 1000000ull;
++                    }
++                    pacing_budget = quantum + catch_up;
+                     pacing_deadline_ = now + (quantum * 1000000ull) / cc_.pacing_rate;
+                 }
+                 UInt32 n = static_cast<UInt32>(data.size() - off);

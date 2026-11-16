@@ -22,6 +22,7 @@ import android.os.SystemClock
 import android.system.OsConstants
 import android.util.Log
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicInteger
 import supersocksr.ppp.android.c.libopenppp2
 
 class PppVpnService : VpnService() {
@@ -29,6 +30,7 @@ class PppVpnService : VpnService() {
         private const val TAG = "PppVpnService"
         private const val CHANNEL_ID = "openppp2_vpn_channel"
         private const val NOTIFICATION_ID = 1
+        private const val DESTROY_JOIN_TIMEOUT_MS = 2500L
 
         const val ACTION_CONNECT = "supersocksr.ppp.android.ACTION_CONNECT"
         const val ACTION_DISCONNECT = "supersocksr.ppp.android.ACTION_DISCONNECT"
@@ -40,23 +42,40 @@ class PppVpnService : VpnService() {
         var instance: PppVpnService? = null
             private set
 
+        @Volatile
         var isRunning = false
             private set
 
+        @Volatile
         var currentState = 0
             private set
+
+        // Identifies the most recent startVpn() attempt process-wide. A vpn
+        // thread may only publish shared state (isRunning, notifications,
+        // queued-reconnect replay) while its own id is still the current one,
+        // so a late finally block of an old service instance cannot clobber a
+        // newer session.
+        private val currentSession = AtomicInteger(0)
+
+        // Queued ACTION_CONNECT; lives in the companion so it survives a
+        // service instance being recreated while the old vpn thread drains.
+        @Volatile
+        private var pendingConfig: String? = null
+
+        @Volatile
+        private var pendingVpnOptions: String? = null
     }
 
+    @Volatile
     private var vpnInterface: ParcelFileDescriptor? = null
+
+    @Volatile
     private var vpnThread: Thread? = null
 
     // When ACTION_CONNECT arrives while the previous session is still tearing
     // down, we stash the new config here and the vpn thread's finally block
     // will replay it once isRunning=false. This makes "tap Stop -> tap Start"
     // feel instant from the user's POV instead of timing out at 30s.
-    private var pendingConfig: String? = null
-    private var pendingVpnOptions: String? = null
-
     private var linkStateThread: HandlerThread? = null
     private var linkStateHandler: Handler? = null
     private var heartbeatThread: HandlerThread? = null
@@ -229,17 +248,26 @@ class PppVpnService : VpnService() {
         // link-state / service-state files on disk are stale and will make
         // the UI sit on "Initializing" forever. Reset them so the user
         // sees a clean disconnected state.
-        PppStateStore.clearLinkState(this)
-        PppStateStore.clearHeartbeat(this)
-        PppStateStore.clearRuntimeSnapshot(this)
-        PppStateStore.clearLastError(this)
-        PppStateStore.set(this, 0)
-        currentState = 0
-        isRunning = false
+        //
+        // A previous service instance in this process may still be draining its
+        // vpn thread (isRunning is process-wide). In that case the state files
+        // and the native session belong to it, so leave them alone and never
+        // force isRunning to false here: only the owning vpn thread clears it.
+        val previousSessionLive = isRunning
+        if (!previousSessionLive) {
+            PppStateStore.clearLinkState(this)
+            PppStateStore.clearHeartbeat(this)
+            PppStateStore.clearRuntimeSnapshot(this)
+            PppStateStore.clearLastError(this)
+            PppStateStore.set(this, 0)
+            currentState = 0
+        }
         ensureGeoRulesAssets()
         NativeTelemetryTransport.install(applicationContext)
-        resetNativeSession("onCreate")
-        PppLog.write(this, "PppVpnService created (state cleared)")
+        if (!previousSessionLive) {
+            resetNativeSession("onCreate")
+        }
+        PppLog.write(this, "PppVpnService created (stateCleared=${!previousSessionLive})")
     }
 
     private fun resetNativeSession(reason: String) {
@@ -332,10 +360,31 @@ class PppVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        stopVpn()
-        isRunning = false
-        currentState = 0
-        PppStateStore.set(this, 0)
+        val stopThread = stopVpn()
+        // Give the native session a bounded chance to drain before this
+        // instance is torn down, so a service recreated right away does not
+        // overlap it. Bounded so the main thread cannot ANR; the session id
+        // guard in the vpn thread handles whatever is still running afterwards.
+        val deadline = SystemClock.elapsedRealtime() + DESTROY_JOIN_TIMEOUT_MS
+        try {
+            stopThread?.join(DESTROY_JOIN_TIMEOUT_MS)
+            val t = vpnThread
+            if (t != null && t !== Thread.currentThread()) {
+                val left = deadline - SystemClock.elapsedRealtime()
+                if (left > 0L) t.join(left)
+                if (t.isAlive) {
+                    PppLog.write(this, "onDestroy: vpn thread still alive after ${DESTROY_JOIN_TIMEOUT_MS}ms")
+                }
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        if (vpnThread?.isAlive != true) {
+            // Only the owner of the session may declare it stopped.
+            isRunning = false
+            currentState = 0
+            PppStateStore.set(this, 0)
+        }
         stopLinkStatePoller()
         stopHeartbeatPoller()
         stopNetworkMonitor()
@@ -344,7 +393,9 @@ class PppVpnService : VpnService() {
         activeVpnOptionsJson = null
         vpnInterface?.close()
         vpnInterface = null
-        instance = null
+        if (instance === this) {
+            instance = null
+        }
         super.onDestroy()
     }
 
@@ -374,6 +425,7 @@ class PppVpnService : VpnService() {
             return
         }
 
+        val sessionId = currentSession.incrementAndGet()
         startForeground(NOTIFICATION_ID, buildNotification("正在连接..."))
         PppLog.write(this, "startForeground done")
         activeConfigJson = configJson
@@ -593,20 +645,26 @@ class PppVpnService : VpnService() {
             PppLog.write(this, "detached tun fd=$tunFd")
 
             // Set network interface for native layer
-            val niResult = libopenppp2.set_network_interface(
-                tunFd,
-                mux,
-                vnet,
-                blockQuic,
-                staticMode,
-                vpnIp,
-                vpnMask
-            )
+            val niResult = try {
+                libopenppp2.set_network_interface(
+                    tunFd,
+                    mux,
+                    vnet,
+                    blockQuic,
+                    staticMode,
+                    vpnIp,
+                    vpnMask
+                )
+            } catch (e: Throwable) {
+                closeDetachedTunFd(tunFd)
+                throw e
+            }
             PppLog.write(this, "set_network_interface result=$niResult")
             if (niResult != 0) {
                 notifyError("set_network_interface failed: $niResult, error: ${libopenppp2.get_last_error_text()}")
-                vpnInterface?.close()
-                vpnInterface = null
+                // Native only takes ownership of the descriptor when
+                // set_network_interface succeeds; otherwise we still own it.
+                closeDetachedTunFd(tunFd)
                 notifyStateChanged(0)
                 stopForeground(true)
                 stopSelf()
@@ -643,32 +701,46 @@ class PppVpnService : VpnService() {
                     PppLog.write(this, "VPN thread exception", e)
                     notifyError("VPN thread exception: ${e.message ?: e.javaClass.name}")
                 } finally {
-                    isRunning = false
+                    val current = currentSession.get() == sessionId
+                    // Instance-local cleanup is always safe.
                     stopLinkStatePoller()
                     stopHeartbeatPoller()
                     stopNetworkMonitor()
                     releaseWakeLock()
                     vpnInterface?.close()
                     vpnInterface = null
-                    val pConfig = pendingConfig
-                    val pOptions = pendingVpnOptions
-                    pendingConfig = null
-                    pendingVpnOptions = null
-                    if (pConfig != null) {
-                        // A reconnect was queued while we were tearing down.
-                        // Replay it on the main looper so the new run() runs
-                        // on a fresh worker thread and we keep the foreground
-                        // service alive (no stopForeground/stopSelf here).
-                        PppLog.write(this, "replaying queued ACTION_CONNECT after teardown")
-                        Handler(Looper.getMainLooper()).post {
-                            startVpn(pConfig, pOptions ?: "{}")
-                        }
+                    if (!current) {
+                        // A newer session owns the shared state; leave it alone.
+                        PppLog.write(this, "vpn thread of superseded session $sessionId finished; shared state untouched")
                     } else {
-                        activeConfigJson = null
-                        activeVpnOptionsJson = null
-                        notifyStateChanged(0) // disconnected
-                        stopForeground(true)
-                        stopSelf()
+                        isRunning = false
+                        val pConfig = pendingConfig
+                        val pOptions = pendingVpnOptions
+                        pendingConfig = null
+                        pendingVpnOptions = null
+                        // The service instance that is alive now; this one may
+                        // have been destroyed and recreated while we drained.
+                        val live = instance
+                        if (pConfig != null && live != null) {
+                            // A reconnect was queued while we were tearing down.
+                            // Replay it on the main looper so the new run() runs
+                            // on a fresh worker thread and we keep the foreground
+                            // service alive (no stopForeground/stopSelf here).
+                            PppLog.write(this, "replaying queued ACTION_CONNECT after teardown")
+                            Handler(Looper.getMainLooper()).post {
+                                val svc = instance
+                                if (svc != null && currentSession.get() == sessionId && !isRunning) {
+                                    svc.startVpn(pConfig, pOptions ?: "{}")
+                                }
+                            }
+                        } else {
+                            val svc = live ?: this
+                            svc.activeConfigJson = null
+                            svc.activeVpnOptionsJson = null
+                            svc.notifyStateChanged(0) // disconnected
+                            svc.stopForeground(true)
+                            svc.stopSelf()
+                        }
                     }
                 }
             }, "openppp2-vpn-thread", 32L * 1024 * 1024).also { it.start() }
@@ -683,7 +755,12 @@ class PppVpnService : VpnService() {
         }
     }
 
-    private fun stopVpn() {
+    /**
+     * Requests a native stop. The blocking JNI call runs on a short-lived
+     * worker so the main thread never waits on the native run context; the
+     * worker is returned so onDestroy can join it with a timeout.
+     */
+    private fun stopVpn(): Thread? {
         PppLog.write(this, "stopVpn requested, isRunning=$isRunning")
         if (!isRunning) {
             resetNativeSession("stopVpn_idle")
@@ -691,17 +768,51 @@ class PppVpnService : VpnService() {
             stopLinkStatePoller()
             stopHeartbeatPoller()
             currentState = 0
-            return
+            return null
         }
 
         notifyStateChanged(3) // disconnecting
+        val sessionId = currentSession.get()
+        return Thread({
+            // Native records a stop that arrives before the client is
+            // published (stop during connect) and reports success. Any other
+            // non-zero result is retried a few times while this session is
+            // still the live one.
+            var attempt = 0
+            while (attempt < 3) {
+                attempt++
+                val result = try {
+                    libopenppp2.stop()
+                } catch (e: Throwable) {
+                    Log.e(TAG, "stop exception", e)
+                    PppLog.write(this, "stop exception", e)
+                    -1
+                }
+                if (result == 0) {
+                    break
+                }
+                PppLog.write(this, "libopenppp2.stop returned=$result attempt=$attempt")
+                if (!isRunning || currentSession.get() != sessionId) {
+                    break
+                }
+                try {
+                    Thread.sleep(300L)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
+            // The vpnThread will exit after run() returns, cleaning up in finally block
+        }, "openppp2-stop-thread").also { it.start() }
+    }
+
+    private fun closeDetachedTunFd(fd: Int) {
         try {
-            libopenppp2.stop()
+            ParcelFileDescriptor.adoptFd(fd).close()
+            PppLog.write(this, "closed detached tun fd=$fd")
         } catch (e: Throwable) {
-            Log.e(TAG, "stop exception", e)
-            PppLog.write(this, "stop exception", e)
+            PppLog.write(this, "close detached tun fd=$fd failed", e)
         }
-        // The vpnThread will exit after run() returns, cleaning up in finally block
     }
 
     fun onStarted(key: Int) {

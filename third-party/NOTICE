@@ -1,0 +1,14 @@
+Optional corocc dependency
+=========================
+Upstream: https://github.com/liulilittle/corocc
+Pinned revision: 92502d92d136ea870a857d1578f13c33191b381f
+Archive SHA-256: 18042dd1ee9263eb40101e38aa7c72f46fb1502331d08619ab69092fb024f1b5
+
+corocc is Copyright (c) 2026 corocc contributors, MIT License.
+Its context-switch assembly derives from Boost.Context, BSL-1.0.
+Original copyright notices remain in the prepared dependency sources.
+See the accompanying MIT.txt and BSL-1.0.txt; also preserve upstream LICENSE
+and THIRD-PARTY.md when redistributing dependency sources.
+
+This notice covers the optional coroutine backend dependency; it is not an
+exhaustive inventory of the repository's existing third-party components.

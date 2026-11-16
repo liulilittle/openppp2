@@ -209,6 +209,12 @@ public:
             }
         }
         threads_.clear();
+        // Dispose posts cleanup that retains the transports and their context.
+        // Drain it after all runners stop, including cancellation completions.
+        if (context_) {
+            context_->restart();
+            context_->run();
+        }
     }
 
     TransmissionPtr Client() const noexcept { return client_; }

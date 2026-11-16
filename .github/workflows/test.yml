@@ -15,10 +15,22 @@ permissions:
   contents: read
 
 jobs:
+  p2p-v2-isolation:
+    name: P2P v2 isolated ASan and UBSan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang libboost-all-dev libssl-dev
+      - name: Run isolated P2P v2 sanitizers
+        run: CXX=clang++ sh scripts/run-p2p-v2-isolation.sh asan
+
   lifecycle-sanitizers:
     name: Lifecycle ASan and UBSan
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -31,7 +43,7 @@ jobs:
   cpp-tsan:
     name: C++ ThreadSanitizer
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -43,7 +55,7 @@ jobs:
 
   cpp-linux:
     name: C++ unit tests (Linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -62,6 +74,14 @@ jobs:
           python3 -m unittest tests.tooling.test_vmux_transport_boundary -v
           python3 -m unittest tests.tooling.test_vmux_receive_semantics_ci -v
           python3 -m unittest tests.tooling.test_proxy_only_static_wiring -v
+          python3 -m unittest tests.tooling.test_p2p_capability_wiring -v
+          python3 -m unittest tests.tooling.test_windows_dns_snapshot_contract -v
+          python3 -m unittest tests.tooling.test_windows_network_resource_contract -v
+          python3 -m unittest tests.tooling.test_windows_ipv6_contract -v
+          python3 -m unittest tests.tooling.test_lifecycle_wiring -v
+          python3 -m unittest tests.tooling.test_ci_workflow_contract -v
+          python3 -m unittest tests.tooling.test_network_lifecycle_issue_pack -v
+          python3 -m unittest tests.tooling.test_network_lifecycle_publish_boundary -v
           PYTHONDONTWRITEBYTECODE=1 python3 tests/tooling/test_datapath_acceptance.py
           python3 tools/check_repository_layout.py
 
@@ -76,6 +96,7 @@ jobs:
           sudo OPENPPP2_NAMESPACE_ARTIFACT_DIR="$PWD/build/route-dns-rollback" bash tests/integration/linux/route_dns_rollback.sh
 
       - name: Upload Route/DNS rollback snapshots
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: route-dns-rollback-snapshots
@@ -85,13 +106,17 @@ jobs:
       - name: MSVC project source parity
         run: bash tools/check_vcxproj_sources.sh
 
+      - name: Prepare pinned XTCP
+        run: bash tools/prepare_xtcp.sh
+
       - name: Configure
         run: |
           cmake -S tests/cpp -B build/test \
             -G Ninja \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
-            -DENABLE_COVERAGE=ON
+            -DENABLE_COVERAGE=ON \
+            -DENABLE_XTCP_TESTS=ON
 
       - name: Build
         run: cmake --build build/test
@@ -103,7 +128,7 @@ jobs:
         run: |
           mkdir -p build/coverage
           LLVM_PROFILE_FILE="$PWD/build/coverage/%p-%m.profraw" \
-            ctest --test-dir build/test --output-on-failure
+            ctest --test-dir build/test --output-on-failure -j$(nproc)
 
       - name: Coverage report
         run: |
@@ -127,9 +152,65 @@ jobs:
           path: build/coverage/summary.txt
           retention-days: 7
 
+      - name: Configure upstream XTCP suite
+        run: |
+          cmake -S third-party/xtcp -B build/xtcp-suite \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DXTCP_BUILD_TESTS=ON
+
+      - name: Build upstream XTCP suite
+        run: cmake --build build/xtcp-suite
+
+      - name: Run upstream XTCP suite
+        run: ctest --test-dir build/xtcp-suite --output-on-failure -j$(nproc) --repeat until-pass:2
+
+      # build/test is coverage-instrumented, so throughput comes from a
+      # separate Release build of the bridge test alone.
+      - name: Capture throughput JSON
+        run: |
+          cmake -S tests/cpp -B build/xtcp-bench \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_XTCP_TESTS=ON
+          cmake --build build/xtcp-bench --target xtcp_runtime_bridge_test
+          mkdir -p build/xtcp-bench/results
+          build/xtcp-bench/xtcp_runtime_bridge_test --throughput xtcp 3 \
+            > build/xtcp-bench/results/xtcp.jsonl
+          build/xtcp-bench/xtcp_runtime_bridge_test --throughput native 3 \
+            > build/xtcp-bench/results/native.jsonl
+
+      - name: Upload throughput JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: xtcp-smoke-throughput
+          path: build/xtcp-bench/results/*.jsonl
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Write lifecycle acceptance summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 tools/write_network_lifecycle_summary.py \
+            --job-status "$JOB_STATUS" \
+            --output build/lifecycle-acceptance/summary.json
+          python3 tools/verify_network_lifecycle_summary.py \
+            build/lifecycle-acceptance/summary.json
+
+      - name: Upload lifecycle acceptance summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lifecycle-acceptance-summary
+          path: build/lifecycle-acceptance/summary.json
+          if-no-files-found: error
+          retention-days: 7
+
   go:
     name: Go unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: go/guardian
@@ -155,9 +236,55 @@ jobs:
           path: go/build/coverage/go-summary.txt
           retention-days: 7
 
+  desktop-rust:
+    name: Desktop frontend and Rust tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    defaults:
+      run:
+        working-directory: desktop/client
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/client/package-lock.json
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+          cache-workspaces: desktop/client/src-tauri
+
+      - name: Install Tauri Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl file libayatana-appindicator3-dev \
+            libgtk-3-dev libssl-dev libwebkit2gtk-4.1-dev \
+            librsvg2-dev libxdo-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Build frontend assets
+        run: npm run build
+
+      - name: Rust unit and integration tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
   flutter:
     name: Flutter unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: android
@@ -182,7 +309,7 @@ jobs:
 
   ios-simulator:
     name: iOS unit tests (simulator)
-    runs-on: macos-latest
+    runs-on: macos-15
     defaults:
       run:
         working-directory: ios/App

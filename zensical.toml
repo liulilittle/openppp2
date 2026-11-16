@@ -1,0 +1,41 @@
+# tools/docs_site.py derives a separate configuration and search index per language.
+[project]
+site_name = "OPENPPP2"
+site_url = "https://miaocchi.github.io/openppp2/"
+site_description = "OPENPPP2 documentation by task"
+repo_url = "https://github.com/Miaocchi/openppp2"
+repo_name = "Miaocchi/openppp2"
+docs_dir = "build/docs-site/en/docs"
+site_dir = "build/docs-site/en/site"
+use_directory_urls = true
+
+[project.theme]
+variant = "modern"
+language = "en"
+features = ["navigation.tabs", "navigation.sections", "navigation.indexes", "navigation.top", "content.code.copy", "search.highlight"]
+font = false
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "material/brightness-7"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "material/brightness-4"
+toggle.name = "Switch to light mode"
+
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+md_in_html = {}
+toc = { permalink = true }
+pymdownx.highlight = { anchor_linenums = true }
+pymdownx.inlinehilite = {}
+pymdownx.superfences.custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+pymdownx.details = {}
+pymdownx.tabbed = { alternate_style = true }

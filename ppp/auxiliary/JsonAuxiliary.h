@@ -7,6 +7,7 @@
 #include <ppp/stdafx.h>
 #include <ppp/Int128.h>
 #include <json/json.h>
+#include <limits.h>
 
 namespace ppp {
     namespace auxiliary {
@@ -63,6 +64,18 @@ namespace ppp {
             static Int64                    AsInt64(const Json::Value& json) noexcept {
                 return AsInt64(json, 0);
             }
+
+            /**
+             * @brief Convert a JSON value to int; returns default_value when the value does not fit in int.
+             */
+            static int                      AsInt(const Json::Value& json, int default_value) noexcept {
+                Int64 v = AsInt64(json, default_value);
+                if (v < INT_MIN || v > INT_MAX) {
+                    return default_value;
+                }
+
+                return static_cast<int>(v);
+            }
             /**
              * @brief Convert a JSON value to unsigned 64-bit integer.
              * @param json Source JSON value.
@@ -111,7 +124,11 @@ namespace ppp {
                     return AsDouble(json);
                 }
                 elif(std::is_same<TValue, char>::value || std::is_same<TValue, short>::value || std::is_same<TValue, int>::value || std::is_same<TValue, long>::value || std::is_same<TValue, long long>::value) {
-                    return AsInt64(json);
+                    if (std::is_same<TValue, int>::value) {
+                        return static_cast<TValue>(AsInt(json, 0));
+                    }
+
+                    return static_cast<TValue>(AsInt64(json));
                 }
                 elif(std::is_same<TValue, bool>::value) {
                     return AsBoolean(json);

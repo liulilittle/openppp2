@@ -50,6 +50,10 @@ BOOST_AUTO_TEST_CASE(default_and_relay_modes_are_not_advertised) {
     BOOST_TEST(std::string(relay.reason) == "relay-only");
 }
 
+BOOST_AUTO_TEST_CASE(production_v2_gate_is_enabled_by_default) {
+    BOOST_TEST(ProductionAuthenticatedControlV1Ready);
+}
+
 BOOST_AUTO_TEST_CASE(direct_requires_authenticated_exporter_and_socket_protection) {
     const auto raw_tcp = P2PCapabilityGate::Evaluate(true, "direct-preferred", false, true, true);
     BOOST_TEST(!raw_tcp.allowed);
@@ -106,6 +110,15 @@ BOOST_AUTO_TEST_CASE(socket_protection_checks_readiness_before_protecting) {
     BOOST_TEST(ProtectP2PSocket(success, 7));
     BOOST_TEST(success->ready_calls == 1);
     BOOST_TEST(success->protect_calls == 1);
+}
+
+BOOST_AUTO_TEST_CASE(linux_p2p_requires_physical_interface_binding) {
+#if defined(_LINUX) && !defined(_ANDROID)
+    BOOST_TEST(!CreateSocketProtector()->IsReady());
+    BOOST_TEST(CreateSocketProtector(-1, "eth0")->IsReady());
+#else
+    BOOST_TEST(true);
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(suspect_processes_authenticated_control_without_forwarding_payload) {

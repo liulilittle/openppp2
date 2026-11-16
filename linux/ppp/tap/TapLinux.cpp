@@ -50,7 +50,9 @@
 #include <exception>
 
 #include <linux/ppp/tap/TapLinux.h>
+#include <ppp/tap/TapOutputLanePolicy.h>
 #include <ppp/ipv6/IPv6Packet.h>
+#include <ppp/tap/TunWriteError.h>
 
 #include <common/unix/UnixAfx.h>
 #include <common/libtcpip/netstack.h>
@@ -775,6 +777,49 @@ namespace ppp {
             return disable == NULLPTR || disable[0] != '1' || disable[1] != '\0';
         }
 
+        static bool TapGsoLanesRequested() noexcept {
+            const char* disable = std::getenv("OPENPPP2_TAP_GSO_LANES_DISABLE");
+            return disable == NULLPTR || disable[0] != '1' || disable[1] != '\0';
+        }
+
+        // Diagnostic ledger events arrive from the shared coalescer and from
+        // every lane; serialize them only when the ledger is enabled.
+        static std::mutex& GsoLedgerMutex() noexcept {
+            static std::mutex mutex;
+            return mutex;
+        }
+
+        struct TapLinux::GsoOutputLane final {
+            GsoOutputLane(TapLinux* tap, boost::asio::io_context& context, int queue_fd, int lane_index,
+                std::shared_ptr<boost::asio::io_context> bound) noexcept
+                : bound_context(std::move(bound))
+                , index(lane_index)
+                , fd(queue_fd)
+                , hold_timer(context)
+                , coalescer([this, tap](const uint8_t* frame, size_t frame_size) noexcept {
+                        return tap->WriteTunFrame(fd, frame, frame_size);
+                    }, {},
+                    [this, tap](const iovec* iovecs, int count, size_t frame_size) noexcept {
+                        return tap->WriteGsoIov(fd, iovecs, count, frame_size);
+                    }, TapGsoPshBoundaryRequested(), TapGsoRetainedWritevRequested()) {
+            }
+
+            // Queue mode: the shard executor owning this lane's asio objects.
+            // Declared first so it outlives the timer and descriptor below.
+            std::shared_ptr<boost::asio::io_context>                                bound_context;
+            std::shared_ptr<TapLaneEnvelopeQueue>                                   envelopes;
+            int                                                                     index           = -1;
+            std::mutex                                                              mutex;
+            int                                                                     fd              = -1;
+            bool                                                                    merge_active    = true;
+            bool                                                                    timer_armed     = false;
+            uint64_t                                                                timer_generation = 0;
+            boost::asio::steady_timer                                               hold_timer;
+            TunGsoCoalescer                                                         coalescer;
+            std::shared_ptr<boost::asio::posix::stream_descriptor>                  sd;
+            std::shared_ptr<Byte>                                                   read_buffer;
+        };
+
         TapLinux::TapLinux(const std::shared_ptr<boost::asio::io_context>& context, const ppp::string& dev, void* tun, uint32_t address, uint32_t gw, uint32_t mask, bool hosted_network)
             : ITap(context, dev, tun, address, gw, mask, hosted_network)
             , promisc_(false)
@@ -792,6 +837,14 @@ namespace ppp {
         }
 
         bool TapLinux::GetRuntimeStats(ppp::tap::TapRuntimeStats& stats) const noexcept {
+            const auto& diagnostics = ppp::tap::TunWriteDiagnostics::Instance();
+            stats.writev_calls = diagnostics.calls.load(std::memory_order_relaxed);
+            stats.writev_bytes = diagnostics.bytes.load(std::memory_order_relaxed);
+            stats.writev_segments = diagnostics.segments.load(std::memory_order_relaxed);
+            stats.writev_max_bytes = diagnostics.max_bytes.load(std::memory_order_relaxed);
+            stats.writev_max_segments = diagnostics.max_segments.load(std::memory_order_relaxed);
+            for (size_t i = 0; i < stats.gso_flushes.size(); ++i)
+                stats.gso_flushes[i] = diagnostics.flushes[i].load(std::memory_order_relaxed);
             std::lock_guard<std::mutex> lock(gso_mutex_);
             stats.vnet_header = vnet_header_;
             stats.gso_merge_active = gso_merge_active_;
@@ -801,12 +854,36 @@ namespace ppp {
             stats.direct_gso_packets = direct_gso_packets_.load(std::memory_order_relaxed);
             stats.direct_gso_bytes = direct_gso_bytes_.load(std::memory_order_relaxed);
             stats.direct_gso_rejected = direct_gso_rejected_.load(std::memory_order_relaxed);
+            stats.bound_output_lanes = bound_output_lanes_.load(std::memory_order_relaxed);
+            if (const std::shared_ptr<TapLaneEnvelopeQueue> envelopes = std::atomic_load(&lane_envelopes_)) {
+                const TapLaneEnvelopeQueue::Snapshot snapshot = envelopes->GetSnapshot();
+                stats.lane_envelope_accepted = snapshot.accepted;
+                stats.lane_envelope_full_drops = snapshot.full_drops;
+            }
             return true;
+        }
+
+        void TapLinux::SetOutputLaneBindingProvider(TapLaneBindingProvider provider) noexcept {
+            std::lock_guard<std::mutex> lanes_lock(gso_lanes_mutex_);
+            try {
+                if (provider && !std::atomic_load(&lane_envelopes_)) {
+                    std::atomic_store(&lane_envelopes_, std::make_shared<TapLaneEnvelopeQueue>());
+                }
+                lane_binding_provider_ = std::move(provider);
+            }
+            catch (...) {
+                lane_binding_provider_ = nullptr;
+            }
         }
 
         int TapLinux::OpenDriver(const char* ifrName) noexcept {
             if (NULLPTR == ifrName || *ifrName == '\x0') {
                 ifrName = "tun%d";
+            }
+
+            if (strlen(ifrName) >= IFNAMSIZ) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelOpenFailed);
+                return -1;
             }
 
             // __oflag
@@ -832,7 +909,9 @@ namespace ppp {
 
             // By default, try to enable tun/tap-driver multi-queue mode, if not single-queue mode.
             // https://www.kernel.org/doc/Documentation/networking/tuntap.txt
-            strncpy(ifr.ifr_name, ifrName, IFNAMSIZ);
+            // Copy with a terminator; the length was validated before the device was opened.
+            memcpy(ifr.ifr_name, ifrName, strlen(ifrName));
+            ifr.ifr_name[IFNAMSIZ - 1] = 0;
 
             bool request_gso = !tun_gso_force_bare_ &&
                 (TapGsoMergeRequested() || TapNdiTsoRequested());
@@ -916,8 +995,9 @@ namespace ppp {
             }
 
             struct ifreq ifr;
-            memset(&ifr, 0, sizeof(ifr));
-            strcpy(ifr.ifr_name, ifrName.data());
+            if (!CopyInterfaceName(ifr, ifrName)) {
+                return false;
+            }
 
             struct sockaddr_in* addr = (struct sockaddr_in*)&(ifr.ifr_addr);
             addr->sin_family = AF_INET;
@@ -1201,8 +1281,9 @@ namespace ppp {
             }
 
             struct ifreq ifr;
-            memset(&ifr, 0, sizeof(ifr));
-            strcpy(ifr.ifr_name, ifrName.data());
+            if (!CopyInterfaceName(ifr, ifrName)) {
+                return "";
+            }
 
             struct sockaddr_in* addr = (struct sockaddr_in*)&(ifr.ifr_addr);
             addr->sin_family = AF_INET;
@@ -1228,8 +1309,9 @@ namespace ppp {
             }
 
             struct ifreq ifr;
-            memset(&ifr, 0, sizeof(ifr));
-            strcpy(ifr.ifr_name, ifrName.data());
+            if (!CopyInterfaceName(ifr, ifrName)) {
+                return "";
+            }
 
             struct sockaddr_in* addr = (struct sockaddr_in*)&(ifr.ifr_netmask);
             addr->sin_family = AF_INET;
@@ -1254,8 +1336,9 @@ namespace ppp {
             }
 
             struct ifreq ifr;
-            memset(&ifr, 0, sizeof(ifr));
-            strncpy(ifr.ifr_name, ifrName.data(), ifrName.size());
+            if (!CopyInterfaceName(ifr, ifrName)) {
+                return "";
+            }
 
             if (ioctl(ifc_ctl_sock.sock_v4, SIOCGIFHWADDR, &ifr)) {
                 return "";
@@ -1275,8 +1358,9 @@ namespace ppp {
             }
 
             struct ifreq ifr;
-            memset(&ifr, 0, sizeof(ifr));
-            strncpy(ifr.ifr_name, ifrName.data(), ifrName.size());
+            if (!CopyInterfaceName(ifr, ifrName)) {
+                return -1;
+            }
 
             if (ioctl(ifc_ctl_sock.sock_v4, SIOGIFINDEX, &ifr)) {
                 return -1;
@@ -1335,7 +1419,7 @@ namespace ppp {
             return err;
         }
 
-        static bool SetRouteToLinux(UInt32 address, int prefix, UInt32 gw, bool action_add_or_delete) noexcept {
+        static bool SetRouteToLinux(const ppp::string& ifrName, UInt32 address, int prefix, UInt32 gw, bool action_add_or_delete) noexcept {
             if (prefix < 0 || prefix > 32) {
                 prefix = 32;
             }
@@ -1344,27 +1428,39 @@ namespace ppp {
             ppp::string address_string = IPEndPoint::ToAddressString(address);
             ppp::string gw_string = IPEndPoint::ToAddressString(gw);
 
+            // Deleting without "dev" could remove same-destination routes owned by other interfaces.
+            ppp::string dev_suffix;
+            if (!action_add_or_delete) {
+                if (!IsSafeInterfaceName(ifrName)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                    return false;
+                }
+                dev_suffix = " dev " + ifrName;
+            }
+
             char cmd[1000];
             if (prefix > 31) {
                 len = snprintf(cmd,
                     sizeof(cmd),
-                    "route %s -host %s gw %s > /dev/null 2>&1",
+                    "route %s -host %s gw %s%s > /dev/null 2>&1",
                     action_add_or_delete ? "add" : "delete",
                     address_string.data(),
-                    gw_string.data());
+                    gw_string.data(),
+                    dev_suffix.data());
             }
             else {
                 ppp::string netmask_string = IPEndPoint::ToAddressString(IPEndPoint::PrefixToNetmask(prefix));
                 len = snprintf(cmd,
                     sizeof(cmd),
-                    "route %s -net %s netmask %s gw %s > /dev/null 2>&1",
+                    "route %s -net %s netmask %s gw %s%s > /dev/null 2>&1",
                     action_add_or_delete ? "add" : "delete",
                     address_string.data(),
                     netmask_string.data(),
-                    gw_string.data());
+                    gw_string.data(),
+                    dev_suffix.data());
             }
 
-            if (len < 1) {
+            if (len < 1 || len >= (int)sizeof(cmd)) {
                 ppp::diagnostics::SetLastErrorCode(action_add_or_delete
                     ? ppp::diagnostics::ErrorCode::RouteAddFailed
                     : ppp::diagnostics::ErrorCode::RouteDeleteFailed);
@@ -1382,7 +1478,7 @@ namespace ppp {
             }
 
             bool any = false;
-            for (;;) {
+            for (int i = 0; i < 64; i++) {
                 int status = system(cmd);
                 if (status != 0) {
                     break;
@@ -1396,7 +1492,7 @@ namespace ppp {
         }
 
         bool TapLinux::AddRoute2(UInt32 address, int prefix, UInt32 gw) noexcept {
-            bool ok = SetRouteToLinux(address, prefix, gw, true);
+            bool ok = SetRouteToLinux(ppp::string(), address, prefix, gw, true);
             if (!ok) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteAddFailed);
             }
@@ -1404,7 +1500,8 @@ namespace ppp {
         }
 
         bool TapLinux::DeleteRoute2(UInt32 address, int prefix, UInt32 gw) noexcept {
-            return SetRouteToLinux(address, prefix, gw, false);
+            // No interface is known here; a dev-less delete is refused (no callers). Use DeleteRoute.
+            return SetRouteToLinux(ppp::string(), address, prefix, gw, false);
         }
 
         TapLinux::RouteMutationResult TapLinux::AddRouteStatus(
@@ -1417,7 +1514,7 @@ namespace ppp {
                 if (TryRouteExists(ifrName, address, prefix, gw, exists) && exists) {
                     return RouteMutationResult::Unchanged;
                 }
-                bool ok = SetRouteToLinux(address, prefix, gw, true);
+                bool ok = SetRouteToLinux(ifrName, address, prefix, gw, true);
                 if (ok) {
                     return RouteMutationResult::Changed;
                 }
@@ -1460,7 +1557,7 @@ namespace ppp {
 
         bool TapLinux::DeleteRoute(const ppp::string& ifrName, UInt32 address, int prefix, UInt32 gw) noexcept {
             if (ifc_ctl_sock_compatible_route) {
-                if (SetRouteToLinux(address, prefix, gw, false)) {
+                if (SetRouteToLinux(ifrName, address, prefix, gw, false)) {
                     return true;
                 }
                 bool exists = false;
@@ -1479,7 +1576,7 @@ namespace ppp {
 
             bool any = false;
             int last_err = 0;
-            for (;;) {
+            for (int i = 0; i < 64; i++) {
                 int err = TapLinux::SetRoute(SIOCDELRT, ifrName, in_dst, prefix, in_gw);
                 if (err != 0) {
                     last_err = err;
@@ -1841,6 +1938,11 @@ namespace ppp {
                 SetNetifUp(false);
             }
 
+            DisableGsoOutputLanes(TunGsoCoalescer::FlushReason::Terminate, true);
+            if (const std::shared_ptr<TapLaneEnvelopeQueue> envelopes = std::atomic_load(&lane_envelopes_)) {
+                envelopes->Close(); // drop staged reads; in-flight credit completes normally
+            }
+
             stl::remove_reference<decltype(tun_ssmt_sds_)>::type tun_ssmt_sds;
             if (Ssmt()) {
                 SynchronizedObjectScope scope(syncobj_);
@@ -2108,10 +2210,15 @@ namespace ppp {
         ssize_t TapLinux::WriteTunFrame(int fd, const uint8_t* frame, size_t frame_size) noexcept {
             ppp::diagnostics::datapath_perf::Scope write_scope;
             const bool direct_write_accounting = ppp::diagnostics::datapath_perf::BeginTunDirectWrite();
-            const ssize_t bytes_transferred = ::write(fd, frame, frame_size);
+            ssize_t bytes_transferred;
+            do {
+                bytes_transferred = ::write(fd, frame, frame_size);
+            } while (bytes_transferred < 0 && ppp::tap::ClassifyTunWriteErrno(errno) == ppp::tap::TunWriteErrorKind::Retry);
+            const int write_errno = errno;
             ppp::diagnostics::datapath_perf::EndTunDirectWrite(direct_write_accounting);
             ppp::diagnostics::datapath_perf::RecordTunDirectWrite(static_cast<int>(frame_size),
                 static_cast<int>(bytes_transferred), write_scope.Elapsed());
+            errno = write_errno;
             return bytes_transferred;
         }
 
@@ -2120,12 +2227,30 @@ namespace ppp {
         }
 
         ssize_t TapLinux::WriteGsoIovLocked(const iovec* iovecs, int count, size_t frame_size) noexcept {
+            return WriteGsoIov(gso_write_fd_, iovecs, count, frame_size);
+        }
+
+        ssize_t TapLinux::WriteGsoIov(int fd, const iovec* iovecs, int count, size_t frame_size) noexcept {
             ppp::diagnostics::datapath_perf::Scope write_scope;
             const bool direct_write_accounting = ppp::diagnostics::datapath_perf::BeginTunDirectWrite();
-            const ssize_t written = ::writev(gso_write_fd_, iovecs, count);
+            ssize_t written;
+            do {
+                written = ::writev(fd, iovecs, count);
+                const int attempt_errno = errno;
+                const auto* header = static_cast<const virtio_net_hdr*>(iovecs[0].iov_base);
+                const size_t gso_size = le16toh(header->gso_size);
+                const size_t header_size = le16toh(header->hdr_len);
+                const size_t payload = frame_size > sizeof(*header) + header_size
+                    ? frame_size - sizeof(*header) - header_size : 0;
+                ppp::tap::TunWriteDiagnostics::Instance().Write(frame_size,
+                    gso_size ? (payload + gso_size - 1) / gso_size : 1);
+                errno = attempt_errno;
+            } while (written < 0 && ppp::tap::ClassifyTunWriteErrno(errno) == ppp::tap::TunWriteErrorKind::Retry);
+            const int write_errno = errno;
             ppp::diagnostics::datapath_perf::EndTunDirectWrite(direct_write_accounting);
             ppp::diagnostics::datapath_perf::RecordTunDirectWrite(static_cast<int>(frame_size),
                 static_cast<int>(written), write_scope.Elapsed());
+            errno = write_errno;
             return written;
         }
 
@@ -2189,6 +2314,7 @@ namespace ppp {
                     std::lock_guard<std::mutex> lock(gso_mutex_);
                     DisableGsoMergeLocked(static_cast<int>(reinterpret_cast<std::intptr_t>(GetHandle())));
                 }
+                DisableGsoOutputLanes(TunGsoCoalescer::FlushReason::Terminate, false);
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelReadFailed);
                 Dispose();
             };
@@ -2312,6 +2438,12 @@ namespace ppp {
                 return false;
             }
 
+            if (!Ssmt()) {
+                if (GsoOutputLane* lane = CurrentGsoOutputLane()) {
+                    return OutputGsoLane(*lane, packet, packet_size, header);
+                }
+            }
+
             const int tun = static_cast<int>(reinterpret_cast<std::intptr_t>(GetHandle()));
             std::lock_guard<std::mutex> lock(gso_mutex_);
             if (!vnet_header_ || !tx_gso_supported_ || gso_ssmt_disabled_ || tun < 0) {
@@ -2344,6 +2476,437 @@ namespace ppp {
             ppp::diagnostics::datapath_perf::EndTunDirectWrite(direct_write_accounting);
             ppp::diagnostics::datapath_perf::RecordTunDirectWrite(
                 static_cast<int>(expected), static_cast<int>(written), write_scope.Elapsed());
+            if (written != static_cast<ssize_t>(expected)) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                FailTunWrite(TunWriteFailureSource::DirectGsoWrite);
+                return false;
+            }
+            direct_gso_packets_.fetch_add(1, std::memory_order_relaxed);
+            direct_gso_bytes_.fetch_add(static_cast<uint64_t>(packet_size), std::memory_order_relaxed);
+            ppp::telemetry::Count("tap.ndi_gso.packets", 1);
+            ppp::telemetry::Count("tap.ndi_gso.bytes", packet_size);
+            return true;
+        }
+
+        int TapLinux::OpenSecondaryQueue() noexcept {
+            ppp::string dev = GetId();
+            if (dev.empty()) {
+                return -1;
+            }
+
+            int tun = OpenDriver(dev.data());
+            if (tun == -1) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6TransitTapOpenFailed);
+                return -1;
+            }
+            struct ifreq driver_ifr;
+            memset(&driver_ifr, 0, sizeof(driver_ifr));
+            const bool got_secondary_ifr = ioctl(tun, TUNGETIFF, &driver_ifr) == 0;
+            const bool secondary_vnet = got_secondary_ifr && (driver_ifr.ifr_flags & IFF_VNET_HDR) != 0;
+            int header_readback = 0;
+            if (!got_secondary_ifr || secondary_vnet != vnet_header_ ||
+                (secondary_vnet && (ioctl(tun, TUNGETVNETHDRSZ, &header_readback) != 0 ||
+                    static_cast<size_t>(header_readback) != vnet_header_size_ ||
+                    !vnet::IsStandardHeaderSize(vnet_header_size_)))) {
+                ::close(tun);
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelDeviceConfigureFailed);
+                return -1;
+            }
+            return tun;
+        }
+
+        TapLinux::GsoOutputLane* TapLinux::CurrentGsoOutputLane() noexcept {
+            const int index = SelectTapOutputLane(TapOutputLaneSlot(), gso_lanes_enabled_);
+            if (index < 0) {
+                return NULLPTR;
+            }
+            // An existing lane stays in use after the lanes are disabled: its
+            // pending frames were flushed in order and later writes go out
+            // unmerged on the same queue, so the flow never changes queue.
+            GsoOutputLane* lane = gso_lanes_[index].load(std::memory_order_acquire);
+            if (NULLPTR != lane) {
+                return lane;
+            }
+            if (gso_lanes_disabled_.load(std::memory_order_acquire) ||
+                (gso_lanes_failed_.load(std::memory_order_relaxed) & (1U << index)) != 0) {
+                return NULLPTR;
+            }
+            return CreateGsoOutputLane(index);
+        }
+
+        TapLinux::GsoOutputLane* TapLinux::CreateGsoOutputLane(int index) noexcept {
+            std::lock_guard<std::mutex> lanes_lock(gso_lanes_mutex_);
+            if (GsoOutputLane* existing = gso_lanes_[index].load(std::memory_order_acquire)) {
+                return existing;
+            }
+            const auto fail = [this, index]() noexcept -> GsoOutputLane* {
+                gso_lanes_failed_.fetch_or(1U << index, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.gso_lane.open_failed", 1);
+                return NULLPTR;
+            };
+            if (gso_lanes_disabled_.load(std::memory_order_acquire) || disposed_.load() != FALSE) {
+                return NULLPTR;
+            }
+            {
+                std::lock_guard<std::mutex> lock(gso_mutex_);
+                if (!gso_merge_active_ || gso_ssmt_disabled_) {
+                    return fail();
+                }
+            }
+
+            std::shared_ptr<boost::asio::io_context> context = GetContext();
+            if (NULLPTR == context) {
+                return fail();
+            }
+            // Opt-in queue mode: own the lane on the shard executor. Without a
+            // provider (default) the lane stays on the TAP context.
+            std::shared_ptr<boost::asio::io_context> bound;
+            std::shared_ptr<TapLaneEnvelopeQueue> envelopes = std::atomic_load(&lane_envelopes_);
+            if (lane_binding_provider_ && envelopes) {
+                TapLaneBinding binding;
+                if (lane_binding_provider_(index, binding) && binding.context) {
+                    bound = std::move(binding.context);
+                }
+            }
+            boost::asio::io_context& lane_context = bound ? *bound : *context;
+            const int fd = OpenSecondaryQueue();
+            if (fd == -1) {
+                return fail();
+            }
+            std::unique_ptr<GsoOutputLane> lane(new (std::nothrow) GsoOutputLane(this, lane_context, fd, index, bound));
+            if (!lane) {
+                ::close(fd);
+                return fail();
+            }
+            lane->read_buffer = make_shared_alloc<Byte>(read_capacity_);
+            lane->sd = make_shared_object<boost::asio::posix::stream_descriptor>(lane_context, fd);
+            if (bound) {
+                lane->envelopes = envelopes;
+            }
+            if (NULLPTR == lane->read_buffer || NULLPTR == lane->sd) {
+                if (lane->sd) {
+                    Socket::Closestream(lane->sd);
+                } else {
+                    ::close(fd);
+                }
+                return fail();
+            }
+
+            GsoMergeabilityTelemetry& telemetry = GsoMergeabilityTelemetry::Instance();
+            if (telemetry.ledger_enabled) {
+                GsoMergeabilityTelemetry* observed = &telemetry;
+                lane->coalescer.SetObserver([observed](const TunGsoCoalescer::Event& event) {
+                    std::lock_guard<std::mutex> ledger_lock(GsoLedgerMutex());
+                    observed->ledger.OnEvent(event);
+                });
+            }
+
+            GsoOutputLane* raw = lane.get();
+            gso_lane_owners_[index] = std::move(lane);
+            gso_lanes_[index].store(raw, std::memory_order_release);
+            ppp::telemetry::Log(Level::kDebug, "tap", "gso lane %d fd add: %d", index, fd);
+            ppp::telemetry::Count("tap.gso_lane.open", 1);
+
+            // The queue must be read: the kernel steers the lane's return
+            // traffic here, and unread packets would be dropped.
+            if (bound) {
+                bound_output_lanes_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.gso_lane.bound", 1);
+                // Weak capture: the shard executor may outlive or stop before
+                // the TAP; neither may keep the other alive through a handler.
+                const std::weak_ptr<ITap> weak = shared_from_this();
+                boost::asio::post(lane_context, [weak, this, raw]() noexcept {
+                    if (const std::shared_ptr<ITap> self = weak.lock()) {
+                        LaneReadLoop(raw);
+                    }
+                });
+                return raw;
+            }
+            std::shared_ptr<ITap> self = shared_from_this();
+            boost::asio::post(*context, [self, this, raw]() noexcept {
+                LaneReadLoop(raw);
+            });
+            return raw;
+        }
+
+        void TapLinux::LaneReadLoop(GsoOutputLane* lane) noexcept {
+            if (disposed_.load() != FALSE) {
+                return;
+            }
+            std::shared_ptr<boost::asio::posix::stream_descriptor> sd = lane->sd;
+            std::shared_ptr<Byte> buffer = lane->read_buffer;
+            if (NULLPTR == sd || !sd->is_open() || NULLPTR == buffer) {
+                return;
+            }
+
+            if (lane->bound_context) {
+                // Queue mode: read on the shard worker, copy the envelope, then
+                // re-arm; OnInput keeps running on the TAP context.
+                const std::weak_ptr<ITap> weak = shared_from_this();
+                sd->async_read_some(boost::asio::buffer(buffer.get(), read_capacity_),
+                    [weak, this, lane, sd, buffer](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                        if (ec == boost::system::errc::operation_canceled) {
+                            return;
+                        }
+                        const std::shared_ptr<ITap> self = weak.lock();
+                        if (NULLPTR == self) {
+                            return;
+                        }
+                        const int length = std::max<int>(ec ? -1 : sz, -1);
+                        if (length > 0) {
+                            ppp::diagnostics::datapath_perf::RecordTunRead(length);
+                            StageLaneEnvelope(lane, buffer.get(), length);
+                        }
+                        if (disposed_.load() == FALSE) {
+                            LaneReadLoop(lane);
+                        }
+                    });
+                return;
+            }
+            std::shared_ptr<ITap> self = shared_from_this();
+            sd->async_read_some(boost::asio::buffer(buffer.get(), read_capacity_),
+                [self, this, lane, sd, buffer](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                    if (ec == boost::system::errc::operation_canceled) {
+                        return;
+                    }
+                    const int length = std::max<int>(ec ? -1 : sz, -1);
+                    if (length > 0) {
+                        ppp::diagnostics::datapath_perf::RecordTunRead(length);
+                        PacketInputEventArgs event{ buffer.get(), length };
+                        OnInput(event);
+                    }
+                    if (disposed_.load() == FALSE) {
+                        LaneReadLoop(lane);
+                    }
+                });
+        }
+
+        void TapLinux::StageLaneEnvelope(GsoOutputLane* lane, const Byte* packet, int length) noexcept {
+            const std::shared_ptr<TapLaneEnvelopeQueue>& envelopes = lane->envelopes;
+            if (NULLPTR == envelopes || length <= 0) {
+                return;
+            }
+            std::shared_ptr<Byte> copy = make_shared_alloc<Byte>(length);
+            if (NULLPTR == copy) {
+                ppp::telemetry::Count("tap.lane_envelope.alloc_drops", 1);
+                return;
+            }
+            memcpy(copy.get(), packet, static_cast<size_t>(length));
+            switch (envelopes->Push(lane->index, std::move(copy), static_cast<std::size_t>(length))) {
+            case TapLaneEnvelopeQueue::PushResult::AcceptedPostDrain: {
+                std::shared_ptr<boost::asio::io_context> context = GetContext();
+                const std::weak_ptr<ITap> weak = shared_from_this();
+                bool posted = false;
+                if (NULLPTR != context) {
+                    try {
+                        boost::asio::post(*context, [weak, this]() noexcept {
+                            if (const std::shared_ptr<ITap> self = weak.lock()) {
+                                DrainLaneEnvelopes();
+                            }
+                        });
+                        posted = true;
+                    }
+                    catch (...) {
+                    }
+                }
+                if (!posted) {
+                    // No consumer can run: stop staging instead of filling silently.
+                    envelopes->Close();
+                }
+                break;
+            }
+            case TapLaneEnvelopeQueue::PushResult::Full:
+                ppp::telemetry::Count("tap.lane_envelope.full_drops", 1);
+                break;
+            default:
+                break;
+            }
+        }
+
+        void TapLinux::DrainLaneEnvelopes() noexcept {
+            const std::shared_ptr<TapLaneEnvelopeQueue> envelopes = std::atomic_load(&lane_envelopes_);
+            if (NULLPTR == envelopes) {
+                return;
+            }
+            static constexpr int kDrainBatch = 64;
+            for (int i = 0; i < kDrainBatch; ++i) {
+                TapLaneEnvelopeQueue::Envelope envelope;
+                if (!envelopes->Pop(envelope)) {
+                    break;
+                }
+                if (disposed_.load() == FALSE) {
+                    // Original owner and order: OnInput and every policy check
+                    // run on the TAP context exactly as for a TAP-context read.
+                    PacketInputEventArgs event{ envelope.data.get(), static_cast<int>(envelope.length) };
+                    OnInput(event);
+                }
+                envelopes->Complete(envelope); // credit held until OnInput returned
+            }
+            if (envelopes->EndDrain()) {
+                std::shared_ptr<boost::asio::io_context> context = GetContext();
+                const std::weak_ptr<ITap> weak = shared_from_this();
+                if (NULLPTR != context) {
+                    boost::asio::post(*context, [weak, this]() noexcept {
+                        if (const std::shared_ptr<ITap> self = weak.lock()) {
+                            DrainLaneEnvelopes();
+                        }
+                    });
+                }
+            }
+        }
+
+        void TapLinux::ArmLaneHoldTimerLocked(GsoOutputLane& lane) noexcept {
+            if (lane.timer_armed || !lane.merge_active) return;
+            lane.timer_armed = true;
+            const uint64_t generation = ++lane.timer_generation;
+            lane.hold_timer.expires_after(std::chrono::nanoseconds(lane.coalescer.hold_ns()));
+            GsoOutputLane* target = &lane;
+            if (lane.bound_context) {
+                // Queue mode: weak capture so a stopped shard executor cannot
+                // keep the TAP alive through a pending timer handler.
+                const std::weak_ptr<ITap> weak = shared_from_this();
+                lane.hold_timer.async_wait([weak, this, target, generation](const boost::system::error_code& ec) noexcept {
+                    const std::shared_ptr<ITap> self = weak.lock();
+                    if (NULLPTR == self) return;
+                    std::lock_guard<std::mutex> lock(target->mutex);
+                    if (generation != target->timer_generation) return;
+                    target->timer_armed = false;
+                    if (ec || !target->merge_active || target->fd < 0 || disposed_.load() != FALSE) return;
+                    if (!target->coalescer.FlushExpired()) {
+                        target->merge_active = false;
+                        FailTunWrite(TunWriteFailureSource::GsoHoldTimerFlush);
+                    }
+                });
+                return;
+            }
+            std::shared_ptr<ITap> self = shared_from_this();
+            lane.hold_timer.async_wait([self, this, target, generation](const boost::system::error_code& ec) noexcept {
+                std::lock_guard<std::mutex> lock(target->mutex);
+                if (generation != target->timer_generation) return;
+                target->timer_armed = false;
+                if (ec || !target->merge_active || target->fd < 0 || disposed_.load() != FALSE) return;
+                if (!target->coalescer.FlushExpired()) {
+                    target->merge_active = false;
+                    FailTunWrite(TunWriteFailureSource::GsoHoldTimerFlush);
+                }
+            });
+        }
+
+        void TapLinux::CancelLaneHoldTimerLocked(GsoOutputLane& lane) noexcept {
+            if (!lane.timer_armed) return;
+            lane.timer_armed = false;
+            ++lane.timer_generation;
+            boost::system::error_code ec;
+            lane.hold_timer.cancel(ec);
+        }
+
+        void TapLinux::DisableGsoOutputLanes(TunGsoCoalescer::FlushReason reason, bool close) noexcept {
+            gso_lanes_disabled_.store(true, std::memory_order_release);
+            std::lock_guard<std::mutex> lanes_lock(gso_lanes_mutex_);
+            for (std::unique_ptr<GsoOutputLane>& owner : gso_lane_owners_) {
+                GsoOutputLane* lane = owner.get();
+                if (NULLPTR == lane) {
+                    continue;
+                }
+                std::lock_guard<std::mutex> lock(lane->mutex);
+                CancelLaneHoldTimerLocked(*lane);
+                if (lane->merge_active) {
+                    lane->merge_active = false;
+                    if (lane->fd >= 0 && !lane->coalescer.DisableAndFlush(reason)) {
+                        FailTunWrite(TunWriteFailureSource::GsoDisableFlush);
+                    }
+                }
+                if (close && lane->fd >= 0) {
+                    lane->fd = -1;
+                    ppp::telemetry::Count("tap.gso_lane.close", 1);
+                    if (lane->bound_context && !lane->bound_context->stopped()) {
+                        // Close on the owner executor so the descriptor is never
+                        // torn down concurrently with its in-flight read.
+                        std::shared_ptr<boost::asio::posix::stream_descriptor> sd = lane->sd;
+                        try {
+                            boost::asio::post(*lane->bound_context, [sd]() noexcept {
+                                std::shared_ptr<boost::asio::posix::stream_descriptor> owned = sd;
+                                Socket::Closestream(owned);
+                            });
+                        }
+                        catch (...) {
+                            Socket::Closestream(lane->sd);
+                        }
+                    }
+                    else {
+                        Socket::Closestream(lane->sd);
+                    }
+                }
+            }
+        }
+
+        bool TapLinux::OutputLane(GsoOutputLane& lane, const void* packet, int packet_size,
+            RetainedPacketOwner* owner) noexcept {
+            GsoMergeabilityTelemetry& mergeability = GsoMergeabilityTelemetry::Instance();
+            std::lock_guard<std::mutex> lock(lane.mutex);
+            if (lane.fd < 0 || disposed_.load() != FALSE) {
+                mergeability.CountTunOutputDisposed();
+                return false;
+            }
+            if (tun_write_failed_.load() != FALSE) {
+                mergeability.CountTunOutputWriteFailed();
+                return false;
+            }
+            if (lane.merge_active && (TapGsoMergeDisableRequested() ||
+                gso_lanes_disabled_.load(std::memory_order_acquire))) {
+                CancelLaneHoldTimerLocked(lane);
+                lane.merge_active = false;
+                if (!lane.coalescer.DisableAndFlush(TunGsoCoalescer::FlushReason::Terminate)) {
+                    FailTunWrite(TunWriteFailureSource::GsoDisableFlush);
+                    return false;
+                }
+            }
+            if (!lane.merge_active) {
+                const bool ok = lane.coalescer.WriteOrdinaryFrame(static_cast<const uint8_t*>(packet),
+                    static_cast<size_t>(packet_size), owner != nullptr && owner->ChecksumPartial());
+                if (!ok) FailTunWrite(TunWriteFailureSource::GsoOrdinaryWrite);
+                return ok;
+            }
+
+            const bool was_pending = lane.coalescer.has_pending();
+            const bool ok = owner != nullptr
+                ? lane.coalescer.PushOwned(static_cast<const uint8_t*>(packet),
+                    static_cast<size_t>(packet_size), std::move(*owner))
+                : lane.coalescer.Push(static_cast<const uint8_t*>(packet), static_cast<size_t>(packet_size));
+            if (ok && !was_pending && lane.coalescer.has_pending()) ArmLaneHoldTimerLocked(lane);
+            if (!lane.coalescer.has_pending()) CancelLaneHoldTimerLocked(lane);
+            if (!lane.coalescer.enabled()) lane.merge_active = false;
+            if (!ok) FailTunWrite(TunWriteFailureSource::GsoCoalescerPush);
+            return ok;
+        }
+
+        bool TapLinux::OutputGsoLane(GsoOutputLane& lane, const std::shared_ptr<Byte>& packet, int packet_size,
+            const virtio_net_hdr& header) noexcept {
+            std::lock_guard<std::mutex> lock(lane.mutex);
+            if (!tx_gso_supported_ || lane.fd < 0 || gso_lanes_disabled_.load(std::memory_order_acquire)) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                return false;
+            }
+
+            // Preserve ordering with ordinary packets held by this lane's
+            // coalescer; a flush failure is terminal, as on the shared path.
+            if (!lane.coalescer.Flush(TunGsoCoalescer::FlushReason::Explicit)) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                FailTunWrite(TunWriteFailureSource::DirectGsoWrite);
+                return false;
+            }
+            CancelLaneHoldTimerLocked(lane);
+
+            struct iovec iov[2];
+            iov[0].iov_base = const_cast<virtio_net_hdr*>(&header);
+            iov[0].iov_len = sizeof(header);
+            iov[1].iov_base = packet.get();
+            iov[1].iov_len = static_cast<size_t>(packet_size);
+            const size_t expected = sizeof(header) + static_cast<size_t>(packet_size);
+            const ssize_t written = WriteGsoIov(lane.fd, iov, 2, expected);
             if (written != static_cast<ssize_t>(expected)) {
                 direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
                 ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
@@ -2406,10 +2969,24 @@ namespace ppp {
                 // Preserve the bare/default path: no GSO state and no feature lock.
                 const ssize_t written = WriteTunFrame(tun, static_cast<const uint8_t*>(packet), static_cast<size_t>(packet_size));
                 if (written != packet_size) {
+                    // A per-packet error (bad frame from the tunnel, momentary buffer
+                    // pressure) drops this packet only; only descriptor errors close the TAP.
+                    if (written < 0 && ppp::tap::ClassifyTunWriteErrno(errno) == ppp::tap::TunWriteErrorKind::DropPacket) {
+                        mergeability.CountTunOutputWriteFailed();
+                        ppp::telemetry::Count("tap.output.dropped", 1);
+                        return false;
+                    }
+
                     FailTunWrite(TunWriteFailureSource::BareWrite);
                     return false;
                 }
                 return true;
+            }
+
+            if (!Ssmt()) {
+                if (GsoOutputLane* lane = CurrentGsoOutputLane()) {
+                    return OutputLane(*lane, packet, packet_size, owner);
+                }
             }
 
             std::lock_guard<std::mutex> lock(gso_mutex_);
@@ -2417,7 +2994,10 @@ namespace ppp {
                 !gso_observer_hooked_ && !Ssmt()) {
                 GsoMergeabilityTelemetry* telemetry = &mergeability;
                 gso_coalescer_.SetObserver([this, telemetry](const TunGsoCoalescer::Event& event) {
-                    if (telemetry->ledger_enabled) telemetry->ledger.OnEvent(event);
+                    if (telemetry->ledger_enabled) {
+                        std::lock_guard<std::mutex> ledger_lock(GsoLedgerMutex());
+                        telemetry->ledger.OnEvent(event);
+                    }
                     if (gso_push_observation_active_) telemetry->first_push_failure.OnEvent(event);
                 });
                 gso_observer_hooked_ = true;
@@ -2486,6 +3066,7 @@ namespace ppp {
                     CancelGsoHoldTimerLocked();
                 }
             }
+            DisableGsoOutputLanes(TunGsoCoalescer::FlushReason::Ssmt, false);
 
             ppp::string dev = GetId();
             if (dev.empty()) {
@@ -2500,22 +3081,8 @@ namespace ppp {
                 return false;
             }
 
-            int tun = OpenDriver(dev.data());
+            int tun = OpenSecondaryQueue();
             if (tun == -1) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6TransitTapOpenFailed);
-                return false;
-            }
-            struct ifreq driver_ifr;
-            memset(&driver_ifr, 0, sizeof(driver_ifr));
-            const bool got_secondary_ifr = ioctl(tun, TUNGETIFF, &driver_ifr) == 0;
-            const bool secondary_vnet = got_secondary_ifr && (driver_ifr.ifr_flags & IFF_VNET_HDR) != 0;
-            int header_readback = 0;
-            if (!got_secondary_ifr || secondary_vnet != vnet_header_ ||
-                (secondary_vnet && (ioctl(tun, TUNGETVNETHDRSZ, &header_readback) != 0 ||
-                    static_cast<size_t>(header_readback) != vnet_header_size_ ||
-                    !vnet::IsStandardHeaderSize(vnet_header_size_)))) {
-                ::close(tun);
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelDeviceConfigureFailed);
                 return false;
             }
             std::shared_ptr<Byte> buffer = make_shared_alloc<Byte>(read_capacity_);
@@ -2724,6 +3291,7 @@ namespace ppp {
             }
             tap->tx_gso_supported_ = tap->vnet_header_;
             tap->gso_merge_active_ = tap->vnet_header_ && TapGsoMergeRequested();
+            tap->gso_lanes_enabled_ = tap->gso_merge_active_ && TapGsoLanesRequested();
             tap->promisc_ = promisc;
             tap->dns_addresses_ = dns_addresses;
 

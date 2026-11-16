@@ -40,6 +40,16 @@ namespace ppp {
              */
             std::shared_ptr<Byte>                               Encrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, Byte* data, int datalen, int& outlen) noexcept;
             /**
+             * @brief Encrypts a plaintext buffer into caller-owned memory.
+             * @param output Destination; must not overlap @p data.
+             * @param output_capacity Destination size; at least @p datalen + EncryptToSlack.
+             * @param data Input plaintext bytes.
+             * @param datalen Input length in bytes.
+             * @param outlen Receives output length in bytes.
+             * @return True on success.
+             */
+            bool                                                EncryptTo(Byte* output, int output_capacity, Byte* data, int datalen, int& outlen) noexcept;
+            /**
              * @brief Decrypts a ciphertext buffer.
              * @param allocator Target buffer allocator.
              * @param data Input ciphertext bytes.
@@ -48,6 +58,15 @@ namespace ppp {
              * @return Allocated plaintext buffer, or null on failure.
              */
             std::shared_ptr<Byte>                               Decrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, Byte* data, int datalen, int& outlen) noexcept;
+            /**
+             * @brief Whether DecryptInPlace() can be used: AES-NI path or a length-preserving (stream-mode) OpenSSL cipher.
+             */
+            bool                                                CanDecryptInPlace() const noexcept;
+            /**
+             * @brief Decrypts @p datalen bytes of @p data in place, producing the same bytes Decrypt() would return.
+             * @return True on success; requires CanDecryptInPlace().
+             */
+            bool                                                DecryptInPlace(Byte* data, int datalen) noexcept;
             /** @brief Returns a shared reference to this object. */
             std::shared_ptr<EVP>                                GetReference() noexcept { return this->shared_from_this(); }
             /** @brief Returns the synchronization object for caller-managed locking. */
@@ -72,6 +91,14 @@ namespace ppp {
              */
             bool                                                initCipher(std::shared_ptr<EVP_CIPHER_CTX>& context, int enc) noexcept;
             /**
+             * @brief Rewinds @p context to the fixed IV, installing the key only on first use.
+             * @param context Encrypt or decrypt context.
+             * @param keyed Per-context flag recording whether the key schedule is installed.
+             * @param enc Non-zero for encryption, zero for decryption.
+             * @return True on success.
+             */
+            bool                                                resetCipher(const std::shared_ptr<EVP_CIPHER_CTX>& context, bool& keyed, int enc) noexcept;
+            /**
              * @brief Resolves cipher type and derives key/IV material.
              * @param method Cipher method name.
              * @param password Password input.
@@ -88,6 +115,8 @@ namespace ppp {
             ppp::string                                         _password;
             std::shared_ptr<EVP_CIPHER_CTX>                     _encryptCTX;
             std::shared_ptr<EVP_CIPHER_CTX>                     _decryptCTX;
+            bool                                                _encryptKeyed = false; // guarded by _syncobj
+            bool                                                _decryptKeyed = false; // guarded by _syncobj
             aesni::AES                                          _aes;
         };
 

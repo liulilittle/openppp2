@@ -7,6 +7,7 @@ namespace ppp::app::client::routing {
     enum class UdpRoutingPlatform {
         Android,
         UnsupportedDirect,
+        ProtectedSocket,
     };
 
     enum class UdpRoutingMode {

@@ -11,6 +11,9 @@
  */
 
 #include <ppp/stdafx.h>
+#include <ppp/app/client/ClientUnderlyingSocketProtector.h>
+#include <ppp/p2p/P2PDatagramTransport.h>
+#include <ppp/app/client/policy/PolicyCompiler.h>
 
 namespace ppp {
     namespace configurations {
@@ -54,6 +57,12 @@ namespace ppp {
 
                 /** @brief Injectable exchanger capabilities for the UDP relay pipeline (no exchanger header). */
                 struct UdpRelayHostPorts final {
+                    ppp::function<std::shared_ptr<boost::asio::io_context>()> get_context;
+                    ppp::function<std::shared_ptr<void>()> get_owner;
+                    ppp::function<ClientUnderlyingSocketProtector()> get_direct_protector;
+                    ppp::function<std::shared_ptr<ppp::p2p::IP2PDatagramTransport>()> create_direct_transport;
+                    ppp::function<bool(const std::string&, const std::shared_ptr<const policy::PolicySnapshot>&,
+                        ppp::coroutines::YieldContext&, boost::asio::ip::address&)> resolve_policy_destination;
                     /** @brief Current virtual NIC (TUN/TAP) for reinjecting inbound datagrams. */
                     ppp::function<std::shared_ptr<ppp::tap::ITap>()> get_tap;
 

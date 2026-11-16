@@ -30,6 +30,9 @@
 #include <linux/ppp/tap/TapLinux.h>
 #include <linux/ppp/net/ProtectorNetwork.h>
 #endif
+#if defined(_WIN32)
+#include <windows/ppp/tap/TapWindows.h>
+#endif
 
 using ppp::net::IPEndPoint;
 using ppp::telemetry::Level;
@@ -54,8 +57,27 @@ namespace ppp {
                     }
                 } connect_histogram;
 
+#if defined(_WIN32) && defined(PPP_ENABLE_XTCP)
+                if (owner_->tcp_stack_mode_ == ppp::app::TcpStackMode::Xtcp) {
+                    const std::shared_ptr<ppp::tap::TapWindows> windows_tap =
+                        std::dynamic_pointer_cast<ppp::tap::TapWindows>(tap);
+                    if (!windows_tap || !windows_tap->IsWintunBackend()) {
+                        ppp::telemetry::Log(Level::kInfo, "xtcp",
+                            "XTCP requires the Windows Wintun L3 adapter; TAP L2 is unsupported");
+                        return ppp::diagnostics::SetLastError(
+                            ppp::diagnostics::ErrorCode::NetworkProtocolUnsupported);
+                    }
+                }
+#endif
+
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                if (!owner_->proxy_only_) {
+                // Proxy-only with the in-process subnet stack only reads the physical NIC, for
+                // P2P socket binding and host candidates; it never touches routes, and a missing
+                // NIC merely leaves P2P unavailable.
+                if (owner_->proxy_only_ && owner_->proxy_subnet_userspace_) {
+                    owner_->underlying_ni_ = ClientNetworkInterfaceResolver::GetUnderlyingNetworkInterface(tap, owner_->preferred_nic_);
+                }
+                elif(!owner_->proxy_only_) {
                 owner_->underlying_ni_ = ClientNetworkInterfaceResolver::GetUnderlyingNetworkInterface(tap, owner_->preferred_nic_);
 
                 if (auto underlying_ni = owner_->underlying_ni_; NULLPTR != underlying_ni) {
@@ -68,7 +90,6 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable);
                 }
 
-                owner_->FixUnderlyingNgw();
                 }
 #endif
                 // Construction of VEtherent virtual Ethernet switcher processing framework.
@@ -90,6 +111,7 @@ namespace ppp {
                         output_rejection_enabled
                             ? make_shared_object<xtcp::XtcpOutputRejectionDiagnostics>(true) : nullptr;
                     xtcp::XtcpRuntime::BorrowedOutputHandler borrowed_output;
+                    xtcp::XtcpRuntime::RetainedOutputHandler retained_output;
 #if defined(__linux__)
                     // Linux TAP Output(const void*, size) consumes the bytes
                     // synchronously (write/writev or copies them into the
@@ -108,7 +130,6 @@ namespace ppp {
                         }
                         return accepted;
                     };
-                    xtcp::XtcpRuntime::RetainedOutputHandler retained_output;
                     retained_output = [weak, output_rejection_diagnostics](const Byte* packet, int size,
                         ppp::tap::RetainedPacketOwner&& retained) noexcept {
                         const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();
@@ -191,10 +212,30 @@ namespace ppp {
                             owner_->SupportsTxGso(),
                             std::move(borrowed_output),
                             std::move(retained_output));
+                    if (NULLPTR != runtime) {
+                        // OPENPPP2_XTCP_AFFINITY=queues is rejected with SSMT.
+                        runtime->SetSsmtActive(owner_->Ssmt(NULLPTR) > 0);
+                    }
                     if (NULLPTR == runtime || !runtime->Start()) {
                         return ppp::diagnostics::SetLastError(
                             ppp::diagnostics::ErrorCode::RuntimeInitializationFailed);
                     }
+#if defined(_LINUX)
+                    if (runtime->SnapshotStats().queue_mode_active) {
+                        // Opt-in queue mode: bind GSO output lanes (created on
+                        // first shard output, after this point) to the shard
+                        // executors. Default modes never register a provider.
+                        if (const std::shared_ptr<ppp::tap::TapLinux> linux_tap =
+                                std::dynamic_pointer_cast<ppp::tap::TapLinux>(owner_->GetTap())) {
+                            const std::weak_ptr<xtcp::XtcpRuntime> weak_runtime = runtime;
+                            linux_tap->SetOutputLaneBindingProvider(
+                                [weak_runtime](int lane, ppp::tap::TapLaneBinding& binding) noexcept {
+                                    const std::shared_ptr<xtcp::XtcpRuntime> current = weak_runtime.lock();
+                                    return current && current->GetLaneBinding(lane, binding);
+                                });
+                        }
+                    }
+#endif
                     owner_->xtcp_runtime_ = std::move(runtime);
 #else
                     return ppp::diagnostics::SetLastError(
@@ -213,6 +254,16 @@ namespace ppp {
 
                 if (NULLPTR == owner_->tun_ni_) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::TunnelDeviceMissing);
+                }
+
+                // The route platform captures both session gateways and
+                // adapter indexes. Create it only after VEthernet::Open has
+                // attached the TAP and its interface snapshot is available.
+                // Windows/macOS need the TAP gateway, Windows also its index;
+                // Linux requires the TAP name before creating the platform.
+                if (!owner_->FixUnderlyingNgw()) {
+                    return ppp::diagnostics::SetLastError(
+                        ppp::diagnostics::ErrorCode::RouteAddFailed);
                 }
 #if defined(_WIN32)
                 // Route-only IPv6 protection is best-effort; binding failure must not block the VPN.

@@ -7,8 +7,12 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include <cstdlib>
 
 namespace {
+// These cases pin the historical 4-segment cap; the production default is larger.
+const bool kPinnedSegmentCap = ::setenv("OPENPPP2_TAP_GSO_SEGMENTS", "4", 1) == 0;
+
 using ppp::tap::TunGsoMergeabilityAnalyzer;
 
 /// Builds one IPv4+TCP packet the way the VPN stack hands it to TapLinux::Output.
@@ -50,7 +54,9 @@ std::vector<uint8_t> build(const PacketSpec& spec) {
     ip[9] = spec.protocol;
     ip[12] = 10; ip[13] = 42; ip[14] = 0; ip[15] = 1;
     ip[16] = 10; ip[17] = 42; ip[18] = 0; ip[19] = 2;
-    std::memcpy(ip + 20, spec.ip_options.data(), spec.ip_options.size());
+    if (!spec.ip_options.empty()) {
+        std::memcpy(ip + 20, spec.ip_options.data(), spec.ip_options.size());
+    }
     uint8_t* tcp = packet.data() + ihl;
     tcp[0] = static_cast<uint8_t>(spec.sport >> 8U); tcp[1] = static_cast<uint8_t>(spec.sport);
     tcp[2] = static_cast<uint8_t>(spec.dport >> 8U); tcp[3] = static_cast<uint8_t>(spec.dport);
@@ -62,7 +68,9 @@ std::vector<uint8_t> build(const PacketSpec& spec) {
     tcp[13] = static_cast<uint8_t>(0x10 | (spec.psh ? 0x08 : 0) | spec.fin_syn_rst);
     tcp[14] = static_cast<uint8_t>(spec.window >> 8U); tcp[15] = static_cast<uint8_t>(spec.window);
     tcp[18] = static_cast<uint8_t>(spec.urg >> 8U); tcp[19] = static_cast<uint8_t>(spec.urg);
-    std::memcpy(tcp + 20, spec.tcp_options.data(), spec.tcp_options.size());
+    if (!spec.tcp_options.empty()) {
+        std::memcpy(tcp + 20, spec.tcp_options.data(), spec.tcp_options.size());
+    }
     for (size_t i = 0; i < spec.payload; ++i) packet[ihl + doff + i] = static_cast<uint8_t>(i);
     return packet;
 }

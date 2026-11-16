@@ -89,7 +89,7 @@ flush 条件（任一触发即完成当前 superpacket 写出，然后按新包�
 
 ```text
 不兼容包（v1 资格/连续性任一失败）
-segments == 4（v1 固定上限）
+segments == 段上限（v1 固定为 4；2026-10-18 起默认 32，`OPENPPP2_TAP_GSO_SEGMENTS` 可设 1–48，见 XTCP_INTEGRATION_CN.md §11.4.1b）
 每段长度超过 `ITap::Mtu`（直接普通写）
 首段入队后 100µs（`steady_timer` flush）
 write 失败/短写
@@ -152,7 +152,15 @@ flush/rejection reason 与 hold histogram。它的 framing domain 固定标注�
 
 1. IP ID 语义等价 vs 逐字节等价（**必须二选一**，v1 假设前者）；
 2. PSH v1 全拒绝是否接受（psh-last-candidate 留作 v2）；
-3. max_segments 固定为 4；提高到 8 必须重新验证 A/B、延迟与 system CPU；
+3. max_segments 固定为 4；提高到 8 必须重新验证 A/B、延迟与 system CPU；（2026-10-18：已在 XTCP netns 矩阵上验证吞吐、重传与 stall 专场后改为默认 32，延迟与 system CPU 仍未单独测量，见 XTCP_INTEGRATION_CN.md §11.4.1b）
 4. 100µs hold 是否接受，且必须先补 singleton pending 的实际 timer flush 与 stop/close race 测试；
 5. 特性保持环境变量 opt-in + kill-switch，还是在所有 gate 后增加稳定配置面；
 6. default-on 前必须完成：隔离 CPU 的 system-wide softirq/ksoftirqd accounting、真实远端/不同内核、native + XTCP P1/P4/P16 × UL/DL、MTU/PMTU/loss/reorder/short-flow/FIN-stop 故障矩阵，以及全量 C++ 和相关 E2E 回归。
+
+## 10. 固定上游迁移的独立记录（2026-10-18）
+
+当前固定上游更新为 `77d455853b2c63442ecb182e94354b89de81e3e8`，归档 SHA256 为 `dc78c701a1936f720a718e19e89814f6113590c01169b58f32b7f45f6adaf550`；本地补丁为 0001-0015、0023、0025-0029、0031-0034，共 25 个。本文旧 `e79db8fd` revision、hash、早期 GSO/stall 及门禁结果均保留其历史含义，不改写为新 pin 的测试证据。此次维护不改变 GSO 默认值、KCC 策略、bridge 或 NDI TSO/partial-checksum 门控。
+
+新整树 zero-fuzz 重放与 fresh/default prepare 幂等性检查已通过；独立旧二进制的 cap48/cap32 × one/two-shard、P16 DL/GSO-on 专场各 20/20，合计 80/80 有效，host route/link/DNS/netns 指纹一致。新 pin 的独立验证与 before/after 比较单独记录于 [XTCP 集成说明](XTCP_INTEGRATION_CN.md) §11.185；旧基线通过不代表新 pin 已通过，也不重新证明严格单核或 1.20× native 性能目标。
+
+新 pin 离线结果为合同 188/188、通用 179/179、fault 20/20、完整上游 241/241，Linux/Windows 产品构建及 Windows 离线 2/2 通过；这些结果不清除运行时门禁。新旧 stall 专场共 160/160 有效，但三轮 P16/P64、DL/UL、one/two-shard、GSO off/on 主矩阵仅 83/96 有效，13 个 cell 出现逐流零吞吐完成（旧版 7、新版 6，零速流 107/104）。全部原始样本与额外配对比较保留于本工作树 `build/plan15/EXEC_REPORT.md`。两版均观察到 kernel TUN TX drop 与 kernel BBR backoff，完整根因和 rebase 独立影响仍未验证；无 watchdog、全流同时零速或 output/NDI/GSO reject 不代表逐流完成。保持现有 GSO、NDI TSO/partial 与默认值门禁，不宣称此次迁移获得运行时验收或新的性能收益。

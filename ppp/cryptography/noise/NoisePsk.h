@@ -58,6 +58,7 @@ enum class BindingPurpose : std::uint8_t {
     SessionResumeRetainedRootV1 = 1,
     SessionResumeCandidateV1 = 2,
     P2PWrapV1 = 3,
+    P2PWrapV2 = 4,
 };
 
 /** Builds the version-1 canonical binary prologue. Key identifiers are 1..64 bytes. */

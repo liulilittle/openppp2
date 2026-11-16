@@ -27,12 +27,19 @@ namespace ppp::net::packet { class UdpFrame; class BufferSegment; }
 #include <ppp/tap/TapRuntimeStats.h>
 #include <ppp/app/protocol/VirtualEthernetInformationFwd.h>
 #include <ppp/app/client/ClientNetworkInterface.h>
+#include <ppp/app/client/NetworkRecoveryJournal.h>
 #include <ppp/net/native/rib_fwd.h>
 #include <memory>
+#include <atomic>
+#include <mutex>
+#include <thread>
+#include <vector>
+#include <string>
 
 #if defined(_WIN32)
 struct _MIB_IPFORWARDROW;
 typedef struct _MIB_IPFORWARDROW MIB_IPFORWARDROW;
+#include <windows/ppp/win32/network/NetworkInterface.h>
 namespace ppp::win32::ipv6 { class WindowsIPv6RouteOwner; }
 #endif
 
@@ -60,6 +67,7 @@ namespace ppp {
                 class DnsInterceptor;
                 class DnsController;
                 class DnsSessionContext;
+                class DurableFakeIpStore;
             }
 
             namespace route {
@@ -70,6 +78,15 @@ namespace ppp {
             namespace routing {
                 class HumanRoutingRules;
                 struct ResolvedDestination;
+            }
+
+            namespace policy {
+                class PolicyUpdateService;
+                class PolicyStatusWriterLease;
+                struct PolicySource;
+                class PolicyRuntime;
+                class PolicySnapshot;
+                enum class PolicyAction;
             }
 
             namespace proxys {
@@ -100,8 +117,9 @@ namespace ppp {
                 typedef ppp::threading::Timer Timer;
                 typedef ppp::vector<std::pair<ppp::string, uint32_t>/**/> LoadIPListFileVector;
                 typedef std::shared_ptr<LoadIPListFileVector> LoadIPListFileVectorPtr;
-                typedef ppp::vector<boost::asio::ip::address> NicDnsServerAddresses;
-                typedef ppp::unordered_map<int, NicDnsServerAddresses> AllNicDnsServerAddresses;
+#if defined(_WIN32)
+                typedef ppp::unordered_map<int, ppp::win32::network::NetworkDnsSnapshot> NetworkDnsSnapshots;
+#endif
                 typedef std::shared_ptr<ppp::transmissions::proxys::IForwarding> IForwardingPtr;
 
             public:
@@ -118,6 +136,18 @@ namespace ppp {
                 virtual ~VEthernetNetworkSwitcher() noexcept;
 
 #include <ppp/app/client/VEthernetNetworkSwitcherPublicMethods.inc>
+                std::shared_ptr<policy::PolicyRuntime> GetPolicyRuntime() const noexcept;
+                std::shared_ptr<const policy::PolicySnapshot> GetPolicySnapshot() const noexcept;
+                bool HasPolicyV2() const noexcept;
+                bool IsPolicyBusinessAllowed() const noexcept;
+                void OnExchangerEstablished() noexcept;
+                bool PreparePolicy(uint32_t tun_ipv4_host = 0, bool proxy_only_runtime = false) noexcept;
+                bool ResolvePolicyDestination(const std::string& domain,
+                    const std::shared_ptr<const policy::PolicySnapshot>& snapshot,
+                    ppp::coroutines::YieldContext& yield, boost::asio::ip::address& address) noexcept;
+                bool ResolvePolicyDestinationIdentity(const ppp::net::IPEndPoint& endpoint,
+                    routing::ResolvedDestination& destination) const noexcept;
+                void RecordPolicyDecision(policy::PolicyAction action) noexcept;
 
             protected:
 #include <ppp/app/client/VEthernetNetworkSwitcherProtectedMethods.inc>
@@ -127,6 +157,21 @@ namespace ppp {
 
             private:
 #include <ppp/app/client/VEthernetNetworkSwitcherMembers.inc>
+                std::shared_ptr<policy::PolicyRuntime> policy_runtime_;
+                std::shared_ptr<dns::DurableFakeIpStore> policy_fake_ip_store_;
+                std::unique_ptr<policy::PolicyUpdateService> policy_update_service_;
+                std::unique_ptr<policy::PolicyStatusWriterLease> policy_status_lease_;
+                std::mutex policy_bootstrap_mutex_;
+                std::thread policy_bootstrap_thread_;
+                std::atomic_bool policy_bootstrap_started_{false};
+                std::atomic_bool policy_status_closing_{false};
+                std::atomic_uint64_t policy_session_generation_{0};
+                std::uint32_t policy_tun_ipv4_host_ = 0;
+                std::vector<std::string> policy_updates_bootstrap_;
+                bool policy_has_remote_sources_ = false;
+                bool policy_updates_direct_ = false;
+                bool policy_updates_allow_http_ = false;
+                bool policy_prepared_ = false;
             };
         }
     }

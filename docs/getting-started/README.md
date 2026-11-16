@@ -1,38 +1,26 @@
 # Getting Started
+
 > Status: Active
 > Type: Index
-> Last verified: 2026-07-22
+> Last verified: 2026-10-11
 >
-> **Purpose:** Choose a safe, source-backed starting point for the native runtime or the experimental desktop surface.
-> **Audience:** Users, operators, and contributors working in this repository.
+> **Purpose:** The entry point to read in order when using OPENPPP2 for the first time.
+> **Audience:** New users.
 > **Parent index:** [Documentation](../README.md) · **Chinese:** [快速开始](README_CN.md)
 
-## Choose a path
+## Read in order
 
-### Run the native `ppp` runtime
+1. **[User manual](USER_MANUAL.md)**: what OPENPPP2 is, which package to download, required privileges, how to start and verify a tunnel, common scenarios.
+2. **[Writing the configuration file](CONFIGURE.md)**: a minimal server / client pair, the fields that must line up, and which field to change for each feature.
+3. Look up specific fields or flags in the [Configuration reference](../reference/CONFIGURATION.md) · [CLI reference](../reference/CLI_REFERENCE.md).
 
-Start with the paired [User Manual](USER_MANUAL.md). It covers the current native command path, configuration discovery, privilege boundary, and the next reference documents to read. The executable defaults to the server role when no `--mode` is supplied.
+## Find by goal
 
-### Try the Desktop Client
-
-[Desktop Client](DESKTOP_CLIENT.md) documents the Tauri/Svelte manager under `desktop/client/`. It is **experimental**, source-run oriented, and does not currently produce a bundled installer from its checked-in Tauri configuration.
-
-### Build, test, or read the source
-
-- [Development](../development/README.md) — native build prerequisites and contributor entry points.
-- [Source Reading Guide](../development/SOURCE_READING_GUIDE.md) — follow the real application startup and runtime paths.
-- [Testing](../development/TESTING.md) — choose the standalone, root-CMake, coverage, or component test entry point.
-
-## When you need detail
-
-| Task | Canonical page |
+| I want to… | Read |
 |---|---|
-| JSON settings and defaults | [Configuration](../reference/CONFIGURATION.md) |
-| Command-line options | [CLI reference](../reference/CLI_REFERENCE.md) |
-| Routing and DNS behavior | [Routing and DNS](../guides/ROUTING_AND_DNS.md) |
-| Platform constraints | [Platforms](../guides/PLATFORMS.md) |
-| Deployment and operations | [Deployment](../operations/DEPLOYMENT.md) · [Operations](../operations/OPERATIONS.md) |
-
-## Documentation boundary
-
-Pages marked **Active** describe the current tree; the Desktop Client is explicitly marked **Experimental**. Dated technical audits in the development section are evidence for review, not current runtime instructions.
+| Split routing, DNS rules | [Routing and DNS](../guides/ROUTING_AND_DNS.md) · [Policy CLI](../guides/POLICY_CLI.md) |
+| Local HTTP / SOCKS proxies only | [Proxy mode](../guides/PROXY_MODE.md) |
+| Platform differences (Windows / Linux / macOS / Android / iOS) | [Platforms](../guides/PLATFORMS.md) |
+| Run as a system service, go-live checks | [Deployment](../operations/DEPLOYMENT.md) · [Operations and troubleshooting](../operations/OPERATIONS.md) |
+| Manage with a GUI | [Desktop client](DESKTOP_CLIENT.md) (experimental, runs from source) |
+| Build or read the source | [Development](../development/README.md) · [Source reading guide](../development/SOURCE_READING_GUIDE.md) |

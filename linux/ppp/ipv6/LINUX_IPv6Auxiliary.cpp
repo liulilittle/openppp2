@@ -16,6 +16,13 @@
 #include <common/unix/UnixAfx.h>
 #include <linux/ppp/tap/TapLinux.h>
 
+#include <cerrno>
+#include <cstdio>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
 namespace {
     static bool IsSafeIPv6ClientAddress(const boost::asio::ip::address_v6& address, int prefix_length, const boost::asio::ip::address_v6* gateway = NULLPTR) noexcept {
         // Reject well-known non-routable or reserved address categories.
@@ -106,8 +113,131 @@ namespace {
      * @brief Gets the on-disk path used to persist IPv6 sysctl snapshots.
      * @return Absolute snapshot file path.
      */
+    static const char* GetIPv6SysctlSnapshotDir() noexcept {
+        return "/run/openppp2";
+    }
+
     static ppp::string GetIPv6SysctlSnapshotPath() noexcept {
+        return "/run/openppp2/ipv6_sysctl_snapshot.json";
+    }
+
+    /** @brief Legacy world-writable location, only read for one-time migration. */
+    static const char* GetLegacyIPv6SysctlSnapshotPath() noexcept {
         return "/tmp/openppp2_ipv6_sysctl_snapshot.json";
+    }
+
+    /**
+     * @brief Ensures the snapshot directory exists, is a real directory owned by
+     *        the current effective user, and is not accessible by group/others.
+     */
+    static bool EnsureSnapshotDirectory() noexcept {
+        const char* dir = GetIPv6SysctlSnapshotDir();
+        if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
+            return false;
+        }
+
+        struct stat st;
+        if (lstat(dir, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+            return false;
+        }
+        return true;
+    }
+
+    /** @brief Reads a regular file without following symlinks. */
+    static bool ReadFileNoFollow(const char* path, ppp::string& content) noexcept {
+        content.clear();
+        int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (fd == -1) {
+            return false;
+        }
+
+        struct stat st;
+        if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > (1 << 20)) {
+            close(fd);
+            return false;
+        }
+
+        char buffer[4096];
+        for (;;) {
+            ssize_t n = read(fd, buffer, sizeof(buffer));
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                close(fd);
+                content.clear();
+                return false;
+            }
+            if (n == 0) {
+                break;
+            }
+            content.append(buffer, (size_t)n);
+        }
+
+        close(fd);
+        return true;
+    }
+
+    /** @brief Atomically writes text to the snapshot path via an O_EXCL|O_NOFOLLOW temp file and rename. */
+    static bool WriteSnapshotText(const ppp::string& text) noexcept {
+        if (!EnsureSnapshotDirectory()) {
+            return false;
+        }
+
+        ppp::string path = GetIPv6SysctlSnapshotPath();
+        char tmp[96];
+        snprintf(tmp, sizeof(tmp), "%s/.snapshot.%d.tmp", GetIPv6SysctlSnapshotDir(), (int)getpid());
+        unlink(tmp);
+
+        int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd == -1) {
+            return false;
+        }
+
+        bool ok = true;
+        size_t off = 0;
+        while (off < text.size()) {
+            ssize_t n = write(fd, text.data() + off, text.size() - off);
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                ok = false;
+                break;
+            }
+            off += (size_t)n;
+        }
+
+        ok = ok && fsync(fd) == 0;
+        ok = (close(fd) == 0) && ok;
+        if (!ok || rename(tmp, path.data()) != 0) {
+            unlink(tmp);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * @brief One-time migration of the legacy /tmp snapshot. Only a root-owned regular
+     *        file (not a symlink, not group/world writable) is trusted; it is then moved
+     *        into the protected directory and removed from /tmp.
+     */
+    static void MigrateLegacySnapshot() noexcept {
+        const char* legacy = GetLegacyIPv6SysctlSnapshotPath();
+        struct stat st;
+        if (lstat(legacy, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0 || st.st_nlink != 1 || (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+            return;
+        }
+
+        struct stat cur;
+        if (lstat(GetIPv6SysctlSnapshotPath().data(), &cur) != 0) {
+            ppp::string content;
+            if (!ReadFileNoFollow(legacy, content) || content.empty() || !WriteSnapshotText(content)) {
+                return;
+            }
+        }
+
+        unlink(legacy);
     }
 
     using ppp::linux::ipv6::auxiliary::detail::IsAllowedSysctlSnapshotKey;
@@ -182,13 +312,11 @@ namespace {
     static bool LoadSysctlSnapshot(ppp::unordered_map<ppp::string, ppp::string>& snapshot) noexcept {
         snapshot.clear();
 
-        ppp::string path = GetIPv6SysctlSnapshotPath();
-        if (!ppp::io::File::Exists(path.data())) {
-            return false;
-        }
+        MigrateLegacySnapshot();
 
-        ppp::string content = ppp::io::File::ReadAllText(path.data());
-        if (content.empty()) {
+        ppp::string path = GetIPv6SysctlSnapshotPath();
+        ppp::string content;
+        if (!ReadFileNoFollow(path.data(), content) || content.empty()) {
             return false;
         }
 
@@ -246,8 +374,7 @@ namespace {
             return false;
         }
 
-        ppp::string path = GetIPv6SysctlSnapshotPath();
-        return ppp::io::File::WriteAllBytes(path.data(), text.data(), static_cast<int>(text.size()));
+        return WriteSnapshotText(text);
     }
 
     /**
@@ -256,8 +383,11 @@ namespace {
      * @return true when all restored keys are applied (or no snapshot exists); otherwise false.
      */
     static bool RestoreSysctlFromSnapshotFile(bool delete_on_success) noexcept {
+        MigrateLegacySnapshot();
+
         ppp::string path = GetIPv6SysctlSnapshotPath();
-        if (!ppp::io::File::Exists(path.data())) {
+        struct stat path_st;
+        if (lstat(path.data(), &path_st) != 0) {
             return true;
         }
 
@@ -274,8 +404,7 @@ namespace {
         }
 
         if (all_ok && delete_on_success) {
-            ppp::string path = GetIPv6SysctlSnapshotPath();
-            ppp::io::File::Delete(path.data());
+            unlink(path.data());
         }
         return all_ok;
     }
@@ -867,15 +996,14 @@ namespace ppp {
                     std::string prefix_std = prefix.to_string();
                     ppp::string prefix_string(prefix_std.data(), prefix_std.size());
                     prefix_length = std::max<int>(ppp::ipv6::IPv6_MIN_PREFIX_LENGTH, std::min<int>(ppp::ipv6::IPv6_MAX_PREFIX_LENGTH, prefix_length));
-                    if (!ppp::tap::TapLinux::AddRoute6(context.InterfaceName, prefix_string, prefix_length, gateway_string)) {
-                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientRouteApplyFailed);
-                        return false;
-                    }
-
                     state.SubnetRouteApplied = true;
                     state.SubnetRoutePrefix = prefix_string;
                     state.SubnetRoutePrefixLength = prefix_length;
                     state.SubnetRouteGateway = gateway_string;
+                    if (!ppp::tap::TapLinux::AddRoute6(context.InterfaceName, prefix_string, prefix_length, gateway_string)) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientRouteApplyFailed);
+                        return false;
+                    }
                     return true;
                 }
 
@@ -895,12 +1023,11 @@ namespace ppp {
                         }
                     }
 
+                    state.DnsApplied = true;
+                    state.DnsServers = dns_servers;
                     if (dns_addrs.empty() || !ppp::unix__::UnixAfx::MergeDnsAddresses(dns_addrs, current_addrs)) {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::IPv6ClientDnsApplyFailed);
                     }
-
-                    state.DnsApplied = true;
-                    state.DnsServers = dns_servers;
                     return true;
                 }
 
@@ -915,7 +1042,12 @@ namespace ppp {
                     }
 
                     if (state.SubnetRouteApplied && !state.SubnetRoutePrefix.empty()) {
-                        ppp::tap::TapLinux::DeleteRoute6(context.InterfaceName, state.SubnetRoutePrefix, state.SubnetRoutePrefixLength, state.SubnetRouteGateway);
+                        if (ppp::tap::TapLinux::DeleteRoute6(context.InterfaceName, state.SubnetRoutePrefix, state.SubnetRoutePrefixLength, state.SubnetRouteGateway)) {
+                            state.SubnetRouteApplied = false;
+                            state.SubnetRoutePrefix.clear();
+                            state.SubnetRoutePrefixLength = 0;
+                            state.SubnetRouteGateway.clear();
+                        }
                     }
 
                     if (state.DefaultRouteApplied && nat_mode && state.DefaultRouteGateway.empty()) {
@@ -949,7 +1081,10 @@ namespace ppp {
                     }
 
                     if (state.DnsApplied) {
-                        ppp::unix__::UnixAfx::SetDnsResolveConfiguration(state.OriginalDnsConfiguration);
+                        if (ppp::unix__::UnixAfx::SetDnsResolveConfiguration(state.OriginalDnsConfiguration)) {
+                            state.DnsApplied = false;
+                            state.DnsServers.clear();
+                        }
                     }
 
                     if (state.DefaultRouteApplied && state.DefaultRouteWasPresent) {

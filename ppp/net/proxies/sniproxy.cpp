@@ -372,7 +372,7 @@ namespace ppp {
              * @brief Handles HTTP header read, Host extraction, and forwarding setup.
              */
             bool sniproxy::do_httpd_handshake(ppp::coroutines::YieldContext& y, MemoryStream& messages_) noexcept {
-                auto response = std::make_shared<boost::asio::streambuf>();
+                auto response = std::make_shared<boost::asio::streambuf>(16 * 1024);
                 if (NULLPTR == response) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SniProxyHttpHandshakeResponseAllocFailed);
                     return false;
@@ -388,20 +388,25 @@ namespace ppp {
                 // Read until "\r\n\r\n" (end of HTTP headers)
                 boost::system::error_code ec;
                 std::size_t length = 0;
+                const ppp::coroutines::YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return false;
+                }
+
                 boost::asio::async_read_until(*local_socket_, *response, "\r\n\r\n",
-                    [&y, &ec, &length](const boost::system::error_code& e, std::size_t sz) noexcept {
+                    [anchor, &ec, &length](const boost::system::error_code& e, std::size_t sz) noexcept {
                         ec = e;
                         length = sz;
-                        y.R();
+                        anchor.R();
                     });
-                y.Suspend();
+                y.Suspend(anchor);
                 
                 if (ec || (0 == length)) {
                     if ((boost::asio::error::operation_aborted == ec) || (boost::asio::error::eof == ec)) {
                         return false;
                     }
 
-                    ppp::diagnostics::SetLastErrorCode(ec ? ppp::diagnostics::ErrorCode::SocketReadFailed
+                    ppp::diagnostics::SetLastErrorCode(ec && ec != boost::asio::error::not_found ? ppp::diagnostics::ErrorCode::SocketReadFailed
                         : ppp::diagnostics::ErrorCode::HttpHeaderInvalid);
                     return false;
                 }
@@ -880,9 +885,12 @@ namespace ppp {
                         last_ = Executors::GetTickCount(); // update activity timestamp
                         reset_inactivity_timer();          // reset timer on read activity
 
-                        boost::asio::async_write(*local_socket_, boost::asio::buffer(remote_socket_buf_, by),
+                        // close() resets local_socket_ while this composed write may still be in
+                        // flight; the completion must keep the socket alive until write_op finishes.
+                        std::shared_ptr<boost::asio::ip::tcp::socket> local_socket = local_socket_;
+                        boost::asio::async_write(*local_socket, boost::asio::buffer(remote_socket_buf_, by),
                             boost::asio::bind_executor(strand_,
-                            [self, this](const boost::system::error_code& ec, uint32_t) noexcept {
+                            [self, this, local_socket](const boost::system::error_code& ec, uint32_t) noexcept {
                                 if (is_disposed()) {
                                     return;
                                 }

@@ -175,6 +175,63 @@ namespace ssea
         return result;
     }
 
+    inline int random_next_from_key_scalar(int32_t key) noexcept
+    {
+        unsigned int seed = static_cast<unsigned int>(key);
+        return random_next_scalar(&seed);
+    }
+
+    inline void masked_xor_fixed_scalar_tail(uint8_t* data, int length, int32_t kf) noexcept
+    {
+        int offset = 0;
+        while (offset + 4 <= length)
+        {
+            int32_t word;
+            std::memcpy(&word, data + offset, sizeof(word));
+            word ^= kf;
+            std::memcpy(data + offset, &word, sizeof(word));
+            offset += 4;
+        }
+        if (offset + 2 <= length)
+        {
+            int16_t half;
+            std::memcpy(&half, data + offset, sizeof(half));
+            half = static_cast<int16_t>(half ^ kf);
+            std::memcpy(data + offset, &half, sizeof(half));
+            offset += 2;
+        }
+        if (offset < length)
+        {
+            data[offset] ^= static_cast<uint8_t>(kf);
+        }
+    }
+
+    inline void masked_xor_random_next_scalar_tail(uint8_t* data, int length, int32_t& kf) noexcept
+    {
+        int offset = 0;
+        while (offset + 4 <= length)
+        {
+            int32_t word;
+            std::memcpy(&word, data + offset, sizeof(word));
+            word ^= kf;
+            std::memcpy(data + offset, &word, sizeof(word));
+            offset += 4;
+            kf = random_next_from_key_scalar(kf);
+        }
+        if (offset + 2 <= length)
+        {
+            int16_t half;
+            std::memcpy(&half, data + offset, sizeof(half));
+            half = static_cast<int16_t>(half ^ kf);
+            std::memcpy(data + offset, &half, sizeof(half));
+            offset += 2;
+        }
+        if (offset < length)
+        {
+            data[offset] ^= static_cast<uint8_t>(kf);
+        }
+    }
+
     /**
      * @brief Delta-encodes a byte sequence: out[0] = in[0] - kf; out[i] = in[i] - in[i-1].
      * @param data      Input bytes (data_size >= 1).
@@ -251,28 +308,8 @@ namespace ssea
             return false;
         }
 
-        int count     = length >> 2;
-        int remainder = length & 3;
-
-        int32_t* p32 = const_cast<int32_t*>(static_cast<const int32_t*>(min));
-        for (int i = 0; i < count; i++)
-        {
-            *p32 = *p32 ^ kf;
-            p32++;
-        }
-
-        int16_t* p16 = reinterpret_cast<int16_t*>(p32);
-        if (remainder >> 1)
-        {
-            *p16 = static_cast<int16_t>(*p16 ^ kf);
-            p16++;
-        }
-
-        int8_t* p8 = reinterpret_cast<int8_t*>(p16);
-        if (remainder & 1)
-        {
-            *p8 = static_cast<int8_t>(*p8 ^ kf);
-        }
+        masked_xor_fixed_scalar_tail(
+            const_cast<uint8_t*>(static_cast<const uint8_t*>(min)), length, kf);
 
         return true;
     }
@@ -296,31 +333,9 @@ namespace ssea
             return false;
         }
 
-        int count     = length >> 2;
-        int remainder = length & 3;
-
-        kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
-
-        int32_t* p32 = const_cast<int32_t*>(static_cast<const int32_t*>(min));
-        for (int i = 0; i < count; i++)
-        {
-            *p32 = *p32 ^ kf;
-            p32++;
-            kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
-        }
-
-        int16_t* p16 = reinterpret_cast<int16_t*>(p32);
-        if (remainder >> 1)
-        {
-            *p16 = static_cast<int16_t>(*p16 ^ kf);
-            p16++;
-        }
-
-        int8_t* p8 = reinterpret_cast<int8_t*>(p16);
-        if (remainder & 1)
-        {
-            *p8 = static_cast<int8_t>(*p8 ^ kf);
-        }
+        kf = random_next_from_key_scalar(kf);
+        masked_xor_random_next_scalar_tail(
+            const_cast<uint8_t*>(static_cast<const uint8_t*>(min)), length, kf);
 
         return true;
     }
@@ -476,6 +491,7 @@ namespace ssea
      */
     inline int lcgmod_scalar(int32_t kf, int min, int max) noexcept
     {
-        return random_next_scalar(reinterpret_cast<unsigned int*>(&kf), min, max);
+        unsigned int seed = static_cast<unsigned int>(kf);
+        return random_next_scalar(&seed, min, max);
     }
 }

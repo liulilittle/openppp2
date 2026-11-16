@@ -13,14 +13,26 @@ cmake --build "$BUILD_DIR" --target \
     runtime_lifecycle_test \
     runtime_stop_pipeline_test \
     client_lifecycle_stress_test \
+    network_recovery_journal_test \
+    network_ownership_test \
     route_coordinator_test \
+    route_snapshot_contract_test \
+    windows_route_snapshot_test \
+    route_platform_adapters_test \
+    linux_route_platform_contract_test \
     dns_controller_test
 
 for test_binary in \
     runtime_lifecycle_test \
     runtime_stop_pipeline_test \
     client_lifecycle_stress_test \
+    network_recovery_journal_test \
+    network_ownership_test \
     route_coordinator_test \
+    route_snapshot_contract_test \
+    windows_route_snapshot_test \
+    route_platform_adapters_test \
+    linux_route_platform_contract_test \
     dns_controller_test
 do
     echo "Running sanitizer target: $test_binary"

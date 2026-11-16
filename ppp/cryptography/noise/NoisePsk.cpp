@@ -36,6 +36,7 @@ constexpr std::uint8_t BindingDomain[] = {
 constexpr char RetainedRootPurpose[] = "SessionResumeRetainedRootV1";
 constexpr char CandidatePurpose[] = "SessionResumeCandidateV1";
 constexpr char P2PWrapPurpose[] = "P2PWrapV1";
+constexpr char P2PWrapV2Purpose[] = "P2PWrapV2";
 
 bool IsAllZero(const std::uint8_t* data, std::size_t size) noexcept {
     std::uint8_t combined = 0;
@@ -206,6 +207,8 @@ const char* PurposeLabel(BindingPurpose purpose) noexcept {
         return CandidatePurpose;
     case BindingPurpose::P2PWrapV1:
         return P2PWrapPurpose;
+    case BindingPurpose::P2PWrapV2:
+        return P2PWrapV2Purpose;
     default:
         return nullptr;
     }
@@ -361,7 +364,8 @@ bool NoisePskHandshakeResult::DeriveBinding(
     }
     const char* label = PurposeLabel(purpose);
     const std::size_t required_context_length =
-        purpose == BindingPurpose::P2PWrapV1 ? 113u : 16u;
+        purpose == BindingPurpose::P2PWrapV1 ? 113u :
+        purpose == BindingPurpose::P2PWrapV2 ? 145u : 16u;
     if (label == nullptr || context_length != required_context_length) return false;
 
     const std::size_t label_length = std::strlen(label);

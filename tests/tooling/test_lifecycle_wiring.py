@@ -103,6 +103,80 @@ class LifecycleWiringTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("Dispose(ppp::function<void(bool)>", switcher_header)
 
+    def test_desktop_persists_forced_stop_marker_and_restores_gate_on_startup(self) -> None:
+        desktop = (ROOT / "desktop/client/src-tauri/src/desktop.rs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('const NETWORK_RECOVERY_MARKER: &str = "network-recovery.pending"', desktop)
+        persist = desktop[desktop.index("fn persist_network_recovery_marker"):
+                          desktop.index("fn clear_network_recovery_marker")]
+        self.assertIn(".tmp", persist)
+        self.assertIn("sync_all", persist)
+        self.assertIn("fs::rename", persist)
+        self.assertIn("exit.recovery_pending", desktop)
+        self.assertIn("persist_network_recovery_marker", desktop)
+        self.assertIn("clear_network_recovery_marker", desktop)
+        self.assertIn("if recovery_marker.exists()", desktop)
+        self.assertIn("process.mark_recovery_pending()", desktop)
+        recovery = desktop[desktop.index("fn recover_pending_network"):
+                           desktop.index("impl DesktopState")]
+        self.assertIn('"--network-recovery"', recovery)
+        self.assertIn("--network-recovery-dir=", recovery)
+        self.assertIn("run_recovery_worker", recovery)
+        self.assertIn("clear_network_recovery_marker", recovery)
+        self.assertLess(
+            recovery.index("clear_network_recovery_marker"),
+            recovery.index("process.mark_recovery_complete()"),
+        )
+
+    def test_desktop_startup_retries_marker_before_exposing_connect(self) -> None:
+        desktop = (ROOT / "desktop/client/src-tauri/src/desktop.rs").read_text(
+            encoding="utf-8"
+        )
+        startup = desktop[
+            desktop.index("let mut process = process;"):
+            desktop.index("Ok(Self {")
+        ]
+        self.assertIn("if recovery_marker.exists()", startup)
+        self.assertIn("journal_exists", startup)
+        self.assertIn("if recovery_marker.exists() || journal_exists", startup)
+        self.assertIn("process.mark_recovery_pending()", startup)
+        self.assertIn("recover_pending_network(&mut process", startup)
+        self.assertIn("let _ = recover_pending_network", startup)
+
+        exit_handler = desktop[
+            desktop.index("let process = ProcessManager::new"):
+            desktop.index("let mut process = process;")
+        ]
+        self.assertIn("persist_network_recovery_marker", exit_handler)
+        self.assertNotIn("clear_network_recovery_marker", exit_handler)
+
+    def test_core_recovery_worker_clears_pending_only_after_verified_success(self) -> None:
+        process = (ROOT / "desktop/client/src-tauri/src/process.rs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("pub fn run_recovery_worker", process)
+        worker = process[process.index("pub fn run_recovery_worker"):
+                         process.index("pub fn start")]
+        self.assertIn("if self.is_running()", worker)
+        self.assertIn("Result<bool, ProcessError>", worker)
+        self.assertIn("status.success()", worker)
+        self.assertIn("RecoveryTimeout", worker)
+        self.assertIn("pub fn mark_recovery_complete", process)
+        self.assertLess(
+            process.index("pub fn mark_recovery_complete"),
+            process.index("pub fn run_recovery_worker"),
+        )
+
+    def test_core_entrypoint_dispatches_recovery_before_normal_bootstrap(self) -> None:
+        source = (ROOT / "main.cpp").read_text(encoding="utf-8")
+        self.assertIn("NetworkRecoveryJournal::IsRecoveryCommand", source)
+        self.assertIn("NetworkRecoveryJournal::RunRecoveryCommand", source)
+        self.assertLess(
+            source.index("NetworkRecoveryJournal::RunRecoveryCommand"),
+            source.index("ApplicationPolicyCommand::Dispatch"),
+        )
+
     def test_android_start_failure_releases_before_completion(self) -> None:
         source = (ROOT / "android/libopenppp2.cpp").read_text(encoding="utf-8")
         run = source[

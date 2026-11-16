@@ -1,5 +1,6 @@
 #include <ppp/threading/Timer.h>
 #include <ppp/threading/Executors.h>
+#include <ppp/coroutines/asio/post_if_running.h>
 #include <ppp/net/Socket.h>
 #include <ppp/diagnostics/Error.h>
 
@@ -397,6 +398,18 @@ namespace ppp {
          * @return true when wait completed without cancellation; otherwise false.
          */
         bool Timer::Timeout(int milliseconds, ppp::coroutines::YieldContext& y) noexcept {
+            std::shared_ptr<boost::asio::steady_timer> cancel_timer;
+            return Timer::Timeout(milliseconds, y, cancel_timer);
+        }
+
+        /**
+         * @brief Coroutine sleep whose timer is handed back to the caller for cancellation.
+         * @param cancel_timer Receives the internal timer before the coroutine suspends. Calling
+         *        `cancel_timer->cancel()` (on the timer's executor) wakes the sleeper with false.
+         * @return true when the full wait elapsed; false on cancellation, stopped context or error.
+         */
+        bool Timer::Timeout(int milliseconds, ppp::coroutines::YieldContext& y, std::shared_ptr<boost::asio::steady_timer>& cancel_timer) noexcept {
+            cancel_timer.reset();
             if (!y) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TimerTimeoutYieldInvalidContext);
                 return false;
@@ -411,29 +424,41 @@ namespace ppp {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                 return false;
             }
-            
+
+            /* A stopped io_context never runs the wakeup, so suspending would leak the coroutine. */
+            if (ppp::coroutines::asio::ExecutorStopped(deadlineTimer->get_executor())) {
+                return false;
+            }
+
+            const ppp::coroutines::YieldContext::Anchor anchor = y.Arm();
+            if (!anchor) {
+                return false;
+            }
+
+            cancel_timer = deadlineTimer;
+
             bool ok = false;
             if (1 > milliseconds) {
                 boost::asio::post(deadlineTimer->get_executor(),
-                    [&y, &ok]() noexcept {
+                    [anchor, &ok]() noexcept {
                         ok = true;
-                        y.R();
+                        anchor.R();
                     });
             }
             else {
                 boost::asio::steady_timer::duration durationTime = Timer::DurationTime(milliseconds);
                 deadlineTimer->expires_after(durationTime);
                 deadlineTimer->async_wait(
-                    [&y, &ok](const boost::system::error_code& ec) noexcept {
+                    [anchor, &ok](const boost::system::error_code& ec) noexcept {
                         if (ec == boost::system::errc::success) {
                             ok = true;
                         }
 
-                        y.R();
+                        anchor.R();
                     });
             }
 
-            y.Suspend();
+            y.Suspend(anchor);
             return ok;
         }
 

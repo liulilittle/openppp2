@@ -550,6 +550,12 @@ namespace ppp {
                 peer_virtual_ip = 0;
                 token.clear();
                 authenticated_offer_v1.clear();
+                authenticated_offer_v2.clear();
+                current_offer_hash.clear();
+                cancel_offer_hash.clear();
+                supported_versions.clear();
+                candidate_revision = peer_candidate_revision = 0;
+                local_candidates.clear();
                 reason.clear();
                 candidates.clear();
             }
@@ -562,6 +568,10 @@ namespace ppp {
                     peer_virtual_ip != 0 ||
                     !token.empty() ||
                     !authenticated_offer_v1.empty() ||
+                    !authenticated_offer_v2.empty() ||
+                    !current_offer_hash.empty() || !cancel_offer_hash.empty() ||
+                    !supported_versions.empty() || candidate_revision != 0 ||
+                    peer_candidate_revision != 0 || !local_candidates.empty() ||
                     !reason.empty() ||
                     !candidates.empty();
             }
@@ -591,6 +601,25 @@ namespace ppp {
                 }
                 if (!reason.empty()) {
                     json["reason"] = Json::Value(reason.c_str());
+                }
+                if (!authenticated_offer_v2.empty()) json["authenticated-offer-v2"] = authenticated_offer_v2.c_str();
+                if (!current_offer_hash.empty()) json["current-offer-hash"] = current_offer_hash.c_str();
+                if (!cancel_offer_hash.empty()) json["cancel-offer-hash"] = cancel_offer_hash.c_str();
+                if (candidate_revision) json["candidate-revision"] = std::to_string(candidate_revision).c_str();
+                if (peer_candidate_revision) json["peer-candidate-revision"] = std::to_string(peer_candidate_revision).c_str();
+                if (!supported_versions.empty()) {
+                    Json::Value versions(Json::arrayValue);
+                    for (const auto version : supported_versions) versions.append(static_cast<unsigned>(version));
+                    json["supported-versions"] = versions;
+                }
+                if (!local_candidates.empty()) {
+                    Json::Value local(Json::arrayValue);
+                    for (const auto& candidate : local_candidates) {
+                        Json::Value item;
+                        candidate.ToJson(item);
+                        local.append(item);
+                    }
+                    json["local-candidates"] = local;
                 }
                 if (!candidates.empty()) {
                     Json::Value arr(Json::arrayValue);
@@ -628,8 +657,52 @@ namespace ppp {
                     JsonAuxiliary::AsString(json["authenticated-offer-v1"]);
                 value.reason = JsonAuxiliary::AsString(json["reason"]);
 
+                const auto fail = [&value]() noexcept { value.Clear(); return false; };
+                const auto parse_hash = [&](const char* key, ppp::string& output) noexcept {
+                    if (!json.isMember(key)) return true;
+                    output = JsonAuxiliary::AsString(json[key]);
+                    return IsCanonicalLowerHex(output, 64);
+                };
+                if (!parse_hash("current-offer-hash", value.current_offer_hash) ||
+                    !parse_hash("cancel-offer-hash", value.cancel_offer_hash)) return fail();
+                if (json.isMember("authenticated-offer-v2")) {
+                    value.authenticated_offer_v2 = JsonAuxiliary::AsString(json["authenticated-offer-v2"]);
+                    const auto n = value.authenticated_offer_v2.size();
+                    if (n == 0 || n > 2048 || n % 2 ||
+                        !IsCanonicalLowerHex(value.authenticated_offer_v2, n)) return fail();
+                }
+                for (const auto& field : {"candidate-revision", "peer-candidate-revision"}) {
+                    if (!json.isMember(field)) continue;
+                    std::uint64_t revision = 0;
+                    if (!ParseCanonicalUInt64(json[field], revision) || revision == 0) return fail();
+                    if (std::strcmp(field, "candidate-revision") == 0) value.candidate_revision = revision;
+                    else value.peer_candidate_revision = revision;
+                }
+                if (json.isMember("supported-versions")) {
+                    const auto& versions = json["supported-versions"];
+                    if (!versions.isArray() || versions.size() == 0 || versions.size() > 2) return fail();
+                    for (Json::ArrayIndex i = 0; i < versions.size(); ++i) {
+                        if (!versions[i].isUInt()) return fail();
+                        const auto version = versions[i].asUInt();
+                        if (version != 1 && version != 2) return fail();
+                        if (std::find(value.supported_versions.begin(), value.supported_versions.end(), version) != value.supported_versions.end()) return fail();
+                        value.supported_versions.push_back(static_cast<std::uint8_t>(version));
+                    }
+                }
+                if (json.isMember("local-candidates")) {
+                    const auto& local = json["local-candidates"];
+                    if (!local.isArray() || local.size() > 2) return fail();
+                    for (Json::ArrayIndex i = 0; i < local.size(); ++i) {
+                        P2PEndpointCandidate candidate;
+                        if (!P2PEndpointCandidate::FromJson(candidate, local[i])) return fail();
+                        value.local_candidates.emplace_back(std::move(candidate));
+                    }
+                }
+
                 const Json::Value& candidates_json = json["candidates"];
                 if (candidates_json.isArray()) {
+                    const bool v2 = value.candidate_revision != 0 || !value.authenticated_offer_v2.empty();
+                    if (candidates_json.size() > (v2 ? 2u : 4u)) return fail();
                     for (Json::ArrayIndex i = 0; i < candidates_json.size(); i++) {
                         P2PEndpointCandidate candidate;
                         if (P2PEndpointCandidate::FromJson(candidate, candidates_json[i])) {

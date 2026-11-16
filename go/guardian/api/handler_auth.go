@@ -13,21 +13,36 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
+// authState returns a consistent snapshot of the mutable auth settings.
+func (s *Server) authState() (enabled bool, secret string) {
+	s.authMu.RLock()
+	defer s.authMu.RUnlock()
+	return s.authCfg.AuthEnabled, s.jwtSecret
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if wait, blocked := s.limiter.Check(ip); blocked {
+		tooManyAttempts(w, wait)
+		return
+	}
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if s.authCfg.AuthEnabled {
-		if s.jwtSecret == "" {
+	enabled, secret := s.authState()
+	if enabled {
+		if secret == "" {
 			Error(w, http.StatusServiceUnavailable, "authentication is not configured")
 			return
 		}
-		if req.Password == "" || subtle.ConstantTimeCompare([]byte(req.Password), []byte(s.jwtSecret)) != 1 {
+		if req.Password == "" || subtle.ConstantTimeCompare([]byte(req.Password), []byte(secret)) != 1 {
+			s.limiter.Fail(ip)
 			Error(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
+		s.limiter.Reset(ip)
 	}
 	token, expiry, err := s.issueToken()
 	if err != nil {
@@ -43,7 +58,8 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	if _, err := auth.ValidateToken(oldToken, s.jwtSecret); err != nil {
+	_, secret := s.authState()
+	if _, err := auth.ValidateToken(oldToken, secret); err != nil {
 		Error(w, http.StatusUnauthorized, err.Error())
 		return
 	}
@@ -57,7 +73,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) issueToken() (string, any, error) {
-	secret := s.jwtSecret
+	_, secret := s.authState()
 	if secret == "" {
 		return "", nil, errors.New("authentication secret is not configured")
 	}
@@ -69,7 +85,6 @@ func (s *Server) issueToken() (string, any, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	s.jwtSecret = secret
 	s.tokenStore.Add(token, claims.ExpiresAt)
 	return token, claims.ExpiresAt, nil
 }
@@ -80,6 +95,11 @@ type changePasswordRequest struct {
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if wait, blocked := s.limiter.Check(ip); blocked {
+		tooManyAttempts(w, wait)
+		return
+	}
 	var req changePasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		Error(w, http.StatusBadRequest, "invalid request body")
@@ -89,15 +109,18 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "new password is required")
 		return
 	}
-	currentSecret := s.jwtSecret
-	if s.authCfg.AuthEnabled && currentSecret == "" {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	if s.authCfg.AuthEnabled && s.jwtSecret == "" {
 		Error(w, http.StatusServiceUnavailable, "authentication is not configured")
 		return
 	}
-	if s.authCfg.AuthEnabled && (req.OldPassword == "" || subtle.ConstantTimeCompare([]byte(req.OldPassword), []byte(currentSecret)) != 1) {
+	if s.authCfg.AuthEnabled && (req.OldPassword == "" || subtle.ConstantTimeCompare([]byte(req.OldPassword), []byte(s.jwtSecret)) != 1) {
+		s.limiter.Fail(ip)
 		Error(w, http.StatusUnauthorized, "invalid current password")
 		return
 	}
+	s.limiter.Reset(ip)
 	authEnabled := s.authCfg.AuthEnabled || req.NewPassword != ""
 	if s.authCfg.OnAuthChanged != nil {
 		if err := s.authCfg.OnAuthChanged(authEnabled, req.NewPassword); err != nil {

@@ -9,6 +9,8 @@ export function formatDuration(startedAt, now = Date.now()) {
 
 export function formatBytes(bytes) {
   if (!Number.isFinite(bytes)) return ''
+  if (bytes < 1024) return `${Math.max(0, bytes).toFixed(0)} B`
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`
 }

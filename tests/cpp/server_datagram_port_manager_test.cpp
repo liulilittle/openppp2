@@ -31,7 +31,7 @@ udp_server::ServerUdpRelayHostPorts MakeFilledPorts() noexcept {
     ports.do_send_to = [](const udp_server::ITransmissionPtr&, const boost::asio::ip::udp::endpoint&,
                           const boost::asio::ip::udp::endpoint&, ppp::Byte*, int,
                           ppp::coroutines::YieldContext&) noexcept { return true; };
-    ports.release_port = [](const boost::asio::ip::udp::endpoint&) noexcept {};
+    ports.release_port = [](const boost::asio::ip::udp::endpoint&, const ppp::app::server::VirtualEthernetDatagramPort*) noexcept {};
     ports.get_interface_ip = []() noexcept { return boost::asio::ip::address(); };
     ports.namespace_query = [](const void*, int) noexcept { return true; };
     return ports;
@@ -42,6 +42,29 @@ udp_server::ServerUdpRelayHostPorts MakeFilledPorts() noexcept {
 BOOST_AUTO_TEST_CASE(default_ports_is_invalid) {
     udp_server::ServerUdpRelayHostPorts ports;
     BOOST_TEST(!ports.IsValid());
+}
+
+BOOST_AUTO_TEST_CASE(session_cap_preserves_existing_ports) {
+    udp_server::ServerDatagramPortManager m(MakeFilledPorts());
+    for (unsigned short port = 1; port <= 1024; ++port) {
+        BOOST_REQUIRE(m.AddNewDatagramPort({}, Ep("10.0.0.1", port)));
+    }
+    BOOST_TEST(!m.AddNewDatagramPort({}, Ep("10.0.0.1", 1025)));
+    BOOST_TEST(!!m.AddNewDatagramPort({}, Ep("10.0.0.1", 1)));
+    m.Release();
+}
+
+BOOST_AUTO_TEST_CASE(stale_port_cannot_remove_replacement) {
+    udp_server::ServerDatagramPortManager m(MakeFilledPorts());
+    auto source = Ep("10.0.0.1", 5000);
+    auto old_port = m.AddNewDatagramPort({}, source);
+    BOOST_REQUIRE(old_port);
+    m.ReleaseDatagramPort(source);
+    auto replacement = m.AddNewDatagramPort({}, source);
+    BOOST_REQUIRE(replacement);
+    BOOST_TEST(!m.ReleaseDatagramPort(source, old_port.get()));
+    BOOST_TEST(m.GetDatagramPort(source) == replacement);
+    m.Release();
 }
 
 BOOST_AUTO_TEST_CASE(filled_ports_is_valid) {

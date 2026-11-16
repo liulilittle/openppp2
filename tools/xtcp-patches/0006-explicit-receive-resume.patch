@@ -1,30 +1,4 @@
---- a/include/xtcp/core/tcp.h
-+++ b/include/xtcp/core/tcp.h
-@@ -331,6 +331,13 @@
-              */
-             void SendAck() noexcept;
-             /**
-+             * @brief Reopens an application-blocked receive window and sends
-+             *        an immediate nonzero window-update ACK.
-+             * @return True only when a latched blocked state was cleared.
-+             * @note Does not advance RCV.NXT; repeated calls are no-ops.
-+             */
-+            bool ResumeReceive() noexcept;
-+            /**
-              * @brief Sends the SYN segment (active-open path, SynSent).
-              * @note Caller invokes after creating the connection in SynSent.
-              */
-@@ -980,8 +987,8 @@
-              * @brief Advertised receive-window field (RFC 1122 s4.2.3.4):
-              *        zero while the app is backpressuring (recv_cb_ rejected
-              *        data) - the peer stops sending and persists instead of
--             *        retransmitting into a window it cannot use. Recovered on
--             *        the next accepted deliver. Reflects the out-of-order
-+             *        retransmitting into a window it cannot use. Cleared by
-+             *        ResumeReceive() when application capacity returns. Reflects the out-of-order
-              *        buffer occupancy: buffered OOO bytes are receive memory
-              *        already consumed, so the free capacity is
-              *        window_ - ooo_bytes_.
+diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
 --- a/include/xtcp/core/stack.h
 +++ b/include/xtcp/core/stack.h
 @@ -139,6 +139,12 @@
@@ -51,14 +25,61 @@
            * @warning Same reentrancy/lifetime rules as SetRecvHandler.
            */
           void SetRecvHandlerChecked(RecvHandlerChecked handler) noexcept { recv_handler_ = std::move(handler); }
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -370,6 +370,13 @@
+              */
+             void SendAck() noexcept;
+             /**
++             * @brief Reopens an application-blocked receive window and sends
++             *        an immediate nonzero window-update ACK.
++             * @return True only when a latched blocked state was cleared.
++             * @note Does not advance RCV.NXT; repeated calls are no-ops.
++             */
++            bool ResumeReceive() noexcept;
++            /**
+              * @brief Sends the SYN segment (active-open path, SynSent).
+              * @note Caller invokes after creating the connection in SynSent.
+              */
+@@ -1134,8 +1141,8 @@
+              * @brief Advertised receive-window field (RFC 1122 s4.2.3.4):
+              *        zero while the app is backpressuring (recv_cb_ rejected
+              *        data) - the peer stops sending and persists instead of
+-             *        retransmitting into a window it cannot use. Recovered on
+-             *        the next accepted deliver. Reflects the out-of-order
++             *        retransmitting into a window it cannot use. Cleared by
++             *        ResumeReceive() when application capacity returns. Reflects the out-of-order
+              *        buffer occupancy: buffered OOO bytes are receive memory
+              *        already consumed, so the free capacity is
+              *        window_ - ooo_bytes_.
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -1453,6 +1453,16 @@
+         return it->second->conn->SendData(data, len, GetTickUs());
+     }
+ 
++    bool XtcpStack::ResumeReceive(UInt64 conn_id) noexcept {
++        Shard* shard = ShardOf(conn_id);
++        std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
++        auto it = shard->conns_.find(conn_id);
++        if (it == shard->conns_.end() || NULLPTR == it->second->conn) {
++            return false;
++        }
++        return it->second->conn->ResumeReceive();
++    }
++
+     bool XtcpStack::ConnLastSendAdmission(
+         UInt64 conn_id, core::SendAdmissionSnapshot& out) const noexcept {
+         out = {};
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -3769,6 +3769,23 @@
- 
-         void TcpConn::SendAck() noexcept {
+@@ -5757,6 +5757,23 @@
              SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
-+        }
-+
+         }
+ 
 +        bool TcpConn::ResumeReceive() noexcept {
 +            std::lock_guard<std::recursive_mutex> scope(syncobj_);
 +            if (!rcv_blocked_) {
@@ -74,28 +95,12 @@
 +            ack_deadline_ = 0;
 +            SendAck();
 +            return true;
-         }
- 
-         void TcpConn::SendSyn() noexcept {
---- a/src/core/stack.cpp
-+++ b/src/core/stack.cpp
-@@ -1405,6 +1405,16 @@
-         }
-         MarkSweep(*shard);  // SendData may arm RTO / buffered data
-         return it->second->conn->SendData(data, len, GetTickUs());
-+    }
-+
-+    bool XtcpStack::ResumeReceive(UInt64 conn_id) noexcept {
-+        Shard* shard = ShardOf(conn_id);
-+        std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
-+        auto it = shard->conns_.find(conn_id);
-+        if (it == shard->conns_.end() || NULLPTR == it->second->conn) {
-+            return false;
 +        }
-+        return it->second->conn->ResumeReceive();
-     }
- 
-     bool XtcpStack::ConnLastSendAdmission(
++
+         void TcpConn::SendSyn() noexcept {
+             std::lock_guard<std::recursive_mutex> scope(syncobj_);
+             // RFC 7323: offer window scaling in the SYN (our receive
+diff --git a/tests/test_zero_window_backpressure.cpp b/tests/test_zero_window_backpressure.cpp
 --- a/tests/test_zero_window_backpressure.cpp
 +++ b/tests/test_zero_window_backpressure.cpp
 @@ -100,9 +100,15 @@
@@ -194,9 +199,8 @@
          for (UInt32 i = 0; i < 800 && b_recv.load(std::memory_order_relaxed) < kTotal; ++i) {
              Pump(backend_a, backend_b, stack_a, stack_b);
 -            std::this_thread::sleep_for(std::chrono::milliseconds(10));
--        }
+         }
 -        std::fprintf(stderr, "[zero-window] recovered b_recv=%llu (expect %u)\n",
-+        }
 +        std::fprintf(stderr, "[zero-window] active-resume b_recv=%llu (expect %u)\n",
                       (unsigned long long)b_recv.load(), kTotal);
 -        CHECK(kTotal == b_recv.load(std::memory_order_relaxed));  // CORE: stream resumed

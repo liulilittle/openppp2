@@ -31,7 +31,10 @@ func computeSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func detectVersion(path string) string {
+// detectVersion reads the version from the binary. The "strings" scan is
+// passive; running the file is only done when allowExec is true, i.e. the file
+// is a plausible ppp binary located in a trusted directory.
+func detectVersion(path string, allowExec bool) string {
 	// Try strings first (faster for large binaries)
 	if _, err := exec.LookPath("strings"); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -44,6 +47,10 @@ func detectVersion(path string) string {
 				return m[1]
 			}
 		}
+	}
+
+	if !allowExec {
+		return "unknown"
 	}
 
 	// Fallback: run the binary and parse version line

@@ -1,0 +1,4 @@
+example.test/192.0.2.53/tun
+regexp:^api[0-9]+\.example\.test$/198.51.100.53/nic
+full:api1.example.test/cloudflare/foreign
+invalid-line

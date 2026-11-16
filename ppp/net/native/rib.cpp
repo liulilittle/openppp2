@@ -133,6 +133,11 @@ namespace ppp
                         return false;
                     }
 
+                    if (parsed_prefix < 0 || parsed_prefix > 128) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkMaskInvalid);
+                        return false;
+                    }
+
                     prefix = static_cast<int>(parsed_prefix);
                 }
 

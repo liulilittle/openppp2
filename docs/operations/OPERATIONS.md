@@ -1,77 +1,84 @@
 # Operations and Troubleshooting
 
-> **Status:** Current
-> **Type:** Operations guide
-> **Last verified:** Runtime lifecycle, CLI help, stats, console UI, and diagnostic sources, 2026-07-22
-> **Parent index:** [Operations](README.md) · **Chinese:** [运维与故障排查](OPERATIONS_CN.md)
+> Status: Active
+> Type: Operations
+> Last verified: 2026-10-11 (against `ppp/facade/ApplicationBootstrap.cpp`, `ApplicationInitialize.cpp`, `ApplicationMainLoop.cpp`, `ppp/app/runtime/RuntimePhase.h`, `RuntimeStatsJson.*`, `ConsoleUI.cpp`)
+>
+> **Purpose:** Tell whether OPENPPP2 is working, and locate problems in order when it is not.
+> **Audience:** Operators and users running a server or client.
+> **Parent index:** [Operations](README.md) · **Chinese:** [运维与排障](OPERATIONS_CN.md)
 
-## Start with observable state
+## 1. What you can observe
 
-Use the selected process mode and explicit configuration path first:
+| Source | How | Shows |
+|---|---|---|
+| Startup failure output | On exit, stderr prints one line `[severity] number Name: description` | The failure reason; look the name up in [Error codes](../reference/ERROR_CODES.md) |
+| Console UI | Shown automatically in a foreground terminal (also under Guardian) | Status bar: connection state, throughput, last error; `openppp2 info` prints the full runtime environment |
+| Startup diagnostics | `[security]` and `[mux]` lines at startup | Weak key / plaintext / legacy cipher warnings; active MUX scheduler |
+| `--stats-json=<file\|stdout>` | Startup flag | One JSON object per line (`type: "ppp-stats"`): rx/tx bytes, link quality, TCP stack, platform counters |
+| `server.log` | Server configuration | Session log file |
+| `telemetry.*` | Configuration | Telemetry logs / metrics / spans, to a file or OTLP |
+| `openppp2 peer status` | Console command | P2P peer state |
 
-```bash
-./ppp --mode=server --config=./server.json
-./ppp --mode=client --config=./client.json
-./ppp --mode=proxy  --config=./client.json
-```
+There is no built-in HTTP metrics or management endpoint; `--stats-json` only writes locally.
 
-The runtime snapshot phase names are:
+## 2. Runtime phases
+
+A client moves through these phases, visible in the console and runtime snapshot:
 
 ```text
-idle → starting → preparing_host → connecting → handshaking →
-applying_policy → connected → reconnecting → stopping → idle|failed
+idle → starting → preparing_host → connecting → handshaking → applying_policy → connected
+                                                       ↘ reconnecting ↗          ↘ stopping → idle / failed
 ```
 
-A phase is useful evidence, not proof that every host-network action or application flow works.
+`connected` only means the tunnel handshake completed; it does not prove traffic flows as intended — test real access.
 
-## Built-in local observability
+## 3. Troubleshoot by phase
 
-| Surface | Use | Boundary |
-|---|---|---|
-| `--stats-json=<path|stdout>` | Write local runtime statistics as NDJSON. | It is a local output option, not a network metrics endpoint. |
-| Runtime snapshot | Contains role, phase, endpoint/transport information, traffic, capabilities, and last error state. | Access follows the hosting/UI path; no public REST API is implied. |
-| Console UI | Local interactive commands include `openppp2 help`, `restart`, `reload`, `exit`, and `info` when the UI is available. | Do not treat it as remote management. |
-| Diagnostics | Inspect process output and the current error state; error formatting APIs are available to code that embeds the runtime. | A code-level diagnostic API is not an operator HTTP API. |
-
-Restart controls are CLI-only:
-
-| Flag | Meaning |
+| Stuck at / symptom | Check first |
 |---|---|
-| `--auto-restart=<seconds>` | Auto-restart interval; `0` disables it. |
-| `--link-restart=<count>` | Reconnection-attempt threshold for link restart; `0` disables it. |
+| Exits immediately | The error name on stderr. Common: `AppPrivilegeRequired` (non-proxy modes need administrator / root, **the server too**), `AppAlreadyRunning` (an instance with the same mode and configuration file is running), `ConfigFileNotFound` / `ConfigLoadFailed` (path or JSON error), IPv6 unsupported on the platform |
+| `preparing_host` | Virtual adapter driver (Windows Wintun / TAP, Linux `/dev/net/tun`); adapter name conflicts |
+| `connecting` | `client.server` address, port, prefix; server firewall; `client.server-proxy`; reachability (`nc -vz SERVER PORT`) |
+| `handshaking` | Identical `key` on both sides; WS / WSS domain, path, certificates; `transport-auth` configured on both sides |
+| `applying_policy` | Route / DNS permissions; split rule files; whether `client.policy` passes `ppp policy check` |
+| `connected` but no traffic | Split rules sending the target direct; DNS reachability; server egress; `openppp2 info` for the assigned address |
+| Repeated `reconnecting` | Network instability, server restarts, duplicate `client.guid`; too small `--link-restart` |
+| Periodic brief disconnects | `--auto-restart`, `--virr`, and vBGP list updates all restart the process |
+| Managed authentication fails | `server.node >= 1`, `server.backend` / `backend-key` match the manager, manager in managed mode, node record exists (see [Management backend](../guides/MANAGEMENT_BACKEND.md)) |
 
-## Troubleshoot by phase
+## 4. Automatic restarts
 
-| Symptom | First checks |
+| Mechanism | Meaning |
 |---|---|
-| Fails before `starting` or exits immediately | Mode/config path, process permissions, single-instance condition, and configuration parse errors. |
-| Stays in `connecting` | Server URI, network reachability, local route policy, and upstream proxy configuration if used. |
-| Stays in `handshaking` | Matching endpoint/transport/key configuration and the selected WebSocket/TLS path. |
-| Stays in `applying_policy` | Virtual-interface availability, route/DNS permissions, and platform host state. |
-| Reaches `connected` but carries no intended traffic | Host routes, bypass/DNS inputs, resolver behavior, remote server policy, and application test path. |
-| Managed authentication fails | `server.node`, `server.backend`, C++/Go shared key, manager mode, and node record. |
-| Server IPv6 fails | Linux-only server boundary, IPv6 mode/CIDR, host capability, TUN, routing/NDP/NAT66 prerequisites. |
+| `--auto-restart=<seconds>` | The process restarts itself after running this long |
+| `--link-restart=<count>` | Restart when the client's reconnection count reaches this value |
+| `openppp2 restart` / `reload` | Manual restart (re-reads the configuration) |
+| systemd `Restart=always` / Guardian `autoRestart` | External restart after abnormal exit; see [Deployment](DEPLOYMENT.md) |
 
-## Safe operating sequence
+## 5. Safe operating sequence
 
-1. Capture the exact command, selected config path, and initial output.
-2. Confirm mode-specific host effects: listener bindings for server/proxy, or virtual interface/routes for normal client mode.
-3. Record phase and last error before changing configuration.
-4. Change one variable at a time; route/DNS and firewall changes can obscure one another.
-5. Use an explicit maintenance/rollback procedure for host-managed settings rather than assuming the application can restore unrelated state.
+1. Record the full start command, configuration path, and initial output.
+2. Record the current phase and last error before changing configuration.
+3. Change one thing at a time; route, DNS, and firewall changes can mask each other.
+4. Back up configuration first; prepare manual rollback steps for host route, DNS, and firewall settings.
+5. Stop clients with `Ctrl+C` / `openppp2 exit` so routes and DNS are restored.
 
-## Do not assume
+## 6. Policy v2 troubleshooting
 
-- a `connected` snapshot is not an end-to-end traffic test;
-- `--stats-json` is not Prometheus or a remote observability service;
-- Console UI commands are not an authenticated remote administration protocol;
-- no undocumented `/metrics`, lease, or IPv6-state REST endpoint is supplied by this runtime;
-- default-route protection is not a universal kill switch.
+| Symptom | Inspect |
+|---|---|
+| A domain takes the wrong path | `ppp policy explain --config F --runtime tun --domain <domain>` |
+| Rules fail to validate | Diagnostics from `ppp policy check --config F --runtime tun --json` |
+| An update has no effect | `ppp policy status`: versions downloaded by `ppp policy update` apply at the next start (`prepared_version`); a custom `--store` needs `export` |
+| Fake-IP addresses change after restart or are unavailable | Was the `dns.fake-ip.storage` directory deleted or held by another process? Do not delete the store as a first recovery step |
+| Status file missing or stale | Another process may hold the status writer lock; the status file is observability only and does not drive routing |
 
-## Related pages
+## 7. When reporting a problem
 
-- [Deployment model](DEPLOYMENT.md)
-- [Security model](SECURITY.md)
-- [Routing and DNS](../guides/ROUTING_AND_DNS.md)
-- [Management backend](../guides/MANAGEMENT_BACKEND.md)
-- [Error codes](../reference/ERROR_CODES.md)
+Share only redacted information: the error line, the phase, platform and version, and configuration excerpts without addresses or keys. Never post full configurations, node addresses, subscription links, or keys.
+
+## Related documents
+
+- [Deployment](DEPLOYMENT.md) · [Security](SECURITY.md) · [Error codes](../reference/ERROR_CODES.md)
+- [Writing the configuration file · common mistakes](../getting-started/CONFIGURE.md) · [Routing and DNS](../guides/ROUTING_AND_DNS.md)

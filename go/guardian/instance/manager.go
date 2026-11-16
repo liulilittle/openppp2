@@ -80,6 +80,11 @@ type HealthCheckConfig struct {
 	HTTPEndpoint string
 }
 
+const (
+	maxLogLines         = 100000
+	minHealthIntervalMs = 1000
+)
+
 type Manager struct {
 	mu               sync.RWMutex
 	instances        map[string]*instance
@@ -100,6 +105,12 @@ func normalizeConfig(name string, cfg Config) Config {
 	}
 	if cfg.LogLines <= 0 {
 		cfg.LogLines = 2000
+	}
+	if cfg.LogLines > maxLogLines {
+		cfg.LogLines = maxLogLines
+	}
+	if cfg.HealthCheck.IntervalMs > 0 && cfg.HealthCheck.IntervalMs < minHealthIntervalMs {
+		cfg.HealthCheck.IntervalMs = minHealthIntervalMs
 	}
 	if cfg.Args == nil {
 		cfg.Args = []string{}
@@ -383,6 +394,7 @@ func (m *Manager) startInstance(inst *instance, isRestart bool) error {
 	defer func() { slave.Close() }()
 
 	if err := cmd.Start(); err != nil {
+		_ = master.Close()
 		inst.mu.Unlock()
 		return err
 	}
@@ -579,11 +591,11 @@ func (m *Manager) capturePty(inst *instance, reader io.ReadCloser) {
 		"public ip": true, "interface ip": true,
 		"hosting environment": true, "process": true,
 		"application": true, "template": true, "mode": true, "cwd": true, "config": true,
-		"triplet": true,
+		"triplet":        true,
 		"managed server": true, "vpn server": true,
 		"http proxy": true, "socks proxy": true,
 		"p/a controller": true,
-		"name": true, "index": true, "interface": true,
+		"name":           true, "index": true, "interface": true,
 		"aggligator": true, "proxy interlayer": true,
 		"tcp/ip cc": true, "block quic": true,
 		"mux state": true, "link state": true,

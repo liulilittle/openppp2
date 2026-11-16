@@ -11,6 +11,7 @@
 #include <ppp/diagnostics/TelemetryFwd.h>
 #include <ppp/tap/ITap.h>
 #include <ppp/net/packet/UdpFrame.h>
+#include <ppp/app/client/policy/PolicyEvaluator.h>
 #include <ppp/net/packet/IcmpFrame.h>
 #include <ppp/net/native/ip.h>
 #include <ppp/net/native/udp.h>
@@ -312,15 +313,43 @@ ANDROID_DNS_REDIRECT_TRACE(
                 }
 
                 routing::ResolvedDestination destination;
-                if (!owner_->ResolveDestination(frame->Destination, destination)) {
+                const auto snapshot = owner_->GetPolicySnapshot();
+                const bool identified = snapshot
+                    ? owner_->ResolvePolicyDestinationIdentity(frame->Destination, destination)
+                    : owner_->ResolveDestination(frame->Destination, destination);
+                if (!identified) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::UdpRelayFailed);
                 }
-                if (destination.is_fake_ip && !destination.is_resolved) {
+                if (snapshot && (!IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Destination).address().is_v4() ||
+                    (destination.is_fake_ip && destination.hostname.empty()))) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                }
+                if (!snapshot && destination.is_fake_ip && !destination.is_resolved) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
                 }
 
                 boost::asio::ip::udp::endpoint destinationEP =
                     IPEndPoint::ToEndPoint<boost::asio::ip::udp>(destination.connect_endpoint);
+                if (snapshot) {
+                    bool accepted = false;
+                    if (exchanger->TrySendToPinned(IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source),
+                        IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Destination), messages->Buffer.get(),
+                        messages->Length, destination.hostname, accepted, destination.is_fake_ip)) return accepted;
+                    const auto decision = policy::PolicyEvaluator::Evaluate(*snapshot, destination.hostname,
+                        destination.is_fake_ip ? "" : destinationEP.address().to_string());
+                    if (decision.action == policy::PolicyAction::Reject && !decision.needs_ip_resolution) {
+                        owner_->RecordPolicyDecision(policy::PolicyAction::Reject);
+                        exchanger->RecordPolicyUdpReject(); return true;
+                    }
+                    if (!decision.needs_ip_resolution) owner_->RecordPolicyDecision(decision.action);
+                    destination.action = decision.action == policy::PolicyAction::Direct
+                        ? routing::RoutingAction::Direct : routing::RoutingAction::Proxy;
+                    if (destination.is_fake_ip) {
+                        const auto original = IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Destination);
+                        return exchanger->SendTo(IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source), original,
+                            messages->Buffer.get(), messages->Length, destination.action, destination.hostname, snapshot, true);
+                    }
+                }
                 if (destinationEP.address().is_unspecified()) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
                 }
@@ -331,7 +360,7 @@ ANDROID_DNS_REDIRECT_TRACE(
                 frame->Destination = destination.connect_endpoint;
 
                 // Direct policy must not enter the tunnel-only static echo path.
-                if (owner_->static_mode_ && !resolver_udp_flow &&
+                if (!snapshot && owner_->static_mode_ && !resolver_udp_flow &&
                     destination.action != routing::RoutingAction::Direct) {
                     auto& static_ = owner_->configuration_->udp.static_;
                     if (static_.quic && destinationPort == PPP_HTTPS_SYS_PORT) {
@@ -350,8 +379,9 @@ ANDROID_DNS_REDIRECT_TRACE(
                 }
 
                 boost::asio::ip::udp::endpoint sourceEP = IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source);
-                bool ok = exchanger->SendTo(
-                    sourceEP, destinationEP, messages->Buffer.get(), messages->Length, destination.action);
+                bool ok = snapshot ? exchanger->SendTo(sourceEP, destinationEP, messages->Buffer.get(),
+                    messages->Length, destination.action, destination.hostname, snapshot)
+                    : exchanger->SendTo(sourceEP, destinationEP, messages->Buffer.get(), messages->Length, destination.action);
                 if (destinationEP.port() == PPP_DNS_SYS_PORT || !ok) {
                     ppp::telemetry::Log(Level::kInfo, "switcher", "UDP send source=%s:%u destination=%s:%u bytes=%d ok=%d error=%d",
                         sourceEP.address().to_string().c_str(),

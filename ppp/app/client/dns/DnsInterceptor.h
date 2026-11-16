@@ -16,6 +16,7 @@
 
 namespace ppp { namespace configurations { class AppConfiguration; } }
 namespace ppp { namespace dns { class DnsResolver; class DnsUdpFlowRegistry; } }
+namespace ppp::app::client::dns { class PolicyResolverService; }
 
 #if defined(_LINUX)
 namespace ppp { namespace net { class ProtectorNetwork; } }
@@ -30,7 +31,7 @@ namespace ppp {
                 public:
                     using RuleMap = ppp::unordered_map<ppp::string, Rule::Ptr>;
 
-                    DnsInterceptor() noexcept = default;
+                    DnsInterceptor() noexcept;
 
                     bool Open(
                         const std::shared_ptr<ppp::configurations::AppConfiguration>& configuration,
@@ -56,6 +57,13 @@ namespace ppp {
                         const ppp::function<void(uint32_t)>& add_nic_ip) noexcept;
                     void SetUdpFlowRegistry(
                         const std::shared_ptr<ppp::dns::DnsUdpFlowRegistry>& registry) noexcept override;
+                    void SetPolicyRuntime(const std::shared_ptr<policy::PolicyRuntime>& runtime) noexcept override;
+                    void SetPolicyFakeIpStore(const std::shared_ptr<DurableFakeIpStore>& store) noexcept override;
+                    void SetDirectSocketProtector(const ppp::function<bool(boost::asio::ip::tcp::socket::native_handle_type)>& protect) noexcept override;
+                    bool ResolvePolicyDestination(const std::string& domain,
+                        const std::shared_ptr<const policy::PolicySnapshot>& snapshot,
+                        const std::shared_ptr<const DnsSessionContext>& session,
+                        ppp::coroutines::YieldContext& yield, boost::asio::ip::address& address) noexcept override;
 
                     boost::asio::ip::address RewriteFakeIpAddress(
                         const boost::asio::ip::address& address) const noexcept override;
@@ -64,6 +72,8 @@ namespace ppp {
                         const ppp::net::IPEndPoint& endpoint,
                         routing::ResolvedDestination& destination) const noexcept override;
                     bool GetFakeIpRoute(uint32_t& network, int& prefix) const noexcept override;
+                    PolicyTelemetrySnapshot SnapshotPolicyTelemetry() const noexcept override;
+                    void RecordPolicyDecision(policy::PolicyAction action) noexcept override;
 
                     bool HandleQuery(
                         const DnsQueryContext& context,
@@ -82,6 +92,11 @@ namespace ppp {
                     std::shared_ptr<const FakeIpPool> GetFakeIpPool() const noexcept { return std::atomic_load(&fake_ip_pool_); }
 
                 private:
+                    struct FakeIpRequestState final {
+                        std::atomic_bool active{true};
+                        std::atomic_uint64_t generation{0};
+                    };
+
                     void SpawnFakeIpBackgroundResolve(
                         const std::shared_ptr<FakeIpPool>& pool,
                         const std::shared_ptr<ppp::dns::DnsResolver>& resolver,
@@ -94,6 +109,12 @@ namespace ppp {
 
                     std::shared_ptr<ppp::configurations::AppConfiguration> configuration_;
                     std::shared_ptr<ppp::dns::DnsResolver> dns_resolver_;
+                    std::shared_ptr<PolicyResolverService> policy_resolver_;
+                    std::shared_ptr<policy::PolicyRuntime> policy_runtime_;
+                    std::shared_ptr<DurableFakeIpStore> policy_fake_ip_store_;
+                    std::shared_ptr<PolicyTelemetry> policy_telemetry_ = std::make_shared<PolicyTelemetry>();
+                    std::shared_ptr<FakeIpRequestState> fake_ip_request_state_ = std::make_shared<FakeIpRequestState>();
+                    ppp::function<bool(boost::asio::ip::tcp::socket::native_handle_type)> direct_socket_protector_;
                     std::shared_ptr<ppp::dns::DnsUdpFlowRegistry> udp_flow_registry_;
                     std::shared_ptr<FakeIpPool> fake_ip_pool_ = make_shared_object<FakeIpPool>();
                     std::shared_ptr<const routing::HumanRoutingRules> human_routing_rules_;

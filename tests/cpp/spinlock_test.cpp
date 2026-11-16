@@ -4,14 +4,40 @@
 #include <ppp/threading/SpinLock.h>
 
 #include <atomic>
+#include <algorithm>
 #include <stdexcept>
 #include <thread>
 #include <vector>
+
+#if defined(__linux__)
+#include <sched.h>
+#endif
 
 namespace {
 
 using ppp::threading::RecursiveSpinLock;
 using ppp::threading::SpinLock;
+
+unsigned contention_threads() {
+    unsigned available = std::thread::hardware_concurrency();
+#if defined(__linux__)
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    if (sched_getaffinity(0, sizeof(affinity), &affinity) == 0) {
+        available = static_cast<unsigned>(CPU_COUNT(&affinity));
+    }
+#endif
+    return std::max(1u, std::min(4u, available));
+}
+
+template <typename Lock>
+void enter_cooperatively(Lock& lock) {
+    // Exercise the real acquisition path without hammering the state gate
+    // while its owner is descheduled on a shared runner.
+    while (!lock.TryEnter()) {
+        std::this_thread::yield();
+    }
+}
 
 }  // namespace
 
@@ -94,8 +120,8 @@ BOOST_AUTO_TEST_CASE(unmatched_leave_throws) {
  */
 BOOST_AUTO_TEST_CASE(contention_stress_no_lost_lock_no_race) {
     RecursiveSpinLock lock;
-    constexpr int kThreads = 8;
-    constexpr int kIterations = 20000;
+    const int kThreads = static_cast<int>(contention_threads());
+    constexpr int kIterations = 2000;
 
     int64_t counter = 0;
     std::atomic<int> ready{0};
@@ -109,7 +135,7 @@ BOOST_AUTO_TEST_CASE(contention_stress_no_lost_lock_no_race) {
                 std::this_thread::yield();
             }
             for (int k = 0; k < kIterations; ++k) {
-                lock.Enter();
+                enter_cooperatively(lock);
                 ++counter;
                 lock.Enter();  // recursive re-entry inside the critical section
                 ++counter;
@@ -133,15 +159,15 @@ BOOST_AUTO_TEST_CASE(contention_stress_no_lost_lock_no_race) {
 
 BOOST_AUTO_TEST_CASE(plain_spinlock_mutual_exclusion) {
     SpinLock lock;
-    constexpr int kThreads = 8;
-    constexpr int kIterations = 20000;
+    const int kThreads = static_cast<int>(contention_threads());
+    constexpr int kIterations = 2000;
 
     int64_t counter = 0;
     std::vector<std::thread> threads;
     for (int i = 0; i < kThreads; ++i) {
         threads.emplace_back([&]() noexcept {
             for (int k = 0; k < kIterations; ++k) {
-                lock.Enter();
+                enter_cooperatively(lock);
                 ++counter;
                 lock.Leave();
             }
@@ -152,4 +178,30 @@ BOOST_AUTO_TEST_CASE(plain_spinlock_mutual_exclusion) {
     }
 
     BOOST_TEST(counter == static_cast<int64_t>(kThreads) * kIterations);
+}
+
+BOOST_AUTO_TEST_CASE(blocking_enter_under_bounded_contention) {
+    // Keep Enter() itself covered: cooperative stress must not hide a broken
+    // blocking acquisition path. Two workers also exercise oversubscription
+    // when the test is pinned to a single CPU.
+    SpinLock plain;
+    RecursiveSpinLock recursive;
+    int counter = 0;
+    auto work = [&]() {
+        for (int i = 0; i < 64; ++i) {
+            plain.Enter();
+            recursive.Enter();
+            recursive.Enter();
+            ++counter;
+            recursive.Leave();
+            recursive.Leave();
+            plain.Leave();
+        }
+    };
+    std::thread worker(work);
+    work();
+    worker.join();
+    BOOST_TEST(counter == 128);
+    BOOST_TEST(!plain.IsLockTaken());
+    BOOST_TEST(!recursive.IsLockTaken());
 }

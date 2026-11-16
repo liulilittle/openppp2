@@ -14,6 +14,7 @@
 #include <ppp/net/native/ip.h>
 #include <ppp/net/native/eth.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/TelemetryFwd.h>
 
 #include <Windows.h>
 #include <netcfgx.h>
@@ -90,6 +91,62 @@ namespace ppp
                 int64_t index = atoll((CHAR*)s);
 #endif
                 return index;
+            }
+
+            static ppp::string GetInterfaceLuidString(int interface_index) noexcept
+            {
+                if (interface_index < 0)
+                {
+                    return ppp::string();
+                }
+
+                NET_LUID luid{};
+                if (ConvertInterfaceIndexToLuid(static_cast<NET_IFINDEX>(interface_index), &luid) != NO_ERROR)
+                {
+                    return ppp::string();
+                }
+
+                return stl::transform<ppp::string>(
+                    std::to_string(static_cast<unsigned long long>(luid.Value)));
+            }
+
+            static bool GetDnsAutomaticByGuid(const ppp::string& guid, bool& automatic) noexcept
+            {
+                automatic = false;
+                if (guid.empty())
+                {
+                    return false;
+                }
+
+                ppp::string path(
+                    "SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\");
+                path.append(guid);
+                HKEY key = NULL;
+                if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, path.c_str(), 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+                {
+                    return false;
+                }
+
+                char value[4096] = {};
+                DWORD type = 0;
+                DWORD size = sizeof(value);
+                const LONG result = RegQueryValueExA(
+                    key, "NameServer", NULL, &type, reinterpret_cast<LPBYTE>(value), &size);
+                RegCloseKey(key);
+                if (result == ERROR_FILE_NOT_FOUND)
+                {
+                    // No static NameServer value means the adapter uses the
+                    // DHCP supplied DNS servers.
+                    automatic = true;
+                    return true;
+                }
+                if (result != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ))
+                {
+                    return false;
+                }
+
+                automatic = size <= sizeof(char) || value[0] == '\0';
+                return true;
             }
 
             static bool RegistryEditGetValue(HKEY hSubKey, const TCHAR* key, ppp::string& value) noexcept
@@ -399,6 +456,7 @@ namespace ppp
                             networkInterface->Guid = VARIANT_string(pclsObj, L"SettingID");
                             networkInterface->Index = VARIANT_value(pclsObj, L"Index", -1);
                             networkInterface->InterfaceIndex = VARIANT_value(pclsObj, L"InterfaceIndex", -1);
+                            networkInterface->InterfaceLuid = GetInterfaceLuidString(networkInterface->InterfaceIndex);
                             networkInterface->Metric = VARIANT_value(pclsObj, L"IPConnectionMetric", -1);
                             networkInterface->MacAddress = VARIANT_string(pclsObj, L"MacAddress");
                             networkInterface->IPEnabled = VARIANT_value(pclsObj, L"IPEnabled", false);
@@ -886,6 +944,224 @@ namespace ppp
                     });
             }
 
+            bool CaptureDnsSnapshot(int interface_index, NetworkDnsSnapshot& snapshot) noexcept
+            {
+                snapshot = NetworkDnsSnapshot();
+                NetworkInterfacePtr current = GetNetworkInterfaceByInterfaceIndex(interface_index);
+                if (!current || current->InterfaceIndex < 0 || current->Guid.empty())
+                {
+                    return false;
+                }
+
+                snapshot.InterfaceIndex = current->InterfaceIndex;
+                snapshot.InterfaceLuid = current->InterfaceLuid;
+                snapshot.Guid = current->Guid;
+                if (!GetDnsAutomaticByGuid(snapshot.Guid, snapshot.DnsAutomatic))
+                {
+                    return false;
+                }
+                for (const ppp::string& value : current->DnsAddresses)
+                {
+                    boost::system::error_code ec;
+                    const boost::asio::ip::address address = StringToAddress(value.data(), ec);
+                    if (!ec && !address.is_unspecified() && !address.is_multicast() &&
+                        !ppp::net::IPEndPoint::IsInvalid(address))
+                    {
+                        snapshot.DnsAddresses.emplace_back(address);
+                    }
+                }
+                return true;
+            }
+
+            bool SetDnsAddressesWithSnapshot(int interface_index, const ppp::vector<ppp::string>& servers, NetworkDnsSnapshot& snapshot) noexcept
+            {
+                // Capture before the write.  This deliberately leaves a
+                // populated snapshot behind when WMI rejects the write, so
+                // teardown can still retry the original state.
+                if (snapshot.InterfaceIndex < 0 || snapshot.Guid.empty()) {
+                    if (!CaptureDnsSnapshot(interface_index, snapshot)) {
+                        return false;
+                    }
+                } else if (snapshot.InterfaceIndex != interface_index) {
+                    return false;
+                }
+
+                // Revalidate the stable adapter identity immediately before
+                // the WMI mutation.  InterfaceIndex values can be reused
+                // between capture and apply; writing by index alone could
+                // otherwise alter an unrelated replacement adapter.
+                NetworkInterfacePtr current =
+                    GetNetworkInterfaceByInterfaceIndex(interface_index);
+                if (!current || current->Guid.empty() ||
+                    _stricmp(current->Guid.data(), snapshot.Guid.data()) != 0 ||
+                    (!snapshot.InterfaceLuid.empty() &&
+                     (current->InterfaceLuid.empty() ||
+                      current->InterfaceLuid != snapshot.InterfaceLuid)))
+                {
+                    return false;
+                }
+
+                snapshot.AppliedDnsAddresses.clear();
+                snapshot.AppliedDnsAddresses.reserve(servers.size());
+                for (const ppp::string& value : servers)
+                {
+                    boost::system::error_code ec;
+                    const boost::asio::ip::address address = StringToAddress(value.data(), ec);
+                    if (!ec && !address.is_unspecified() && !address.is_multicast() &&
+                        !ppp::net::IPEndPoint::IsInvalid(address))
+                    {
+                        snapshot.AppliedDnsAddresses.emplace_back(address);
+                    }
+                }
+                snapshot.DnsApplyAttempted = true;
+                snapshot.DnsApplied = SetDnsAddresses(interface_index, servers);
+                return snapshot.DnsApplied;
+            }
+
+            bool RestoreDnsSnapshot(const NetworkDnsSnapshot& snapshot) noexcept
+            {
+                if (snapshot.InterfaceIndex < 0 || snapshot.Guid.empty())
+                {
+                    return false;
+                }
+
+                // Interface indexes are reusable. Require the stable WMI GUID
+                // and, when available, the kernel LUID to still match before
+                // changing any adapter state.
+                NetworkInterfacePtr current = GetNetworkInterfaceByInterfaceIndex(snapshot.InterfaceIndex);
+                if (!current || current->Guid.empty() ||
+                    _stricmp(current->Guid.data(), snapshot.Guid.data()) != 0)
+                {
+                    return false;
+                }
+                if (!snapshot.InterfaceLuid.empty() &&
+                    (current->InterfaceLuid.empty() || current->InterfaceLuid != snapshot.InterfaceLuid))
+                {
+                    return false;
+                }
+
+                ppp::vector<boost::asio::ip::address> current_dns;
+                for (const ppp::string& value : current->DnsAddresses)
+                {
+                    boost::system::error_code ec;
+                    const boost::asio::ip::address address = StringToAddress(value.data(), ec);
+                    if (!ec && !address.is_unspecified() && !address.is_multicast() &&
+                        !ppp::net::IPEndPoint::IsInvalid(address))
+                    {
+                        current_dns.emplace_back(address);
+                    }
+                }
+
+                // The resolver list alone does not identify the Windows DNS
+                // mode.  A static NameServer value and an automatic/DHCP
+                // configuration can expose the same servers, so keep the
+                // registry mode in the ownership comparison as well.
+                bool current_automatic = false;
+                if (!GetDnsAutomaticByGuid(current->Guid, current_automatic))
+                {
+                    return false;
+                }
+
+                // Compare-and-restore: after OpenPPP2 has written DNS, only
+                // restore if the current values still match what it wrote.
+                // If WMI reported failure, accept an unchanged original value
+                // or a value that was applied despite the error; any other
+                // value belongs to another actor and must remain untouched.
+                if (snapshot.DnsApplyAttempted)
+                {
+                    // DHCP can refresh resolver addresses while the VPN is
+                    // active.  When the captured state was automatic and the
+                    // adapter is automatic again, there is no OpenPPP2
+                    // static ownership left to restore, even if the server
+                    // list changed naturally.
+                    if (snapshot.DnsAutomatic && current_automatic)
+                    {
+                        return true;
+                    }
+                    if (current_dns == snapshot.DnsAddresses &&
+                        current_automatic == snapshot.DnsAutomatic)
+                    {
+                        return true;
+                    }
+                    if (current_dns != snapshot.AppliedDnsAddresses)
+                    {
+                        return false;
+                    }
+                    // SetDnsAddresses writes a static resolver list.  An
+                    // automatic mode with the same values belongs to a
+                    // different actor and must not be overwritten.
+                    if (current_automatic && !snapshot.AppliedDnsAddresses.empty())
+                    {
+                        return false;
+                    }
+                }
+
+                ppp::vector<ppp::string> servers;
+                servers.reserve(snapshot.DnsAddresses.size());
+                for (const boost::asio::ip::address& address : snapshot.DnsAddresses)
+                {
+                    if (!address.is_unspecified() && !address.is_multicast() &&
+                        !ppp::net::IPEndPoint::IsInvalid(address))
+                    {
+                        servers.emplace_back(address.to_string());
+                    }
+                }
+                // Passing an empty list clears NameServer and returns DNS
+                // ownership to the automatic/DHCP source. Static snapshots
+                // restore the exact captured server list.
+                if (snapshot.DnsAutomatic)
+                {
+                    servers.clear();
+                }
+                if (!SetDnsAddresses(snapshot.InterfaceIndex, servers))
+                {
+                    return false;
+                }
+
+                // WMI can report success before a provider has committed the
+                // requested values, and it can also partially apply a write.
+                // Re-read both the adapter and registry mode before allowing
+                // callers to remove the durable recovery record.
+                NetworkInterfacePtr restored =
+                    GetNetworkInterfaceByInterfaceIndex(snapshot.InterfaceIndex);
+                if (!restored || restored->Guid.empty() ||
+                    _stricmp(restored->Guid.data(), snapshot.Guid.data()) != 0 ||
+                    (!snapshot.InterfaceLuid.empty() &&
+                     (restored->InterfaceLuid.empty() ||
+                      restored->InterfaceLuid != snapshot.InterfaceLuid)))
+                {
+                    return false;
+                }
+
+                bool restored_automatic = false;
+                if (!GetDnsAutomaticByGuid(restored->Guid, restored_automatic) ||
+                    restored_automatic != snapshot.DnsAutomatic)
+                {
+                    return false;
+                }
+
+                if (snapshot.DnsAutomatic)
+                {
+                    // DHCP-provided resolver addresses may legitimately
+                    // change while the VPN is down; mode restoration is the
+                    // stable invariant for an automatic snapshot.
+                    return true;
+                }
+
+                ppp::vector<boost::asio::ip::address> restored_dns;
+                for (const ppp::string& value : restored->DnsAddresses)
+                {
+                    boost::system::error_code ec;
+                    const boost::asio::ip::address address = StringToAddress(value.data(), ec);
+                    if (!ec && !address.is_unspecified() && !address.is_multicast() &&
+                        !ppp::net::IPEndPoint::IsInvalid(address))
+                    {
+                        restored_dns.emplace_back(address);
+                    }
+                }
+                return restored_dns == snapshot.DnsAddresses;
+            }
+
             bool GetAllComponentIds(ppp::unordered_set<ppp::string>& componentIds) noexcept
             {
                 if (!GetAllComponentIdsByRegistryEdit(componentIds))
@@ -927,30 +1203,47 @@ namespace ppp
                     return ppp::diagnostics::SetLastError<int>(ppp::diagnostics::ErrorCode::NetworkInterfaceGetIfIndexEmptyFriendlyName);
                 }
 
-                DWORD dwSize = 0;
-                DWORD dwRetVal = 0;
+                ULONG dwSize = 0;
+                DWORD dwRetVal = ERROR_BUFFER_OVERFLOW;
                 PIP_ADAPTER_ADDRESSES pAddresses = NULL;
                 PIP_ADAPTER_ADDRESSES pCurrAddresses = NULL;
 
-                dwRetVal = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, NULL, &dwSize);
-                if (dwRetVal != ERROR_BUFFER_OVERFLOW)
+                // The adapter list can grow between the size probe and the fetch,
+                // so retry a bounded number of times on ERROR_BUFFER_OVERFLOW.
+                for (int attempt = 0; attempt < 5 && dwRetVal == ERROR_BUFFER_OVERFLOW; attempt++)
                 {
-                    printf("GetAdaptersAddresses (first) failed with error: %d\n", dwRetVal);
-                    return ppp::diagnostics::SetLastError<int>(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable);
+                    if (pAddresses != NULL)
+                    {
+                        free(pAddresses);
+                        pAddresses = NULL;
+                    }
+
+                    dwRetVal = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, NULL, &dwSize);
+                    if (dwRetVal != ERROR_BUFFER_OVERFLOW)
+                    {
+                        break;
+                    }
+
+                    pAddresses = (PIP_ADAPTER_ADDRESSES)malloc(dwSize);
+                    if (pAddresses == NULL)
+                    {
+                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                            "windows_network", "GetIfIndexByFriendlyName memory allocation failed");
+                        return ppp::diagnostics::SetLastError<int>(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    }
+
+                    dwRetVal = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &dwSize);
                 }
 
-                pAddresses = (PIP_ADAPTER_ADDRESSES)malloc(dwSize);
-                if (pAddresses == NULL)
-                {
-                    printf("Memory allocation failed\n");
-                    return ppp::diagnostics::SetLastError<int>(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
-                }
-
-                dwRetVal = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &dwSize);
                 if (dwRetVal != NO_ERROR)
                 {
-                    printf("GetAdaptersAddresses (second) failed with error: %d\n", dwRetVal);
-                    free(pAddresses);
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                        "windows_network", "GetAdaptersAddresses failed: win32_error=%lu",
+                        static_cast<unsigned long>(dwRetVal));
+                    if (pAddresses != NULL)
+                    {
+                        free(pAddresses);
+                    }
                     return ppp::diagnostics::SetLastError<int>(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable);
                 }
 
@@ -1984,13 +2277,59 @@ namespace ppp
                 return any;
             }
 
-            void DeleteAllDefaultGatewayRoutes(boost::asio::ip::address gw) noexcept
+            bool DeleteAllDefaultGatewayRoutes(boost::asio::ip::address gw) noexcept
             {
-                std::string tp = gw.to_string();
-                ppp::string ip = ppp::string(tp.data(), tp.size());
-                ppp::win32::Win32Native::Echo("route delete 0.0.0.0 mask 0.0.0.0 " + ip);
-                ppp::win32::Win32Native::Echo("route delete 128.0.0.0 mask 128.0.0.0 " + ip);
-                ppp::win32::Win32Native::Echo("route delete 128.0.0.0 mask 128.0.0.0 " + ip);
+                if (!gw.is_v4())
+                {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                    return false;
+                }
+
+                auto mib = ppp::win32::network::Router::GetIpForwardTable();
+                if (NULLPTR == mib)
+                {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RouteTableUnavailable);
+                }
+
+                // MIB_IPFORWARDROW stores IPv4 values in network byte order.  The
+                // three entries cover the ordinary default route and the split
+                // 0/1 + 128/1 takeover used by the client.
+                const uint32_t half = inet_addr("128.0.0.0");
+                const uint32_t gateway = htonl(gw.to_v4().to_uint());
+                ppp::vector<MIB_IPFORWARDROW> owned;
+                for (DWORD i = 0; i < mib->dwNumEntries; ++i)
+                {
+                    const MIB_IPFORWARDROW& route = mib->table[i];
+                    const bool is_default =
+                        (route.dwForwardDest == ppp::net::IPEndPoint::AnyAddress &&
+                            (route.dwForwardMask == ppp::net::IPEndPoint::AnyAddress || route.dwForwardMask == half)) ||
+                        (route.dwForwardDest == half && route.dwForwardMask == half);
+                    if (is_default && route.dwForwardNextHop == gateway)
+                    {
+                        owned.emplace_back(route);
+                    }
+                }
+
+                ppp::vector<MIB_IPFORWARDROW> removed;
+                for (MIB_IPFORWARDROW& route : owned)
+                {
+                    if (!ppp::win32::network::Router::Delete(route))
+                    {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                        // Deletion is not transactional at the IP Helper API
+                        // boundary. Best-effort restore rows already removed so a
+                        // partial takeover does not leave the host without its
+                        // original default path.
+                        for (MIB_IPFORWARDROW& previous : removed)
+                        {
+                            ppp::win32::network::Router::Add(previous);
+                        }
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                        return false;
+                    }
+                    removed.emplace_back(route);
+                }
+                return true;
             }
 
             bool DeleteAllDefaultGatewayRoutes(ppp::vector<MIB_IPFORWARDROW>& routes, const ppp::unordered_set<uint32_t>& bypass_gws) noexcept
@@ -2034,7 +2373,12 @@ namespace ppp
             int SetAllNicsDnsAddresses(ppp::vector<boost::asio::ip::address>& servers, ppp::unordered_map<int, ppp::vector<boost::asio::ip::address>>& addresses) noexcept
             {
                 int events = 0;
-                addresses.clear();
+                // A non-empty map represents a pending restore. Never discard
+                // it while preparing another apply operation.
+                if (!addresses.empty())
+                {
+                    return events;
+                }
 
                 ppp::vector<NetworkInterfacePtr> interfaces;
                 if (!GetAllNetworkInterfaces(interfaces))
@@ -2086,9 +2430,14 @@ namespace ppp
                 ppp::vector<ppp::string> servers_string;
                 ppp::net::Ipep::AddressesTransformToStrings(servers, servers_string);
 
-                for (NetworkInterfacePtr& ni : interfaces)
+                // The snapshot map is the authorization set for this operation.
+                // Apply DNS only to interfaces that were captured above.  In
+                // particular, do not write to a down or newly discovered
+                // interface that has no corresponding restore snapshot.
+                for (const auto& [interface_index, ignored] : addresses)
                 {
-                    bool ok = SetDnsAddresses(ni->InterfaceIndex, servers_string);
+                    (void)ignored;
+                    bool ok = SetDnsAddresses(interface_index, servers_string);
                     if (ok)
                     {
                         events++;
@@ -2101,8 +2450,10 @@ namespace ppp
             int SetAllNicsDnsAddresses(ppp::unordered_map<int, ppp::vector<boost::asio::ip::address>>& addresses) noexcept
             {
                 int events = 0;
-                for (auto&& [interface_index, servers] : addresses)
+                for (auto it = addresses.begin(); it != addresses.end();)
                 {
+                    const int interface_index = it->first;
+                    const auto& servers = it->second;
                     ppp::vector<ppp::string> servers_string;
                     for (auto&& ip : servers)
                     {
@@ -2113,10 +2464,17 @@ namespace ppp
                     if (ok)
                     {
                         events++;
+                        it = addresses.erase(it);
+                    }
+                    else
+                    {
+                        // Retain failed snapshots so the caller can report a
+                        // pending restore and retry without losing the
+                        // original DNS state.
+                        ++it;
                     }
                 }
 
-                addresses.clear();
                 return events;
             }
 
@@ -2136,22 +2494,40 @@ namespace ppp
             static bool SetInterfaceMtuIpInterfaceEntry(int interface_index, int mtu) noexcept
             {
                 PIP_ADAPTER_ADDRESSES pAddresses = NULLPTR;
+                char* szBuf = NULLPTR;
                 ULONG ulBufLen = 0;
-                GetAdaptersAddresses(AF_UNSPEC, 0, NULLPTR, pAddresses, &ulBufLen);
+                DWORD dwErr = ERROR_BUFFER_OVERFLOW;
 
-                if (ulBufLen == 0)
+                // Probe and fetch with identical family/flags; retry (bounded) when the
+                // adapter list grows between the two calls.
+                for (int attempt = 0; attempt < 5 && dwErr == ERROR_BUFFER_OVERFLOW; attempt++)
                 {
+                    Mfree(szBuf);
+                    szBuf = NULLPTR;
+
+                    ulBufLen = 0;
+                    dwErr = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST, NULLPTR, NULLPTR, &ulBufLen);
+                    if (dwErr != ERROR_BUFFER_OVERFLOW)
+                    {
+                        break;
+                    }
+
+                    szBuf = (char*)Malloc(ulBufLen);
+                    if (NULLPTR == szBuf)
+                    {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    }
+
+                    pAddresses = (IP_ADAPTER_ADDRESSES*)szBuf;
+                    dwErr = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST, NULLPTR, pAddresses, &ulBufLen); /* NETIOAPI_API */
+                }
+
+                if (dwErr != NO_ERROR)
+                {
+                    Mfree(szBuf);
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable);
                 }
 
-                char* szBuf = (char*)Malloc(ulBufLen);
-                pAddresses = (IP_ADAPTER_ADDRESSES*)szBuf;
-                if (NULLPTR == pAddresses)
-                {
-                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
-                }
-
-                DWORD dwErr = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST, NULLPTR, pAddresses, &ulBufLen); /* NETIOAPI_API */
                 if (dwErr == NO_ERROR)
                 {
                     while (NULLPTR != pAddresses)

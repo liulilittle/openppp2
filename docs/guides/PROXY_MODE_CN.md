@@ -1,95 +1,108 @@
-# 纯代理模式
+# 代理模式
+
 > Status: Active
 > Type: Guide
-> Last verified: 63fc030
+> Last verified: 2026-10-12（对照 `ApplicationMode.cpp`、`ApplicationClientBootstrap.cpp`、`ClientConnectionOpener.cpp`、`VEthernetLocalProxySwitcher.cpp`）
+>
+> **用途：** 只在本机提供 HTTP / SOCKS5 代理，不修改系统路由和 DNS。
+> **读者：** 不想接管整机网络、只想让部分应用走隧道的用户。
+> **上级索引：** [指南](README_CN.md) · **English:** [Proxy mode](PROXY_MODE.md)
 
-> **用途：**说明本主题的当前行为、配置或实现边界。
-> **适用对象：**OPENPPP2 用户、运维人员与开发者。
-> **当前状态：**当前有效。
-> **最后核对依据：**当前仓库结构、实现路径与文档链接，2026-07-31。
-> **上一层索引：**[返回索引](README_CN.md) · **English：**[Proxy-only mode](PROXY_MODE.md)
+## 1. 什么时候用
 
+| 需求 | 选择 |
+|---|---|
+| 整机流量都按规则走隧道 | TUN 客户端：`--mode=client` |
+| 只让浏览器 / 某些程序走隧道，系统网络保持不变 | **代理模式**：`--mode=proxy` |
+| 没有管理员权限的桌面环境 | 代理模式（不创建网卡、不需要管理员；经本地代理也能访问其他客户端） |
 
-纯代理模式连接 OPENPPP2 服务端，并提供**本地 HTTP 与 SOCKS5 转发代理**，不安装宿主系统路由条目或系统 DNS 设置，但仍会把 canonical 路由策略加载到 native client。桌面端使用 `TapStub`；移动端只保留运行时所需的最小 tunnel 接口。不安装宿主规则不等于对应的 native policy 失效。
+## 2. 快速开始
 
-## 快速开始
+使用和 TUN 客户端相同的客户端配置（`key` + `client.guid` + `client.server`）即可：
 
 ```bash
-./ppp --mode=proxy --config=./appsettings.json
+./ppp --mode=proxy --config=./client.json
+```
+
+验证：
+
+```bash
 curl -x socks5h://127.0.0.1:1080 https://example.com
 curl -x http://127.0.0.1:8080 https://example.com
 ```
 
-## 配置
+把浏览器或应用的代理设置为 `127.0.0.1:1080`（SOCKS5）或 `127.0.0.1:8080`（HTTP）。
 
-推荐使用 canonical 对象 `client.routing` 保存 IP/DNS policy。它存在时只对这些 policy source 具有权威性；运行模式保持独立：
+## 3. 两种启用方式
+
+| 方式 | 写法 |
+|---|---|
+| 命令行 | `--mode=proxy` |
+| 配置文件 | `"client": { "proxy-only": true }`，然后用 `--mode=client` 启动 |
+
+两者效果相同。
+
+## 4. 监听地址和端口
+
+| 监听 | 地址 | 默认端口 | 修改端口 |
+|---|---|---|---|
+| HTTP（含 HTTPS CONNECT） | `127.0.0.1`（强制） | `8080` | `client.http-proxy.port` 或 `--proxy-http-port` |
+| SOCKS5（CONNECT 和 UDP ASSOCIATE） | `127.0.0.1`（强制） | `1080` | `client.socks-proxy.port` 或 `--proxy-socks-port` |
+
+- 代理模式下 `bind` **始终是 `127.0.0.1`**，配置里写的 `bind` 会被忽略；绑定失败直接报错，不会退回到监听所有地址。需要给局域网其他设备用时，请改用 TUN 客户端并显式设置 `bind`。
+- SOCKS5 可以用 `client.socks-proxy.username` / `password` 开启用户名密码认证。
+
+## 5. 分流规则仍然生效
+
+`client.routing`（或 `client.policy`）里的直连列表、路由和 DNS 规则在代理模式下照常加载：命中“直连”的目标由本机直接连接，其余经隧道转发。区别只在于不把这些规则写进操作系统的路由表和 DNS 设置。
 
 ```json
-{
-  "client": {
-    "guid": "{...}",
-    "server": "ppp://your-server:20000/",
-    "proxy-only": true,
-    "routing": {
-      "ip": {
-        "bypass": [],
-        "routes": [],
-        "peer-routes": []
-      },
-      "dns": {
-        "rules": []
-      }
-    },
-    "http-proxy": { "bind": "127.0.0.1", "port": 8080 },
-    "socks-proxy": { "bind": "127.0.0.1", "port": 1080 }
+"client": {
+  "guid": "{...}",
+  "server": "ppp://服务器IP:20000/",
+  "proxy-only": true,
+  "routing": {
+    "ip":  { "bypass": ["./ip.txt"] },
+    "dns": { "rules": ["./dns-rules.txt"] }
   }
 }
 ```
 
-`client.proxy-only` 是独立的顶层运行标志，即使存在 `client.routing` 也会读取。旧的 `client.routes` 和 `client.peer-routes` 仅在 canonical 对象缺失时作为兼容输入；旧 routing 对象中的 mode 字段会被忽略且不会序列化。命令行使用 `--mode=client` 或 `--mode=proxy` 选择运行模式；`--mode=proxy` 等价于启用纯代理行为。
+## 6. 访问其他客户端（虚拟子网）
 
-省略监听端口或绑定地址时使用以下默认值：
+服务端开启 `server.subnet` 时，同一服务器下的客户端可以通过虚拟 IP 互相访问。桌面代理模式**不创建任何网卡**，而是在客户端进程内接入虚拟子网（进程内协议栈）。两个开关独立控制，组合出三种用法：
 
-| 监听器 | 默认绑定地址 | 默认端口 |
-|--------|--------------|----------|
-| HTTP | 127.0.0.1 | 8080 |
-| SOCKS5 | 127.0.0.1 | 1080 |
+| 用法 | `--proxy-subnet` | `--proxy-internet` | 效果 |
+|---|---|---|---|
+| 组网 + 代理（默认） | `yes` | `yes` | 本地代理既能上网，也能访问其他客户端 |
+| 只组网 | `yes` | `no` | 本地代理只接受虚拟子网目标，其余拒绝（`ProxyInternetDisabled`）；客户端不设置系统代理 |
+| 只代理 | `no` | `yes` | 原来的行为：只代理上网，不接入虚拟子网 |
 
-## 平台行为
+接入虚拟子网后：
 
-| 平台 | proxy-only 下的变化 | 仍然生效的内容 |
-|------|---------------------|----------------|
-| Linux / macOS / Windows | 不安装 OS 路由；不覆写系统 DNS；使用 `TapStub` 代替真实 TUN | native bypass、路由、peer 路由和 DNS rules 仍加载。本地 HTTP/SOCKS 代理可用。无需 root。 |
-| Android | `VpnService.Builder` 只安装 VPN 接口子网路由；不捕获 IPv6；不设置隧道 DNS | native bypass、路由、peer 路由和 DNS policy 仍加载。需要 VpnService 权限。 |
-| iOS | `PacketTunnelProvider` 只安装 tunnel 子网 included route；不设置 bypass 排除路由；不配置 `NEDNSSettings` | native 路由和 DNS policy 仍加载。需要 Network Extension 授权。 |
+- **出站**：经本地 HTTP / SOCKS5 代理访问对端虚拟 IP 的 TCP 和 UDP，由进程内协议栈从本机虚拟 IP 发出；P2P 直连建立后走直连，否则经服务器中转。这些流量绝不会经宿主机套接字发出。其他程序不能绕过本地代理直接访问对端。
+- **入站**：对端只能连接显式开放的 TCP 端口，用 `--proxy-forward` 指定，例如 `--proxy-forward=22,8080:3000`：本机虚拟 IP 的 22 端口转发到 `127.0.0.1:22`，8080 端口转发到 `127.0.0.1:3000`。未列出的端口一律拒绝。
+- **虚拟 IP**：指定了 `--tun-ip` 时按手动地址登记，不向服务器地址池申请；没有指定时向服务器地址池申请，并把分到的地址用在进程内协议栈上（需要客户端配置了 `server.ipv4-pool`，否则使用默认地址）。
+- P2P 需要读取物理网卡信息来绑定套接字、生成候选地址；只读取，不修改任何路由。
 
-TUN 和 proxy-only 都会把 `routing.ip.bypass`、`routing.ip.routes`、`routing.ip.peer-routes` 和 `routing.dns.rules` 加载到 native policy，区别仅在于是否将状态投影到宿主 OS。
+当前限制：入站转发只支持 TCP；单个 UDP 数据报负载上限为 1372 字节；对端局域网前缀（peer-routes）不提供。详见[计划](../design/p2p-direct-channel/proxy-only-subnet-plan_CN.md)。
 
-**Android：** 在应用的 **仅代理模式** 选项中启用（`vpnOptions.proxyOnly=true`）。仍会创建最小 TUN 以支持 `protect()` 调用。
+## 7. 各平台的差异
 
-**iOS：** extension 从准备好的 JSON 读取 `client.proxy-only`，并据此调整 `NEPacketTunnelNetworkSettings`。
+| 平台 | 代理模式下 | 权限 |
+|---|---|---|
+| Windows / Linux / macOS | 不创建网卡。接入虚拟子网时使用进程内协议栈，否则使用内部占位网卡。都不改路由、不改 DNS | 不需要管理员 |
+| Android | 仍创建一个最小的 VPN 接口（用于保护套接字），只保留该接口子网路由；不接管 DNS 和 IPv6；不会把本地代理发布为系统代理 | 需要 VPN 授权 |
+| iOS | Network Extension 只保留隧道子网路由，不设置系统 DNS | 需要 Network Extension 授权 |
 
-## 静态传输边界
+Android App 中的开关名为“仅代理模式”。
 
-纯代理模式启动时强制关闭静态传输（static transport）。这意味着：
+## 8. 其他限制
 
-- 不会发起 `STATIC`/`STATICACK` 交换。
-- 即使 `--tun-ip` 通常会启用静态传输，在此模式下也会被覆盖。
-- IPv4 地址分配使用自动模式，而不是提交本地 TUN 地址。
-
-## CLI 选项
-
-| 选项 | 说明 |
-|------|------|
-| `--mode=proxy` | 选择纯代理运行时 |
-| `--proxy-http-port=N` | 覆盖 HTTP 监听端口 |
-| `--proxy-socks-port=N` | 覆盖 SOCKS 监听端口 |
-
-完整说明见 [CLI_REFERENCE_CN.md](../reference/CLI_REFERENCE_CN.md) 和 [CONFIGURATION_CN.md](../reference/CONFIGURATION_CN.md)。
+- 代理模式下强制关闭静态 UDP 隧道：`--tun-static` 无效，不进行 `STATIC`/`STATICACK` 交换。未接入虚拟子网时，即使指定了 `--tun-ip`，IPv4 也使用自动分配（automatic）模式；接入虚拟子网时，`--tun-ip` 按手动地址生效。
+- 系统 DNS 不变，所以应用自身的 DNS 查询不经过隧道；用 `socks5h://`（由代理端解析域名）可以避免本地解析。
 
 ## 相关文档
 
-- [路由与 DNS](ROUTING_AND_DNS_CN.md) — 归一化路由策略与 DNS 行为
-- [平台集成](PLATFORMS_CN.md) — 桌面端、Android 与 iOS 边界
-- [CLI 参考](../reference/CLI_REFERENCE_CN.md) — 所有命令行选项
-- [配置参考](../reference/CONFIGURATION_CN.md) — 所有配置字段
+- [配置文件参考 · client](../reference/CONFIGURATION_CN.md) · [命令行参考](../reference/CLI_REFERENCE_CN.md)
+- [路由与 DNS](ROUTING_AND_DNS_CN.md) · [平台说明](PLATFORMS_CN.md)

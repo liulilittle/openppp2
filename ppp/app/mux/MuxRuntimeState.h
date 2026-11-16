@@ -50,6 +50,9 @@ inline bool ModeRequiresFlowV2(const std::string& mode, bool turbo) noexcept {
  * @param peer_reliability Peer advertised reliability capability bit.
  * @param local_fec Local FEC enabled (config); requires reliability to take effect.
  * @param peer_fec Peer advertised FEC capability bit.
+ * @param peer_requests_flow_v2 Peer's own preset needs per-flow ordering (FLOW_V2
+ *        REQUEST bit). Agreed whenever both ends support flow_v2, even if the
+ *        local preset alone would not require it.
  */
 inline MuxRuntimeState NegotiateMuxRuntimeState(
     std::string requested_mode,
@@ -60,7 +63,8 @@ inline MuxRuntimeState NegotiateMuxRuntimeState(
     bool local_reliability = false,
     bool peer_reliability = false,
     bool local_fec = false,
-    bool peer_fec = false) {
+    bool peer_fec = false,
+    bool peer_requests_flow_v2 = false) {
     MuxRuntimeState state;
     state.requested_mode = std::move(requested_mode);
     state.effective_mode = state.requested_mode;
@@ -101,8 +105,13 @@ inline MuxRuntimeState NegotiateMuxRuntimeState(
     }
 
     // flow keeps its preset even if ordering stays compat (old peer or no turbo).
-    const bool uses_flow_v2 = ModeRequiresFlowV2(state.effective_mode, state.turbo) &&
-        local_supports_flow_v2 && peer_supports_flow_v2;
+    // Receiver ordering is a session-wide property shared by both ends, so a
+    // peer whose own preset needs flow_v2 (e.g. a flow+turbo client against a
+    // compat server) gets it whenever both ends support it; otherwise its
+    // multi-link competition would run over one global sequence space.
+    const bool wants_flow_v2 = ModeRequiresFlowV2(state.effective_mode, state.turbo) ||
+        peer_requests_flow_v2;
+    const bool uses_flow_v2 = wants_flow_v2 && local_supports_flow_v2 && peer_supports_flow_v2;
     state.receiver_ordering = uses_flow_v2 ? "flow_v2" : "compat";
     if (state.requested_mode == "flow" && state.turbo && !uses_flow_v2 &&
         state.fallback_reason.empty() && (!local_supports_flow_v2 || !peer_supports_flow_v2)) {

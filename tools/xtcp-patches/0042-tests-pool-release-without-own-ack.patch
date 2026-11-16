@@ -1,0 +1,11 @@
+diff --git a/tests/test_pool_pressure.cpp b/tests/test_pool_pressure.cpp
+--- a/tests/test_pool_pressure.cpp
++++ b/tests/test_pool_pressure.cpp
+@@ -241,6 +241,7 @@
+     CHECK(xtcp::buf::GetPoolPressureStats().tx_deferrals > before.tx_deferrals);
+     // This connection has never emitted data: no ACK/RTO can restart it.
+     retained.clear();
++    CHECK(sender.NextTimerDeadlineUs() != xtcp::XtcpStack::kNoTimerDeadline);
+     sender.PollAckTimers();
+     CHECK(a.TxPending() > 0);
+     for (unsigned i = 0; i < 1000 && received < data.size(); ++i) {

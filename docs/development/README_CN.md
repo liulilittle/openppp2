@@ -1,7 +1,7 @@
 # 开发文档
 > Status: Active
 > Type: Index
-> Last verified: 2026-07-22
+> Last verified: 2026-10-07
 >
 > **用途：**在本仓库中开始可由源码追溯的原生开发。
 > **适用对象：**贡献者和维护者。
@@ -13,8 +13,13 @@
 |---|---|
 | 从入口点跟踪到运行时 | [源码阅读指南](SOURCE_READING_GUIDE_CN.md) |
 | 运行合适的测试集合 | [测试](TESTING_CN.md) |
+| 构建或评估可选协程后端 | [corocc 构建指南](COROCC_BACKEND_CN.md) · [验证记录](COROCC_VALIDATION_CN.md) |
 | 审阅带日期的 Boost 审计 | [Boost 兼容性审计](BOOST_187_COMPATIBILITY.md) |
 | 遵循仓库约定 | [代码风格](../governance/CODE_STYLE.md) · [文档规范](../governance/DOCUMENTATION_STYLE.md) |
+| 构建、预览与发布双语文档站 | [文档站](DOCS_SITE_CN.md) |
+| 查看本地策略实现范围 | [本地改动范围](LOCAL_CHANGE_SCOPE_CN.md) |
+| 查看策略实机验收证据 | [Linux 实机报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md) |
+| 查看策略设计与阶段记录 | [设计文档索引](../design/README.md) |
 
 ## 原生 `ppp` 构建边界
 

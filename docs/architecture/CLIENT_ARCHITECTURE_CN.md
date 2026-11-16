@@ -32,7 +32,7 @@ CLI 决定角色：
 
 若没有 `--mode=client` 或 `--mode=proxy`，即使存在 `client.proxy-only`，进程仍会选择 server 模式。
 
-`PrepareClientLoopbackEnvironment()` 从 proxy mode 或配置标志推导 `proxy_only_runtime`。在非 Android/非 iOS 目标上，它为该运行时选择 `TapStub`；`TapStub` 会显示为已打开，但有意丢弃输出。Android 向原生代码提供真实 VPN 文件描述符；源码不支持宣称 iOS 具有桌面式 proxy-only 行为。
+`PrepareClientLoopbackEnvironment()` 从 proxy mode 或配置标志推导 `proxy_only_runtime`。在非 Android/非 iOS 目标上，它从不创建宿主机网卡。开启 `--proxy-subnet`（默认）时选择 `TapUserspace`，在进程内 lwIP 协议栈和隧道之间转送虚拟子网包，并设置 `proxy_subnet_userspace_`：本地代理访问对端的 TCP 走 `UserspaceSubnetBridge`，UDP 走进程内数据报，绝不使用宿主机套接字；对端只能连接 `--proxy-forward` 列出的端口，并被桥接到回环地址。`--proxy-internet=no` 时本地代理只接受虚拟子网目标。`--proxy-subnet=no` 时选择 `TapStub`；`TapStub` 会显示为已打开，但有意丢弃输出。Android 向原生代码提供真实 VPN 文件描述符；源码不支持宣称 iOS 具有桌面式 proxy-only 行为。
 
 ## 设备与宿主边界
 

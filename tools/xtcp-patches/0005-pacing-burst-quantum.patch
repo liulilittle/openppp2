@@ -1,6 +1,7 @@
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -392,9 +392,11 @@
+@@ -431,9 +431,11 @@
               * @brief Earliest armed timer deadline (steady-clock microseconds,
               *        the PollAckTimers clock).
               * @return The minimum of the delayed-ACK/RTO/TLP/persist/MTU-probe/
@@ -15,7 +16,7 @@
               *         TIME-WAIT connection reports its 2MSL deadline.
               * @note  OPENPPP2 integration patch (tools/xtcp-patches/
               *        0001-next-timer-deadline.patch): enables deadline-driven
-@@ -434,6 +436,16 @@
+@@ -473,6 +475,16 @@
                      consider(last_rx_ + idle_us);
                  }
                  if (0 < pending_send_.size()) {
@@ -32,9 +33,10 @@
                      return 0;  // buffered sends ride the next sweep
                  }
                  return next;
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -3437,15 +3437,40 @@
+@@ -5216,15 +5216,40 @@
              ack_release_pending_flush_attempts_.fetch_add(1, std::memory_order_relaxed);
              std::vector<Byte> data;
              data.swap(pending_send_);
@@ -80,7 +82,7 @@
                  }
                  UInt32 n = static_cast<UInt32>(data.size() - off);
                  const UInt64 cwnd = static_cast<UInt64>(cc_.snd_cwnd) * peer_mss_;
-@@ -3512,6 +3537,12 @@
+@@ -5291,6 +5316,12 @@
                  if (n > payload_cap) {
                      n = payload_cap;
                  }
@@ -93,8 +95,8 @@
                  // No Nagle gate here: this is the ACK-driven flush path, and
                  // Nagle (RFC 896) applies only at the application send entry.
                  // Gating the tail here deadlocks: after a partial ACK leaves
-@@ -3555,7 +3586,9 @@
-                 cc_.inflight = snd_nxt_ - snd_una_;
+@@ -5366,7 +5397,9 @@
+                 cc_.inflight = PipeInFlightBytes();
                  cc_.lsndtime = now / 1000;
                  if (0 < cc_.pacing_rate) {
 -                    pacing_deadline_ = now + (static_cast<UInt64>(n) * 1000000ull) / cc_.pacing_rate;
@@ -104,7 +106,7 @@
                  }
                  off += n;
              }
-@@ -4472,6 +4505,12 @@
+@@ -6538,6 +6571,12 @@
                              // (a later Transition would resurrect/regress it).
                              break;
                          }
@@ -115,9 +117,9 @@
 +                        // ACK here would stall every loss recovery.
 +                        bool drained_gap = false;
                          while (!ooo_.empty()) {
+                             TrimOooToFrontier();
                              // Exact-key lookup: sequence wraparound makes
-                             // std::less<UInt32> ordering meaningless at the
-@@ -4512,6 +4551,7 @@
+@@ -6573,6 +6612,7 @@
                              ooo_bytes_ -= static_cast<UInt32>(seg.data.size());
                              const bool fin = seg.fin;  // capture before erase (seg aliases the node)
                              ooo_.erase(it);
@@ -125,7 +127,7 @@
                              if (fin) {
                                  // RFC 793: an out-of-order FIN is consumed once
                                  // its data fills the gap - enter CLOSE-WAIT.
-@@ -4521,7 +4561,16 @@
+@@ -6583,7 +6623,16 @@
                                  break;
                              }
                          }
@@ -142,8 +144,8 @@
 +                        } else if (hdr.IsFin()) {
                              SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
                              Transition(TcpState::kCloseWait);
-                         } else if (quickack_) {
-@@ -4547,6 +4596,7 @@
+                             NotifyStateChanged();  // peer half-closed: the app must see it
+@@ -6619,6 +6668,7 @@
                              }
                          }
                      } else if (SeqLt(hdr.seq, rcv_nxt_)) {
@@ -151,7 +153,7 @@
                          // Fully or partially old data: re-ACK. A partially
                          // overlapping segment (hdr.seq < rcv_nxt_ < seg_end)
                          // must not be dropped whole - its fresh suffix
-@@ -4638,16 +4688,26 @@
+@@ -6711,16 +6761,26 @@
                              }
                          }
                          // Re-ACK of old data: consumes the TCP_QUICKACK
@@ -188,7 +190,7 @@
                          quickack_ = false;
                      } else {
                          // Out-of-order: RFC 793 accepts only segments inside
-@@ -4656,6 +4716,7 @@
+@@ -6729,6 +6789,7 @@
                          // fills the ooo buffer and starves real reassembly.
                          const UInt32 wnd_end = rcv_nxt_ + rcv_wnd_;
                          if (SeqLt(hdr.seq, wnd_end) || hdr.seq == wnd_end) {
@@ -196,7 +198,7 @@
                              if ((ooo_bytes_ + payload_len) <= OooCapacity(window_)) {
                                  OutSeg entry;
                                  entry.data.assign(payload, payload + payload_len);
-@@ -4672,6 +4733,8 @@
+@@ -6745,6 +6806,8 @@
                                  auto existing = ooo_.find(hdr.seq);
                                  if (existing != ooo_.end()) {
                                      ooo_bytes_ -= static_cast<UInt32>(existing->second.data.size());
@@ -205,7 +207,7 @@
                                  }
                                  ooo_[hdr.seq] = std::move(entry);
                                  ooo_bytes_ += payload_len;
-@@ -4681,12 +4744,27 @@
+@@ -6754,12 +6817,27 @@
                              // delayed-ACK state (an in-order segment may have
                              // armed ack_deadline_ earlier; wiping it would
                              // lose that ACK and stall the peer's recovery).
@@ -239,6 +241,41 @@
                          }
                      }
                  } else if (0 == payload_len) {
+diff --git a/tests/test_1mb_stream.cpp b/tests/test_1mb_stream.cpp
+--- a/tests/test_1mb_stream.cpp
++++ b/tests/test_1mb_stream.cpp
+@@ -218,12 +218,17 @@
+     WriteFile(send_path, payload);
+ 
+     // Send the full 1 MiB (chunked), pumping with the drop policy.
++    // The hang guard is WALL-CLOCK, not iterations: with burst-driven pacing
++    // (patch 0005) a no-progress iteration is nearly free, so an iteration
++    // count cannot bound the transfer time - loss recovery is RTO/RACK-paced
++    // (hundreds of ms), which a fast-spinning iteration budget can undershoot.
+     UInt32 sent = 0, first_seen = 0;
+     std::vector<UInt32> dropped;
+-    const UInt32 guard_max = 40000;
+-    UInt32 guard = 0;
+-    while (sent < kTotal && guard_max > ++guard) {
++    const auto send_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
++    while (sent < kTotal && std::chrono::steady_clock::now() < send_deadline) {
+         const UInt32 chunk = (kTotal - sent < 4096) ? (kTotal - sent) : 4096;
++        const UInt32 prev_sent = sent;
++        const std::size_t prev_recv = received.size();
+         if (stack_a.Send(conn, payload.data() + sent, chunk)) {
+             sent += chunk;
+         }
+@@ -231,6 +236,9 @@
+         PumpDrop(backend_b, backend_a, drop_every, first_seen, dropped);
+         stack_a.PollAckTimers();
+         stack_b.PollAckTimers();
++        if (prev_sent == sent && prev_recv == received.size()) {
++            std::this_thread::sleep_for(std::chrono::milliseconds(1));
++        }
+     }
+     // Drain until the receiver has everything.
+     for (UInt32 i = 0; i < 4000 && received.size() < kTotal; ++i) {
+diff --git a/tests/test_pacing_flush.cpp b/tests/test_pacing_flush.cpp
 --- a/tests/test_pacing_flush.cpp
 +++ b/tests/test_pacing_flush.cpp
 @@ -153,15 +153,18 @@
@@ -265,36 +302,3 @@
  }
  
  /**
---- a/tests/test_1mb_stream.cpp
-+++ b/tests/test_1mb_stream.cpp
-@@ -209,12 +209,17 @@
-     WriteFile(send_path, payload);
- 
-     // Send the full 1 MiB (chunked), pumping with the drop policy.
-+    // The hang guard is WALL-CLOCK, not iterations: with burst-driven pacing
-+    // (patch 0005) a no-progress iteration is nearly free, so an iteration
-+    // count cannot bound the transfer time - loss recovery is RTO/RACK-paced
-+    // (hundreds of ms), which a fast-spinning iteration budget can undershoot.
-     UInt32 sent = 0, first_seen = 0;
-     std::vector<UInt32> dropped;
--    const UInt32 guard_max = 40000;
--    UInt32 guard = 0;
--    while (sent < kTotal && guard_max > ++guard) {
-+    const auto send_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-+    while (sent < kTotal && std::chrono::steady_clock::now() < send_deadline) {
-         const UInt32 chunk = (kTotal - sent < 4096) ? (kTotal - sent) : 4096;
-+        const UInt32 prev_sent = sent;
-+        const std::size_t prev_recv = received.size();
-         if (stack_a.Send(conn, payload.data() + sent, chunk)) {
-             sent += chunk;
-         }
-@@ -222,6 +227,9 @@
-         PumpDrop(backend_b, backend_a, drop_every, first_seen, dropped);
-         stack_a.PollAckTimers();
-         stack_b.PollAckTimers();
-+        if (prev_sent == sent && prev_recv == received.size()) {
-+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-+        }
-     }
-     // Drain until the receiver has everything.
-     for (UInt32 i = 0; i < 4000 && received.size() < kTotal; ++i) {

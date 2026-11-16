@@ -1,69 +1,90 @@
-# Security Model
+# Security
 
-> **Status:** Current hardening boundary; not a formal security assessment
-> **Type:** Operations guide
-> **Last verified:** Configuration validation, runtime, native manager, and subscription sources, 2026-07-22
-> **Parent index:** [Operations](README.md) · **Chinese:** [安全模型](SECURITY_CN.md)
+> Status: Active
+> Type: Operations
+> Last verified: 2026-10-11 (against the security diagnostics in `AppConfiguration.cpp`, `ppp/diagnostics/ErrorCodes.def`, `TransportAuthConfiguration.cpp`, `ApplicationMode.cpp`, `VEthernetLocalProxySwitcher.cpp`, `go/ppp/Admin.go`, `go/guardian/config.go`)
+>
+> **Purpose:** Assets to protect, configurations to avoid, and a hardening checklist.
+> **Audience:** Operators deploying and maintaining OPENPPP2.
+> **Parent index:** [Operations](README.md) · **Chinese:** [安全](SECURITY_CN.md)
 
-## Scope and non-goals
+This page is operational hardening guidance, not a formal security assessment; it does not claim forward secrecy, a leak-proof kill switch, or automatic firewall management.
 
-This page states operational controls visible in this tree. It does not claim perfect forward secrecy, a formal cryptographic proof, a leak-proof kill switch, automatic host-firewall management, or universal TLS.
+## 1. Assets to protect
 
-Treat the tunnel configuration, management credentials, and published subscription documents as sensitive deployment assets.
+| Asset | Location | If leaked |
+|---|---|---|
+| Tunnel keys | Configuration `key.protocol-key` / `transport-key` | Forged clients can connect; traffic can be decrypted |
+| `transport-auth` key files | `keys[].secret-file` | Connection authentication can be passed |
+| Manager keys and tokens | Manager `key`, `admin.token`; C++ `server.backend-key` | Node impersonation or manager control |
+| Subscription links and documents | `/sub/{token}` | Documents contain node addresses and keys |
+| Manager data | `manager-data.json` | All users, nodes, subscriptions |
+| Guardian configuration | `guardian.json` (`auth.jwtSecret` is the login password) | Control of local `ppp` processes and configs |
+| Policy stores, status files, logs | `.ppp-policy`, `dns-fake-ip`, `server.log`, telemetry logs | Access records, internal addresses |
 
-## Protect configuration material
+Make these readable only by the service account (e.g. `chmod 600`); never commit them, paste them into tickets, or include them in screenshots.
 
-The `key` configuration contains protocol/transport key material. At minimum:
+## 2. Encryption settings
 
-- use unique secrets for each deployment;
-- keep `key.protocol-key`, `key.transport-key`, and related configuration readable only by the intended service account/operator;
-- keep `key.plaintext` disabled outside controlled testing;
-- do not commit active configuration, keys, subscription documents, or exported manager data to source control;
-- review runtime configuration warnings for weak/default/legacy settings, but do not treat warnings as an enforcement policy or a security audit.
+Startup prints `[security] WARN` for the following (warnings only — **startup is not blocked**):
 
-Do not publish a copyable “strong key” value in documentation. Generate and distribute keys through the deployment's secret-management process.
+| Warning | Trigger | Action |
+|---|---|---|
+| `ConfigPlaintextEnabled` | `key.plaintext` is `true` — **which it is when the field is omitted** | Write `"plaintext": false` explicitly |
+| `ConfigWeakKeyDefault` | A key equals the built-in default `"ppp"` (an empty key also falls back to it) | Generate unique random keys per deployment |
+| `ConfigWeakKeyShort` | A key is shorter than 8 bytes | Use random strings of 16+ characters |
+| `ConfigLegacyCipherAlgorithm` / `ShortKey` | RC4, DES, Blowfish, CAST5, SEED, IDEA, or a key below 128 bits | Use the default `aes-128-cfb` / `aes-256-cfb` |
+| `ConfigLegacyKdfMd5` | Always: key derivation uses `EVP_BytesToKey` (MD5) internally | A known legacy design; compensate with long random keys |
 
-## Protect management and subscriptions
+Notes:
 
-| Surface | Required hardening |
-|---|---|
-| Native manager admin API | Restrict listener address/network, protect bearer token, and use an operator-managed TLS boundary when it is not on a trusted network. |
-| C++ managed link | Keep `server.backend-key` and Go `key` secret; require matching `server.node`, URL/path, and manager record. |
-| Public subscription URL | Treat `/sub/{token}` as a credential-bearing capability; rotate, disable, or delete it when access must end. |
-| `manager-data.json` | Protect it as sensitive local control data in standalone mode. |
+- A misspelled cipher name **silently falls back** to the default instead of failing; if both sides use the same wrong name they still connect, but not with the cipher you think.
+- The default CFB modes provide no integrity protection by themselves. Enable `transport-auth` for connection authentication beyond the keys, and consider a WSS (TLS) carrier across untrusted networks.
+- Generate a random key, for example: `openssl rand -base64 24`. Never reuse keys from documentation or repository samples.
 
-The direct Go HTTP server does not provide TLS termination. A `public-base-url` changes returned URLs; it does not secure the listener.
+## 3. `transport-auth` (optional connection authentication)
 
-## Host networking is part of the boundary
+- Uses a 32-byte pre-shared key file (64 lowercase hex characters), owned by the service user with mode `600`, otherwise loading fails. Generate: `openssl rand -hex 32 | tr -d '\n' > k.hex && chmod 600 k.hex`.
+- When enabled, exactly one key must be `active`. To rotate: add the new key as `verify-only` on all nodes, switch it to `active`, then mark the old one `revoked`.
+- Windows cannot read secret files. Field details are in the [Configuration reference · transport-auth](../reference/CONFIGURATION.md).
 
-Normal client/server operation can alter virtual-interface, route, DNS, IPv6, and listener state. A bad route or resolver policy can send traffic somewhere unexpected even if the configured tunnel keys are correct.
+## 4. Listeners and exposure
 
-- Review bypass lists and DNS rule inputs before each rollout.
-- Test normal client route/DNS changes in a controlled environment.
-- Keep host firewall policy, port exposure, route persistence, and DNS-service policy under operator control.
-- Do not claim default-route protection prevents every traffic/DNS leak; it is host-dependent route management, not a universal kill switch.
-- Treat Linux server GUA/NAT66/NDP setup as privileged host integration with separate upstream/firewall requirements.
+| Listener | Default | Recommendation |
+|---|---|---|
+| Server tunnel ports (`tcp` / `websocket` / `udp` / `cdn`) | All addresses | Open only the ports in use; bind to a specific interface with `ip.interface` if needed |
+| Client local proxies (proxy mode) | Forced `127.0.0.1` | Nothing to do |
+| Client local proxies (TUN mode) | **All addresses** when `bind` is empty | Use `127.0.0.1` for local-only use; set SOCKS5 username/password when serving the LAN |
+| Manager (`go/`) | `:10000` (all addresses), **no TLS** | Bind to private / loopback; expose via a TLS reverse proxy; set a fixed `admin.token` (otherwise a temporary one is generated each start) |
+| Guardian | `127.0.0.1:18080` | Keep it local; use an SSH tunnel or TLS reverse proxy for remote access |
 
-## Transport and TLS boundary
+## 5. Host networking is part of the boundary
 
-The source has configured protocol/transport key material and session runtime behavior, but this page does not turn that into claims about a complete adversary model. Use a trusted transport/network boundary for control services, and supply TLS termination where a service is exposed beyond a trusted network.
+TUN clients change routes and DNS; servers may change IPv6, NDP, and NAT rules.
 
-For WSS or other TLS-bearing deployment paths, validate certificates, names, and reverse-proxy behavior in the actual deployment. Do not infer TLS from a URL field alone.
+- Review split lists and DNS rules before rollout: wrong rules can send traffic or DNS queries outside the tunnel.
+- An abnormal client exit can leave stale routes; default-route protection is not a kill switch and does not guarantee zero leaks.
+- Keep host firewall, route persistence, and DNS service policy under operator control; the program does not manage firewalls.
+- Linux server GUA / NAT66 / NDP are privileged host operations that need their own upstream and firewall review.
 
-## Operational hardening checklist
+## 6. Subscriptions and management
 
-1. Store client/server configuration, manager data, and logs under least-privilege access control.
-2. Use different tunnel and manager keys per environment; plan a documented rotation procedure.
-3. Bind listeners only to intended interfaces and use host firewall policy to constrain exposure.
-4. Put public management/subscription surfaces behind HTTPS/TLS termination and monitor access logs.
-5. Review subscription documents before publication because they can carry node key material.
-6. Revalidate route, DNS, IPv6, and peer-prefix policy after upgrades or topology changes.
-7. If credentials may have leaked, rotate affected keys/tokens, restrict the listener, redeploy affected configuration, and verify new clients cannot use the old capability.
+- Subscription links are credentials and tokens never expire. When a user leaves or a link leaks, rotate the token or disable the subscription in the manager.
+- Publish subscriptions over HTTPS only (`admin.public-base-url` changes generated links; it does not add TLS to the listener).
+- The manager `key` and C++ `server.backend-key` must match and stay secret; use different values per environment.
 
-## Related pages
+## 7. Hardening checklist
 
-- [Deployment model](DEPLOYMENT.md)
-- [Operations and troubleshooting](OPERATIONS.md)
-- [Management backend](../guides/MANAGEMENT_BACKEND.md)
-- [Remote subscription format](../guides/REMOTE_SUBSCRIPTION.md)
-- [Routing and DNS](../guides/ROUTING_AND_DNS.md)
+1. Configurations, key files, manager data, and logs readable only by the service account.
+2. Full `key` block, `"plaintext": false`, distinct random keys per environment; no `[security] WARN` at startup (except the MD5 KDF line).
+3. A unique `client.guid` per client.
+4. Open only the ports in use; never expose the manager or Guardian directly to the Internet.
+5. HTTPS for public management / subscription entry points, with access-log monitoring.
+6. Review subscription contents before publishing — no stray nodes or test keys.
+7. Revalidate routing, DNS, IPv6, and peer prefix policy after upgrades or topology changes.
+8. On suspected leaks: rotate affected keys / tokens, restrict listeners, redeploy configurations, and confirm the old credentials no longer work.
+
+## Related documents
+
+- [Deployment](DEPLOYMENT.md) · [Operations and troubleshooting](OPERATIONS.md)
+- [Management backend](../guides/MANAGEMENT_BACKEND.md) · [Remote subscription](../guides/REMOTE_SUBSCRIPTION.md) · [Configuration reference](../reference/CONFIGURATION.md)

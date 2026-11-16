@@ -7,14 +7,20 @@
 #include <ppp/stdafx.h>
 #include <ppp/threading/Executors.h>
 
+#if !defined(_WIN32)
 #include <sys/syscall.h>
 #include <unistd.h>
+#endif
 
 namespace ppp {
 
     int64_t GetCurrentThreadId() noexcept {
+#if defined(_WIN32)
+        return static_cast<int64_t>(::GetCurrentThreadId());
+#else
         static thread_local const int64_t tid = static_cast<int64_t>(::syscall(SYS_gettid));
         return tid;
+#endif
     }
 
     uint64_t GetTickCount() noexcept {

@@ -70,6 +70,7 @@ jobs:
             boost-system:$env:VCPKG_DEFAULT_TRIPLET `
             boost-asio:$env:VCPKG_DEFAULT_TRIPLET `
             boost-beast:$env:VCPKG_DEFAULT_TRIPLET `
+            boost-crc:$env:VCPKG_DEFAULT_TRIPLET `
             boost-coroutine:$env:VCPKG_DEFAULT_TRIPLET `
             boost-thread:$env:VCPKG_DEFAULT_TRIPLET `
             boost-context:$env:VCPKG_DEFAULT_TRIPLET `

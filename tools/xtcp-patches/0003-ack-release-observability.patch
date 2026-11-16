@@ -1,17 +1,32 @@
-diff '--unified=0' -rN a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
---- a/include/xtcp/core/stack.h	2026-09-01 09:44:44.008972238 +0800
-+++ b/include/xtcp/core/stack.h	2026-09-01 09:44:44.096971904 +0800
-@@ -504,0 +505,4 @@
+diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
+--- a/include/xtcp/core/stack.h
++++ b/include/xtcp/core/stack.h
+@@ -526,6 +526,10 @@
+         bool ConnLastSendAdmission(UInt64 conn_id,
+                                    core::SendAdmissionSnapshot& out) const noexcept;
+         /**
 +         * @brief Aggregates read-only ACK-release telemetry across live connections.
 +         */
 +        core::AckReleaseTelemetrySnapshot AckReleaseTelemetry() const noexcept;
 +        /**
-diff '--unified=0' -rN a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
---- a/include/xtcp/core/tcp.h	2026-09-01 09:44:44.008972238 +0800
-+++ b/include/xtcp/core/tcp.h	2026-09-01 09:44:44.096971904 +0800
-@@ -16,0 +17 @@
+          * @brief Sets the algorithm applied to all new connections.
+          * @param name Registered algorithm name; NULLPTR/empty = Reno.
+          */
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -14,6 +14,7 @@
+ #include <xtcp/buf/bufref.h>
+ #include <xtcp/core/timer.h>
+ #include <xtcp/core/tfo.h>
 +#include <atomic>
-@@ -111,0 +113,16 @@
+ #include <deque>
+ #include <functional>
+ #include <map>
+@@ -148,6 +149,22 @@
+         };
+ 
+         /**
 +         * @brief Cumulative ACK-release telemetry; all fields are observational.
 +         */
 +        struct AckReleaseTelemetrySnapshot {
@@ -28,12 +43,24 @@ diff '--unified=0' -rN a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
 +        };
 +
 +        /**
-@@ -272,0 +290,4 @@
+          * @brief TCP flags (RFC 793).
+          */
+         enum TcpFlag : UInt16 {
+@@ -309,6 +326,10 @@
+              */
+             bool LastSendAdmission(SendAdmissionSnapshot& out) const noexcept;
+             /**
 +             * @brief Copies cumulative ACK-release telemetry.
 +             */
 +            AckReleaseTelemetrySnapshot AckReleaseTelemetry() const noexcept;
 +            /**
-@@ -1079,0 +1101,10 @@
+              * @brief Re-sends buffered data after a window update.
+              * @param now Monotonic time.
+              */
+@@ -1330,6 +1351,16 @@
+             UInt32      snd_buf_ = kDefaultSndBuf;
+             std::vector<Byte> pending_send_;  /**< App data queued while SYN/SYN+ACK is in flight (full client semantics) */
+             SendAdmissionSnapshot last_send_admission_;  /**< Updated only by rejected SendData calls. */
 +            std::atomic<UInt64> ack_release_valid_acks_{0};
 +            std::atomic<UInt64> ack_release_advance_events_{0};
 +            std::atomic<UInt64> ack_release_advance_bytes_{0};
@@ -44,10 +71,16 @@ diff '--unified=0' -rN a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
 +            std::atomic<UInt64> ack_release_pending_flush_window_cwnd_{0};
 +            std::atomic<UInt64> ack_release_pending_flush_fast_recovery_pipe_{0};
 +            std::atomic<UInt64> ack_release_pending_flush_packet_allocation_{0};
-diff '--unified=0' -rN a/src/core/stack.cpp b/src/core/stack.cpp
---- a/src/core/stack.cpp	2026-09-01 09:44:44.012972223 +0800
-+++ b/src/core/stack.cpp	2026-09-01 09:44:44.104971875 +0800
-@@ -1419,0 +1420,26 @@
+             mutable std::recursive_mutex syncobj_;  /**< Guards state changes (multi-thread safe) */
+             TxSink      sink_;
+             RecvCallback recv_cb_;
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -1463,6 +1463,32 @@
+             it->second->conn->LastSendAdmission(out);
+     }
+ 
 +    core::AckReleaseTelemetrySnapshot XtcpStack::AckReleaseTelemetry() const noexcept {
 +        core::AckReleaseTelemetrySnapshot total;
 +        const auto add = [&total](const core::AckReleaseTelemetrySnapshot& value) noexcept {
@@ -74,15 +107,33 @@ diff '--unified=0' -rN a/src/core/stack.cpp b/src/core/stack.cpp
 +        return total;
 +    }
 +
-diff '--unified=0' -rN a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
---- a/src/core/tcp_fsm.cpp	2026-09-01 09:44:44.012972223 +0800
-+++ b/src/core/tcp_fsm.cpp	2026-09-01 09:44:44.100971890 +0800
-@@ -2189,0 +2190 @@
+     bool XtcpStack::SetCongestionControl(UInt64 conn_id, const char* name) noexcept {
+         Shard* shard = ShardOf(conn_id);
+         std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -3037,6 +3037,7 @@
+             // emit a rate sample too (kernel tcp_rate_gen at :3939).
+             const UInt64 delivered_bytes_at_entry = cc_.delivered;
+             const UInt64 delivered_pkts_at_entry = cc_.delivered_pkts;
 +            ack_release_valid_acks_.fetch_add(1, std::memory_order_relaxed);
-@@ -2379,0 +2381,2 @@
+             // RFC 6675 pipe estimate: track SACKed bytes per queued segment
+             // so the recovery path can compute the pipe (bytes actually in
+             // the network) instead of using the inflated cwnd. Runs on every
+@@ -3537,6 +3538,8 @@
+                 return;
+             }
+             if (ack != snd_una_) {
 +                ack_release_advance_events_.fetch_add(1, std::memory_order_relaxed);
 +                ack_release_advance_bytes_.fetch_add(ack - snd_una_, std::memory_order_relaxed);
-@@ -2882,0 +2886,17 @@
+                 // RFC 3522 Eifel: adjudicate the pending RTO once the ACK
+                 // actually covers the retransmitted range (rto_retx_end_), or
+                 // once the queue drained (nothing left to judge).
+@@ -4564,6 +4567,23 @@
+             return out.generation != 0;
+         }
+ 
 +        AckReleaseTelemetrySnapshot TcpConn::AckReleaseTelemetry() const noexcept {
 +            AckReleaseTelemetrySnapshot snapshot;
 +            snapshot.valid_acks = ack_release_valid_acks_.load(std::memory_order_relaxed);
@@ -100,30 +151,78 @@ diff '--unified=0' -rN a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
 +            return snapshot;
 +        }
 +
-@@ -3421,0 +3442 @@
+         bool TcpConn::SendData(const Byte* data, UInt32 len, TimePoint now) noexcept {
+             std::lock_guard<std::recursive_mutex> scope(syncobj_);
+             const auto reject = [this, len](SendAdmissionReason reason) noexcept {
+@@ -5198,6 +5218,7 @@
+                 buf::TxWaiter& waiter;
+                 ~BurstGuard() noexcept { waiter.ReleaseUnused(); }
+             } burst_guard{tx_waiter_};
 +            ack_release_pending_flush_attempts_.fetch_add(1, std::memory_order_relaxed);
-@@ -3429,0 +3451 @@
+             std::vector<Byte> data;
+             data.swap(pending_send_);
+             for (UInt32 off = 0; off < data.size();) {
+@@ -5206,6 +5227,7 @@
+                 // gates, FlushPendingSend must too - otherwise the ACK clock
+                 // flushes the whole buffer in one round).
+                 if (0 < cc_.pacing_rate && now < pacing_deadline_) {
 +                    ack_release_pending_flush_pacing_.fetch_add(1, std::memory_order_relaxed);
-@@ -3450,0 +3473,2 @@
+                     pending_send_.assign(data.begin() + off, data.end());
+                     return;
+                 }
+@@ -5227,6 +5249,8 @@
+                     const UInt64 ssthresh_bytes = static_cast<UInt64>(cc_.snd_ssthresh) * peer_mss_;
+                     const UInt64 pipe = PipeBytes();
+                     if (pipe >= ssthresh_bytes) {
 +                        ack_release_pending_flush_fast_recovery_pipe_.fetch_add(
 +                            1, std::memory_order_relaxed);
-@@ -3461,0 +3486 @@
+                         pending_send_.assign(data.begin() + off, data.end());
+                         return;  // pipe full: the ACK clock reopens it
+                     }
+@@ -5238,6 +5262,7 @@
+             const UInt32 inflight = snd_nxt_ - snd_una_;
+                 if (limit <= inflight) {
+                     // Window closed mid-flush: re-queue the remainder.
 +                    ack_release_pending_flush_window_cwnd_.fetch_add(1, std::memory_order_relaxed);
-@@ -3517,0 +3543 @@
+                     pending_send_.assign(data.begin() + off, data.end());
+                     // RFC 1122 s4.2.2.17: data buffered behind a zero window
+                     // MUST be probed - a lost window-update ACK must not
+@@ -5305,6 +5330,7 @@
+                 }
+                 if (packet.IsEmpty()) {
+                     MarkPoolLimited(inflight);
 +                    ack_release_pending_flush_packet_allocation_.fetch_add(1, std::memory_order_relaxed);
-@@ -3538,0 +3565,2 @@
+                     pending_send_.insert(pending_send_.begin(), data.begin() + off, data.end());
+                     return;
+                 }
+@@ -5341,6 +5367,8 @@
+                     first_outstanding_ = now;  // TCP_USER_TIMEOUT anchor (Karn-immune)
+                 }
+                 if (sink_) {
 +                    ack_release_tx_sink_packets_.fetch_add(1, std::memory_order_relaxed);
 +                    ack_release_tx_sink_bytes_.fetch_add(n, std::memory_order_relaxed);
-diff '--unified=0' -rN a/tests/test_pacing_flush.cpp b/tests/test_pacing_flush.cpp
---- a/tests/test_pacing_flush.cpp	2026-08-23 01:12:56.000000000 +0800
-+++ b/tests/test_pacing_flush.cpp	2026-09-01 09:44:44.108971859 +0800
-@@ -157,0 +158,5 @@
+                     sink_(retrans_queue_.back().data.Clone());  // transmit now (zero-copy retx ref held)
+                 }
+                 // Kernel tcp_packets_in_flight(tp) = packets_out - (sacked_out + lost_out)
+diff --git a/tests/test_pacing_flush.cpp b/tests/test_pacing_flush.cpp
+--- a/tests/test_pacing_flush.cpp
++++ b/tests/test_pacing_flush.cpp
+@@ -155,6 +155,11 @@
+ 
+     // Exactly one MSS may leave under the pacing gate; the rest re-queues.
+     CHECK(received.size() == kMss);
 +    const xtcp::core::AckReleaseTelemetrySnapshot telemetry = stack_a.AckReleaseTelemetry();
 +    CHECK(telemetry.pending_flush_attempts >= 1);
 +    CHECK(telemetry.tx_sink_packets >= 1);
 +    CHECK(telemetry.tx_sink_bytes >= kMss);
 +    CHECK(telemetry.pending_flush_pacing >= 1);
-@@ -210,0 +216,7 @@
+     std::fprintf(stderr, "[pacing_flush] gate: one flush emitted %u bytes (expect %u = 1 MSS)\n",
+                  (UInt32)received.size(), kMss);
+ }
+@@ -208,6 +213,13 @@
+ 
+     CHECK(kTotal == received.size());
+     CHECK(0 == std::memcmp(received.data(), payload.data(), kTotal));
 +    const xtcp::core::AckReleaseTelemetrySnapshot telemetry = stack_a.AckReleaseTelemetry();
 +    CHECK(telemetry.valid_acks > 0);
 +    CHECK(telemetry.ack_advance_events > 0);
@@ -131,3 +230,6 @@ diff '--unified=0' -rN a/tests/test_pacing_flush.cpp b/tests/test_pacing_flush.c
 +    CHECK(telemetry.pending_flush_attempts > 0);
 +    CHECK(telemetry.tx_sink_packets > 0);
 +    CHECK(telemetry.tx_sink_bytes >= kTotal);
+     std::fprintf(stderr, "[pacing_flush] integrity: %u/%u bytes, %s\n",
+                  (UInt32)received.size(), kTotal,
+                  (kTotal == received.size() && 0 == std::memcmp(received.data(), payload.data(), kTotal))

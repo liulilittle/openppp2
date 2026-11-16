@@ -16,6 +16,8 @@
                 bool WasTeardownSuccessful() const noexcept { return last_teardown_success_.load(std::memory_order_acquire); }
                 void Dispose(ppp::function<void(bool)> completion) noexcept;
                 void RequestedIPv6(const ppp::string& value) noexcept;
+                void ManualIPv4(bool value) noexcept { manual_ipv4_ = value; }
+                bool ManualIPv4() const noexcept { return manual_ipv4_; }
                 ppp::string RequestedIPv6() noexcept;
 #if !defined(_ANDROID) && !defined(_IPHONE)
                 boost::asio::ip::address LastAssignedIPv6() noexcept;
@@ -40,6 +42,15 @@
                 virtual bool LoadAllDnsRules(const ppp::string& rules, bool load_file_or_string) noexcept;
                 bool StaticMode(bool* static_mode) noexcept;
                 bool ProxyOnly(bool* proxy_only) noexcept;
+                bool ProxySubnetUserspace(bool* proxy_subnet_userspace) noexcept;
+                bool ProxyInternet(bool* proxy_internet) noexcept;
+                void ProxySubnetForwards(const ppp::unordered_map<uint16_t, uint16_t>& forwards) noexcept;
+                /** @brief Maps a peer connection to this client's virtual IP onto its forwarded loopback target. */
+                bool ResolveSubnetForward(const boost::asio::ip::tcp::endpoint& destination,
+                    boost::asio::ip::tcp::endpoint& target) noexcept;
+                // True for a peer address inside the virtual subnet that the proxy-only
+                // in-process stack carries.
+                bool IsVirtualSubnetAddress(const boost::asio::ip::address& ip) noexcept;
                 uint16_t Mux(uint16_t* mux) noexcept;
                 uint8_t MuxAcceleration(uint8_t* mux_acceleration) noexcept;
 

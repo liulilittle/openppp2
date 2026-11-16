@@ -42,6 +42,8 @@ namespace lwip {
 
     public:
         static bool                                         input(const void* packet, int size) noexcept;
+        /** @brief Readdresses the stack's interface (network byte order), e.g. after server IPv4 assignment. */
+        static bool                                         set_address(uint32_t ip, uint32_t mask) noexcept;
         static bool                                         input(struct pbuf* buf) noexcept;
         static void                                         close(int nat) noexcept;
         static bool                                         link(int nat, uint32_t& srcAddr, int& srcPort, uint32_t& dstAddr, int& dstPort) noexcept;

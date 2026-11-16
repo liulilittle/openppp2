@@ -54,6 +54,6 @@
 ---
 
 ## Global Constraints
-- 提交:[[git-commit-standards]](HyacinthHaru/hyacinth@haru.ac、SSH 签名、无 co-author、标题一句正文≤2句)。
+- 提交:`git-commit-standards`（HyacinthHaru/hyacinth@haru.ac、SSH 签名、无 co-author、标题一句正文≤2句）。
 - 服务器验证:`cd /root/ppp-bench/openppp2 && g++ -std=c++17 -fsyntax-only -I. -Icommon/json/include -D__SIMD__ -DJEMALLOC -DFUNCTION <file>`(内置 jsoncpp)。
 - 停在 push/CI 前。static 暂缓(P2-f)。

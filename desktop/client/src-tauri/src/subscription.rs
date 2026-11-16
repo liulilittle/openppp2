@@ -114,6 +114,7 @@ pub fn parse_subscription(bytes: &[u8]) -> Result<SubscriptionDocument, Subscrip
         .map(str::trim)
         .filter(|s| !s.is_empty());
     let mut nodes = Vec::new();
+    let mut ids = std::collections::BTreeSet::new();
     for node in raw.nodes.into_iter().filter(|node| node.enabled) {
         let id = node.id.trim().to_owned();
         if id.is_empty() {
@@ -123,6 +124,7 @@ pub fn parse_subscription(bytes: &[u8]) -> Result<SubscriptionDocument, Subscrip
             ));
         }
         validate_node(&id, &node)?;
+        if !ids.insert(id.clone()) { return Err(SubscriptionError::InvalidNode(id, "Duplicate node ID".into())); }
         let raw_name = node
             .name
             .as_deref()
@@ -266,12 +268,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let temporary = path.with_extension("tmp");
-    fs::write(&temporary, bytes)?;
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    fs::rename(temporary, path)
+    crate::storage::write(path, bytes).map_err(std::io::Error::other)
 }
 
 fn now_ms() -> u64 {

@@ -15,6 +15,7 @@
 
 #include <ppp/net/asio/IAsynchronousWriteIoQueue.h>
 #include <ppp/net/rinetd/RinetdConnection.h>
+#include <ppp/app/client/proxys/UserspaceSubnetBridge.h>
 
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/app/protocol/VirtualEthernetTcpipConnection.h>
@@ -133,6 +134,8 @@ namespace ppp {
                      * @return true if a bridge path is established.
                      */
                     bool                                                                ConnectBridgeToPeer(const std::shared_ptr<ppp::app::protocol::AddressEndPoint>& destinationEP, YieldContext& y) noexcept;
+                    /** @brief Reaches a virtual-subnet peer through the in-process stack (proxy-only without a host adapter). */
+                    bool                                                                ConnectUserspaceSubnet(const boost::asio::ip::address& address, int port, YieldContext& y) noexcept;
                     /**
                      * @brief Sends raw bytes from local side to the active peer bridge.
                      * @param y Coroutine yield context.
@@ -155,6 +158,7 @@ namespace ppp {
                     std::shared_ptr<ppp::threading::BufferswapAllocator>                allocator_;
                     std::shared_ptr<RinetdConnection>                                   connection_rinetd_;
                     std::shared_ptr<vmux::vmux_skt>                                     connection_mux_;
+                    std::shared_ptr<UserspaceSubnetBridge>                              connection_userspace_;
 #if defined(_IPHONE)
                     bool                                                                ios_child_transmission_slot_held_ = false;
                     uint64_t                                                            ios_child_transmission_slot_generation_ = 0;

@@ -65,10 +65,19 @@ namespace ppp::app::client::routing {
             std::string_view path,
             std::string_view selector) noexcept;
 
+        // Parses an already loaded source without reopening its original file.
+        // Byte APIs reject payloads larger than 64 MiB before parsing.
+        static GeoIpReadResult ReadGeoIpBytes(
+            std::string_view bytes, std::string_view selector) noexcept;
+        static GeoSiteReadResult ReadGeoSiteBytes(
+            std::string_view bytes, std::string_view selector) noexcept;
+
         // Reads the existing line-oriented source formats. Invalid data lines are
         // skipped and counted; file access and stream errors are structured statuses.
         static GeoIpReadResult ReadGeoIpText(std::string_view path) noexcept;
         static GeoSiteReadResult ReadGeoSiteText(std::string_view path) noexcept;
+        static GeoIpReadResult ReadGeoIpTextBytes(std::string_view bytes) noexcept;
+        static GeoSiteReadResult ReadGeoSiteTextBytes(std::string_view bytes) noexcept;
 
         // Compatibility adapters for callers that predate the structured result API.
         static bool ReadGeoIp(

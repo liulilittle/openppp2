@@ -23,7 +23,7 @@ env:
 jobs:
   build:
     name: Guardian ${{ matrix.goos }}/${{ matrix.goarch }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"goos":"linux","goarch":"amd64"}]}' || '{"include":[{"goos":"linux","goarch":"amd64"},{"goos":"linux","goarch":"arm64"},{"goos":"darwin","goarch":"amd64"},{"goos":"darwin","goarch":"arm64"},{"goos":"windows","goarch":"amd64"}]}') }}

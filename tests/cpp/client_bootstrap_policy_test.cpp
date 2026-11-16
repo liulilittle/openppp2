@@ -33,6 +33,16 @@ BOOST_AUTO_TEST_CASE(static_mode_respects_proxy_only_runtime) {
     BOOST_TEST(!NormalizeClientStaticMode(true, true));
 }
 
+BOOST_AUTO_TEST_CASE(manual_ipv4_and_static_udp_are_independent) {
+    for (bool manual : {false, true}) {
+        for (bool udp : {false, true}) {
+            const auto modes = ppp::app::ResolveClientAddressModes(manual, udp);
+            BOOST_TEST(modes.manual_ipv4 == manual);
+            BOOST_TEST(modes.static_udp == udp);
+        }
+    }
+}
+
 
 BOOST_AUTO_TEST_CASE(client_routing_string_sources_trim_and_drop_empty) {
     ppp::vector<ppp::string> values;

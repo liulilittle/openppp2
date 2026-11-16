@@ -5,8 +5,10 @@
 
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/ApplicationClientBootstrap.h>
+#include <ppp/app/ProxySubnetOptions.h>
 #include <ppp/app/PppApplicationInternal.h>
 #include <ppp/diagnostics/Error.h>
+#include <errno.h>
 #include <ppp/diagnostics/Telemetry.h>
 #include <ppp/dns/DnsResolver.h>
 
@@ -101,14 +103,34 @@ int PppApplication::PreparedArgumentEnvironment(int argc, const char* argv[]) no
         configuration->ApplyProxyModeDefaults();
     }
 
+    /** @brief Parse a CLI proxy port strictly: full-string decimal in 1..65535. */
+    auto parse_proxy_port = [](const ppp::string& text, int& port) noexcept -> bool {
+        const char* begin = text.data();
+        char* endptr = NULLPTR;
+        errno = 0;
+        long value = strtol(begin, &endptr, 10);
+        if (text.empty() || errno != 0 || endptr == begin || NULLPTR == endptr || *endptr != '\0' || value < 1 || value > 65535) {
+            return false;
+        }
+
+        port = static_cast<int>(value);
+        return true;
+    };
+
     if (ppp::HasCommandArgument("--proxy-http-port", argc, argv)) {
         ppp::string port_arg = ppp::GetCommandArgument("--proxy-http-port", argc, argv);
-        configuration->client.http_proxy.port = static_cast<int>(strtol(port_arg.data(), NULLPTR, 10));
+        if (!parse_proxy_port(port_arg, configuration->client.http_proxy.port)) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkPortInvalid);
+            return -1;
+        }
     }
 
     if (ppp::HasCommandArgument("--proxy-socks-port", argc, argv)) {
         ppp::string port_arg = ppp::GetCommandArgument("--proxy-socks-port", argc, argv);
-        configuration->client.socks_proxy.port = static_cast<int>(strtol(port_arg.data(), NULLPTR, 10));
+        if (!parse_proxy_port(port_arg, configuration->client.socks_proxy.port)) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkPortInvalid);
+            return -1;
+        }
     }
 
     int max_concurrent = configuration->concurrent - 1;
@@ -491,17 +513,18 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
 #endif
 
         ni->IPAddress = Ipep::FixedIPAddress(ni->IPAddress, ni->GatewayServer, ni->SubmaskAddress);
-        ni->StaticMode = ppp::ToBoolean(ppp::GetCommandArgument("--tun-static", argc, argv).data());
-
-        // If the user explicitly passed --tun-ip on the command line, implicitly enable
-        // static mode so the client sends "manual" to the server instead of requesting
-        // DHCP auto-allocation.  This matches user expectation: specifying an IP means
-        // "use this IP, don't let the server override it".
-        if (!ni->StaticMode && ppp::HasCommandArgument("--tun-ip", argc, argv)) {
-            ni->StaticMode = true;
-        }
+        const ClientAddressModes address_modes = ResolveClientAddressModes(
+            ppp::HasCommandArgument("--tun-ip", argc, argv),
+            ppp::ToBoolean(ppp::GetCommandArgument("--tun-static", argc, argv).data()));
+        ni->StaticMode = address_modes.static_udp;
+        ni->ManualIPv4 = address_modes.manual_ipv4;
         ni->HostedNetwork = ppp::ToBoolean(ppp::GetCommandArgument("--tun-host", argc, argv, "y").data());
         ni->VNet = ppp::ToBoolean(ppp::GetCommandArgument("--tun-vnet", argc, argv, "y").data());
+        auto proxy_options = ParseProxySubnetOptions(argc, argv);
+        ni->ProxySubnet = proxy_options.subnet;
+        ni->ProxyInternet = proxy_options.internet;
+        ni->ProxyForwards.clear();
+        ni->ProxyForwards.insert(proxy_options.forwards.begin(), proxy_options.forwards.end());
 
 #if defined(_LINUX)
         ni->BypassNic = ppp::RTrim(ppp::LTrim(ppp::GetCommandArgument("--bypass-nic", argc, argv)));

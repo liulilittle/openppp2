@@ -4,17 +4,120 @@
  */
 
 #include <ppp/configurations/AppConfiguration.h>
+#include <ppp/Filesystem.h>
 #include <ppp/app/ApplicationClientBootstrap.h>
 #include <ppp/app/ApplicationServerBootstrap.h>
 #include <ppp/app/PppApplicationInternal.h>
 #include <ppp/p2p/P2PCapabilityGate.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/NetworkRecoveryJournal.h>
 #include <ppp/diagnostics/Error.h>
 #if defined(_WIN32)
 #include <windows/ppp/app/client/lsp/PaperAirplaneController.h>
 #endif
 
 namespace ppp::app {
+
+#if defined(_WIN32)
+namespace {
+
+constexpr const char* kNetworkRecoveryOwner = "openppp2-core-network-v1";
+
+std::string WindowsNetworkRecoveryDirectory() noexcept {
+    const ppp::string startup = ppp::GetApplicationStartupPath();
+    if (startup.empty()) return std::string();
+    return (ppp::filesystem::fs::path(startup.data()) /
+        "network-recovery").string();
+}
+
+bool RecoverWindowsFirewallJournal() noexcept {
+    const std::string directory = WindowsNetworkRecoveryDirectory();
+    if (directory.empty()) return false;
+    ppp::app::client::NetworkRecoveryJournal journal;
+    std::string error;
+    if (!journal.Open(directory, kNetworkRecoveryOwner, {}, &error)) return false;
+    return journal.RecoverPendingFor(
+        "windows-firewall",
+        [](const ppp::app::client::NetworkRecoveryJournal::Entry& entry) noexcept {
+            if (entry.resource != "windows-firewall") return false;
+            ppp::win32::network::Fw::ApplicationOwnership before;
+            ppp::win32::network::Fw::ApplicationOwnership after;
+            if (!ppp::win32::network::Fw::DeserializeApplicationOwnership(
+                    entry.before, &before) ||
+                !ppp::win32::network::Fw::DeserializeApplicationOwnership(
+                    entry.after, &after) ||
+                before.name != after.name ||
+                before.executable_path != after.executable_path ||
+                entry.target != ppp::win32::network::Fw::ApplicationOwnershipTarget(after)) {
+                return false;
+            }
+            return ppp::win32::network::Fw::RestoreApplicationOwned(after);
+        }, &error);
+}
+
+bool ApplyWindowsFirewallRule(const char* name, const char* path) noexcept {
+    if (!name || !path) return false;
+    const std::string directory = WindowsNetworkRecoveryDirectory();
+    if (directory.empty()) return false;
+
+    ppp::app::client::NetworkRecoveryJournal journal;
+    std::string error;
+    if (!journal.Open(directory, kNetworkRecoveryOwner, {}, &error)) return false;
+    // Do not add a new rule while an earlier ownership conflict is pending.
+    if (!journal.RecoverPendingFor(
+            "windows-firewall",
+            [](const ppp::app::client::NetworkRecoveryJournal::Entry& entry) noexcept {
+                if (entry.resource != "windows-firewall") return false;
+                ppp::win32::network::Fw::ApplicationOwnership before;
+                ppp::win32::network::Fw::ApplicationOwnership after;
+                return ppp::win32::network::Fw::DeserializeApplicationOwnership(
+                           entry.before, &before) &&
+                    ppp::win32::network::Fw::DeserializeApplicationOwnership(
+                           entry.after, &after) &&
+                    before.name == after.name &&
+                    before.executable_path == after.executable_path &&
+                    entry.target == ppp::win32::network::Fw::ApplicationOwnershipTarget(after) &&
+                    ppp::win32::network::Fw::RestoreApplicationOwned(after);
+            }, &error)) {
+        return false;
+    }
+
+    ppp::win32::network::Fw::ApplicationOwnership before;
+    if (!ppp::win32::network::Fw::CaptureApplicationOwnership(name, path, &before)) {
+        return false;
+    }
+    // Existing or ambiguous rows belong to the user or another VPN.  Leave
+    // them untouched and do not create a recovery record for a no-op.
+    if (before.existed) return true;
+    ppp::win32::network::Fw::ApplicationOwnership after = before;
+    after.added = !before.existed;
+    const std::string target =
+        ppp::win32::network::Fw::ApplicationOwnershipTarget(after);
+    const std::string before_value =
+        ppp::win32::network::Fw::SerializeApplicationOwnership(before);
+    const std::string after_value =
+        ppp::win32::network::Fw::SerializeApplicationOwnership(after);
+    if (target.empty() || before_value.empty() || after_value.empty() ||
+        !journal.RecordIntent("windows-firewall", target,
+                              before_value, after_value, &error)) {
+        return false;
+    }
+
+    ppp::win32::network::Fw::ApplicationOwnership applied;
+    if (!ppp::win32::network::Fw::AddApplicationOwned(name, path, &applied)) {
+        return false;
+    }
+    // AddApplicationOwned must agree with the pre-change ownership decision;
+    // otherwise leave the conservative intent pending for conflict review.
+    if (applied.existed != before.existed || applied.added != after.added ||
+        applied.name != before.name || applied.executable_path != before.executable_path) {
+        return false;
+    }
+    return journal.Confirm("windows-firewall", target, &error);
+}
+
+} // namespace
+#endif
 
 /**
  * @brief Initializes process-level console state and platform-specific UI settings.
@@ -49,6 +152,9 @@ PppApplication::~PppApplication() noexcept {
  */
 void PppApplication::Release() noexcept {
 #if defined(_WIN32)
+    // Firewall cleanup is independent from route/DNS teardown.  A failed or
+    // conflicted restore leaves the durable record for the recovery worker.
+    RecoverWindowsFirewallJournal();
     ppp::win32::Win32Native::EnabledConsoleWindowClosedButton(true);
 #endif
 
@@ -75,8 +181,9 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
 
 #if defined(_WIN32)
     ppp::string executable_path = File::GetFullPath(File::RewritePath(ppp::GetFullExecutionFilePath().data()).data());
-    ppp::win32::network::Fw::NetFirewallAddApplication(PPP_APPLICATION_NAME, executable_path.data());
-    ppp::win32::network::Fw::NetFirewallAddAllApplication(PPP_APPLICATION_NAME, executable_path.data());
+    // The application allow rule is a temporary, owned OS mutation.  Never
+    // call the legacy non-owning add path when the journal cannot be prepared.
+    ApplyWindowsFirewallRule(PPP_APPLICATION_NAME, executable_path.data());
 
     if (client_mode_) {
         if (!proxy_mode_ && network_interface->HostedNetwork && configuration->client.paper_airplane.tcp) {

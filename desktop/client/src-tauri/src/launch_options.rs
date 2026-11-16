@@ -14,6 +14,12 @@ pub enum LaunchOptionsError {
     InvalidMux,
     #[error("启动参数 muxMode 必须是 compat、flow、balance 或 stripe")]
     InvalidMuxMode,
+    #[error("启动参数 tcpStack 必须是 native、lwip 或 xtcp")]
+    InvalidTcpStack,
+    #[error("启动参数 tunIpv6 必须是 IPv6 地址")]
+    InvalidTunIpv6,
+    #[error("启动参数 proxyForwards 必须是逗号分隔的 端口 或 端口:本机端口（1-65535）")]
+    InvalidProxyForwards,
 }
 
 pub fn merge_launch_options(
@@ -68,16 +74,87 @@ pub fn append_launch_args(
         }
         args.push(format!("--mux-mode={mode}"));
     }
+    if let Some(stack) = optional_string(options, "tcpStack")? {
+        if !["native", "lwip", "xtcp"].contains(&stack) {
+            return Err(LaunchOptionsError::InvalidTcpStack);
+        }
+        args.push(format!("--tcp-stack={stack}"));
+    }
+    if let Some(address) = optional_string(options, "tunIpv6")? {
+        // A request hint only; the server owns IPv6 allocation.
+        if address.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err(LaunchOptionsError::InvalidTunIpv6);
+        }
+        args.push(format!("--tun-ipv6={address}"));
+    }
     for (field, flag) in [
         ("vnet", "--tun-vnet"),
         ("blockQuic", "--block-quic"),
         ("staticMode", "--tun-static"),
+        ("muxTurbo", "--mux-mode-turbo"),
+        // Proxy mode only: join the virtual subnet / proxy Internet destinations.
+        ("proxySubnet", "--proxy-subnet"),
+        ("proxyInternet", "--proxy-internet"),
     ] {
         if let Some(value) = optional_bool(options, field)? {
             args.push(format!("{flag}={}", if value { "yes" } else { "no" }));
         }
     }
+    if let Some(forwards) = optional_string(options, "proxyForwards")? {
+        args.push(format!("--proxy-forward={}", normalize_proxy_forwards(forwards)?));
+    }
     Ok(())
+}
+
+/// Validates `22,8080:3000`: virtual-IP ports, each optionally mapped to a local port.
+fn normalize_proxy_forwards(value: &str) -> Result<String, LaunchOptionsError> {
+    let port = |text: &str| text.trim().parse::<u16>().ok().filter(|port| *port > 0);
+    let mut items = Vec::new();
+    for item in value.split(',').map(str::trim).filter(|item| !item.is_empty()) {
+        let normalized = match item.split_once(':') {
+            Some((remote, local)) => format!(
+                "{}:{}",
+                port(remote).ok_or(LaunchOptionsError::InvalidProxyForwards)?,
+                port(local).ok_or(LaunchOptionsError::InvalidProxyForwards)?
+            ),
+            None => port(item).ok_or(LaunchOptionsError::InvalidProxyForwards)?.to_string(),
+        };
+        items.push(normalized);
+    }
+    Ok(items.join(","))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn proxy_subnet_maps_to_kernel_flag_only_when_set() {
+        let mut args = Vec::new();
+        append_launch_args(&BTreeMap::new(), &mut args).unwrap();
+        assert!(!args.iter().any(|arg| arg.starts_with("--proxy-subnet")));
+
+        let options = BTreeMap::from([("proxySubnet".to_string(), json!(false))]);
+        append_launch_args(&options, &mut args).unwrap();
+        assert_eq!(args, vec!["--proxy-subnet=no".to_string()]);
+
+        let invalid = BTreeMap::from([("proxySubnet".to_string(), json!("yes"))]);
+        assert!(append_launch_args(&invalid, &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn proxy_forwards_are_validated_and_normalized() {
+        let mut args = Vec::new();
+        let options = BTreeMap::from([("proxyForwards".to_string(), json!(" 22, 8080:3000 "))]);
+        append_launch_args(&options, &mut args).unwrap();
+        assert_eq!(args, vec!["--proxy-forward=22,8080:3000".to_string()]);
+
+        for bad in ["0", "70000", "22:", "abc", "22:x"] {
+            let options = BTreeMap::from([("proxyForwards".to_string(), json!(bad))]);
+            assert!(append_launch_args(&options, &mut Vec::new()).is_err(), "{bad}");
+        }
+    }
 }
 
 fn optional_string<'a>(

@@ -44,13 +44,18 @@ namespace ppp {
                 bool read_ok = false;
                 boost::system::error_code read_ec;
 
+                const YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return false;
+                }
+
                 bool ok = ppp::threading::Executors::Post(context, strand,
-                    [ssl_websocket, buffer, offset, length, &y, &read_ok, &read_ec]() noexcept {
+                    [ssl_websocket, buffer, offset, length, anchor, &read_ok, &read_ec]() noexcept {
                         boost::asio::async_read(*ssl_websocket, boost::asio::buffer((Byte*)buffer + offset, length),
-                            [&y, length, &read_ok, &read_ec](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                            [anchor, length, &read_ok, &read_ec](const boost::system::error_code& ec, std::size_t sz) noexcept {
                                 read_ec = ec;
                                 read_ok = boost::system::errc::success == ec && static_cast<std::size_t>(length) == sz;
-                                y.R();
+                                anchor.R();
                             });
                     });
 
@@ -61,7 +66,7 @@ namespace ppp {
                     return false;
                 }
 
-                y.Suspend();
+                y.Suspend(anchor);
                 if (true == read_ok) {
                     return true;
                 }

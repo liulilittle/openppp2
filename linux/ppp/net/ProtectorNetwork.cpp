@@ -378,8 +378,14 @@ namespace ppp
                 return false;
             }
 
+            const YieldContext::Anchor anchor = y.Arm();
+            if (!anchor)
+            {
+                return false;
+            }
+
             std::shared_ptr<ProtectorNetworkRequest> request =
-                session->requests.Create([yield = &y]() noexcept { yield->R(); });
+                session->requests.Create([anchor]() noexcept { anchor.R(); });
             if (!request)
             {
                 return false;
@@ -423,7 +429,7 @@ namespace ppp
                 session->requests.Cancel(request);
             }
 
-            y.Suspend();
+            y.Suspend(anchor);
             return request->Result();
         }
 #endif
@@ -463,7 +469,7 @@ namespace ppp
             }
 
 #if defined(_ANDROID)
-            return ProtectorNetwork::Sendfd(dev_.data(), sockfd);
+            return 0 == ProtectorNetwork::Sendfd(dev_.data(), sockfd);
 #else
             if (::setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, dev_.data(), dev_.size()) > -1)
             {

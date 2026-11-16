@@ -6,7 +6,7 @@ namespace ppp::app::client::routing {
         const UdpRoutingSelectorInput& input) noexcept {
         switch (input.action) {
         case RoutingAction::Direct:
-            return input.platform == UdpRoutingPlatform::Android
+            return input.platform != UdpRoutingPlatform::UnsupportedDirect
                 ? UdpRoutingMode::DirectSocket
                 : UdpRoutingMode::Reject;
         case RoutingAction::Proxy:

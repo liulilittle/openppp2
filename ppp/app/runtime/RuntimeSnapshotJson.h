@@ -98,6 +98,51 @@ namespace ppp {
                     }
                 }
 
+                inline void WriteRuntimePeer(
+                    Json::Value& value,
+                    const RuntimePeerSnapshot& peer) noexcept {
+                    value["peer_uuid"] = ToRuntimeJsonString(peer.peer_uuid);
+                    value["p2p_priority"] = ToRuntimeJsonString(peer.p2p_priority);
+                    value["virtual_ip"] = peer.virtual_ip;
+                    value["state"] = ppp::p2p::ToString(peer.state);
+                    value["effective_path"] = ToRuntimeJsonString(peer.effective_path);
+                    value["has_current"] = peer.has_current;
+                    value["has_pending"] = peer.has_pending;
+                    value["has_previous"] = peer.has_previous;
+                    value["pending_ready"] = peer.pending_ready;
+                    value["migration_pending"] = peer.migration_pending;
+                    value["generation"] = Json::UInt64(peer.generation);
+                    value["key_generation"] = Json::UInt64(peer.key_generation);
+                    value["key_deadline_ms"] = Json::UInt64(peer.key_deadline_ms);
+                    value["last_receive_ms"] = Json::UInt64(peer.last_receive_ms);
+                    value["local_candidate"] = ToRuntimeJsonString(peer.local_candidate);
+                    value["peer_candidate"] = ToRuntimeJsonString(peer.peer_candidate);
+                }
+
+                inline void ReadRuntimePeer(
+                    const Json::Value& value,
+                    RuntimePeerSnapshot& peer) noexcept {
+                    if (!value.isObject()) return;
+                    peer.peer_uuid = RuntimeJsonString(value, "peer_uuid");
+                    peer.p2p_priority = RuntimeJsonString(value, "p2p_priority");
+                    if (peer.p2p_priority.empty()) peer.p2p_priority = "ipv6-first";
+                    if (value["virtual_ip"].isUInt()) peer.virtual_ip = value["virtual_ip"].asUInt();
+                    if (value["state"].isString()) peer.state =
+                        ppp::p2p::ParseP2PState(RuntimeJsonString(value, "state"));
+                    peer.effective_path = RuntimeJsonString(value, "effective_path");
+                    if (value["has_current"].isBool()) peer.has_current = value["has_current"].asBool();
+                    if (value["has_pending"].isBool()) peer.has_pending = value["has_pending"].asBool();
+                    if (value["has_previous"].isBool()) peer.has_previous = value["has_previous"].asBool();
+                    if (value["pending_ready"].isBool()) peer.pending_ready = value["pending_ready"].asBool();
+                    if (value["migration_pending"].isBool()) peer.migration_pending = value["migration_pending"].asBool();
+                    if (value["generation"].isUInt64()) peer.generation = value["generation"].asUInt64();
+                    if (value["key_generation"].isUInt64()) peer.key_generation = value["key_generation"].asUInt64();
+                    if (value["key_deadline_ms"].isUInt64()) peer.key_deadline_ms = value["key_deadline_ms"].asUInt64();
+                    if (value["last_receive_ms"].isUInt64()) peer.last_receive_ms = value["last_receive_ms"].asUInt64();
+                    peer.local_candidate = RuntimeJsonString(value, "local_candidate");
+                    peer.peer_candidate = RuntimeJsonString(value, "peer_candidate");
+                }
+
             }
 
             inline std::string SerializeRuntimeSnapshot(
@@ -124,7 +169,16 @@ namespace ppp {
                 root["mux_active_links"] = snapshot.mux_active_links;
                 root["mux_fallback_reason"] = detail::ToRuntimeJsonString(snapshot.mux_fallback_reason);
                 root["p2p_state"] = ppp::p2p::ToString(snapshot.p2p_state);
+                root["p2p_gate_reason"] = snapshot.p2p_gate_reason.c_str();
+                root["p2p_priority"] = detail::ToRuntimeJsonString(snapshot.p2p_priority);
                 root["effective_path"] = ppp::p2p::EffectivePath(snapshot.p2p_state);
+                Json::Value peers(Json::arrayValue);
+                for (const RuntimePeerSnapshot& peer : snapshot.peers) {
+                    Json::Value value(Json::objectValue);
+                    detail::WriteRuntimePeer(value, peer);
+                    peers.append(std::move(value));
+                }
+                root["peers"] = std::move(peers);
                 detail::WriteRuntimeTraffic(root, snapshot.traffic);
                 root["connected_monotonic_ms"] = Json::UInt64(snapshot.connected_monotonic_ms);
                 detail::WriteRuntimeError(root, snapshot.last_error);
@@ -201,10 +255,21 @@ namespace ppp {
                         std::min<unsigned int>(root["mux_active_links"].asUInt(), UINT16_MAX));
                 }
                 parsed.mux_fallback_reason = detail::RuntimeJsonString(root, "mux_fallback_reason");
+                parsed.p2p_gate_reason = root.isMember("p2p_gate_reason")
+                    ? detail::RuntimeJsonString(root, "p2p_gate_reason") : "";
                 parsed.p2p_state = root.isMember("p2p_state")
                     ? ppp::p2p::ParseP2PState(
                         detail::RuntimeJsonString(root, "p2p_state"))
                     : ppp::p2p::P2PState::Disabled;
+                parsed.p2p_priority = detail::RuntimeJsonString(root, "p2p_priority");
+                if (parsed.p2p_priority.empty()) parsed.p2p_priority = "ipv6-first";
+                if (root["peers"].isArray()) {
+                    for (const Json::Value& value : root["peers"]) {
+                        RuntimePeerSnapshot peer;
+                        detail::ReadRuntimePeer(value, peer);
+                        parsed.peers.emplace_back(std::move(peer));
+                    }
+                }
                 detail::ReadRuntimeTraffic(root, parsed.traffic);
                 if (root.isMember("connected_monotonic_ms") &&
                     root["connected_monotonic_ms"].isUInt64()) {

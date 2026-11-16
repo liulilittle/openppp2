@@ -7,6 +7,52 @@
 
 namespace runtime = ppp::app::runtime;
 
+BOOST_AUTO_TEST_CASE(tun_write_diagnostics_json) {
+    runtime::RuntimeStatsSample sample;
+    sample.has_tap_linux = true;
+    sample.tap_linux.writev_calls = UINT64_C(9000000000);
+    sample.tap_linux.writev_bytes = 1234;
+    sample.tap_linux.writev_segments = 4;
+    sample.tap_linux.writev_max_bytes = 1234;
+    sample.tap_linux.writev_max_segments = 4;
+    sample.tap_linux.gso_flushes[8] = 7;
+    Json::Value root;
+    Json::Reader reader;
+    const auto encoded = runtime::SerializeRuntimeStats(sample);
+    BOOST_REQUIRE(reader.parse(encoded.data(), encoded.data() + encoded.size(), root));
+    const auto& tap = root["tap_linux"];
+    BOOST_TEST(tap["writev_calls"].asUInt64() == UINT64_C(9000000000));
+    BOOST_TEST(tap["writev_bytes"].asUInt64() == 1234u);
+    BOOST_TEST(tap["writev_segments"].asUInt64() == 4u);
+    BOOST_TEST(tap["writev_max_bytes"].asUInt64() == 1234u);
+    BOOST_TEST(tap["writev_max_segments"].asUInt64() == 4u);
+    BOOST_TEST(tap["gso_flushes"]["terminate"].asUInt64() == 7u);
+    BOOST_TEST(tap["gso_flushes"].size() == 9u);
+}
+
+BOOST_AUTO_TEST_CASE(xtcp_startup_and_shard_metadata) {
+    runtime::RuntimeStatsSample sample;
+    sample.has_xtcp = true;
+    sample.xtcp.shard_count = 2;
+    sample.xtcp.worker_count = 2;
+    sample.xtcp.spsc_ingress = true;
+    sample.xtcp.shard_policy_requested = "auto";
+    sample.xtcp.shard_policy_reason = "auto-opt-in";
+    sample.xtcp.allowed_cpus = {1, 3, 5, 7};
+    sample.xtcp.worker_cpus = {1, 3};
+    sample.xtcp.shards[1].bytes = UINT64_C(9000000000);
+    Json::Value root;
+    Json::Reader reader;
+    const auto encoded = runtime::SerializeRuntimeStats(sample);
+    BOOST_REQUIRE(reader.parse(encoded.data(), encoded.data() + encoded.size(), root));
+    BOOST_TEST(root["xtcp"]["shard_count"].asUInt() == 2u);
+    BOOST_TEST(root["xtcp"]["worker_count"].asUInt() == 2u);
+    BOOST_TEST(root["xtcp"]["ingress_backend"].asString() == "spsc-serialized-producer");
+    BOOST_TEST(root["xtcp"]["shards"].size() == 2u);
+    BOOST_TEST(root["xtcp"]["shards"][1]["bytes"].asUInt64() == UINT64_C(9000000000));
+    BOOST_TEST(root["xtcp"]["worker_cpus"][1].asUInt() == 3u);
+}
+
 BOOST_AUTO_TEST_CASE(stats_json_preserves_v1_contract) {
     runtime::RuntimeStatsSample sample;
     sample.monotonic_ms = 8080123;
@@ -27,6 +73,11 @@ BOOST_AUTO_TEST_CASE(stats_json_preserves_v1_contract) {
     const std::string encoded = runtime::SerializeRuntimeStats(sample);
     BOOST_REQUIRE(reader.parse(encoded.data(), encoded.data() + encoded.size(), root));
     BOOST_TEST(root["type"].asString() == "ppp-stats");
+#if defined(PPP_COROUTINE_BACKEND_COROCC)
+    BOOST_TEST(root["coroutine_backend"].asString() == "corocc");
+#else
+    BOOST_TEST(!root.isMember("coroutine_backend"));
+#endif
     BOOST_TEST(root["version"].asUInt() == 1u);
     BOOST_TEST(root["monotonic_ms"].asUInt64() == 8080123u);
     BOOST_TEST(root["rx_bytes"].asUInt64() == 1932734464u);
@@ -106,6 +157,10 @@ BOOST_AUTO_TEST_CASE(stats_json_emits_xtcp_block_when_present) {
     sample.xtcp.direct_download_rejected = 2;
     sample.xtcp.direct_upload_rejected = 3;
     sample.xtcp.direct_upload_queue_bytes = 32768;
+    sample.xtcp.direct_spsc_enabled = 1;
+    sample.xtcp.direct_handoff_full = 21;
+    sample.xtcp.direct_handoff_wakes = 22;
+    sample.xtcp.direct_handoff_alloc_fallback = 23;
     sample.xtcp.direct_upload_queue_items = 11;
     sample.xtcp.direct_upload_backpressured = 1;
     sample.xtcp.direct_upload_writer_active = 2;
@@ -161,6 +216,10 @@ BOOST_AUTO_TEST_CASE(stats_json_emits_xtcp_block_when_present) {
     BOOST_TEST(xtcp["direct_download_rejected"].asUInt64() == 2u);
     BOOST_TEST(xtcp["direct_upload_rejected"].asUInt64() == 3u);
     BOOST_TEST(xtcp["direct_upload_queue_bytes"].asUInt64() == 32768u);
+    BOOST_TEST(xtcp["direct_spsc_enabled"].asUInt64() == 1u);
+    BOOST_TEST(xtcp["direct_handoff_full"].asUInt64() == 21u);
+    BOOST_TEST(xtcp["direct_handoff_wakes"].asUInt64() == 22u);
+    BOOST_TEST(xtcp["direct_handoff_alloc_fallback"].asUInt64() == 23u);
     BOOST_TEST(xtcp["upload_budget_bytes"].asUInt64() == 4096u);
     BOOST_TEST(xtcp["upload_budget_items"].asUInt64() == 3u);
     BOOST_TEST(xtcp["upload_budget_max_bytes"].asUInt64() == 32u * 1024u * 1024u);
@@ -219,6 +278,9 @@ BOOST_AUTO_TEST_CASE(stats_json_emits_tcp_stack_and_active_linux_tap_blocks) {
     sample.tap_linux.direct_gso_packets = 17;
     sample.tap_linux.direct_gso_bytes = 262144;
     sample.tap_linux.direct_gso_rejected = 1;
+    sample.tap_linux.bound_output_lanes = 2;
+    sample.tap_linux.lane_envelope_accepted = 31;
+    sample.tap_linux.lane_envelope_full_drops = 4;
 
     const std::string encoded = runtime::SerializeRuntimeStats(sample);
     Json::Value root;
@@ -234,4 +296,7 @@ BOOST_AUTO_TEST_CASE(stats_json_emits_tcp_stack_and_active_linux_tap_blocks) {
     BOOST_TEST(root["tap_linux"]["direct_gso_packets"].asUInt64() == 17u);
     BOOST_TEST(root["tap_linux"]["direct_gso_bytes"].asUInt64() == 262144u);
     BOOST_TEST(root["tap_linux"]["direct_gso_rejected"].asUInt64() == 1u);
+    BOOST_TEST(root["tap_linux"]["bound_output_lanes"].asUInt64() == 2u);
+    BOOST_TEST(root["tap_linux"]["lane_envelope_accepted"].asUInt64() == 31u);
+    BOOST_TEST(root["tap_linux"]["lane_envelope_full_drops"].asUInt64() == 4u);
 }

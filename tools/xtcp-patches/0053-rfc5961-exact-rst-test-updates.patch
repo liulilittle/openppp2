@@ -1,0 +1,80 @@
+diff --git a/tests/test_rst_keepalive.cpp b/tests/test_rst_keepalive.cpp
+index 1ef73a4..11f000c 100644
+--- a/tests/test_rst_keepalive.cpp
++++ b/tests/test_rst_keepalive.cpp
+@@ -133,8 +133,8 @@ int main() {
+         CHECK(0 == log.CountWithFlag(kFlagRst));
+         std::fprintf(stderr, "[rst-keepalive] keepalive probe sent\n");
+ 
+-        // Peer aborts with RST carrying seq = our snd_nxt_ (in window).
+-        const std::vector<Byte> rst = BuildTcp(kFlagAck | kFlagRst, 0x40000006, 0x40000006);
++        // Peer aborts with RST carrying seq == rcv_nxt_ (RFC 5961 3.2 exact match).
++        const std::vector<Byte> rst = BuildTcp(kFlagAck | kFlagRst, 0x3FFFF006, 0x40000006);
+         conn->OnSegment(rst.data(), static_cast<UInt32>(rst.size()), 14000);
+         CHECK(xtcp::core::TcpState::kClosed == conn->State());
+         std::fprintf(stderr,
+@@ -162,10 +162,10 @@ int main() {
+         CHECK(1 <= acks);  // the flood was challenged at least once
+         CHECK(xtcp::core::TcpState::kEstablished == conn->State());  // storm does not close
+ 
+-        // A valid in-window RST (seq = rcv_nxt_ + 1) after the storm must still
+-        // be honored: the limiter gates only challenge emission, not the
+-        // in-window kClosed transition.
+-        const std::vector<Byte> valid = BuildTcp(kFlagAck | kFlagRst, 0x50000002, 0);
++        // A valid RST (seq == rcv_nxt_) after the storm must still be
++        // honored: the limiter gates only challenge emission, not the
++        // kClosed transition.
++        const std::vector<Byte> valid = BuildTcp(kFlagAck | kFlagRst, 0x50000001, 0);
+         conn->OnSegment(valid.data(), static_cast<UInt32>(valid.size()), 5000);
+         CHECK(xtcp::core::TcpState::kClosed == conn->State());
+         std::fprintf(stderr,
+diff --git a/tests/test_seqwrap_rst.cpp b/tests/test_seqwrap_rst.cpp
+index 3e6a4bc..4c5684d 100644
+--- a/tests/test_seqwrap_rst.cpp
++++ b/tests/test_seqwrap_rst.cpp
+@@ -107,8 +107,13 @@ static void TestInWindowRstCloses() {
+         UInt32 tx = 0;
+         xtcp::core::TcpConn conn = MakeWrapConn(&tx);
+         InjectRst(conn, seq);
+-        CHECK(TcpState::kClosed == conn.State());
+-        CHECK(0 == tx);  // valid RST: no challenge ACK emitted
++        if (0xFFFFFFF0u == seq) {
++            // RFC 5961 3.2: only an exact RCV.NXT match closes.
++            CHECK(TcpState::kClosed == conn.State());
++            CHECK(0 == tx);  // valid RST: no challenge ACK emitted
++        } else {
++            CHECK(TcpState::kClosed != conn.State());  // in-window, inexact: challenge
++        }
+     }
+     std::fprintf(stderr, "[seqwrap-rst] in-window RSTs closed the connection at the wrap\n");
+ }
+@@ -171,7 +176,7 @@ static void TestConnectionConsistentAfterChallenge() {
+ 
+     // rcv_nxt_ is now 0x00000003 (0xFFFFFFF0 + 16 wraps to 0, then +3);
+     // an RST inside the post-wrap window closes the connection.
+-    InjectRst(conn, 0x00000010u);
++    InjectRst(conn, 0x00000003u);
+     CHECK(TcpState::kClosed == conn.State());
+     std::fprintf(stderr, "[seqwrap-rst] connection consistent after boundary challenge\n");
+ }
+diff --git a/tests/test_window_edge_rst.cpp b/tests/test_window_edge_rst.cpp
+index f7b3c10..313e304 100644
+--- a/tests/test_window_edge_rst.cpp
++++ b/tests/test_window_edge_rst.cpp
+@@ -250,13 +250,12 @@ int main() {
+ 
+     {
+         // ---- Scenario 2: RST seq == rcv_nxt + rcv_wnd - 1 (last in-window
+-        // slot) must be HONORED: A closes, no challenge ACK. ----
++        // slot) is inexact (RFC 5961 3.2): challenged, A stays alive. ----
+         Fixture f(40185, 9126);
+         const UInt32 last_in = f.WindowEnd() - 1u;
+         InjectRstToA(f.backend_a, last_in, 9126, 40185);
+-        CHECK(xtcp::core::TcpState::kClosed == f.stack_a.ConnectionState(f.conn_a));
+-        CHECK(0 == DrainAckCount(f.backend_a));
+-        std::fprintf(stderr, "[window-edge-rst] last in-window slot RST closed A\n");
++        CHECK(xtcp::core::TcpState::kEstablished == f.stack_a.ConnectionState(f.conn_a));
++        std::fprintf(stderr, "[window-edge-rst] last in-window slot RST challenged, A alive\n");
+     }
+ 
+     {

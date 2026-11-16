@@ -48,8 +48,10 @@ namespace ppp {
             const ppp::unordered_map<ppp::string, ppp::vector<ServerEntry> >& Providers() noexcept {
                 static const ppp::unordered_map<ppp::string, ppp::vector<ServerEntry> > providers = {
                     { "doh.pub", {
-                        MakeEntry(Protocol::DoH, "119.29.29.29:443", "doh.pub", "https://doh.pub/dns-query"),
-                        MakeEntry(Protocol::DoT, "119.29.29.29:853", "dot.pub"),
+                        // DNSPod serves DoH/DoT on 1.12.12.12 and 120.53.53.53; 119.29.29.29 is plain DNS only.
+                        MakeEntry(Protocol::DoH, "1.12.12.12:443", "doh.pub", "https://doh.pub/dns-query"),
+                        MakeEntry(Protocol::DoH, "120.53.53.53:443", "doh.pub", "https://doh.pub/dns-query"),
+                        MakeEntry(Protocol::DoT, "1.12.12.12:853", "dot.pub"),
                         MakeEntry(Protocol::TCP, "119.29.29.29:53"),
                         MakeEntry(Protocol::UDP, "119.29.29.29:53") } },
                     { "alidns", {
@@ -57,8 +59,8 @@ namespace ppp {
                         MakeEntry(Protocol::DoT, "223.5.5.5:853", "dns.alidns.com"),
                         MakeEntry(Protocol::TCP, "223.5.5.5:53"),
                         MakeEntry(Protocol::UDP, "223.5.5.5:53") } },
+                    // Baidu and 114 publish no DoH/DoT service; plain DNS only.
                     { "baidu", {
-                        MakeEntry(Protocol::DoH, "180.76.76.76:443", "doh.baidu.com", "https://doh.baidu.com/dns-query"),
                         MakeEntry(Protocol::TCP, "180.76.76.76:53"),
                         MakeEntry(Protocol::UDP, "180.76.76.76:53") } },
                     { "360", {
@@ -67,11 +69,10 @@ namespace ppp {
                         MakeEntry(Protocol::TCP, "101.226.4.6:53"),
                         MakeEntry(Protocol::UDP, "101.226.4.6:53") } },
                     { "114", {
-                        MakeEntry(Protocol::DoH, "114.114.114.114:443", "dns.114.com", "https://dns.114.com/dns-query"),
                         MakeEntry(Protocol::TCP, "114.114.114.114:53"),
                         MakeEntry(Protocol::UDP, "114.114.114.114:53") } },
+                    // doh.tuna.tsinghua.edu.cn does not exist; TUNA only ever published DoT here.
                     { "tuna", {
-                        MakeEntry(Protocol::DoH, "101.6.6.6:443", "doh.tuna.tsinghua.edu.cn", "https://doh.tuna.tsinghua.edu.cn/dns-query"),
                         MakeEntry(Protocol::DoT, "101.6.6.6:853", "dns.tuna.tsinghua.edu.cn"),
                         MakeEntry(Protocol::TCP, "101.6.6.6:53"),
                         MakeEntry(Protocol::UDP, "101.6.6.6:53") } },
@@ -113,6 +114,19 @@ namespace ppp {
 
         bool DnsProviderCatalog::HasProvider(const ppp::string& name) noexcept {
             return NULLPTR != GetProvider(name);
+        }
+
+        bool DnsProviderCatalog::HasEncryptedEndpoint(const ppp::string& name) noexcept {
+            const ppp::vector<ServerEntry>* provider = GetProvider(name);
+            if (NULLPTR == provider) {
+                return false;
+            }
+            for (const ServerEntry& entry : *provider) {
+                if (entry.protocol == Protocol::DoH || entry.protocol == Protocol::DoT) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         const ppp::vector<ServerEntry>* DnsProviderCatalog::GetProvider(const ppp::string& name) noexcept {

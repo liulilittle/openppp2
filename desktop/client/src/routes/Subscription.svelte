@@ -1,52 +1,19 @@
 <script>
-  import { Check, Copy, RefreshCw } from 'lucide-svelte'
+  import { Plus, RefreshCw, Trash2, Pencil, Save, X } from 'lucide-svelte'
+  import { t } from '../lib/i18n.js'
   import { formatDateTime } from '../lib/format.js'
-  import { subscriptionNotice } from '../lib/runtime/model.js'
   export let state
   export let runtime
-  let copied = false
-  let refreshing = false
-  let urlDraft = state.subscription.url
-  let editing = false
-  $: subscription = state.subscription
-  $: notice = subscriptionNotice(subscription)
-
-  async function copyUrl() {
-    await navigator.clipboard?.writeText(subscription.url)
-    copied = true
-    setTimeout(() => (copied = false), 1200)
-  }
-
-  async function refresh() {
-    refreshing = true
-    await runtime.refreshSubscription(urlDraft.trim())
-    setTimeout(() => (refreshing = false), 350)
-  }
-  $: if (!editing && urlDraft !== subscription.url) urlDraft = subscription.url
+  let editing=null, error='', busy=false
+  function add() { editing={id:'',name:'',url:'',enabled:true,lastSyncedAt:0,cached:false,error:''} }
+  async function run(action) { if(busy) return; busy=true; error=''; try { await action() } catch(cause) { error=String(cause) } finally { busy=false } }
+  async function save() { await runtime.saveSubscription(editing); editing=null }
+  async function refreshAll() { for(const source of (state.subscription.sources || []).filter((s) => s.enabled)) await runtime.refreshSubscription(source.url,source.id) }
+  function remove(source) { if(confirm($t('Delete this subscription?','删除这个订阅？'))) run(() => runtime.deleteSubscription(source.id)) }
 </script>
-
-<div class="page">
-  {#if notice}<div class="notice">{notice}，节点仍可正常使用。</div>{/if}
-  <section class="panel">
-    <div class="panel-head"><h1 class="panel-title">订阅</h1><button class="secondary-button refresh" on:click={refresh} disabled={refreshing}><span class:spin={refreshing}><RefreshCw size={14} /></span>刷新</button></div>
-    <div class="panel-body subscription-body">
-      <div class="field full"><label for="subscription-url">订阅地址</label><div class="url-row"><input id="subscription-url" class="text-input mono" bind:value={urlDraft} on:focus={() => editing = true} on:blur={() => editing = false} placeholder="https://example.com/sub/token" /><button class="icon-button" on:click={copyUrl} title="复制订阅地址">{#if copied}<Check size={15} />{:else}<Copy size={15} />{/if}</button></div></div>
-      <div class="fact"><span>名称</span><strong>{subscription.name}</strong></div>
-      <div class="fact"><span>节点数量</span><strong class="number">{subscription.nodes.length}</strong></div>
-      <div class="fact"><span>上次成功同步</span><strong class="number">{formatDateTime(subscription.lastSyncedAt)}</strong></div>
-      <div class="fact"><span>文档更新时间</span><strong class="number">{formatDateTime(subscription.updatedAt)}</strong></div>
-    </div>
-  </section>
-  <section class="panel panel-body token-note"><b>Token 轮换</b><p>服务端轮换订阅 Token 后，需要在这里替换新的订阅地址。旧地址失效不会删除本地缓存。</p></section>
+<div class="page"><div class="page-heading"><h1>{$t('Subscriptions','订阅')}</h1><div class="toolbar"><button class="icon-button" disabled={busy} on:click={() => run(refreshAll)} title={$t('Refresh all','全部更新')} aria-label={$t('Refresh all','全部更新')}><RefreshCw size={17}/></button><button class="primary-button action" on:click={add}><Plus size={16}/>{$t('Add source','添加来源')}</button></div></div>
+  {#if error}<p role="alert" class="error-line">{error}</p>{/if}
+  {#if editing}<form class="editor" on:submit|preventDefault={() => run(save)}><label class="field"><span>{$t('Name','名称')}</span><input class="text-input" bind:value={editing.name} required/></label><label class="field"><span>URL</span><input class="text-input" type="url" bind:value={editing.url} required placeholder="https://"/></label><div class="toolbar"><button class="primary-button action" type="submit" disabled={busy}><Save size={15}/>{$t('Save','保存')}</button><button class="icon-button" type="button" on:click={() => editing=null} title={$t('Cancel','取消')} aria-label={$t('Cancel','取消')}><X size={16}/></button></div></form>{/if}
+  {#each state.subscription.sources || [] as source (source.id)}<section class="source-row"><div class="source-details"><h2>{source.name}</h2><div class="subtle">{source.enabled ? $t('Enabled','启用') : $t('Disabled','停用')} · {formatDateTime(source.lastSyncedAt) || $t('Not synced','未同步')}{#if source.cached} · {$t('Cached','缓存')}{/if}</div>{#if source.error}<p class="error-line">{source.error}</p>{/if}</div><div class="toolbar"><input type="checkbox" checked={source.enabled} aria-label={$t('Enable subscription','启用订阅')} disabled={busy} on:change={(event) => run(() => runtime.saveSubscription({...source,enabled:event.currentTarget.checked}))}/><button class="icon-button" disabled={busy} title={$t('Refresh','更新')} aria-label={$t('Refresh','更新')} on:click={() => run(() => runtime.refreshSubscription(source.url,source.id))}><RefreshCw size={15}/></button><button class="icon-button" title={$t('Edit','编辑')} aria-label={$t('Edit','编辑')} on:click={() => editing={...source}}><Pencil size={15}/></button><button class="icon-button" disabled={busy} title={$t('Delete','删除')} aria-label={$t('Delete','删除')} on:click={() => remove(source)}><Trash2 size={15}/></button></div></section>{:else}<div class="empty">{$t('No subscription sources','暂无订阅来源')}</div>{/each}
 </div>
-
-<style>
-  .refresh { display: inline-flex; align-items: center; gap: 7px; }
-  .subscription-body { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 28px; }
-  .full { grid-column: 1 / -1; }
-  .url-row { display: grid; grid-template-columns: 1fr 32px; gap: 7px; }
-  .fact { display: grid; gap: 4px; }.fact span { color: var(--text-3); font-size: 11px; }.fact strong { font-size: 12px; }
-  .token-note p { margin: 6px 0 0; color: var(--text-2); }
-  .refresh span { display: inline-flex; } .spin { animation: spin .8s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }
-  @media (max-width: 640px) { .subscription-body { grid-template-columns: 1fr; } .full { grid-column: auto; } }
-</style>
+<style>.editor { display:grid; grid-template-columns:minmax(120px,.5fr) minmax(0,1fr) auto; gap:12px; align-items:end; padding:20px 0; border-bottom:1px solid var(--border); } .source-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:24px 0; border-bottom:1px solid var(--border); } .source-details { min-width:0; overflow-wrap:anywhere; } h2 { font-size:15px; margin:0 0 8px; } @media(max-width:760px) { .editor { grid-template-columns:1fr; } .source-row { align-items:flex-start; flex-wrap:wrap; } }</style>

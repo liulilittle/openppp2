@@ -1,12 +1,12 @@
 # 项目接口全景图
 > Status: Active
 > Type: Reference
-> Last verified: a7e9b99
+> Last verified: local workspace, 2026-10-07
 
 > **用途：**盘点 OPENPPP2 全部可发现的调用面和序列化边界，区分受支持契约、实验接口、内部实现和已知缺口。
 > **适用对象：**用户、运维人员、客户端作者、集成人员和维护者。
 > **当前状态：**当前有效。本页是发现入口，不等同于 ABI 兼容承诺。
-> **最后核对依据：**仓库源码与测试 `a7e9b99`，2026-07-19。
+> **最后核对依据：**本地工作区源码，2026-10-07。policy v2 计划纳入 v2.1.7，v2.1.6 不含；尚未确认 v2.1.7 已成功发布。
 > **上一层索引：**[参考手册](README_CN.md) · **English：**[Project Interface Map](PROJECT_INTERFACE_MAP.md)
 
 ## 如何阅读本页
@@ -27,9 +27,9 @@ C++ 类中的 `public` 只表示仓库代码可以访问，并不等于稳定的
 
 | 领域 | 提供方 | 主要调用方 | 输入 / 输出 | 稳定性 | 详细文档 |
 |---|---|---|---|---|---|
-| `ppp` 进程和 CLI | C++ 可执行文件 | 用户、服务管理器、脚本 | 参数和文件 / 退出状态、日志、TUI | **稳定**，但有缺口 | [CLI 参考](CLI_REFERENCE_CN.md) |
-| `appsettings.json` | C++ 配置加载器 | 用户和平台客户端 | JSON / 归一化运行策略 | 事实上的**稳定** | [配置模型](CONFIGURATION_CN.md) |
-| 连接 URI | C++ 客户端 | 用户、配置档和订阅生成器 | `ppp://`、`ppp://ws/`、`ppp://wss/` | **稳定** | [配置模型](CONFIGURATION_CN.md) |
+| `ppp` 进程和 CLI | C++ 可执行文件 | 用户、服务管理器、脚本 | 参数和文件 / 退出状态、日志、TUI | **稳定**，但有缺口；策略命令计划纳入 v2.1.7，尚未确认成功发布 | [CLI 参考](CLI_REFERENCE_CN.md) |
+| `appsettings.json` | C++ 配置加载器 | 用户和平台客户端 | JSON / 归一化运行策略 | 事实上的**稳定**；`client.policy` v2 计划纳入 v2.1.7，尚未确认成功发布 | [配置模型](CONFIGURATION_CN.md) |
+| 连接 URI | C++ 客户端 | 用户、配置档和订阅生成器 | `ppp://` / `tcp://`、`ws://`、`wss://` | **稳定** | [配置模型](CONFIGURATION_CN.md) |
 | 隧道线上协议 | C++ 客户端/服务端 | OPENPPP2 对端 | 加密帧、握手、操作码、INFO JSON | 事实上的**稳定** | [包格式](PACKET_FORMATS_CN.md)、[链路层](LINKLAYER_PROTOCOL_CN.md) |
 | Runtime Snapshot JSON v1 | C++ 运行时 | TUI、Android、iOS | 版本化 JSON 快照 | **稳定** | [UI Runtime 契约](UI_RUNTIME_CONTRACT_CN.md) |
 | Go 管理器后台 API | `go/ppp` | 内嵌 `/admin/`、运维人员 | HTTP JSON 和订阅 JSON | `/api/v1` **稳定**；旧路由为内部兼容面 | [管理后端](../guides/MANAGEMENT_BACKEND_CN.md) |
@@ -58,6 +58,7 @@ C++ 类中的 `public` 只表示仓库代码可以访问，并不等于稳定的
 |---|---|---|
 | 角色与配置 | `--mode`、`--config`、`--proxy-http-port`、`--proxy-socks-port` | **稳定** |
 | 运行策略 | `--rt`、`--dns`、`--tun-flash`、`--auto-restart`、`--link-restart`、`--block-quic`、`--firewall-rules`、`--lwip`、`--vbgp` | **稳定** |
+| 策略工具（工作区实现） | `ppp policy check`、`explain`、`init`、`export`、`status`、`update`、`migrate` | 计划纳入 v2.1.7，v2.1.6 不含；尚未确认 v2.1.7 已成功发布 |
 | 网卡与地址 | `--nic`、`--ngw`、`--tun`、`--tun-ip`、`--tun-ipv6`、`--tun-gw`、`--tun-mask` | **稳定** |
 | 隧道行为 | `--tun-vnet`、`--tun-host`、`--tun-static`、`--tun-promisc`、`--tun-ssmt`、`--tun-route`、`--tun-protect`、`--tun-lease-time-in-seconds` | **稳定** |
 | MUX | `--tun-mux`、`--tun-mux-acceleration`、`--mux-mode`、`--mux-mode-turbo` | `compat`、`flow`、`balance` 事实**稳定**；`stripe` 为**实验** |
@@ -79,14 +80,36 @@ C++ 类中的 `public` 只表示仓库代码可以访问，并不等于稳定的
 | `tcp`、`udp`、`websocket`、`cdn` | 载体监听、连接策略、TLS/WS 和端口模式 | 传输层 | **稳定** | 同上 |
 | `mux` | 多路复用模式与限制 | 传输/运行时 | `compat`/`flow`/`balance` 事实**稳定**；`stripe` 和实时控制为**实验** |
 | `server` | 地址池、映射、后端、策略、IPv6、计费身份 | 服务端运行时 | **稳定** | 同上 |
-| `client` | 服务端 URI、重连、带宽、代理和 canonical `client.routing` IP/DNS policy（`ip.bypass`、`ip.routes`、`ip.peer-routes`、`dns.rules`）；运行模式由顶层 `--mode` 和 `client.proxy-only` 决定 | 客户端运行时 | **稳定** | 同上 |
+| `client` | 服务端 URI、重连、带宽、代理、legacy `client.routing` 和计划纳入 v2.1.7 的工作区 `client.policy` v2；运行模式由顶层 `--mode` 和 `client.proxy-only` 决定 | 客户端运行时 | legacy 字段事实上的**稳定**；v2 发布尚未确认 | 同上 |
 | `ip`、`virr`、`vbgp` | 地址、路由/规则和路由传播输入 | 网络切换器 | 事实上的**稳定** | 同上 |
 | `dns` | resolver、拦截、fallback、cache 和 policy | 客户端/服务端 DNS 运行时 | 事实上的**稳定** | 同上 |
 | `telemetry` | exporter、signal、sampling 和 resource attributes | 诊断/平台桥 | **实验** | 同上 |
 | `p2p` | 直连发现、信令、传输和 fallback | 客户端/服务端 P2P 运行时 | **实验** | 同上 |
 | `geo-rules` | 地理路由/规则来源与行为 | 路由/DNS policy | **实验** | 同上 |
 
-`client.routing` 是 canonical client IP/DNS policy。四类来源在两种模式下都进入 native route/DNS policy；顶层 `--mode=client`/`--mode=proxy` 与独立的 `client.proxy-only` 标志决定宿主集成。`proxy-only` 抑制桌面宿主路由和系统 DNS 接管；移动端 bridge 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS 或本地 HTTP proxy。旧 routing 对象中的 mode 字段会被忽略且不会序列化。
+`client.routing` 仍是受支持的 legacy client IP/DNS policy 来源。本地工作区实现计划纳入
+v2.1.7（v2.1.6 不含，尚未确认成功发布）；其中 `client.policy` v2 是独立的版本化来源，与 legacy
+policy 字段冲突，不会合并。运行模式仍由顶层
+`--mode` 和 `client.proxy-only` 决定。`proxy-only` 抑制桌面宿主路由和系统 DNS 接管；移动端
+bridge 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS 或本地 HTTP proxy。字段和
+命令契约见[配置模型](CONFIGURATION_CN.md)与[CLI 参考](CLI_REFERENCE_CN.md)。
+
+### Policy v2 内部组件（工作区实现，计划纳入 v2.1.7）
+
+以下路径描述本地源码边界，不是 SDK 接口；尚未确认这些内容已成功纳入 v2.1.7 发行版。
+
+| 边界 | 职责 | 分类 |
+|---|---|---|
+| `ppp/app/ApplicationPolicyCommand.cpp` | 分发七个 `ppp policy` 命令，输出文本/JSON 报告和退出状态。 | 内部 CLI 实现；计划纳入 v2.1.7 |
+| `ppp/app/client/policy/PolicySourceLoader.cpp`、`PolicyCompiler.cpp`、`PolicyEvaluator.h` | 加载 v2 来源、校验/编译规则并计算路由/DNS 决策。 | 内部策略引擎；计划纳入 v2.1.7 |
+| `ppp/app/client/policy/PolicyRuntime.cpp` | 发布不可变策略快照并协调运行时决策。 | 内部运行时边界；计划纳入 v2.1.7 |
+| `ppp/app/client/dns/PolicyResolverService.cpp` | 通过配置的上游传输和缓存/合并服务执行策略选定的 DNS 解析。 | 内部 DNS 边界；计划纳入 v2.1.7 |
+| `ppp/app/client/policy/DurablePolicyBundle.cpp`、`PolicyUpdateService.cpp` | 保存已验证的 current/previous bundle，并获取、校验后准备或发布更新。 | 内部持久化/更新边界；计划纳入 v2.1.7 |
+| `ppp/app/client/policy/LegacyPolicyAdapter.cpp`、`LegacyPolicyMigration.cpp` | v2 缺席时适配 legacy 输入，并写出供人工复核的迁移草案。 | 内部兼容边界；计划纳入 v2.1.7 |
+
+目前只有 Linux HTTP/UDP/DNS 上游、更新和 Fake-IP 行为具备
+[实机报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)所列证据。HTTPS 和部分 proxy TCP 路径
+仍未验证；Windows/macOS/Android/iOS 未构建或运行。尚未确认 v2.1.7 已成功发布。
 
 完整字段和模板见 [配置模型](CONFIGURATION_CN.md)。平台配置档存储会包装这份 JSON，但不会取代其契约。
 
@@ -96,9 +119,10 @@ C++ 类中的 `public` 只表示仓库代码可以访问，并不等于稳定的
 
 | 形式 | 含义 | 鉴权 / 安全 | 稳定性 |
 |---|---|---|---|
-| `ppp://host:port/` | 原生 TCP 隧道 | 隧道密钥配置；载体无 TLS | **稳定** |
-| `ppp://ws/host:port/` | WebSocket 隧道 | 隧道密钥配置；载体无 TLS | **稳定** |
-| `ppp://wss/host:port/` | TLS WebSocket 隧道 | TLS 加隧道密钥配置 | **稳定** |
+| `ppp://host:port/` 或 `tcp://host:port/` | 原生 TCP 隧道 | 隧道密钥配置；载体无 TLS | **稳定** |
+| `ws://host[:port]/path` | WebSocket 隧道（默认端口 80） | 隧道密钥配置；载体无 TLS | **稳定** |
+| `wss://host[:port]/path` | TLS WebSocket 隧道（默认端口 443） | TLS 加隧道密钥配置 | **稳定** |
+| `ppp://ws/host:port/`、`ppp://wss/host:port/` | 旧的显示格式，Android App 的地址解析器会转换为 `ws://` / `wss://` | 原生 `client.server` 解析器不接受 | **旧格式（仅 UI）** |
 | `ws://.../ppp/webhook`、`wss://...` | C++ 服务端到 Go 管理器控制链路 | 共享 backend key | **内部** |
 | `http(s)://.../sub/{token}` | 移动端公开订阅文档 | 路径中的 capability token | **稳定** |
 | 本地配置档导入/导出文件 | iOS 配置档 bundle JSON | 用户选择文件；包含敏感信息 | 内置 iOS App 的**稳定**接口 |
@@ -187,7 +211,7 @@ Android 和 iOS 使用的公开订阅载荷为：
 
 ## 9. Guardian HTTP 和 SSE API
 
-Guardian 路由整体为**实验**。启用鉴权时，普通 `/api/*` 路由要求 `Authorization: Bearer <token>`。auth 路由和 `GET /api/v1/status` 绕过通用中间件。SSE 也绕过该中间件，但会在 handler 中用 query token 或 Bearer token 单独校验 TokenStore/JWT；只有关闭鉴权时才公开。CORS 当前允许 `*`。
+Guardian 路由整体为**实验**。启用鉴权时，普通 `/api/*` 路由要求 `Authorization: Bearer <token>`。auth 路由和 `GET /api/v1/status` 绕过通用中间件。SSE 也绕过该中间件，但会在 handler 中用 query token 或 Bearer token 单独校验 TokenStore/JWT；只有关闭鉴权时才公开。不输出 CORS 头；外域 Origin 的状态变更请求返回 403，回环监听会校验 Host 头。
 
 | 分组 | 路由 |
 |---|---|
@@ -201,7 +225,7 @@ Guardian 路由整体为**实验**。启用鉴权时，普通 `/api/*` 路由要
 
 源码依据：`go/guardian/api/router.go`、`middleware.go`、各 handler 和 `webui/src/lib/api.js`。
 
-Guardian 配置和实例状态以 `0600` 模式写入 JSON；profiles/backups 是 `0644` 普通文件；binary 注册表仅在内存中，重启后依赖重新发现。
+Guardian 配置和实例状态以 `0600` 模式写入 JSON；profiles/backups 以 `0600` 写入（目录 `0700`）；binary 注册表仅在内存中，重启后依赖重新发现。
 
 **缺口：**discover/register 可访问任意主机路径；`PUT /api/v1/guardian/config` 当前忽略请求体；多数 handler 没有直接 API 测试；SSE 凭据可能出现在 URL；WebUI token 存在 `localStorage`；配置档保存/恢复不是原子操作；binary 注册不会持久化。关闭鉴权时，修改密码也是未鉴权的首次初始化入口，因此首次设置只能放在 loopback 或可信网络。
 
@@ -220,7 +244,7 @@ Guardian 配置和实例状态以 `0600` 模式写入 JSON；profiles/backups �
 
 `PppVpnService` 运行在 `:vpn`。它此前发布事件的 EventChannel 解析到的是进程内 static sink，什么也送不出去，现已移除；Service 改为把每个 runtime snapshot 与错误镜像到上述文件，UI 进程在可见时每秒轮询一次。native 侧的发布经 `runtime_snapshot` JNI 回调抵达 Service，并按 snapshot 自身的 `generation` 与 `monotonic_ms` 排序。
 
-对于 proxy-only 配置，Android 仍会加载 native `client.routing` policy。`VpnService.Builder` 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS 或本地 HTTP proxy。
+对于 proxy-only 配置，Android 仍会加载 native client policy。`VpnService.Builder` 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS 或本地 HTTP proxy。
 
 **缺口：**debug 构建会去掉 Service 的 `android:process`（`app/src/debug/AndroidManifest.xml`），因此 instrumentation 始终单进程运行，无法复现跨进程投递。上述缺陷正是被这个覆盖掩盖的。release 布局目前由 `tests/tooling/test_runtime_ui_wiring.py` 的源码级检查保证，而非设备测试。
 
@@ -240,7 +264,7 @@ Guardian 配置和实例状态以 `0600` 模式写入 JSON；profiles/backups �
 
 配置档导出 v1 对内置 iOS App 是**稳定**契约；C ABI 和 provider-message 命令仍为**内部**。
 
-对于 proxy-only 配置，Packet Tunnel 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS、tunnel DNS 或本地 HTTP proxy；native `client.routing` policy 仍保持生效。
+对于 proxy-only 配置，Packet Tunnel 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS、tunnel DNS 或本地 HTTP proxy；native client policy 仍保持生效。
 
 **缺口：**provider 消息使用未版本化裸字符串，并以 `nil` 表示多种失败；C struct 没有 ABI version 或 `struct_size`；buffer 截断约定不完整；Actions 没有构建 native iOS static library，也没有真实 Packet Tunnel 集成测试。
 
@@ -281,8 +305,8 @@ TUI 依赖 TTY，并受 `PPP_NO_TUI` 控制。命令在 ConsoleUI 生命周期�
 | Windows | Wintun/TAP、路由/DNS/代理辅助、服务/进程辅助 | 网卡和网络修改需要 Administrator | `windows/`、`TapWindows.*` | 辅助命令退出/错误行为缺少统一表 |
 | Linux | TUN、route/rule/DNS、可选 io_uring/SYSNAT | root/CAP_NET_ADMIN | `linux/`、`TapLinux.*` | 发行版相关命令/回滚需要集成覆盖 |
 | macOS | utun、route/DNS | 桌面隧道需要 root | `darwin/`、`TapDarwin.*` | macOS 构建不等于 iOS 扩展验证 |
-| Android | `VpnService`、protected socket、JNI callback；proxy-only 只保留最小 interface/subnet 路由，同时 native `client.routing` policy 仍生效 | 用户批准 VPN；Service 持有 TUN fd | `android/` | 跨进程 Runtime Snapshot 缺陷和设备测试不足 |
-| iOS | Packet Tunnel、C callback 桥、App Group；proxy-only 只保留最小 interface/subnet 路由，同时 native `client.routing` policy 仍生效 | entitlement 和 provider 持有包流 | `ios/` | CI 未端到端构建 native library 和 provider IPC |
+| Android | `VpnService`、protected socket、JNI callback；proxy-only 只保留最小 interface/subnet 路由，同时 native client policy 仍生效 | 用户批准 VPN；Service 持有 TUN fd | `android/` | 跨进程 Runtime Snapshot 缺陷和设备测试不足 |
+| iOS | Packet Tunnel、C callback 桥、App Group；proxy-only 只保留最小 interface/subnet 路由，同时 native client policy 仍生效 | entitlement 和 provider 持有包流 | `ios/` | CI 未端到端构建 native library 和 provider IPC |
 
 ## 15. 错误、诊断、Telemetry 与持久化
 
@@ -294,7 +318,7 @@ TUI 依赖 TTY，并受 `PPP_NO_TUI` 控制。命令在 ConsoleUI 生命周期�
 | Telemetry facade | log、metric、span、OTLP HTTP callback | **实验** | `ppp/diagnostics/Telemetry.h`、平台桥 | 文档与构建对默认启用状态描述不一致 |
 | 管理器状态 | 带 `version: 1` 的 `manager-data.json` | 独立管理器的**当前持久化格式** | `LocalStore.go` | 无公开 JSON Schema、迁移策略或损坏恢复契约 |
 | Guardian 配置/实例 | 以 `0600` 写入的 JSON | **内部持久化格式** | `go/guardian/config.go`、`guardian.go` | 无公开 schema 或迁移契约 |
-| Guardian profiles/backups | 以 `0644` 写入的文件 | **内部持久化格式** | `go/guardian/profile/manager.go` | 保存/恢复不是原子操作 |
+| Guardian profiles/backups | 以 `0600` 写入的文件 | **内部持久化格式** | `go/guardian/profile/manager.go` | 保存/恢复不是原子操作 |
 | Guardian binary 注册表 | 内存注册加重新发现 | **内部运行状态** | `go/guardian/binary/manager.go` | 显式注册不会跨重启保留 |
 | Android 配置档 | SharedPreferences JSON | **内部** | `profile_store.dart` | 无显式存储 schema/迁移 |
 | iOS 配置档导出 | 版本化 JSON bundle | **稳定** | `ProfileImportExport.swift` | 无独立 JSON Schema |

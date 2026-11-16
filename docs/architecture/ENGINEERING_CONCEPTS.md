@@ -1,4 +1,10 @@
 # Engineering Concepts
+
+Coroutine backend selection is a compile-time primitive choice, independent of
+the Anchor state machine and Asio scheduling. `ENABLE_COROCC` uses L0 only and
+defaults OFF; it does not introduce corocc tokens, workers or scopes. See
+[ADR 0003](../adr/0003-corocc-coroutine-backend.md).
+
 > Status: Active
 > Type: Architecture vocabulary
 > Last verified: current application, diagnostics, and executor sources, 2026-07-22

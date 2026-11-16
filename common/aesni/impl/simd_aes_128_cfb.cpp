@@ -88,6 +88,27 @@ namespace aesni {
         return block;
     }
 
+    // Encrypts four independent blocks with their rounds interleaved so the
+    // AESENC latency of one block overlaps with the others.
+    static inline void aes128_encrypt_blocks4(__m128i& b0, __m128i& b1,
+        __m128i& b2, __m128i& b3, const __m128i* round_key) noexcept {
+        b0 = _mm_xor_si128(b0, round_key[0]);
+        b1 = _mm_xor_si128(b1, round_key[0]);
+        b2 = _mm_xor_si128(b2, round_key[0]);
+        b3 = _mm_xor_si128(b3, round_key[0]);
+        for (int r = 1; r < 10; r++) {
+            const __m128i k = round_key[r];
+            b0 = _mm_aesenc_si128(b0, k);
+            b1 = _mm_aesenc_si128(b1, k);
+            b2 = _mm_aesenc_si128(b2, k);
+            b3 = _mm_aesenc_si128(b3, k);
+        }
+        b0 = _mm_aesenclast_si128(b0, round_key[10]);
+        b1 = _mm_aesenclast_si128(b1, round_key[10]);
+        b2 = _mm_aesenclast_si128(b2, round_key[10]);
+        b3 = _mm_aesenclast_si128(b3, round_key[10]);
+    }
+
     // AES-128-CFB encryption
     void aes128_cfb_encrypt(uint8_t* ciphertext, const uint8_t* plaintext, size_t len, const uint8_t* iv, const __m128i* round_key) noexcept {
         __m128i feedback = _mm_loadu_si128((const __m128i*)iv); // Initialize feedback register
@@ -130,8 +151,30 @@ namespace aesni {
         size_t blocks = len / 16;    // Number of full blocks
         size_t remaining = len % 16; // Number of remaining bytes
 
-        // Process full blocks
-        for (size_t i = 0; i < blocks; i++) {
+        // CFB decryption blocks are parallelizable because each AES input is
+        // the previous ciphertext block, not the previous plaintext output.
+        // All four ciphertext blocks are loaded before any store, so
+        // plaintext == ciphertext (in-place) is safe.
+        size_t i = 0;
+        for (; i + 4 <= blocks; i += 4) {
+            const __m128i c0 = _mm_loadu_si128((const __m128i*)(ciphertext + (i + 0) * 16));
+            const __m128i c1 = _mm_loadu_si128((const __m128i*)(ciphertext + (i + 1) * 16));
+            const __m128i c2 = _mm_loadu_si128((const __m128i*)(ciphertext + (i + 2) * 16));
+            const __m128i c3 = _mm_loadu_si128((const __m128i*)(ciphertext + (i + 3) * 16));
+            __m128i b0 = feedback;
+            __m128i b1 = c0;
+            __m128i b2 = c1;
+            __m128i b3 = c2;
+            aes128_encrypt_blocks4(b0, b1, b2, b3, round_key);
+            _mm_storeu_si128((__m128i*)(plaintext + (i + 0) * 16), _mm_xor_si128(c0, b0));
+            _mm_storeu_si128((__m128i*)(plaintext + (i + 1) * 16), _mm_xor_si128(c1, b1));
+            _mm_storeu_si128((__m128i*)(plaintext + (i + 2) * 16), _mm_xor_si128(c2, b2));
+            _mm_storeu_si128((__m128i*)(plaintext + (i + 3) * 16), _mm_xor_si128(c3, b3));
+            feedback = c3;
+        }
+
+        // Process remaining full blocks
+        for (; i < blocks; i++) {
             // Generate keystream
             __m128i keystream = aes128_encrypt_block(feedback, round_key);
             // Load current ciphertext block

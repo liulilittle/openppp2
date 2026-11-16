@@ -1,0 +1,3 @@
+# Keep docs independent from the native and application dependency trees.
+zensical==0.0.67
+tomli-w==1.2.0

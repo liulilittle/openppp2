@@ -1,0 +1,1077 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "id": "configuration_nested_wins",
+      "kind": "configuration",
+      "input": {
+        "config": {
+          "client": {
+            "proxy-only": false,
+            "routes": [
+              {
+                "ngw": "203.0.113.1",
+                "path": "legacy"
+              }
+            ],
+            "routing": {
+              "mode": "proxy",
+              "bypass": "alias",
+              "dns-rules": "alias-dns",
+              "ip": {
+                "bypass": [
+                  " 192.0.2.0/24 ",
+                  "",
+                  7
+                ],
+                "routes": [
+                  {
+                    "ngw": "192.0.2.1",
+                    "path": "test-route"
+                  }
+                ],
+                "peer-routes": [
+                  {
+                    "network": "198.51.100.0",
+                    "prefix": 24,
+                    "via": "192.0.2.2",
+                    "guid": "test-peer"
+                  }
+                ]
+              },
+              "dns": {
+                "rules": " example.test/192.0.2.53/tun "
+              }
+            }
+          },
+          "routing": {
+            "rules": "priority.rules",
+            "tcp-domain-sniff": true
+          }
+        }
+      },
+      "expected": {
+        "configured": true,
+        "proxy_only": false,
+        "rules": "priority.rules",
+        "sniff": true,
+        "legacy_routes": 1,
+        "legacy_peer_routes": 1,
+        "legacy_routes_emitted": false,
+        "roundtrip": true,
+        "canonical": {
+          "ip": {
+            "bypass": [
+              "192.0.2.0/24"
+            ],
+            "routes": [
+              {
+                "ngw": "192.0.2.1",
+                "path": "test-route",
+                "vbgp": ""
+              }
+            ],
+            "peer-routes": [
+              {
+                "network": "198.51.100.0",
+                "prefix": 24,
+                "via": "192.0.2.2",
+                "guid": "test-peer"
+              }
+            ]
+          },
+          "dns": {
+            "rules": [
+              "example.test/192.0.2.53/tun"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "configuration_aliases",
+      "kind": "configuration",
+      "input": {
+        "config": {
+          "client": {
+            "proxy-only": true,
+            "routing": {
+              "mode": "tun",
+              "bypass": " 198.51.100.0/24 ",
+              "dns-rules": [
+                " cloudflare ",
+                false,
+                ""
+              ],
+              "routes": [],
+              "peer-routes": []
+            }
+          }
+        }
+      },
+      "expected": {
+        "configured": true,
+        "proxy_only": true,
+        "rules": "",
+        "sniff": false,
+        "legacy_routes": 0,
+        "legacy_peer_routes": 0,
+        "legacy_routes_emitted": false,
+        "roundtrip": true,
+        "canonical": {
+          "ip": {
+            "bypass": [
+              "198.51.100.0/24"
+            ],
+            "routes": [],
+            "peer-routes": []
+          },
+          "dns": {
+            "rules": [
+              "cloudflare"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "configuration_empty_canonical",
+      "kind": "configuration",
+      "input": {
+        "config": {
+          "client": {
+            "routes": [
+              {
+                "ngw": "192.0.2.1",
+                "path": "ignored"
+              }
+            ],
+            "routing": {}
+          }
+        }
+      },
+      "expected": {
+        "configured": true,
+        "proxy_only": false,
+        "rules": "",
+        "sniff": false,
+        "legacy_routes": 0,
+        "legacy_peer_routes": 0,
+        "legacy_routes_emitted": false,
+        "roundtrip": true,
+        "canonical": {
+          "ip": {
+            "bypass": [],
+            "routes": [],
+            "peer-routes": []
+          },
+          "dns": {
+            "rules": []
+          }
+        }
+      }
+    },
+    {
+      "id": "configuration_legacy_projection",
+      "kind": "configuration",
+      "input": {
+        "config": {
+          "client": {
+            "routes": [
+              {
+                "ngw": "192.0.2.1",
+                "path": "legacy"
+              }
+            ],
+            "peer-routes": [
+              {
+                "network": "198.51.100.0",
+                "prefix": 24,
+                "via": "192.0.2.2",
+                "guid": "test-peer"
+              }
+            ]
+          }
+        }
+      },
+      "expected": {
+        "configured": false,
+        "proxy_only": false,
+        "rules": "",
+        "sniff": false,
+        "legacy_routes": 1,
+        "legacy_peer_routes": 1,
+        "legacy_routes_emitted": true,
+        "roundtrip": true,
+        "canonical": {
+          "ip": {
+            "bypass": [],
+            "routes": [
+              {
+                "ngw": "192.0.2.1",
+                "path": "legacy",
+                "vbgp": ""
+              }
+            ],
+            "peer-routes": [
+              {
+                "network": "198.51.100.0",
+                "prefix": 24,
+                "via": "192.0.2.2",
+                "guid": "test-peer"
+              }
+            ]
+          },
+          "dns": {
+            "rules": []
+          }
+        }
+      }
+    },
+    {
+      "id": "human_priority",
+      "kind": "human",
+      "input": {
+        "file": "priority.rules",
+        "queries": [
+          {
+            "domain": "example.test"
+          },
+          {
+            "domain": "www.EXAMPLE.test."
+          },
+          {
+            "domain": "x.very.example.test"
+          },
+          {
+            "domain": "api1.very.example.test"
+          },
+          {
+            "domain": "login.example.test"
+          },
+          {
+            "domain": "unmatched.test"
+          },
+          {
+            "domain": "bad_domain.test"
+          },
+          {
+            "ip": "192.0.2.42"
+          },
+          {
+            "ip": "192.0.2.10"
+          },
+          {
+            "ip": "192.0.2.200"
+          },
+          {
+            "ip": "203.0.113.1"
+          },
+          {
+            "ip": "not-ip"
+          }
+        ]
+      },
+      "expected": {
+        "loaded": true,
+        "diagnostics": [],
+        "default": "proxy",
+        "domains": 5,
+        "ipv4": 3,
+        "matches": [
+          {
+            "valid": true,
+            "matched": true,
+            "action": "direct",
+            "effective": "direct",
+            "origin": "explicit"
+          },
+          {
+            "valid": true,
+            "matched": true,
+            "action": "proxy",
+            "effective": "proxy",
+            "origin": "explicit"
+          },
+          {
+            "valid": true,
+            "matched": true,
+            "action": "direct",
+            "effective": "direct",
+            "origin": "explicit"
+          },
+          {
+            "valid": true,
+            "matched": true,
+            "action": "proxy",
+            "effective": "proxy",
+            "origin": "explicit"
+          },
+          {
+            "valid": true,
+            "matched": true,
+            "action": "direct",
+            "effective": "direct",
+            "origin": "explicit"
+          },
+          {
+            "valid": true,
+            "matched": false,
+            "action": "auto",
+            "effective": "proxy",
+            "origin": "none"
+          },
+          {
+            "valid": false,
+            "matched": false,
+            "action": "auto",
+            "effective": "auto",
+            "origin": "none"
+          },
+          {
+            "valid": true,
+            "matched": true,
+            "action": "direct",
+            "effective": "direct",
+            "origin": "explicit"
+          },
+          {
+            "valid": true,
+            "matched": true,
+            "action": "proxy",
+            "effective": "proxy",
+            "origin": "explicit"
+          },
+          {
+            "valid": true,
+            "matched": true,
+            "action": "direct",
+            "effective": "direct",
+            "origin": "explicit"
+          },
+          {
+            "valid": true,
+            "matched": false,
+            "action": "auto",
+            "effective": "proxy",
+            "origin": "none"
+          },
+          {
+            "valid": false,
+            "matched": false,
+            "action": "auto",
+            "effective": "auto",
+            "origin": "none"
+          }
+        ]
+      }
+    },
+    {
+      "id": "human_dedup",
+      "kind": "human",
+      "input": {
+        "text": "[direct]\nexample.test\nexample.test\n192.0.2.1/24\n192.0.2.0/24\n"
+      },
+      "expected": {
+        "loaded": true,
+        "diagnostics": [],
+        "default": "auto",
+        "domains": 1,
+        "ipv4": 1,
+        "matches": []
+      }
+    },
+    {
+      "id": "human_conflict",
+      "kind": "human",
+      "input": {
+        "text": "[direct]\nexample.test\n[proxy]\nexample.test\n"
+      },
+      "expected": {
+        "loaded": false,
+        "diagnostics": [
+          {
+            "line": 4,
+            "original_line": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "human_ipv6_rejected",
+      "kind": "human",
+      "input": {
+        "text": "[direct]\n2001:db8::1\n"
+      },
+      "expected": {
+        "loaded": false,
+        "diagnostics": [
+          {
+            "line": 2,
+            "original_line": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "geo_explicit_precedence_and_skips",
+      "kind": "human",
+      "input": {
+        "file": "geo.rules",
+        "geo": true,
+        "queries": [
+          {
+            "domain": "api.example.test"
+          },
+          {
+            "domain": "x.geo.test"
+          },
+          {
+            "ip": "192.0.2.42"
+          },
+          {
+            "ip": "198.51.100.1"
+          }
+        ]
+      },
+      "expected": {
+        "loaded": true,
+        "diagnostics": [],
+        "compiled": true,
+        "geo_ipv4": 2,
+        "geo_domains": 2,
+        "ipv6_skipped": 1,
+        "unsupported_skipped": 1,
+        "source_skipped": 2,
+        "default": "proxy",
+        "domains": 3,
+        "ipv4": 3,
+        "matches": [
+          {
+            "valid": true,
+            "matched": true,
+            "action": "proxy",
+            "effective": "proxy",
+            "origin": "explicit"
+          },
+          {
+            "valid": true,
+            "matched": true,
+            "action": "direct",
+            "effective": "direct",
+            "origin": "geo"
+          },
+          {
+            "valid": true,
+            "matched": true,
+            "action": "proxy",
+            "effective": "proxy",
+            "origin": "explicit"
+          },
+          {
+            "valid": true,
+            "matched": true,
+            "action": "direct",
+            "effective": "direct",
+            "origin": "geo"
+          }
+        ]
+      }
+    },
+    {
+      "id": "geo_requires_sources",
+      "kind": "human",
+      "input": {
+        "file": "geo.rules",
+        "geo": true,
+        "missing_geo": true
+      },
+      "expected": {
+        "loaded": true,
+        "diagnostics": [
+          {
+            "line": 6,
+            "original_line": 0
+          }
+        ],
+        "compiled": false,
+        "geo_ipv4": 0,
+        "geo_domains": 0,
+        "ipv6_skipped": 0,
+        "unsupported_skipped": 0,
+        "source_skipped": 0,
+        "default": "proxy",
+        "domains": 1,
+        "ipv4": 1,
+        "matches": []
+      }
+    },
+    {
+      "id": "source_existing_file",
+      "kind": "source",
+      "input": {
+        "file": "priority.rules"
+      },
+      "expected": {
+        "kind": "file",
+        "exists": true
+      }
+    },
+    {
+      "id": "source_missing_file_scheme",
+      "kind": "source",
+      "input": {
+        "raw": " file://__openppp2_missing_p0__.rules "
+      },
+      "expected": {
+        "kind": "inline",
+        "value": "__openppp2_missing_p0__.rules"
+      }
+    },
+    {
+      "id": "source_inline_trim",
+      "kind": "source",
+      "input": {
+        "raw": " 192.0.2.0/24 "
+      },
+      "expected": {
+        "kind": "inline",
+        "value": "192.0.2.0/24"
+      }
+    },
+    {
+      "id": "legacy_dns_priority",
+      "kind": "legacy_dns",
+      "input": {
+        "file": "legacy-dns.rules",
+        "queries": [
+          "API1.EXAMPLE.TEST",
+          "api2.example.test",
+          "x.example.test",
+          "unmatched.test",
+          "192.0.2.1"
+        ]
+      },
+      "expected": {
+        "entries": 3,
+        "matches": [
+          {
+            "matched": true,
+            "host": "api1.example.test",
+            "nic": false,
+            "provider": "cloudflare",
+            "server": "0.0.0.0"
+          },
+          {
+            "matched": true,
+            "host": "^api[0-9]+\\.example\\.test$",
+            "nic": true,
+            "provider": "",
+            "server": "198.51.100.53"
+          },
+          {
+            "matched": true,
+            "host": "example.test",
+            "nic": false,
+            "provider": "",
+            "server": "192.0.2.53"
+          },
+          {
+            "matched": false
+          },
+          {
+            "matched": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "legacy_dns_overwrite",
+      "kind": "legacy_dns",
+      "input": {
+        "text": "example.test/192.0.2.53/nic\n",
+        "append": "example.test/198.51.100.53/tun\n",
+        "queries": [
+          "x.example.test"
+        ]
+      },
+      "expected": {
+        "entries": 1,
+        "matches": [
+          {
+            "matched": true,
+            "host": "example.test",
+            "nic": false,
+            "provider": "",
+            "server": "198.51.100.53"
+          }
+        ]
+      }
+    },
+    {
+      "id": "legacy_dns_bare_ip",
+      "kind": "legacy_dns",
+      "input": {
+        "text": "192.0.2.53\n",
+        "queries": [
+          "other.test"
+        ]
+      },
+      "expected": {
+        "entries": 1,
+        "matches": [
+          {
+            "matched": true,
+            "host": ".*",
+            "nic": false,
+            "provider": "",
+            "server": "192.0.2.53"
+          }
+        ]
+      }
+    },
+    {
+      "id": "legacy_dns_bare_provider",
+      "kind": "legacy_dns",
+      "input": {
+        "text": "cloudflare\n",
+        "queries": [
+          "other.test"
+        ]
+      },
+      "expected": {
+        "entries": 1,
+        "matches": [
+          {
+            "matched": true,
+            "host": ".*",
+            "nic": false,
+            "provider": "cloudflare",
+            "server": "0.0.0.0"
+          }
+        ]
+      }
+    },
+    {
+      "id": "tcp_auto",
+      "kind": "tcp",
+      "input": {
+        "action": "auto"
+      },
+      "expected": {
+        "mode": "legacy_auto"
+      }
+    },
+    {
+      "id": "tcp_direct",
+      "kind": "tcp",
+      "input": {
+        "action": "direct"
+      },
+      "expected": {
+        "mode": "direct"
+      }
+    },
+    {
+      "id": "tcp_proxy",
+      "kind": "tcp",
+      "input": {
+        "action": "proxy"
+      },
+      "expected": {
+        "mode": "proxy"
+      }
+    },
+    {
+      "id": "tcp_unresolved_fake",
+      "kind": "tcp",
+      "input": {
+        "action": "proxy",
+        "fake": true,
+        "resolved": false
+      },
+      "expected": {
+        "mode": "reject"
+      }
+    },
+    {
+      "id": "tcp_unsupported_direct",
+      "kind": "tcp",
+      "input": {
+        "action": "direct",
+        "direct_supported": false
+      },
+      "expected": {
+        "mode": "reject"
+      }
+    },
+    {
+      "id": "tcp_resolved_fake",
+      "kind": "tcp",
+      "input": {
+        "action": "direct",
+        "fake": true
+      },
+      "expected": {
+        "mode": "direct"
+      }
+    },
+    {
+      "id": "udp_android_direct",
+      "kind": "udp",
+      "input": {
+        "action": "direct",
+        "android": true
+      },
+      "expected": {
+        "mode": "direct"
+      }
+    },
+    {
+      "id": "udp_other_direct",
+      "kind": "udp",
+      "input": {
+        "action": "direct"
+      },
+      "expected": {
+        "mode": "reject"
+      }
+    },
+    {
+      "id": "udp_android_auto_bypass",
+      "kind": "udp",
+      "input": {
+        "action": "auto",
+        "android": true,
+        "bypass": true
+      },
+      "expected": {
+        "mode": "direct"
+      }
+    },
+    {
+      "id": "udp_other_auto_bypass",
+      "kind": "udp",
+      "input": {
+        "action": "auto",
+        "bypass": true
+      },
+      "expected": {
+        "mode": "tunnel"
+      }
+    },
+    {
+      "id": "udp_android_auto",
+      "kind": "udp",
+      "input": {
+        "action": "auto",
+        "android": true
+      },
+      "expected": {
+        "mode": "tunnel"
+      }
+    },
+    {
+      "id": "udp_proxy_overrides_bypass",
+      "kind": "udp",
+      "input": {
+        "action": "proxy",
+        "android": true,
+        "bypass": true
+      },
+      "expected": {
+        "mode": "tunnel"
+      }
+    },
+    {
+      "id": "dns_real",
+      "kind": "human_dns",
+      "input": {
+        "strict": true
+      },
+      "expected": {
+        "mode": "real",
+        "startup": "real",
+        "fake_result": "respond"
+      }
+    },
+    {
+      "id": "dns_real_sniff",
+      "kind": "human_dns",
+      "input": {
+        "strict": true,
+        "sniff": true
+      },
+      "expected": {
+        "mode": "real",
+        "startup": "real",
+        "fake_result": "respond"
+      }
+    },
+    {
+      "id": "dns_fake_attempt",
+      "kind": "human_dns",
+      "input": {
+        "strict": true,
+        "fake": true
+      },
+      "expected": {
+        "mode": "attempt_fake",
+        "startup": "fake",
+        "fake_result": "respond"
+      }
+    },
+    {
+      "id": "dns_fake_ineligible",
+      "kind": "human_dns",
+      "input": {
+        "strict": true,
+        "fake": true,
+        "eligible": false
+      },
+      "expected": {
+        "mode": "reject",
+        "startup": "fake",
+        "fake_result": "respond"
+      }
+    },
+    {
+      "id": "dns_fake_allocation_failure",
+      "kind": "human_dns",
+      "input": {
+        "strict": true,
+        "fake": true,
+        "allocated": false
+      },
+      "expected": {
+        "mode": "attempt_fake",
+        "startup": "fake",
+        "fake_result": "reject"
+      }
+    },
+    {
+      "id": "dns_fake_build_failure",
+      "kind": "human_dns",
+      "input": {
+        "strict": true,
+        "fake": true,
+        "built": false
+      },
+      "expected": {
+        "mode": "attempt_fake",
+        "startup": "fake",
+        "fake_result": "reject"
+      }
+    },
+    {
+      "id": "dns_non_a",
+      "kind": "human_dns",
+      "input": {
+        "strict": true,
+        "fake": true,
+        "a": false
+      },
+      "expected": {
+        "mode": "continue",
+        "startup": "fake",
+        "fake_result": "respond"
+      }
+    },
+    {
+      "id": "dns_nonstrict",
+      "kind": "human_dns",
+      "input": {
+        "fake": true,
+        "domain_rules": false
+      },
+      "expected": {
+        "mode": "continue",
+        "startup": "fake",
+        "fake_result": "respond"
+      }
+    },
+    {
+      "id": "plan_human_wins",
+      "kind": "dns_plan",
+      "input": {
+        "action": "direct",
+        "provider": "doh.pub",
+        "rule_provider": "cloudflare"
+      },
+      "expected": {
+        "action": "provider",
+        "provider": "doh.pub",
+        "domestic": true,
+        "target": "0.0.0.0"
+      }
+    },
+    {
+      "id": "plan_human_proxy",
+      "kind": "dns_plan",
+      "input": {
+        "action": "proxy",
+        "provider": "cloudflare"
+      },
+      "expected": {
+        "action": "provider",
+        "provider": "cloudflare",
+        "domestic": false,
+        "target": "0.0.0.0"
+      }
+    },
+    {
+      "id": "plan_human_aaaa",
+      "kind": "dns_plan",
+      "input": {
+        "action": "direct",
+        "aaaa": true,
+        "resolver": false
+      },
+      "expected": {
+        "action": "block_aaaa",
+        "provider": "",
+        "domestic": false,
+        "target": "0.0.0.0"
+      }
+    },
+    {
+      "id": "plan_human_missing_provider",
+      "kind": "dns_plan",
+      "input": {
+        "action": "direct"
+      },
+      "expected": {
+        "action": "drop",
+        "provider": "",
+        "domestic": false,
+        "target": "0.0.0.0"
+      }
+    },
+    {
+      "id": "plan_human_missing_resolver",
+      "kind": "dns_plan",
+      "input": {
+        "action": "proxy",
+        "provider": "cloudflare",
+        "resolver": false
+      },
+      "expected": {
+        "action": "drop",
+        "provider": "",
+        "domestic": false,
+        "target": "0.0.0.0"
+      }
+    },
+    {
+      "id": "plan_gateway_rule_first",
+      "kind": "dns_plan",
+      "input": {
+        "gateway": true,
+        "rule_server": "198.51.100.53",
+        "upstream": "203.0.113.53"
+      },
+      "expected": {
+        "action": "relay",
+        "provider": "",
+        "domestic": false,
+        "target": "198.51.100.53"
+      }
+    },
+    {
+      "id": "plan_legacy_provider",
+      "kind": "dns_plan",
+      "input": {
+        "rule_provider": "doh.pub",
+        "nic": true
+      },
+      "expected": {
+        "action": "provider",
+        "provider": "doh.pub",
+        "domestic": true,
+        "target": "0.0.0.0"
+      }
+    },
+    {
+      "id": "plan_legacy_provider_no_resolver",
+      "kind": "dns_plan",
+      "input": {
+        "rule_provider": "cloudflare",
+        "resolver": false
+      },
+      "expected": {
+        "action": "drop",
+        "provider": "",
+        "domestic": false,
+        "target": "0.0.0.0"
+      }
+    },
+    {
+      "id": "plan_unmatched",
+      "kind": "dns_plan",
+      "input": {},
+      "expected": {
+        "action": "unmatched",
+        "provider": "",
+        "domestic": false,
+        "target": "0.0.0.0"
+      }
+    },
+    {
+      "id": "plan_desktop_defer",
+      "kind": "dns_plan",
+      "input": {
+        "intercept": false,
+        "defer": true
+      },
+      "expected": {
+        "action": "defer",
+        "provider": "",
+        "domestic": false,
+        "target": "192.0.2.53"
+      }
+    },
+    {
+      "id": "plan_gateway_upstream",
+      "kind": "dns_plan",
+      "input": {
+        "gateway": true,
+        "resolver": false,
+        "upstream": "203.0.113.53"
+      },
+      "expected": {
+        "action": "relay",
+        "provider": "",
+        "domestic": false,
+        "target": "203.0.113.53"
+      }
+    },
+    {
+      "id": "plan_gateway_drop",
+      "kind": "dns_plan",
+      "input": {
+        "gateway": true,
+        "resolver": false
+      },
+      "expected": {
+        "action": "drop",
+        "provider": "",
+        "domestic": false,
+        "target": "0.0.0.0"
+      }
+    },
+    {
+      "id": "plan_ipv6_disabled",
+      "kind": "dns_plan",
+      "input": {
+        "aaaa": true,
+        "ipv6": false
+      },
+      "expected": {
+        "action": "block_aaaa",
+        "provider": "",
+        "domestic": false,
+        "target": "0.0.0.0"
+      }
+    }
+  ]
+}

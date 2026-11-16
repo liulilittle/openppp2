@@ -189,8 +189,11 @@ namespace ppp {
                 struct {
                     bool                                                    enabled;        ///< QUIC-style reliability sub-protocol (ACK + fast retransmit + PTO); negotiated, falls back when the peer lacks it.
                     struct {
-                        int                                                 bytes;          ///< Session-wide retransmit buffer byte cap; strictly > 0.
+                        int                                                 bytes;          ///< Session-wide retransmit send window in unacked bytes (throughput <= window / RTT); strictly > 0.
+                        int                                                 flow_bytes;     ///< Per-flow retransmit send window under flow_v2 (clamped to bytes); strictly > 0.
                         int                                                 max_attempts;   ///< Per-frame retransmit attempts before flow reset / session rebuild; strictly > 0.
+                        bool                                                pto;            ///< Probe-timeout retransmission; default false: carriers are reliable streams, so a PTO only re-sends frames still queued behind a slow carrier.
+                        bool                                                fast;           ///< Dup-ACK fast retransmit; default false: cross-carrier reordering is not loss. Frames of an exited carrier are always re-injected.
                     }                                                       rtx;
                     struct {
                         int                                                 delay;          ///< Max delayed-ACK wait in milliseconds; strictly > 0.
@@ -309,6 +312,9 @@ namespace ppp {
                     bool                                                    enabled;        ///< Require transport-auth PSK during client handshakes.
                 }                                                           transport_auth;
                 ClientRoutingConfiguration                                   routing;        ///< Canonical routing policy; legacy route/proxy fields remain mirrored during migration.
+                std::shared_ptr<const Json::Value>                          policy;         ///< Explicit v2 source definition; prepared before opening client services.
+                ppp::string                                                 policy_config_path; ///< Configuration filename anchoring relative policy resources.
+                bool                                                        policy_config_file_backed = false; ///< True only when Load(path) parsed this policy file.
 #if defined(_WIN32)
                 struct {
                     bool                                                    tcp;            ///< Enable Paper Airplane TCP acceleration driver on Windows when true.
@@ -350,11 +356,12 @@ namespace ppp {
                 bool                                                        console_span;   ///< Show span events on local console/file sink.
             }                                                               telemetry;       ///< Optional telemetry/observability configuration.
             struct {
-                bool                                                        enabled;        ///< Enable server-coordinated P2P path discovery.
-                ppp::string                                                 mode;           ///< "relay" keeps server relay only; "direct-preferred" advertises peer candidates.
+                bool                                                        enabled;        ///< Enable server-coordinated P2P path discovery (production default true).
+                ppp::string                                                 mode;           ///< "relay" keeps server relay only; "direct-preferred" is the production default.
                 int                                                         punch_timeout;  ///< UDP punch timeout in seconds.
                 int                                                         keep_alived;    ///< P2P keep-alive interval in seconds.
                 ppp::vector<ppp::string>                                    stun_servers;   ///< STUN servers used for future UDP candidate discovery.
+                ppp::string                                                 stun_request_profile; ///< Standard or explicit tailnode STUN compatibility.
                 int                                                         max_probes;             ///< Max probe rounds before relay fallback (default 2).
                 int                                                         probe_timeout_ms;       ///< Per-round probe timeout in ms (default 2000).
                 int                                                         heartbeat_interval_ms;  ///< Heartbeat send interval in ms (default 1000).
@@ -444,6 +451,7 @@ namespace ppp {
              * @return True when loading and normalization succeed.
              */
             bool                                                            Load(Json::Value& json) noexcept;
+            bool                                                            Load(Json::Value& json, const ppp::string& config_path) noexcept;
             /**
              * @brief Loads configuration data from a JSON file path.
              * @param path Path to the configuration file.

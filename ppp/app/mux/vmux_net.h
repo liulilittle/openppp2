@@ -15,6 +15,9 @@
 #include <ppp/app/mux/MuxAckTracker.h>
 #include <ppp/app/mux/MuxRetransmitBuffer.h>
 #include <ppp/app/mux/MuxFecCodec.h>
+#include <ppp/app/mux/MuxRxBackpressure.h>
+#include <ppp/app/mux/MuxRxQueueLimit.h>
+#include <ppp/app/mux/MuxTxBackpressure.h>
 
 namespace vmux {
     class vmux_skt;
@@ -52,6 +55,10 @@ namespace vmux {
             uint64_t                                                                total_sent_bytes_ = 0; ///< Lifetime bytes accepted by local write path. Strand-affine.
             ppp::app::mux::MuxLinkDrainState                                        drain_;            ///< Strand-affine in-flight write and retirement state.
             std::atomic<bool>                                                       handshake_complete_{false}; ///< True only after the carrier handshake succeeds. Atomic: written by the carrier handshake (under syncobj_), read lock-free on the vmux strand.
+            bool                                                                    in_tx_links_ = false; ///< Currently listed in tx_links_ (may take another frame). Strand-affine (attach writes it under syncobj_ before the strand sees the link).
+            bool                                                                    exited_ = false; ///< on_link_exit already ran for this carrier (it is also retiring). Strand-affine.
+            std::atomic<bool>                                                       rx_paused_{false}; ///< Receive backpressure: the forwarding coroutine stops reading while set. Written on the vmux strand, read (and lease-expired) by the carrier forwarding coroutine.
+            std::atomic<uint64_t>                                                   rx_paused_since_{0}; ///< Tick the current pause began; bounds one pause to PPP_MUX_RX_PAUSE_MAX_MS.
 
             // Per-link path state (strand-affine, same domain as queued_bytes_).
             // Updated from packet_input_ack on the vmux strand; used by PTO and
@@ -96,11 +103,11 @@ namespace vmux {
              * @param seq1 Left sequence number.
              * @param seq2 Right sequence number.
              * @return true when @p seq1 is considered before @p seq2.
-             * @details Uses signed subtraction on explicitly-cast values to
-             * avoid implementation-defined behavior during wrap handling.
+             * @details Subtracts in uint32_t (well-defined wrap) and reads the
+             * difference as signed, as TCP's before() does.
              */
             static constexpr bool                                                   before(uint32_t seq1, uint32_t seq2) noexcept {
-                return static_cast<int32_t>(seq1) - static_cast<int32_t>(seq2) < 0;
+                return static_cast<int32_t>(seq1 - seq2) < 0;
             }
 
             /**
@@ -160,6 +167,7 @@ namespace vmux {
             cmd_max,                      ///< Sentinel — one past the last valid command.
 
             max_buffers_size = UINT16_MAX - sizeof(vmux_hdr), ///< Maximum payload bytes per vmux frame.
+            zero_copy_min_payload = 4096,                     ///< Pushes at least this large are sent from the read buffer itself (no copy).
         };
 
         /** @brief Internal completion callback for post operations. */
@@ -216,6 +224,7 @@ namespace vmux {
          */
         struct tx_packet : rx_packet {
             tx_completion_ptr                                                       completion;
+            bool                                                                    assign_seq = false; ///< compat: global sequence still to be assigned when the frame is handed to a carrier.
         };
 
         typedef vmux::list<vmux_linklayer_ptr>                                      vmux_linklayer_list;
@@ -236,7 +245,7 @@ namespace vmux {
         struct flow_rx_context {
             uint32_t                                                                flow_rx_next_         = 0;     ///< Next expected per-flow DSN.
             ppp::app::mux::MuxFlowReorderBuffer<rx_packet>                         flow_reorder_;                ///< Strictly bounded reorder buffer for this flow only.
-            uint64_t                                                                oldest_buffered_tick_ = 0;     ///< Tick the oldest buffered frame was queued; 0 = no active gap timer.
+            uint64_t                                                                oldest_buffered_tick_ = 0;     ///< Tick the current head-of-line gap began, restarted on in-order progress; 0 = no active gap timer.
             bool                                                                    primed_               = false; ///< True once the initial expected DSN (1) has been established.
             bool                                                                    fin_seen_             = false; ///< True once a cmd_fin has been delivered for this connection.
         };
@@ -254,6 +263,7 @@ namespace vmux {
             bool                                                                    quantum_due = true;     ///< Add a quantum before the next turn.
             bool                                                                    active = false;        ///< True while this cid is in active_tx_flows_.
             uint32_t                                                                visit_count = 0;       ///< Frames popped from this flow in the current DRR visit (reset when requeued to back).
+            bool                                                                    rtx_parked = false;    ///< Held off the active ring by the retransmit send window (active stays true so enqueue does not re-add it).
         };
 
         typedef vmux::unordered_map<uint32_t, vmux_skt_ptr>                         vmux_skt_map;
@@ -288,6 +298,7 @@ namespace vmux {
             ordering_caps_flow_v2 = 0x01,
             ordering_caps_reliability = 0x02, ///< RELIABILITY — ACK feedback + retransmission sub-protocol.
             ordering_caps_fec = 0x04,         ///< FEC — XOR parity groups (implies RELIABILITY when agreed).
+            ordering_caps_flow_v2_request = 0x08, ///< FLOW_V2 REQUEST — client→server only: the client's own preset needs per-flow ordering; older servers ignore it.
         };
 
     public:
@@ -339,7 +350,7 @@ namespace vmux {
          */
         void                                                                        set_ordering_mode(receiver_ordering_mode m) noexcept;
         /** @brief Applies peer capability negotiation before establishment. */
-        void                                                                        apply_negotiation(bool local_supports_flow_v2, bool peer_supports_flow_v2, bool local_reliability, bool peer_reliability, bool local_fec, bool peer_fec) noexcept;
+        void                                                                        apply_negotiation(bool local_supports_flow_v2, bool peer_supports_flow_v2, bool local_reliability, bool peer_reliability, bool local_fec, bool peer_fec, bool peer_requests_flow_v2 = false) noexcept;
         /** @brief Applies the peer's authoritative negotiation result on the client. */
         void                                                                        apply_agreed_ordering(bool agreed_flow_v2, bool agreed_reliability, bool agreed_fec) noexcept;
         /** @brief True when the reliability sub-protocol (ACK + retransmit) was negotiated. */
@@ -468,21 +479,25 @@ namespace vmux {
          */
         bool                                                                        do_yield(ppp::coroutines::YieldContext& y, YieldHandler&& h) noexcept {
             bool ok = false;
+            const ppp::coroutines::YieldContext::Anchor anchor = y.Arm();
+            if (!anchor) {
+                return false;
+            }
 
             // Guard Suspend() behind the post result: if the executor is unavailable the
-            // lambda (and the y.R() inside it) will never run, so calling Suspend() would
-            // park the coroutine with no future Resume() – a permanent coroutine leak.
+            // lambda (and the anchor.R() inside it) will never run, so calling Suspend()
+            // would park the coroutine with no future resume – a permanent coroutine leak.
             bool posted = vmux_post_exec(context_, strand_,
-                [&y, &ok, h]() noexcept {
+                [anchor, &ok, h]() noexcept {
                     ok = h();
-                    y.R();
+                    anchor.R();
                 });
 
             if (!posted) {
                 return false;
             }
 
-            y.Suspend();
+            y.Suspend(anchor);
             return ok;
         }
 
@@ -523,6 +538,16 @@ namespace vmux {
             return NULLPTR != strand_ && strand_->running_in_this_thread();
         }
 
+        /** @brief List a carrier in tx_links_ unless retiring, already listed, or at its in-flight byte budget. */
+        void                                                                        tx_link_offer(const vmux_linklayer_ptr& linklayer) noexcept;
+        /** @brief Remove a carrier from tx_links_ (no-op when not listed). */
+        void                                                                        tx_link_withdraw(const vmux_linklayer_ptr& linklayer) noexcept;
+        /** @brief Listed carrier with credit for @p length and the least bytes in flight (ties: lower SRTT); null when none. */
+        vmux_linklayer_ptr                                                          tx_link_pick(int length) noexcept;
+        /** @brief Hand one queued frame to a carrier (assigning a deferred compat sequence first); keeps the carrier listed while it has room. */
+        bool                                                                        tx_send_on(const vmux_linklayer_ptr& linklayer, tx_packet& packet) noexcept;
+        /** @brief Assign the deferred compat global sequence of a frame that is about to be sent. */
+        void                                                                        tx_assign_seq(tx_packet& packet) noexcept;
         /** @brief Send packet to one specific underlying link-layer endpoint. */
         bool                                                                        underlyin_sent(const vmux_linklayer_ptr& linklayer, const std::shared_ptr<Byte>& packet, int packet_length, const tx_completion_ptr& completion) noexcept;
 
@@ -557,6 +582,16 @@ namespace vmux {
         void                                                                        note_flow_unbuffered(size_t bytes) noexcept;
         /** @brief Release a flow context once its FIN was delivered and buffer drained. */
         void                                                                        maybe_release_flow(uint32_t connection_id, flow_rx_context& fx) noexcept;
+        /** @brief Stop reading one carrier while the reorder budget is over its soft cap (strand-affine). */
+        void                                                                        rx_pause_link(const vmux_linklayer_ptr& linklayer) noexcept;
+        /** @brief Drop an exiting carrier from the paused set and re-check liveness (strand-affine). */
+        void                                                                        rx_forget_paused_link(const vmux_linklayer_ptr& linklayer) noexcept;
+        /** @brief Release every pause when no live carrier would remain readable (strand-affine). */
+        void                                                                        rx_release_if_stalled() noexcept;
+        /** @brief Resume every paused carrier (strand-affine). */
+        void                                                                        rx_resume_all_links() noexcept;
+        /** @brief Resume paused carriers once the reorder budgets drained below their hysteresis mark. */
+        void                                                                        rx_maybe_resume() noexcept;
 
         /**
          * @brief Reliability sub-protocol (negotiated; strand-affine).
@@ -581,6 +616,8 @@ namespace vmux {
         void                                                                        note_inbound_reliability_frame(const vmux_linklayer_ptr& linklayer, const std::shared_ptr<Byte>& frame, vmux_hdr* h, int length, uint64_t now) noexcept;
         /** @brief Latch the negotiated reliability/FEC flags and their config bounds (pre-establishment). */
         void                                                                        latch_reliability(bool agreed_reliability, bool agreed_fec) noexcept;
+        /** @brief Schedule every unacked frame last sent on an exited carrier for re-send (strand-affine). */
+        void                                                                        reinject_link_inflight(const vmux_linklayer_ptr& linklayer, uint64_t now) noexcept;
         /** @brief Re-send scheduled lost frames on live carriers, bounded per turn (strand-affine). */
         void                                                                        retransmit_pending(uint64_t now) noexcept;
         /** @brief Current probe-timeout derived from the smoothed RTT estimate (session-level fallback). */
@@ -636,6 +673,8 @@ namespace vmux {
 
             return successing;
         }
+        /** @brief Send a frame the caller filled after a header-sized gap (no payload copy); closes the session on failure like post(). */
+        bool                                                                        post_frame(Byte cmd, const std::shared_ptr<Byte>& frame, int payload_length, uint32_t connection_id, bool acceleration, const PostInternalAsynchronousCallback& posted_ac) noexcept;
         /** @brief Build and enqueue one vmux framed packet; synchronously requires the mux strand. */
         bool                                                                        post_internal(Byte cmd, const void* packet, int packet_length, uint32_t connection_id, bool acceleration, const PostInternalAsynchronousCallback& posted_ac) noexcept;
         /** @brief Enqueue a prebuilt frame; synchronously requires the mux strand. */
@@ -697,16 +736,19 @@ namespace vmux {
          * @brief Handle one carrier exit on the vmux strand.
          * @details Removes the link. If no other live carriers remain, closes the
          *          session; otherwise isolates the failure and continues draining.
-         *          Multi-link is throughput/latency, not HA — in-flight frames on
-         *          the dead link are lost without VMUX-layer replay.
+         *          With reliability negotiated, unacked frames last written to the
+         *          dead link are re-injected on the survivors; without it they are
+         *          lost (multi-link is throughput/latency, not HA).
          */
         void                                                                        on_link_exit(const vmux_linklayer_ptr& linklayer, const char* reason) noexcept;
         /** @brief Count handshake-complete non-retiring carriers (strand-affine). */
         size_t                                                                      count_live_carriers(const vmux_linklayer_ptr& except = NULLPTR) const noexcept;
         /** @brief True when the link still has room under the per-link byte high-water. */
         static bool                                                                 link_has_byte_credit(const vmux_linklayer_ptr& linklayer, int packet_length) noexcept;
-        /** @brief Enqueue one data frame into the per-flow DRR queue (strand-affine). */
-        void                                                                        enqueue_flow_tx(uint32_t connection_id, tx_packet&& packet) noexcept;
+        /** @brief Enqueue one data frame into the per-flow DRR queue (strand-affine). @return false when the per-flow cap rejected it (never silently dropped). */
+        bool                                                                        enqueue_flow_tx(uint32_t connection_id, tx_packet&& packet) noexcept;
+        /** @brief A data frame could not be queued: fail its completion; true when only the flow (flow_v2) was affected. */
+        bool                                                                        fail_tx_enqueue(const tx_completion_ptr& completion) noexcept;
         /** @brief Total queued data frames across all per-flow TX queues. */
         size_t                                                                      tx_data_depth() const noexcept;
         /** @brief Total queued data bytes across all per-flow TX queues. */
@@ -715,6 +757,16 @@ namespace vmux {
         bool                                                                        drr_pop_next(tx_packet& out) noexcept;
         /** @brief Return a frame to the front of its flow queue (send failed). */
         void                                                                        drr_requeue_front(tx_packet&& packet) noexcept;
+        /** @brief Return a frame to its flow queue and park the flow off the DRR ring until an ACK frees retransmit-window bytes. */
+        void                                                                        drr_park_front(tx_packet&& packet) noexcept;
+        /** @brief Put every parked flow back on the DRR ring (strand-affine); returns true when any was parked. */
+        bool                                                                        drr_unpark_all() noexcept;
+        /** @brief True when @p connection_id is parked by the retransmit send window. */
+        bool                                                                        tx_flow_parked(uint32_t connection_id) const noexcept;
+        /** @brief Retransmit-buffer bytes a first send of this frame would add (0 = not tracked). */
+        size_t                                                                      rtx_charge_bytes(const std::shared_ptr<Byte>& packet, int packet_length) noexcept;
+        /** @brief Send window: park @p packet's flow when sending it would cross the retransmit budget. @return true when held (packet moved). */
+        bool                                                                        tx_rtx_window_hold(tx_packet& packet) noexcept;
         /** @brief Drop all per-flow TX state (finalize). */
         void                                                                        clear_flow_tx() noexcept;
         /** @brief Publish a lock-free runtime snapshot (call on strand or under mutex). */
@@ -796,7 +848,7 @@ namespace vmux {
          * touching queues, links, maps, or socket state off strand.
          */
         mutable std::mutex                                                          tx_completion_mutex_;
-        tx_completion_list                                                          pending_tx_completions_;
+        vmux::unordered_set<tx_completion_ptr>                                      pending_tx_completions_; ///< O(1) register/finish (was a list scanned on every completed frame).
         bool                                                                        close_requested_ = false;
         mutable std::mutex                                                          runtime_state_mutex_; ///< Guards runtime_state_ writes; prefer strand.
         ppp::app::mux::MuxRuntimeState                                               runtime_state_;       ///< Authoritative runtime facts.
@@ -808,6 +860,7 @@ namespace vmux {
 
         vmux_tx_flow_map                                                            tx_flows_;          ///< connection_id -> per-flow TX queue + DRR deficit (strand-affine).
         vmux_tx_active_list                                                         active_tx_flows_;   ///< RR ring of cids with non-empty TX queues (strand-affine).
+        vmux_tx_active_list                                                         tx_rtx_parked_flows_; ///< cids held off the ring by the retransmit send window; resumed on ACK (strand-affine).
         size_t                                                                      tx_data_frames_ = 0; ///< Aggregate data frame count across tx_flows_ (for high-water / turbo).
         size_t                                                                      tx_data_bytes_total_ = 0; ///< Aggregate data byte count across tx_flows_.
         tx_packet_ssqueue                                                           tx_ctrl_queue_;     ///< High-priority control-frame queue (flow v2 only); drained before data so SYN / heartbeats are never starved.
@@ -833,7 +886,9 @@ namespace vmux {
         size_t                                                                      max_open_flows_ = 0; ///< Max open logical flows (from config).
         size_t                                                                      tx_ctrl_budget_frames_ = (size_t)PPP_MUX_TX_CTRL_BUDGET_FRAMES; ///< Ctrl frames per drain turn.
         uint64_t                                                                    flow_reorder_timeout_   = 0; ///< Gap wait timeout in ms (flow_v2 per-flow; compat global rx_queue_).
-        uint64_t                                                                    rx_gap_oldest_tick_     = 0; ///< Compat: tick of oldest buffered OOO frame (0 = no global gap).
+        uint64_t                                                                    rx_gap_oldest_tick_     = 0; ///< Compat: tick the current head-of-line gap began, restarted on in-order progress (0 = no global gap).
+        vmux_linklayer_vector                                                       rx_paused_links_;   ///< Carriers paused by receive backpressure (strand-affine).
+        vmux::unordered_set<uint32_t>                                               rx_pressure_flows_; ///< flow_v2: cids whose reorder buffer crossed the per-flow soft cap (strand-affine).
         uint64_t                                                                    tx_backlog_since_       = 0; ///< Tick the data tx queue first stayed at/over high-water (0 = not backlogged); drives the D11 stall watchdog.
         size_t                                                                      tx_queue_high_water_    = (size_t)PPP_MUX_TX_QUEUE_HIGH_WATER; ///< Aggregate data-frame high-water (tx_data_frames_) for D11 backpressure.
         uint64_t                                                                    tx_backlog_stall_ms_    = (uint64_t)PPP_MUX_TX_BACKLOG_STALL_TIMEOUT; ///< Backlog stall timeout in ms (from config; D11 watchdog).
@@ -861,7 +916,10 @@ namespace vmux {
 
         bool                                                                        reliability_on_ = false;   ///< Negotiated reliability sub-protocol active.
         bool                                                                        fec_on_ = false;           ///< Negotiated FEC active (implies reliability_on_).
-        size_t                                                                      rtx_cap_bytes_ = (size_t)PPP_MUX_RELIABILITY_RTX_BYTES;   ///< Retransmit buffer byte cap (from config).
+        bool                                                                        rtx_pto_on_ = false;       ///< Local: probe-timeout retransmission enabled (config; default off on reliable carriers).
+        bool                                                                        rtx_fast_on_ = false;      ///< Local: dup-ACK fast retransmit enabled (config; default off on reliable carriers).
+        size_t                                                                      rtx_flow_window_bytes_ = (size_t)PPP_MUX_RTX_FLOW_MAX_BYTES; ///< Per-flow retransmit send window under flow_v2 (from config, clamped to rtx_cap_bytes_).
+        size_t                                                                      rtx_cap_bytes_ = (size_t)PPP_MUX_RELIABILITY_RTX_BYTES;   ///< Retransmit send window in unacked bytes (from config); the buffer itself fails only at window * PPP_MUX_RTX_HARD_FACTOR.
         uint32_t                                                                    rtx_max_attempts_ = (uint32_t)PPP_MUX_RELIABILITY_RTX_MAX_ATTEMPTS; ///< Per-frame retransmit attempt cap (from config).
         uint64_t                                                                    ack_delay_ms_ = (uint64_t)PPP_MUX_RELIABILITY_ACK_DELAY;  ///< Delayed-ACK wait in ms (from config).
         uint64_t                                                                    reliability_gap_timeout_ms_ = (uint64_t)PPP_MUX_RELIABILITY_GAP_TIMEOUT; ///< Gap timeout when reliability is active (from config).
@@ -870,7 +928,6 @@ namespace vmux {
         bool                                                                        fec_flush_due_ = false;   ///< Full FEC group awaiting deferred emission on the maintenance tick.
 
         ppp::app::mux::MuxRetransmitBuffer                                          rtx_;               ///< Sender-side retransmit buffer (strand-affine).
-        vmux::unordered_map<uint32_t, size_t>                                       rtx_flow_bytes_;    ///< Per-flow RTX byte usage (strand-affine, flow v2 only).
         vmux::unordered_map<uint32_t, ppp::app::mux::MuxAckTracker>                 ack_trackers_;      ///< Received-sequence trackers; cid 0 = compat global space (strand-affine).
         uint32_t                                                                    ack_pending_count_ = 0;      ///< Reliable frames received since the last emitted ACK.
         uint64_t                                                                    ack_first_pending_tick_ = 0; ///< Tick the oldest un-ACKed frame arrived (delayed-ACK base).

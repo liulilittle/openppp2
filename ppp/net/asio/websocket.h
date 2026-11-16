@@ -43,7 +43,7 @@ namespace ppp {
                 typedef ppp::function<void(bool)>                               AsynchronousWriteCallback;
 
             public:
-                /** @brief Optional proxied client IP text from forwarding headers. */
+                /** @brief Untrusted claimed client IP for diagnostics only; never an authenticated peer. */
                 ppp::string                                                     XForwardedFor;
 
             public:
@@ -63,6 +63,8 @@ namespace ppp {
                 ppp::threading::Executors::StrandPtr                            GetStrand()    noexcept { return strand_; }
                 /** @brief Releases transport resources and marks session disposed. */
                 virtual void                                                    Dispose()      noexcept;
+                /** @brief Aborts an incomplete upgrade without a websocket close handshake. */
+                void AbortHandshake() noexcept;
                 /** @brief Checks whether websocket session is already closed/disposed. */
                 virtual bool                                                    IsDisposed()   noexcept;
 
@@ -172,7 +174,7 @@ namespace ppp {
                 typedef ppp::function<void(bool)>                               AsynchronousWriteCallback;
 
             public:
-                /** @brief Optional proxied client IP text from forwarding headers. */
+                /** @brief Untrusted claimed client IP for diagnostics only; never an authenticated peer. */
                 ppp::string                                                     XForwardedFor;
 
             public:
@@ -196,6 +198,8 @@ namespace ppp {
                 ppp::threading::Executors::StrandPtr                            GetStrand() noexcept { return strand_; }
                 /** @brief Releases TLS and websocket resources and marks disposed. */
                 virtual void                                                    Dispose() noexcept;
+                /** @brief Aborts TLS/HTTP upgrade without waiting for peer shutdown. */
+                void AbortHandshake() noexcept;
                 /** @brief Checks whether TLS websocket session is closed/disposed. */
                 virtual bool                                                    IsDisposed() noexcept;
                 /** @brief Reports whether the completed TLS session can export key material. */

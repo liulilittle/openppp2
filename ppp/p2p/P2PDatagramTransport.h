@@ -40,6 +40,9 @@ namespace ppp {
         public:
             virtual ~IP2PDatagramTransport() noexcept = default;
             virtual bool IsReady() const noexcept = 0;
+            // The owner installs exactly one receive callback and demultiplexes
+            // STUN, authenticated control and data there. Packet memory is valid
+            // only during that callback; queued work must copy a bounded packet.
             virtual bool Start(const P2PDatagramReceiveCallback& callback) noexcept = 0;
             virtual boost::asio::ip::udp::endpoint LocalEndpoint() const noexcept = 0;
             virtual bool SendTo(
@@ -57,6 +60,11 @@ namespace ppp {
         };
 
         class ISocketProtector;
+
+        boost::asio::ip::address GetProtectedP2PRouteAddress(
+            boost::asio::io_context& context,
+            const std::shared_ptr<ISocketProtector>& protector,
+            const boost::asio::ip::udp::endpoint& destination) noexcept;
 
         std::shared_ptr<IP2PDatagramTransportFactory>
         CreateNativeSocketP2PDatagramTransportFactory(

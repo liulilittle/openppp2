@@ -42,6 +42,7 @@
 
 #include <ppp/collections/Dictionary.h>
 #include <ppp/threading/Executors.h>
+#include <ppp/net/asio/SharedBufferReceive.h>
 #include <ppp/transmissions/ITcpipTransmission.h>
 #include <ppp/transmissions/IWebsocketTransmission.h>
 
@@ -1150,7 +1151,7 @@ namespace ppp {
                     can_publish = can_publish && ipv6_transit_tap_ == transit_tap;
 #endif
                     if (can_publish) {
-                        ipv6s_[ip_key] = exchanger;
+                        ipv6s_.assign(ip_key, exchanger);
 #if defined(_LINUX)
                         if (permanent_neighbor_created) {
                             ipv6_transit_neighbor_owned_.insert(ip_key);
@@ -1411,15 +1412,32 @@ namespace ppp {
                     return NULLPTR;
                 }
 
-                std::string ip_std = ip.to_string();
-                ppp::string ip_key(ip_std.data(), ip_std.size());
+                // Per-packet path: binary key into the published snapshot, no string
+                // formatting and no syncobj_.
+                auto ipv6s = ipv6s_.Snapshot();
+                auto tail = ipv6s->find(MakeIPv6LookupKey(ip.to_v6()));
+                return tail != ipv6s->end() ? tail->second : NULLPTR;
+            }
 
-                SynchronizedObjectScope scope(syncobj_);
-                auto tail = ipv6s_.find(ip_key);
-                if (tail != ipv6s_.end()) {
-                    return tail->second;
+            VirtualEthernetSwitcher::IPv6LookupKey VirtualEthernetSwitcher::MakeIPv6LookupKey(const boost::asio::ip::address_v6& ip) noexcept {
+                boost::asio::ip::address_v6::bytes_type bytes = ip.to_bytes();
+                IPv6LookupKey key;
+                memcpy(&key.first, bytes.data(), sizeof(key.first));
+                memcpy(&key.second, bytes.data() + sizeof(key.first), sizeof(key.second));
+                return key;
+            }
+
+            VirtualEthernetSwitcher::IPv6ExchangerLookup VirtualEthernetSwitcher::IPv6ExchangerLookupProject::operator()(const IPv6ExchangerTable& table) const {
+                IPv6ExchangerLookup lookup;
+                lookup.reserve(table.size());
+                for (const auto& kv : table) {
+                    boost::system::error_code ec;
+                    boost::asio::ip::address ip = StringToAddress(kv.first, ec);
+                    if (!ec && ip.is_v6()) {
+                        lookup.emplace(MakeIPv6LookupKey(ip.to_v6()), kv.second);
+                    }
                 }
-                return NULLPTR;
+                return lookup;
             }
 
             /**
@@ -2083,13 +2101,14 @@ namespace ppp {
 
                     auto allocator = transmission->BufferAllocator;
                     auto self = shared_from_this();
-                    auto& strand = transmission->GetStrand();
+                    auto strand = transmission->GetStrand();
                     if (NULLPTR == strand) {
                         strand = make_shared_object<ppp::threading::Executors::Strand>(
                             context->get_executor());
                         if (NULLPTR == strand) {
                             return false;
                         }
+                        transmission->SetStrand(strand);
                     }
                     return YieldContext::Spawn(allocator.get(), *context, strand.get(),
                         [self, this, context, transmission](YieldContext& y) noexcept {
@@ -2806,6 +2825,7 @@ namespace ppp {
                     ipv6_requests_.clear();
                     ipv6_leases_.clear();
                     p2p_peers_.clear();
+                    p2p_v2_pairs_.clear();
                     p2p_virtual_ips_.clear();
                     peer_prefix_gateways_.clear();
                     peer_prefix_rib_.Clear();
@@ -3433,7 +3453,7 @@ namespace ppp {
                 }
 
                 auto self = shared_from_this();
-                static_echo_socket_.async_receive_from(boost::asio::buffer(static_echo_buffers_.get(), PPP_BUFFER_SIZE), static_echo_source_ep_,
+                ppp::net::asio::AsyncReceiveFromSharedBuffer(static_echo_socket_, static_echo_buffers_.get(), PPP_BUFFER_SIZE, static_echo_source_ep_,
                     [self, this](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         if (ec == boost::system::errc::operation_canceled) {
                             return false;
@@ -3914,7 +3934,7 @@ namespace ppp {
                         }
                     }
 
-                    nats   = std::move(nats_);
+                    nats   = nats_.take();
                     logger = std::move(logger_);
 
                     exchangers = std::move(exchangers_);
@@ -3924,6 +3944,7 @@ namespace ppp {
                     connections_.clear();
 
                     p2p_peers_.clear();
+                    p2p_v2_pairs_.clear();
                     p2p_virtual_ips_.clear();
                     peer_prefix_gateways_.clear();
                     peer_prefix_rib_.Clear();
@@ -4144,23 +4165,39 @@ namespace ppp {
              *        Dispose() acquires ASIO's internal queue lock while syncobj_ is held.
              */
             void VirtualEthernetSwitcher::TickAllExchangers(UInt64 now) noexcept {
+                ppp::vector<std::pair<Int128, VirtualEthernetExchangerPtr>> active;
                 ppp::vector<VirtualEthernetExchangerPtr> stale;
+
+                // Snapshot under syncobj_ and run the per-session Update() outside it, so the
+                // O(sessions) tick does not block packet threads that need the switcher lock.
+                {
+                    SynchronizedObjectScope scope(syncobj_);
+                    active.reserve(exchangers_.size());
+                    for (const auto& kv : exchangers_) {
+                        active.emplace_back(kv.first, kv.second);
+                    }
+                }
+
+                ppp::vector<std::pair<Int128, VirtualEthernetExchangerPtr>> expired;
+                for (auto& kv : active) {
+                    if (!kv.second || !kv.second->Update(now)) {
+                        expired.emplace_back(std::move(kv));
+                    }
+                }
 
                 {
                     SynchronizedObjectScope scope(syncobj_);
-                    for (auto tail = exchangers_.begin(); tail != exchangers_.end();) {
-                        const VirtualEthernetExchangerPtr& ex = tail->second;
-                        if (!ex || !ex->Update(now)) {
-                            if (ex) {
-                                stale.emplace_back(ex);
-                                ppp::telemetry::Count("server.exchanger.remove", 1);
-                                ppp::telemetry::Log(Level::kInfo, "server", "exchanger removed (stale)");
-                            }
-
-                            tail = exchangers_.erase(tail);
+                    for (auto& kv : expired) {
+                        auto tail = exchangers_.find(kv.first);
+                        if (tail == exchangers_.end() || tail->second != kv.second) {
+                            continue; // Replaced or removed while the lock was released.
                         }
-                        else {
-                            ++tail;
+
+                        exchangers_.erase(tail);
+                        if (kv.second) {
+                            stale.emplace_back(std::move(kv.second));
+                            ppp::telemetry::Count("server.exchanger.remove", 1);
+                            ppp::telemetry::Log(Level::kInfo, "server", "exchanger removed (stale)");
                         }
                     }
                     ppp::telemetry::Gauge("server.active_sessions", (int64_t)exchangers_.size());
@@ -4633,8 +4670,10 @@ namespace ppp {
                     return NULLPTR;
                 }
 
-                SynchronizedObjectScope scope(syncobj_);
-                return Dictionary::FindObjectByKey(nats_, ip);
+                // Per-packet path: read the published snapshot instead of taking syncobj_.
+                ppp::collections::SnapshotMap<NatInformationTable>::SnapshotPtr nats = nats_.Snapshot();
+                auto tail = nats->find(ip);
+                return tail != nats->end() ? tail->second : NULLPTR;
             }
 
             /**
@@ -4679,16 +4718,16 @@ namespace ppp {
                     return nat;
                 }
 
-                NatInformationTable::iterator tail = kv.first;
-                NatInformationTable::iterator endl = nats_.end();
+                auto tail = kv.first;
+                auto endl = nats_.end();
                 if (tail == endl) {
                     return NULLPTR;
                 }
 
-                NatInformationPtr& raw = tail->second;
-                std::shared_ptr<VirtualEthernetExchanger>& raw_exchanger = raw->Exchanger;
+                const NatInformationPtr& raw = tail->second;
+                const std::shared_ptr<VirtualEthernetExchanger>& raw_exchanger = raw->Exchanger;
                 if (raw_exchanger->IsDisposed()) {
-                    raw = nat;
+                    nats_.assign(ip, nat);
                     return nat;
                 }
                 else {
@@ -4762,6 +4801,10 @@ namespace ppp {
                 response.P2P.enabled = false;
                 response.P2P.mode = "relay";
                 response.P2P.virtual_ip = request.P2P.virtual_ip;
+                response.P2P.supported_versions = {1, 2};
+                if (request.P2P.action == "renew" || request.P2P.action == "key-active") {
+                    return UpdateP2PV2Control(exchanger, transmission, request.P2P, response.P2P);
+                }
 
                 // Fix #3: Only accept explicit "register" actions with enabled=true.
                 // Other actions/replies must not be treated as registration.
@@ -4818,6 +4861,14 @@ namespace ppp {
                 record.VirtualIP = virtual_ip;
                 record.Mode = requested_mode;
                 record.Candidates = request.P2P.candidates;
+                record.SupportedVersions = request.P2P.supported_versions;
+                record.CandidateRevision = request.P2P.candidate_revision;
+                const bool v2 = std::find(record.SupportedVersions.begin(), record.SupportedVersions.end(), 2) != record.SupportedVersions.end();
+                if (v2 && (record.CandidateRevision == 0 || record.Candidates.empty() || record.Candidates.size() > 2)) {
+                    response.P2P.action = "reject";
+                    response.P2P.reason = "invalid-v2-candidates";
+                    return false;
+                }
                 record.LastSeen = now;
                 record.Exchanger = exchanger;
 
@@ -4834,6 +4885,24 @@ namespace ppp {
                         uint32_t old_vip = existing_peer_it->second.VirtualIP;
                         if (old_vip == virtual_ip) {
                             record.ObservedEndpoint = existing_peer_it->second.ObservedEndpoint;
+                            const auto& previous = existing_peer_it->second;
+                            record.LastOfferAt = previous.LastOfferAt;
+                            record.LastOfferGeneration = previous.LastOfferGeneration;
+                            if (v2 && previous.CandidateRevision != 0) {
+                                auto endpoints = [](const auto& candidates) {
+                                    std::vector<ppp::string> values;
+                                    for (const auto& candidate : candidates) values.push_back(candidate.endpoint);
+                                    std::sort(values.begin(), values.end());
+                                    return values;
+                                };
+                                if (record.CandidateRevision < previous.CandidateRevision ||
+                                    (record.CandidateRevision == previous.CandidateRevision &&
+                                     endpoints(record.Candidates) != endpoints(previous.Candidates))) {
+                                    response.P2P.action = "reject";
+                                    response.P2P.reason = "candidate-revision-conflict";
+                                    return false;
+                                }
+                            }
                         }
                         if (old_vip != 0 && old_vip != virtual_ip) {
                             auto old_vip_it = p2p_virtual_ips_.find(old_vip);
@@ -4859,6 +4928,10 @@ namespace ppp {
                 response.P2P.action = "status";
                 response.P2P.reason = "registered";
                 response.P2P.candidates = P2PBuildCandidates(record);
+                if (v2) {
+                    response.P2P.candidates = record.Candidates;
+                    response.P2P.candidate_revision = record.CandidateRevision;
+                }
                 return true;
             }
 
@@ -4910,6 +4983,11 @@ namespace ppp {
                     p2p_virtual_ips_.erase(vip_it);
                 }
                 p2p_peers_.erase(it);
+                for (auto pair = p2p_v2_pairs_.begin(); pair != p2p_v2_pairs_.end();) {
+                    if (pair->second.InitiatorSession == session_id || pair->second.ResponderSession == session_id)
+                        pair = p2p_v2_pairs_.erase(pair);
+                    else ++pair;
+                }
                 return true;
             }
 
@@ -4987,6 +5065,12 @@ namespace ppp {
                     }
                 }
 
+                const auto supports_v2 = [](const auto& record) {
+                    return record.CandidateRevision != 0 &&
+                        std::find(record.SupportedVersions.begin(), record.SupportedVersions.end(), 2) != record.SupportedVersions.end();
+                };
+                const bool both_v2 = supports_v2(source_record) && supports_v2(destination_record);
+
                 // NAT classification check: skip offer if both peers have
                 // symmetric NAT or either is UDP-blocked.
                 //
@@ -4997,7 +5081,7 @@ namespace ppp {
                 // Unknown still allows bounded probing.
                 // Only Symmetric-Symmetric and UdpBlocked (based on real
                 // observations) cause immediate skip.
-                {
+                if (!both_v2) {
                     ppp::p2p::P2PNatClassification source_class = p2p_nat_classifier_.Classify(source_ip, now);
                     ppp::p2p::P2PNatClassification dest_class   = p2p_nat_classifier_.Classify(destination_ip, now);
                     if (!ppp::p2p::P2PNatClassifier::ShouldAttemptPunch(source_class, dest_class)) {
@@ -5062,6 +5146,10 @@ namespace ppp {
                 }
 
                 std::vector<ppp::p2p::P2PCandidateV1> canonical_candidates;
+                if (both_v2) {
+                    return OfferP2PPeerHintsV2(source_record, destination_record,
+                        source_transmission, destination_transmission, now);
+                }
                 ppp::p2p::P2POfferHash candidate_set_hash{};
                 if (!P2PCollectPeerCandidates(
                         source_record, destination_record, canonical_candidates) ||
@@ -5262,14 +5350,14 @@ namespace ppp {
                     return false;
                 }
 
-                NatInformationTable::iterator tail = nats_.find(ip);
-                NatInformationTable::iterator endl = nats_.end();
+                auto tail = nats_.find(ip);
+                auto endl = nats_.end();
                 if (tail == endl) {
                     return false;
                 }
 
-                NatInformationPtr& nat = tail->second;
-                std::shared_ptr<VirtualEthernetExchanger>& exchanger = nat->Exchanger;
+                const NatInformationPtr& nat = tail->second;
+                const std::shared_ptr<VirtualEthernetExchanger>& exchanger = nat->Exchanger;
                 if (key != exchanger.get()) {
                     return false;
                 }

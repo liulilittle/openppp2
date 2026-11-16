@@ -1,4 +1,11 @@
 # Concurrency Model
+
+The default coroutine primitive is Boost fcontext. An experimental,
+default-OFF `ENABLE_COROCC` backend replaces only L0 stack switching; Asio
+executors, Anchor wakeups and shard ownership are unchanged. See
+[ADR 0003](../adr/0003-corocc-coroutine-backend.md) for transfer and sanitizer
+semantics and [validation](../development/COROCC_VALIDATION.md) for tested scope.
+
 > Status: Active
 > Type: Architecture
 > Last verified: `ppp/threading/`, `ppp/coroutines/`, and runtime startup sources, 2026-07-22
@@ -20,7 +27,7 @@ The native runtime is asynchronous and uses Boost.Asio, but it does not establis
 | Default `io_context` | Attached by `Executors::Run()` and driven by the calling thread. The application start callback is posted here. |
 | Worker contexts | Created by `SetMaxThreads()`; each has a managed worker thread and a cached buffer. `GetExecutor()` rotates through them and falls back to the default context when none exists. |
 | Scheduler context | Created once by `SetMaxSchedulers()` and driven by scheduler threads. Socket migration can bind a socket to a strand on this context. |
-| Tick thread | Maintains cached time and periodic low-level work while executor internals remain live. It is detached; source does not demonstrate a joined tick-thread shutdown contract. |
+| Tick thread | Publishes the cached tick count and time through atomics (readers take no lock) and, about once per second, runs the handler installed with `Executors::SetSecondTickHandler()`; `global::cctor` wires DNS-cache and ICMP upkeep there. `Executors::Exit()` stops and joins it last. |
 
 `AppConfiguration::concurrent` defaults to the processor count, but startup does not impose a source-level CPU-count cap. It requests scheduler threads when `concurrent - 1` is positive; worker contexts are requested on non-client startup paths. Treat the resulting topology as configuration-dependent.
 
@@ -34,7 +41,7 @@ A strand serializes handlers only when a caller supplies one. `Executors::Post` 
 
 ## Lifecycle implications
 
-- Executor shutdown posts stop operations for known contexts, joins managed worker threads, attempts netstack shutdown, then stops scheduler and default contexts.
+- Executor shutdown posts stop operations for known contexts, joins managed worker threads, runs the workers-stopped hook (`global::cctor` installs the netstack shutdown there), then stops scheduler and default contexts.
 - `Executors::Awaitable` is a condition-variable bridge that blocks until `Processed()` is called. It has no cancellation wake-up path in the current implementation.
 - `YieldContext` state transitions are guarded internally, but callers still need to preserve the ownership and dispatch requirements of the surrounding object.
 - `nullof<T>()` is implemented with a null-address reference convention. It exists in current code, but this documentation makes no portable-safety claim about that convention and does not recommend new uses.

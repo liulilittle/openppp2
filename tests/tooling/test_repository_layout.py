@@ -134,6 +134,31 @@ class RepositoryLayoutTests(unittest.TestCase):
         )
         self.assert_violation(root, "host policy precedes route transaction")
 
+    def test_exchanger_does_not_publish_established_before_host_apply(self) -> None:
+        source = (
+            ROOT / "ppp/app/client/VEthernetExchanger.cpp"
+        ).read_text(encoding="utf-8")
+        apply = source.index("TryApplyHostedNetworkRoutes(true)")
+        established = source.index("ExchangeToEstablishState();")
+        self.assertLess(apply, established)
+        self.assertNotIn(
+            "route setup failed after exchanger connected",
+            source[established:],
+        )
+
+    def test_host_apply_checks_dns_and_protection_results(self) -> None:
+        source = (
+            ROOT / "ppp/app/client/VEthernetNetworkSwitcher.cpp"
+        ).read_text(encoding="utf-8")
+        apply = source[
+            source.index("bool VEthernetNetworkSwitcher::TryApplyHostedNetworkRoutes"):
+            source.index("/** @brief Creates concrete TCP/IP stack", source.index(
+                "bool VEthernetNetworkSwitcher::TryApplyHostedNetworkRoutes"))
+        ]
+        self.assertIn("if (!dns_applied)", apply)
+        self.assertIn("if (!route_coordinator_->ProtectDefaultRoute(input))", apply)
+        self.assertIn("route_coordinator_->RollbackApplied()", apply)
+
     def test_dns_public_header_cannot_expose_exchanger(self) -> None:
         root = self.fixture(
             {

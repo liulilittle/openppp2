@@ -1,0 +1,358 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 169ca6c..a0826df 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -201,6 +201,7 @@ if(XTCP_BUILD_TESTS)
+         test_accept_reject
+         test_rst_challenge
+         test_rst_peer
++        test_review_rst_exact
+         test_rst_closing
+         test_fin_data
+         test_close_recv
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+index 070e4cb..787a7c4 100644
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -552,6 +552,10 @@ namespace xtcp {
+                     if (0 == snd_wnd_ && 0 != persist_deadline_) {
+                         return next;
+                     }
++                    if (pool_retry_deadline_ != 0) {
++                        consider(pool_retry_deadline_);
++                        return next;
++                    }
+                     // Buffered sends: when a pacing clock is armed the flush
+                     // cannot make progress before pacing_deadline_, so wake
+                     // AT the deadline instead of reporting "due now" and
+@@ -1677,6 +1681,7 @@ namespace xtcp {
+             UInt32      rack_seq_ = 0;           /**< RFC 8985 RACK: seq of the most recently delivered segment */
+             TimePoint   rack_time_ = 0;          /**< RACK: send time of the most recently delivered segment */
+             UInt32      rack_reo_wnd_ = 0;       /**< RACK: reorder window (us); shrinks toward min-RTT/4 */
++            TimePoint   pool_retry_deadline_ = 0;
+             TimePoint   pacing_deadline_ = 0;    /**< Next allowed send time (pacing, bytes/sec) */
+             TimePoint   last_rate_sample_ = 0;   /**< Last rate-sample time (for interval_us) */
+             UInt64      last_delivered_ = 0;     /**< cc_.delivered at the last emitted rate sample (delivered-delta base) */
+diff --git a/src/core/gso.cpp b/src/core/gso.cpp
+index 590b492..1aeb67e 100644
+--- a/src/core/gso.cpp
++++ b/src/core/gso.cpp
+@@ -131,9 +131,11 @@ namespace xtcp {
+                 std::memcpy(hdr + ip_hdr_len, p + ip_hdr_len, tcp_hdr_len);  // copy TCP header
+                 // RFC 1122: PSH/FIN/URG only on the final segment; ECE (ECN)
+                 // stays on every segment.
+-                const UInt16 seg_flags = (i + 1 < seg_count)
++                UInt16 seg_flags = (i + 1 < seg_count)
+                     ? static_cast<UInt16>(tcp.flags & static_cast<UInt16>(~(kFlagPsh | kFlagFin | kFlagUrg)))
+                     : tcp.flags;
++                if (i != 0) seg_flags &= static_cast<UInt16>(~kFlagCwr);
++                if (tcp.urgent <= off) seg_flags &= static_cast<UInt16>(~kFlagUrg);
+                 hdr[ip_hdr_len + 13] = static_cast<Byte>(seg_flags);  // TCP flags byte
+                 const UInt32 seg_seq = tcp.seq + off;
+                 Store32(hdr + ip_hdr_len + 4, seg_seq);                     // sequence
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
+index 5eddf4b..2ee340f 100644
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -2317,6 +2317,13 @@ namespace xtcp {
+         // RFC 791 / RFC 8200: reassemble fragmented TCP segments before the
+         // TCP parse below. Add returns 1 on a complete datagram (reassembled
+         // is the full TCP segment), 0 while partial, -1 on discard.
++        if (!is_fragment) {
++            if (version == 4) {
++                len = (static_cast<UInt32>(data[2]) << 8) | data[3];
++            } else if (version == 6) {
++                len = 40 + ((static_cast<UInt32>(data[4]) << 8) | data[5]);
++            }
++        }
+         if (is_fragment) {
+             Int32 rc = 0;
+             {
+@@ -2410,13 +2417,9 @@ namespace xtcp {
+                     const UInt32 time_sec = static_cast<UInt32>(GetTickUs() / 1000000);
+                     const UInt32 cookie = syncookies_.Compute(src.addr, dst.addr, src.port, dst.port,
+                                                               tcp.seq, time_sec, mss_index);
+-                    // RFC 7323: the stateless SYN+ACK offers our window scale
+-                    // and scales the window field only when the client itself
+-                    // offered WSOPT (both-sides rule).
++                    // Cookies cannot restore window scaling or SACK state.
+                     buf::BufRef synack = core::TcpConn::BuildSynAckPacket(dst, src, cookie, tcp.seq + 1,
+-                                                                           syn_opts.has_wscale
+-                                                                               ? core::TcpConn::kWindowScaleOffer
+-                                                                               : 0,
++                                                                           0,
+                                                                            cookie_key.data(), cookie_key_len);
+                     if (!synack.IsEmpty()) {
+                         ndi::Packet out;
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index e61a7d8..5732898 100644
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -456,14 +456,15 @@ namespace xtcp {
+                                            bool mark_ect = false,
+                                            bool include_ts = false, UInt32 ts_val = 0, UInt32 ts_ecr = 0,
+                                            bool no_sack_permitted = false,
+-                                           bool checksum_partial = false) noexcept {
++                                           bool checksum_partial = false,
++                                           bool suppress_wscale = false) noexcept {
+                 const bool is_v6 = (6 == remote.family);
+                 checksum_partial = checksum_partial && !is_v6;
+                 // SYN options: MSS (RFC 879) + SACK-permitted (RFC 2018) +
+                 // window scale (RFC 7323) + TFO cookie (RFC 7413);
+                 // TCP-MD5 (RFC 2385) on all segments. TFO and MD5 are
+                 // mutually exclusive (the option area would overflow).
+-                const bool include_wscale = (0 != (flags & kFlagSyn));
++                const bool include_wscale = (0 != (flags & kFlagSyn)) && !suppress_wscale;
+                 const bool include_mss = (0 != (flags & kFlagSyn));
+                 // SACK-permitted (RFC 2018) is offered on SYNs by default;
+                 // kTcpNoSackPermitted suppresses it (RFC 5827 ER needs
+@@ -4915,6 +4916,7 @@ namespace xtcp {
+                 // stays set so the flush still emits the CWR.
+                 MarkPoolLimited(inflight);
+                 AppendPendingSendNoLock(data, len);
++                pool_retry_deadline_ = now + 1000;
+                 timers_dirty_.store(true, std::memory_order_relaxed);
+                 return true;
+             }
+@@ -5431,6 +5433,7 @@ namespace xtcp {
+         }
+ 
+         void TcpConn::FlushPendingSend(TimePoint now) noexcept {
++            pool_retry_deadline_ = 0;
+             if (PendingSendEmptyNoLock() || (TcpState::kEstablished != state_ && TcpState::kCloseWait != state_)) {
+                 tx_waiter_.Cancel();
+                 return;
+@@ -5641,6 +5644,8 @@ namespace xtcp {
+                 }
+                 if (packet.IsEmpty()) {
+                     MarkPoolLimited(inflight);
++                    pool_retry_deadline_ = now + 1000;
++                    timers_dirty_.store(true, std::memory_order_relaxed);
+                     ack_release_pending_flush_packet_allocation_.fetch_add(1, std::memory_order_relaxed);
+                     if (pacing_tick_unused) pacing_deadline_ = pacing_before_tick;
+                     RequeuePendingSendNoLock(data, off);
+@@ -6335,13 +6340,13 @@ namespace xtcp {
+         buf::BufRef TcpConn::BuildSynAckPacket(const Endpoint& local, const Endpoint& remote,
+                                                UInt32 cookie, UInt32 ack, Byte wscale,
+                                                const Byte* md5_key, UInt32 md5_key_len) noexcept {
+-            // Stateless SYN+ACK for SYN-cookie mode: MSS + SACK-permitted +
+-            // WSOPT options (mirrors the normal SYN+ACK layout). Stateless:
+-            // no conn exists yet, so the window is the protocol default.
++            // Stateless cookies cannot restore WS/SACK negotiation state.
++            (void)wscale;
+             return BuildSegmentPacket(local, remote, cookie, ack,
+                                       kFlagSyn | kFlagAck, NULLPTR, 0,
+-                                      static_cast<UInt16>(kDefaultWindow >> wscale),
+-                                      wscale, md5_key, md5_key_len);
++                                      static_cast<UInt16>(kDefaultWindow),
++                                      0, md5_key, md5_key_len, NULLPTR, 0, NULLPTR,
++                                      false, false, 0, 0, true, false, true);
+         }
+ 
+         void TcpConn::Close(TimePoint now) noexcept {
+@@ -6516,8 +6521,7 @@ namespace xtcp {
+                 case TcpState::kClosing:
+                 case TcpState::kCloseWait:
+                 case TcpState::kLastAck: {
+-                    const bool valid = (hdr.seq == rcv_nxt_) ||
+-                        (SeqLt(rcv_nxt_, hdr.seq) && SeqLt(hdr.seq, rcv_nxt_ + rcv_wnd_));
++                    const bool valid = (hdr.seq == rcv_nxt_);
+                     if (valid) {
+                         Transition(TcpState::kClosed);
+                     } else {
+@@ -6741,8 +6745,7 @@ namespace xtcp {
+                     // (mirror of the Established branch). A spoofed RST with
+                     // a random seq is dropped with a challenge instead of
+                     // killing the half-open connection.
+-                    const bool valid = (hdr.seq == rcv_nxt_) ||
+-                        (SeqLt(rcv_nxt_, hdr.seq) && SeqLt(hdr.seq, rcv_nxt_ + rcv_wnd_));
++                    const bool valid = (hdr.seq == rcv_nxt_);
+                     if (valid) {
+                         Transition(TcpState::kClosed);
+                     } else {
+@@ -6883,8 +6886,7 @@ namespace xtcp {
+                 if (hdr.IsRst()) {
+                     // RFC 5961: validate the RST sequence number within the
+                     // receive window before honoring it; otherwise challenge.
+-                    const bool valid = (hdr.seq == rcv_nxt_) ||
+-                        (SeqLt(rcv_nxt_, hdr.seq) && SeqLt(hdr.seq, rcv_nxt_ + rcv_wnd_));
++                    const bool valid = (hdr.seq == rcv_nxt_);
+                     if (valid) {
+                         Transition(TcpState::kClosed);
+                     } else {
+@@ -7547,6 +7549,9 @@ namespace xtcp {
+                 break;
+             }
+             case TcpState::kTimeWait: {
++                if (hdr.IsFin() && !hdr.IsRst() && hdr.seq + payload_len + 1 == rcv_nxt_) {
++                    EnterTimeWait(now);
++                }
+                 // RFC 793: re-ACK on stray retransmissions during 2MSL.
+                 // RFC 1337: ignore RST entirely - never answer an RST with ACK.
+                 if (!hdr.IsRst() &&
+diff --git a/tests/test_ipv6_stack.cpp b/tests/test_ipv6_stack.cpp
+index a24c56a..eed2d5a 100644
+--- a/tests/test_ipv6_stack.cpp
++++ b/tests/test_ipv6_stack.cpp
+@@ -29,14 +29,18 @@ static void Pump(xtcp::ndi::ManualBackend& a, xtcp::ndi::ManualBackend& b,
+         while (0 != a.TxPending()) {
+             const UInt32 n = a.PollTx(out);
+             if (0 < n) {
+-                b.Inject(out, n, 0x86DD);
++                CHECK(n + 32 <= sizeof(out));
++                std::memset(out + n, 0xAA, 32);
++                b.Inject(out, n + 32, 0x86DD);
+                 moved = true;
+             }
+         }
+         while (0 != b.TxPending()) {
+             const UInt32 n = b.PollTx(out);
+             if (0 < n) {
+-                a.Inject(out, n, 0x86DD);
++                CHECK(n + 32 <= sizeof(out));
++                std::memset(out + n, 0xAA, 32);
++                a.Inject(out, n + 32, 0x86DD);
+                 moved = true;
+             }
+         }
+diff --git a/tests/test_pool_pressure.cpp b/tests/test_pool_pressure.cpp
+index d084f70..fd99621 100644
+--- a/tests/test_pool_pressure.cpp
++++ b/tests/test_pool_pressure.cpp
+@@ -238,6 +238,7 @@ void PoolReleaseWithoutOwnAck() {
+     CHECK(sender.Send(conn, data.data(), static_cast<UInt32>(data.size())));
+     sender.PollAckTimers();
+     CHECK(a.TxPending() == 0);
++    CHECK(sender.NextTimerDeadlineUs() != 0);
+     CHECK(xtcp::buf::GetPoolPressureStats().tx_deferrals > before.tx_deferrals);
+     // This connection has never emitted data: no ACK/RTO can restart it.
+     retained.clear();
+diff --git a/tmp/core-review-batch2/xtcp/tests/test_review_rst_exact.cpp b/tests/test_review_rst_exact.cpp
+new file mode 100644
+index 0000000..5505652
+--- /dev/null
++++ b/tests/test_review_rst_exact.cpp
+@@ -0,0 +1,61 @@
++#include <xtcp/core/tcp.h>
++#include <xtcp/core/gso.h>
++#include "harness/raw_pkt.h"
++#include <cstdio>
++
++int main() {
++    xtcp::buf::InitPools();
++    int failures = 0;
++    {
++        xtcp::core::Endpoint local, remote;
++        local.family = remote.family = 4;
++        local.addr[0] = 0x0a000002;
++        remote.addr[0] = 0x0a000001;
++        local.port = 8080;
++        remote.port = 40000;
++        for (auto state : {xtcp::core::TcpState::kEstablished, xtcp::core::TcpState::kFinWait2,
++                           xtcp::core::TcpState::kCloseWait, xtcp::core::TcpState::kClosing,
++                           xtcp::core::TcpState::kLastAck, xtcp::core::TcpState::kFinWait1}) {
++            unsigned replies = 0;
++            xtcp::core::TcpConn conn(state, local, remote, 1000, 2000,
++                [&](xtcp::buf::BufRef&&) { ++replies; });
++            auto rst = xtcp::harness::BuildIp4Tcp(remote.addr[0], local.addr[0],
++                remote.port, local.port, conn.RcvNxt() + 1, 0, 4);
++            conn.OnSegment(rst.data() + 20, rst.size() - 20, 100);
++            if (conn.State() != state || replies != 1) ++failures;
++            rst = xtcp::harness::BuildIp4Tcp(remote.addr[0], local.addr[0],
++                remote.port, local.port, conn.RcvNxt(), 0, 4);
++            conn.OnSegment(rst.data() + 20, rst.size() - 20, 200);
++            if (conn.State() != xtcp::core::TcpState::kClosed) ++failures;
++        }
++        xtcp::core::TcpConn tw(xtcp::core::TcpState::kTimeWait, local, remote, 1000, 2000,
++            [](xtcp::buf::BufRef&&) {});
++        tw.SetTwoMsl(1000);
++        tw.EnterTimeWait(100);
++        auto fin = xtcp::harness::BuildIp4Tcp(remote.addr[0], local.addr[0],
++            remote.port, local.port, tw.RcvNxt() - 1, 1001, 0x11);
++        tw.OnSegment(fin.data() + 20, fin.size() - 20, 200);
++        if (tw.TimeWaitDeadline() != 1200) ++failures;
++
++        std::vector<Byte> data(3000, 0x55);
++        auto super = xtcp::harness::BuildIp4Tcp(remote.addr[0], local.addr[0],
++            remote.port, local.port, 100, 200, 0xb8, data.data(), data.size());
++        super[39] = 1; // URG expires before the last segment.
++        auto owned = xtcp::buf::BufRef::Acquire(super.size());
++        std::memcpy(owned.Data(), super.data(), super.size());
++        owned.SetLen(super.size());
++        std::vector<xtcp::core::GsoSeg> segments;
++        if (!xtcp::core::GsoSegment(owned, 1460, segments) || segments.size() != 3) {
++            ++failures;
++        } else {
++            for (unsigned i = 0; i < segments.size(); ++i) {
++                const Byte* header = segments[i].hdr_ref.Data();
++                if (!!(header[33] & 0x80) != (i == 0)) ++failures;
++                if (header[33] & 0x20 || header[38] || header[39]) ++failures;
++            }
++        }
++    }
++    xtcp::buf::ShutdownPools();
++    std::printf("RST exact-match failures: %d\n", failures);
++    return failures ? 1 : 0;
++}
+diff --git a/tests/test_syn_cookie.cpp b/tests/test_syn_cookie.cpp
+index 605ff83..59c1fd4 100644
+--- a/tests/test_syn_cookie.cpp
++++ b/tests/test_syn_cookie.cpp
+@@ -46,7 +46,7 @@ static void Pump(xtcp::ndi::ManualBackend& from, xtcp::ndi::ManualBackend& to,
+         if (0 == got) {
+             break;
+         }
+-        if (NULLPTR != probe && !probe->got && got >= 52) {
++        if (NULLPTR != probe && !probe->got && got >= 44) {
+             const UInt16 sport = static_cast<UInt16>((out[20] << 8) | out[21]);
+             const UInt16 dport = static_cast<UInt16>((out[22] << 8) | out[23]);
+             const Byte flags = out[33];
+diff --git a/tests/test_syn_cookie_data.cpp b/tests/test_syn_cookie_data.cpp
+index d6f4968..fc17077 100644
+--- a/tests/test_syn_cookie_data.cpp
++++ b/tests/test_syn_cookie_data.cpp
+@@ -99,7 +99,7 @@ static void PumpServer(xtcp::ndi::ManualBackend& from, CookieProbe* probe) {
+         if (0 == got) {
+             break;
+         }
+-        if (NULLPTR != probe && !probe->got && got >= 52) {
++        if (NULLPTR != probe && !probe->got && got >= 44) {
+             const UInt16 sport = static_cast<UInt16>((out[20] << 8) | out[21]);
+             const Byte flags = out[33];
+             if (0 != (flags & 0x12) && kPort == sport && 0 == (flags & 0x01)) {
+@@ -108,6 +108,10 @@ static void PumpServer(xtcp::ndi::ManualBackend& from, CookieProbe* probe) {
+                                 (static_cast<UInt32>(out[26]) << 8) |
+                                 static_cast<UInt32>(out[27]);
+                 probe->got = true;
++                xtcp::core::TcpOpts opts;
++                CHECK(xtcp::core::ParseTcpOpts(out + 20, got - 20, (out[32] >> 4) * 4, opts));
++                CHECK(!opts.has_wscale);
++                CHECK(!opts.has_sack);
+             }
+         }
+         if (2000 < ++guard) {
+@@ -122,10 +126,11 @@ static UInt32 BuildSyn(Byte* out, UInt32 src, UInt16 sport, UInt32 dst, UInt16 d
+     // checksum-validate build and the cookie path never runs.
+     std::vector<Byte> syn = xtcp::harness::BuildIp4Tcp(src, dst, sport, dport, seq, 0, 0x02);
+     syn.push_back(2); syn.push_back(4); syn.push_back(0x05); syn.push_back(0xB4);  // MSS 1460
+-    syn[2] = 0; syn[3] = 44;   // total length 44 (incl. MSS option)
+-    syn[20 + 12] = 0x60;       // data offset 24 (incl. MSS)
++    syn.insert(syn.end(), {3, 3, 7, 1}); // WSOPT=7 plus NOP
++    syn[2] = 0; syn[3] = 48;
++    syn[20 + 12] = 0x70;
+     xtcp::harness::FillIp4Checksum(syn.data());
+-    xtcp::harness::FillTcp4Checksum(syn.data(), syn.data() + 20, 24);
++    xtcp::harness::FillTcp4Checksum(syn.data(), syn.data() + 20, 28);
+     std::memcpy(out, syn.data(), syn.size());
+     return static_cast<UInt32>(syn.size());
+ }
+@@ -212,7 +217,8 @@ int main() {
+         const UInt32 ack_len = BuildCookieAckData(ack, kClientV4, kCookieClientPort, kServerV4,
+                                                   kPort, probe.cookie, kClientSynSeq + 1,
+                                                   payload.data(), kTotal);
+-        backend_b.Inject(ack, ack_len, 0x0800);
++        std::memset(ack + ack_len, 0xAA, 32);
++        backend_b.Inject(ack, ack_len + 32, 0x0800);
+         PumpServer(backend_b, NULLPTR);
+         std::fprintf(stderr, "[syn-cookie-data] cookie=%08X conns=%u recv=%llu rebuilt=%llu\n",
+                      probe.cookie, static_cast<unsigned>(stack_b.ConnectionCount()),

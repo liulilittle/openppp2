@@ -1,0 +1,518 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -107,6 +107,7 @@
+     enable_testing()
+ 
+     set(XTCP_TESTS
++        test_ack_allocation
+         test_smoke
+         test_fin_state_callbacks
+         test_ndi
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -516,7 +516,8 @@
+                     return 0;  // the sweep's reclamation pass is due now
+                 }
+                 if (TcpState::kTimeWait == state_) {
+-                    return timewait_deadline_;
++                    return ack_retry_deadline_ != 0 && ack_retry_deadline_ < timewait_deadline_
++                        ? ack_retry_deadline_ : timewait_deadline_;
+                 }
+                 TimePoint next = ~(TimePoint)0;
+                 const auto consider = [&next](TimePoint due) noexcept {
+@@ -525,6 +526,7 @@
+                     }
+                 };
+                 consider(ack_deadline_);
++                consider(ack_retry_deadline_);
+                 consider(rto_deadline_);
+                 consider(persist_deadline_);
+                 consider(mtu_probe_deadline_);
+@@ -1287,7 +1289,7 @@
+             void ConsumePendingSendFrontNoLock() noexcept;
+             void RequeuePendingSendNoLock(std::vector<Byte>& data, std::size_t offset) noexcept;
+             void Transition(TcpState next) noexcept;
+-            void SendSegment(UInt32 seq, UInt32 ack, UInt16 flags, const Byte* payload, UInt32 payload_len) noexcept;
++            bool SendSegment(UInt32 seq, UInt32 ack, UInt16 flags, const Byte* payload, UInt32 payload_len) noexcept;
+             Byte BuildSackRanges(UInt32* out, Byte max_pairs) const noexcept;
+             void SendChallengeAck() noexcept;
+             void SendDupAck() noexcept;
+@@ -1465,6 +1467,7 @@
+             bool        ack_pending_ = false;
+             UInt32      ack_count_ = 0;
+             TimePoint   ack_deadline_ = 0;
++            TimePoint   ack_retry_deadline_ = 0; /**< Coalesced ACK/window construction retry, independent of delayed ACKs. */
+             TimePoint   challenge_deadline_ = 0;  /**< RFC 5961 challenge-ACK window end (us) */
+             UInt32      challenge_count_ = 0;     /**< Challenge ACKs sent in current window */
+             TimePoint   dupack_deadline_ = 0;     /**< dup-ACK rate-limit window end (us) */
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -1111,13 +1111,14 @@
+                 ack_pending_ = false;
+                 ack_count_ = 0;
+                 ack_deadline_ = 0;
++                ack_retry_deadline_ = 0;
+                 close_pending_ = false;
+                 pending_frontier_.reset();
+                 pending_frontier_bytes_ = 0;
+             }
+         }
+ 
+-        void TcpConn::SendSegment(UInt32 seq, UInt32 ack, UInt16 flags, const Byte* payload, UInt32 payload_len) noexcept {
++        bool TcpConn::SendSegment(UInt32 seq, UInt32 ack, UInt16 flags, const Byte* payload, UInt32 payload_len) noexcept {
+             // RFC 3168 s6.1.2: a pending CWR (we reduced cwnd on an ECE) is
+             // emitted on the next DATA segment per the RFC - but when no data
+             // flows, Linux also puts it on a pure ACK so the peer stops ECEing
+@@ -1127,7 +1128,6 @@
+             UInt16 out_flags = flags;
+             if (cwr_pending_ && 0 == (flags & (kFlagSyn | kFlagRst))) {
+                 out_flags |= kFlagCwr;
+-                cwr_pending_ = false;
+             }
+             // Advertise the receive window scaled by our WSOPT factor.
+             const UInt16 advertised = AdvertisedWindow();
+@@ -1146,7 +1146,6 @@
+                 if (dsack_pending_) {
+                     sack_buf[0] = dsack_left_;
+                     sack_buf[1] = dsack_right_;
+-                    dsack_pending_ = false;
+                     sack_n = 1;
+                 }
+                 if (!ooo_.empty()) {
+@@ -1171,9 +1170,26 @@
+             // unilaterally - parity with the kernel's tcp_sack=0).
+             const bool sack_offer = (0 != (flags & kFlagSyn)) &&
+                 (no_sack_permitted_ || (0 != (flags & kFlagAck) && !peer_syn_sack_));
+-            SendSegmentPacket(local_, remote_, seq, ack, out_flags, payload, payload_len, advertised, sink_, rcv_wscale_,
++            buf::BufRef packet = BuildSegmentPacket(local_, remote_, seq, ack, out_flags, payload, payload_len, advertised, rcv_wscale_,
+                               Md5Key(), Md5KeyLen(), (0 < sack_n) ? sack_buf : NULLPTR, sack_n, NULLPTR, false,
+                               include_ts, ts_val, ts_ecr, sack_offer);
++            if (packet.IsEmpty()) {
++                if (0 != (flags & kFlagAck) && 0 == (flags & (kFlagSyn | kFlagRst)) &&
++                    TcpState::kClosed != state_ && 0 == ack_retry_deadline_) {
++                    ack_retry_deadline_ = NowUs() + kDelayedAckMs * 1000;
++                    timers_dirty_.store(true, std::memory_order_relaxed);
++                }
++                return false;
++            }
++            // Construction transfers the obligation to the sink/backend retry
++            // path. Consume one-shot state before calling a reentrant sink.
++            if (0 != (out_flags & kFlagCwr)) cwr_pending_ = false;
++            if (0 < sack_n && dsack_pending_) dsack_pending_ = false;
++            if (0 != (flags & kFlagAck) && 0 == (flags & (kFlagSyn | kFlagRst))) {
++                ack_retry_deadline_ = 0;
++            }
++            if (sink_) sink_(std::move(packet));
++            return true;
+         }
+ 
+         Byte TcpConn::BuildSackRanges(UInt32* out, Byte max_pairs) const noexcept {
+@@ -5167,15 +5183,21 @@
+             // delayed ACK, persist probe, keepalive). Transition(kClosed)
+             // already disarmed these timers; this guard is the belt-and-
+             // suspenders for any state that slipped in without a Transition.
+-            // TIME-WAIT is terminating too: a delayed ACK armed before the
+-            // close handshake would otherwise fire a gratuitous ACK during
+-            // 2MSL (RFC 793 allows only re-ACKing stray retransmits, which
+-            // the kTimeWait OnSegment branch handles). FIN-WAIT-1/2 and
+-            // LAST-ACK may still legitimately ACK received data, so only
+-            // CLOSED and TIME-WAIT are blocked here.
+-            if (TcpState::kClosed == state_ || TcpState::kTimeWait == state_) {
++            // TIME-WAIT may retry an ACK that could not be constructed (e.g.
++            // the final FIN ACK), but must not flush old delayed ACK/data work.
++            if (TcpState::kClosed == state_) {
+                 return 0;
+             }
++            if (0 != ack_retry_deadline_ && ack_retry_deadline_ <= now &&
++                (TcpState::kTimeWait != state_ || now < timewait_deadline_) &&
++                (TcpState::kTimeWait == state_ || 0 == ack_deadline_ || ack_deadline_ > now)) {
++                // Rearm from the poll clock, including when tests or a late
++                // scheduler advance beyond wall time. Never leave a due retry.
++                ack_retry_deadline_ = now + kDelayedAckMs * 1000;
++                SendAck();
++                ++fired;
++            }
++            if (TcpState::kTimeWait == state_ || TcpState::kClosed == state_) return fired;
+             // TCP_USER_TIMEOUT: abort when the oldest unacknowledged segment
+             // has been outstanding longer than the bound (Linux parity; 0 =
+             // disabled, the RTO-retry budget still bounds the connection).
+@@ -5191,10 +5213,14 @@
+             }
+             if (0 != ack_deadline_ && ack_deadline_ <= now) {
+                 if (ack_pending_) {
+-                    SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
+-                    ack_pending_ = false;
+-                    ack_count_ = 0;
+-                    ack_deadline_ = 0;
++                    if (SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0)) {
++                        ack_pending_ = false;
++                        ack_count_ = 0;
++                        ack_deadline_ = 0;
++                    } else {
++                        ack_deadline_ = now + kDelayedAckMs * 1000;
++                        ack_retry_deadline_ = ack_deadline_;
++                    }
+                     ++fired;
+                 }
+             }
+@@ -5321,7 +5347,7 @@
+             // reclamation pass in PollAckTimers sees them every round.
+             const bool closing = (TcpState::kClosed == state_ || TcpState::kLastAck == state_ ||
+                                   TcpState::kFinWait2 == state_ || TcpState::kTimeWait == state_);
+-            if (0 == ack_deadline_ && 0 == rto_deadline_ && 0 == persist_deadline_ &&
++            if (0 == ack_deadline_ && 0 == ack_retry_deadline_ && 0 == rto_deadline_ && 0 == persist_deadline_ &&
+                 0 == tlp_deadline_ && 0 == PendingSendSizeNoLock() && 0 == keepalive_idle_ &&
+                 0 == mtu_probe_deadline_ && !closing) {
+                 timers_dirty_.store(false, std::memory_order_relaxed);
+@@ -6013,7 +6039,11 @@
+         }
+ 
+         void TcpConn::SendAck() noexcept {
+-            SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
++            if (SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0)) {
++                ack_pending_ = false;
++                ack_count_ = 0;
++                ack_deadline_ = 0;
++            }
+         }
+ 
+         ReceiveResumeResult TcpConn::ResumeReceiveDetailed() noexcept {
+@@ -6025,9 +6055,6 @@
+                 return ReceiveResumeResult::kNotBlocked;
+             }
+             rcv_blocked_ = false;
+-            ack_pending_ = false;
+-            ack_count_ = 0;
+-            ack_deadline_ = 0;
+             const TimePoint now = NowUs();
+             if (pending_frontier_) {
+                 std::unique_ptr<OutSeg> segment = std::move(pending_frontier_);
+diff --git a/tests/test_ack_allocation.cpp b/tests/test_ack_allocation.cpp
+--- a/tests/test_ack_allocation.cpp
++++ b/tests/test_ack_allocation.cpp
+@@ -0,0 +1,322 @@
++#include <xtcp/buf/bufref.h>
++#include <xtcp/core/tcp.h>
++
++#include <chrono>
++#include <condition_variable>
++#include <cstdio>
++#include <cstring>
++#include <mutex>
++#include <thread>
++#include <vector>
++
++namespace {
++using namespace xtcp::core;
++int failures = 0;
++#define CHECK(x) do { if (!(x)) { ++failures; std::fprintf(stderr, "FAIL %d: %s\n", __LINE__, #x); } } while (0)
++
++void Put32(Byte* p, UInt32 n) {
++    p[0] = Byte(n >> 24); p[1] = Byte(n >> 16);
++    p[2] = Byte(n >> 8); p[3] = Byte(n);
++}
++
++UInt64 Now() {
++    return std::chrono::duration_cast<std::chrono::microseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
++// Keep the releasing thread alive: its TLS cache must not be flushed by exit.
++class Pressure {
++public:
++    explicit Pressure(UInt32 size = 40) {
++        for (;;) {
++            auto ref = xtcp::buf::BufRef::Acquire(size);
++            if (ref.IsEmpty()) break;
++            held_.push_back(std::move(ref));
++        }
++        CHECK(!held_.empty());
++        CHECK(xtcp::buf::BufRef::Acquire(size).IsEmpty());
++    }
++    void Release() {
++        worker_ = std::thread([this] {
++            held_.clear();
++            std::unique_lock<std::mutex> lock(mutex_);
++            released_ = true;
++            cv_.notify_all();
++            cv_.wait(lock, [this] { return done_; });
++        });
++        std::unique_lock<std::mutex> lock(mutex_);
++        cv_.wait(lock, [this] { return released_; });
++    }
++    ~Pressure() {
++        if (!worker_.joinable()) return;
++        { std::lock_guard<std::mutex> lock(mutex_); done_ = true; }
++        cv_.notify_all();
++        worker_.join();
++    }
++private:
++    std::vector<xtcp::buf::BufRef> held_;
++    std::thread worker_;
++    std::mutex mutex_;
++    std::condition_variable cv_;
++    bool released_ = false, done_ = false;
++};
++
++struct Probe {
++    static Endpoint EndpointAt(UInt32 ip, UInt16 port) {
++        Endpoint e; e.family = 4; e.addr[0] = ip; e.port = port; return e;
++    }
++    std::vector<std::vector<Byte>> output;
++    std::vector<Byte> delivered;
++    bool accepting = true;
++    TcpConn conn;
++    explicit Probe(TcpState state = TcpState::kEstablished) : conn(state, EndpointAt(0x0a000001, 1001),
++        EndpointAt(0x0a000002, 2001), 100, 200,
++        [this](xtcp::buf::BufRef&& ref) {
++            output.emplace_back(ref.Data(), ref.Data() + ref.Len());
++        }) {
++        conn.SetRecvHandler([this](const Byte* p, UInt32 n) {
++            if (!accepting) return false;
++            delivered.insert(delivered.end(), p, p + n);
++            return true;
++        });
++    }
++    void Segment(UInt64 now, UInt32 seq = 201, UInt16 flags = kFlagAck, bool data = true,
++                 UInt32 ack = 101) {
++        Byte packet[21] = {};
++        packet[0] = 7; packet[1] = 0xd1;
++        packet[2] = 3; packet[3] = 0xe9;
++        Put32(packet + 4, seq); Put32(packet + 8, ack);
++        packet[12] = 0x50; packet[13] = Byte(flags);
++        packet[14] = 0xff; packet[15] = 0xff; packet[20] = 0x5a;
++        conn.OnSegment(packet, data ? sizeof(packet) : 20, now);
++    }
++    bool CurrentAck() const {
++        for (const auto& packet : output) {
++            TcpHdr hdr;
++            if (packet.size() >= 40 && ParseTcp(packet.data() + 20,
++                UInt32(packet.size() - 20), hdr) && hdr.IsAck() &&
++                hdr.ack == 202 && hdr.window != 0) return true;
++        }
++        return false;
++    }
++    void Poll(UInt64 start) {
++        for (unsigned i = 1; i <= 100; ++i) conn.OnPoll(start + i * 10000);
++    }
++};
++
++void DelayedAck(bool close) {
++    Probe p;
++    const auto now = Now();
++    p.Segment(now);
++    CHECK(p.delivered == std::vector<Byte>{0x5a});
++    CHECK(p.conn.RcvNxt() == 202);
++    const auto deadline = p.conn.NextAckTime();
++    CHECK(deadline > now);
++    p.output.clear();
++    Pressure pressure;
++    p.conn.OnPoll(deadline);
++    p.conn.OnPoll(deadline + 10000);
++    CHECK(p.output.empty());
++    if (close) p.conn.Abort();
++    pressure.Release();
++    p.Poll(deadline + 10000);
++    if (close) CHECK(p.output.empty());
++    else CHECK(p.CurrentAck());
++    std::printf("delayed_ack%s: frontier=%u outputs=%zu next_ack=%llu\n",
++        close ? "_close" : "", p.conn.RcvNxt(), p.output.size(),
++        static_cast<unsigned long long>(p.conn.NextAckTime()));
++}
++
++void Resume() {
++    Probe p;
++    const auto now = Now();
++    p.accepting = false;
++    p.Segment(now);
++    CHECK(p.conn.ReceiveState().rcv_blocked);
++    p.output.clear();
++    Pressure pressure;
++    p.accepting = true;
++    CHECK(p.conn.ResumeReceiveDetailed() == ReceiveResumeResult::kResumed);
++    CHECK(p.delivered == std::vector<Byte>{0x5a});
++    CHECK(p.conn.RcvNxt() == 202);
++    CHECK(p.output.empty());
++    pressure.Release();
++    p.Poll(now);
++    CHECK(p.CurrentAck());
++    std::printf("resume: frontier=%u outputs=%zu\n", p.conn.RcvNxt(), p.output.size());
++}
++
++void LostAck() {
++    Probe p;
++    const auto now = Now();
++    p.Segment(now);
++    p.Poll(now);
++    CHECK(p.CurrentAck());
++    p.output.clear();
++    p.Segment(now + 1100000);
++    CHECK(p.CurrentAck());
++    CHECK(p.delivered == std::vector<Byte>{0x5a});
++}
++
++void Repeated(bool resume, bool close) {
++    Probe p;
++    const auto now = Now();
++    p.accepting = !resume;
++    p.Segment(now);
++    p.output.clear();
++    Pressure pressure;
++    if (resume) {
++        p.accepting = true;
++        CHECK(p.conn.ResumeReceiveDetailed() == ReceiveResumeResult::kResumed);
++    }
++    auto deadline = p.conn.NextTimerDeadline();
++    CHECK(deadline > now && deadline <= now + 1000000);
++    for (unsigned i = 0; i < 32 && deadline <= now + 2000000; ++i) {
++        CHECK(p.conn.OnPoll(deadline - 1) == 0);
++        p.conn.OnPoll(deadline);
++        const auto next = p.conn.NextTimerDeadline();
++        CHECK(next > deadline && next <= deadline + 100000);
++        CHECK(p.conn.TimersDirty());
++        deadline = next;
++    }
++    CHECK(p.output.empty());
++    if (close) p.conn.Abort();
++    pressure.Release();
++    if (deadline < now + 2000000) p.Poll(deadline);
++    if (close) CHECK(p.output.empty());
++    else {
++        CHECK(p.CurrentAck());
++        CHECK(p.output.size() == 1);
++        CHECK(!p.conn.TimersDirty());
++    }
++    CHECK(p.delivered == std::vector<Byte>{0x5a});
++}
++
++void PeerProbe() {
++    Probe p;
++    const auto now = Now();
++    p.Segment(now);
++    p.Poll(now);
++    CHECK(p.CurrentAck());
++    p.output.clear(); // An emitted packet is lost after construction.
++    p.Segment(now + 1100000, 201, kFlagAck, false);
++    CHECK(p.CurrentAck());
++    CHECK(p.delivered == std::vector<Byte>{0x5a});
++}
++
++void Fin(bool timewait) {
++    Probe p;
++    const auto now = Now();
++    if (timewait) {
++        p.conn.Close();
++        p.Segment(now, 201, kFlagAck, false);
++        // Our FIN consumes sequence 101; acknowledge it explicitly.
++        Byte ack[20] = {};
++        ack[0] = 7; ack[1] = 0xd1; ack[2] = 3; ack[3] = 0xe9;
++        Put32(ack + 4, 201); Put32(ack + 8, 102);
++        ack[12] = 0x50; ack[13] = kFlagAck; ack[14] = 0xff; ack[15] = 0xff;
++        p.conn.OnSegment(ack, sizeof(ack), now);
++        CHECK(p.conn.State() == TcpState::kFinWait2);
++    }
++    p.output.clear();
++    Pressure pressure;
++    const auto failed_at = Now();
++    p.Segment(failed_at, 201, kFlagAck | kFlagFin, false);
++    CHECK(p.conn.RcvNxt() == 202);
++    CHECK(p.conn.State() == (timewait ? TcpState::kTimeWait : TcpState::kCloseWait));
++    CHECK(p.output.empty());
++    const auto deadline = p.conn.NextTimerDeadline();
++    CHECK(deadline > failed_at && deadline <= Now() + 100000);
++    pressure.Release();
++    p.conn.OnPoll(deadline);
++    CHECK(p.CurrentAck());
++    CHECK(p.delivered.empty());
++}
++
++void Dsack() {
++    Probe p;
++    p.conn.SetSackOk(true);
++    const auto now = Now();
++    p.Segment(now);
++    p.Poll(now);
++    p.output.clear();
++    Pressure pressure;
++    p.Segment(now + 1100000);
++    CHECK(p.output.empty());
++    pressure.Release();
++    p.Poll(now + 1100000);
++    CHECK(p.CurrentAck());
++    bool dsack = false;
++    for (const auto& packet : p.output) {
++        TcpHdr hdr;
++        if (ParseTcp(packet.data() + 20, UInt32(packet.size() - 20), hdr)) {
++            TcpOpts opts;
++            CHECK(ParseTcpOpts(packet.data() + 20, UInt32(packet.size() - 20), hdr.hdr_len, opts));
++            dsack |= opts.sack_count > 0 && opts.sack[0][0] == 201 && opts.sack[0][1] == 202;
++        }
++    }
++    CHECK(dsack);
++    CHECK(p.delivered == std::vector<Byte>{0x5a});
++}
++
++void Ecn() {
++    Probe p(TcpState::kSynSent);
++    const auto now = Now();
++    p.conn.SetEcnRequested(true);
++    p.conn.SendSyn();
++    p.Segment(now, 200, kFlagSyn | kFlagAck | kFlagEce, false);
++    CHECK(p.conn.State() == TcpState::kEstablished);
++    CHECK(p.conn.EcnActive());
++    p.conn.SetCeSeen();
++    // Send actual data first: ECE only requests CWR with data outstanding.
++    const Byte data = 0x42;
++    CHECK(p.conn.SendData(&data, 1, now));
++    p.output.clear();
++    Pressure pressure;
++    p.Segment(now + 1, 201, kFlagAck | kFlagEce, false);
++    p.conn.SendAck();
++    CHECK(p.output.empty());
++    pressure.Release();
++    p.Poll(now);
++    bool flags = false;
++    for (const auto& packet : p.output) {
++        TcpHdr hdr;
++        if (ParseTcp(packet.data() + 20, UInt32(packet.size() - 20), hdr)) {
++            flags |= hdr.IsAck() && hdr.IsCwr() && (hdr.flags & kFlagEce);
++        }
++    }
++    CHECK(flags);
++    p.output.clear();
++    p.conn.SendAck();
++    CHECK(p.output.size() == 1);
++    if (!p.output.empty()) CHECK((p.output[0][33] & kFlagCwr) == 0);
++}
++void RunCase(const char* name) {
++    if (std::strcmp(name, "delayed") == 0) DelayedAck(false);
++    else if (std::strcmp(name, "resume") == 0) Resume();
++    else if (std::strcmp(name, "closed") == 0) DelayedAck(true);
++    else if (std::strcmp(name, "lost") == 0) LostAck();
++    else if (std::strcmp(name, "repeated-delayed") == 0) Repeated(false, false);
++    else if (std::strcmp(name, "repeated-resume") == 0) Repeated(true, false);
++    else if (std::strcmp(name, "repeated-closed") == 0) Repeated(true, true);
++    else if (std::strcmp(name, "probe") == 0) PeerProbe();
++    else if (std::strcmp(name, "fin") == 0) Fin(false);
++    else if (std::strcmp(name, "timewait") == 0) Fin(true);
++    else if (std::strcmp(name, "dsack") == 0) Dsack();
++    else if (std::strcmp(name, "ecn") == 0) Ecn();
++    else CHECK(false);
++}
++} // namespace
++
++int main(int argc, char** argv) {
++    if (argc > 2) return 2;
++    xtcp::buf::InitPools();
++    if (argc == 2) RunCase(argv[1]);
++    else {
++        const char* cases[] = {"delayed", "resume", "closed", "lost", "repeated-delayed",
++            "repeated-resume", "repeated-closed", "probe", "fin", "timewait", "dsack", "ecn"};
++        for (const auto* name : cases) RunCase(name);
++    }
++    xtcp::buf::ShutdownPools();
++    return failures ? 1 : 0;
++}

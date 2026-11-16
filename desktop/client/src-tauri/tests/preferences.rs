@@ -31,7 +31,13 @@ fn preferences_round_trip_without_unknown_fields() {
     let loaded = load_preferences(&path).unwrap();
     assert_eq!(loaded.subscription_url, "https://sub.test/token");
     assert_eq!(loaded.ppp_path, "C:\\ppp.exe");
-    assert!(loaded.favorites.contains("node-1"));
+    assert!(loaded.favorites.contains("sub:legacy:node-1"));
+    assert_eq!(loaded.subscriptions[0].id, "legacy");
+    assert!(path.with_extension("migration-backup.json").exists());
+    let mut removed = loaded.clone();
+    removed.subscriptions.clear();
+    save_preferences(&path, &removed).unwrap();
+    assert!(load_preferences(&path).unwrap().subscriptions.is_empty());
     assert_eq!(loaded.manual_nodes[0].id, "manual:1");
     assert_eq!(loaded.launch_options["mux"], json!(4));
     assert!(!loaded.settings.close_to_tray);

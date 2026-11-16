@@ -1,415 +1,172 @@
-# 部署模型
+# 部署
+
 > Status: Active
 > Type: Operations
-> Last verified: 63fc030
+> Last verified: 2026-10-11（对照 `ppp/app/ApplicationInitialize.cpp`、`PppApplication.cpp`、`go/guardian/config.go`、`go/guardian/service/systemd.go`、`go/guardian/instance/manager.go`、`.github/workflows/release.yml`）
+>
+> **用途：** 把 OPENPPP2 长期运行为系统服务，以及升级、回滚和多实例的做法。
+> **读者：** 部署服务端或常驻客户端的运维人员。
+> **上级索引：** [运维](README_CN.md) · **English:** [Deployment](DEPLOYMENT.md)
 
-> **用途：**说明本主题的当前行为、配置或实现边界。
-> **适用对象：**OPENPPP2 用户、运维人员与开发者。
-> **当前状态：**当前有效。
-> **最后核对依据：**当前仓库结构、实现路径与文档链接，2026-07-18。
-> **上一层索引：**[返回索引](README_CN.md) · **English：**[Deployment Model](DEPLOYMENT.md)
+先用前台方式跑通（见 [用户手册](../getting-started/USER_MANUAL_CN.md)），再按本页改成服务。
 
+## 1. 部署前检查
 
-[English Version](DEPLOYMENT.md)
+| 项目 | 要求 |
+|---|---|
+| 权限 | 服务端和 TUN 客户端必须以管理员 / root 运行（代理模式除外），否则启动报 `AppPrivilegeRequired`。 |
+| 配置 | 用 `--config=<绝对路径>` 显式指定；`key` 块写全且 `"plaintext": false`；每台客户端 `client.guid` 不同。 |
+| 端口 | 服务器防火墙 / 安全组放行 `tcp.listen.port`，以及启用了的 `websocket.listen.ws/wss`、`udp.listen.port`、`cdn`。 |
+| 驱动 | Linux 有 `/dev/net/tun`；Windows 保留发行包中的 `Driver\` 目录。 |
+| 证书 | WSS 的证书和私钥文件对运行用户可读。 |
+| 时间 | 服务器时间准确（TLS 证书校验依赖系统时间）。 |
 
-## 范围
+## 2. 目录布局（Linux 示例）
 
-本文解释 OPENPPP2 按源码结构如何部署，涵盖部署表面、启动顺序、平台前置条件和运行预期。
-
----
-
-## 核心事实
-
-- C++ 运行时是一个单一可执行文件：`ppp`。
-- 它可以运行在 `client` 模式或 `server` 模式。
-- 服务端可以通过 `server.backend` 接入可选的 Go backend。
-- 始终需要管理员/root 权限。
-
----
-
-## 部署分成两层
-
-```mermaid
-flowchart TD
-    A[OPENPPP2 部署] --> B[Node 层]
-    A --> C[Host 层]
-    B --> D[角色：client 或 server]
-    B --> E[持久配置 JSON]
-    B --> F[可选 Go backend]
-    B --> G[服务意图]
-    C --> H[虚拟网卡]
-    C --> I[路由表]
-    C --> J[DNS 行为]
-    C --> K[权限]
-    C --> L[本地代理表面]
+```text
+/opt/openppp2/
+├── ppp                 # 可执行文件
+├── server.json         # 或 client.json
+├── ip.txt              # 分流列表（客户端，可选）
+├── dns-rules.txt       # DNS 规则（客户端，可选）
+└── cacert.pem          # 自定义 CA（可选）
 ```
 
-| 层 | 含义 |
-|----|------|
-| Node 层 | 持久 JSON、角色、backend 和服务意图 |
-| Host 层 | 适配器、路由、DNS、权限、本地代理表面 |
-
-源码把这两层当作相关但不完全相同的问题。
-
----
-
-## 部署表面
-
-OPENPPP2 的部署可以看成四个表面：
-
-```mermaid
-flowchart TD
-    A[部署] --> B[Host 表面]
-    A --> C[Listener 表面]
-    A --> D[Data plane 表面]
-    A --> E[Management 表面]
-    B --> F[权限 / 适配器 / 路由 / DNS]
-    C --> G[TCP / UDP / WS / WSS]
-    D --> H[会话 / 映射 / IPv6]
-    E --> I[可选 Go backend]
+```bash
+chmod 700 /opt/openppp2
+chmod 600 /opt/openppp2/*.json    # 配置里有密钥
 ```
 
-| 表面 | 组件 | 备注 |
-|------|------|------|
-| Host | 权限、虚拟网卡、OS 路由、DNS 设置 | 运行时打开前必须就绪 |
-| Listener | TCP、WebSocket、TLS WebSocket、static UDP | 在 `tcp.listen/websocket.listen/udp.listen` 中配置 |
-| Data plane | 会话、NAT 映射、IPv6 transit、static echo | 每会话运行时状态 |
-| Management | 通过 WebSocket 接入 Go backend | 可选；扩展策略，不接触数据包字节 |
+## 3. Linux：systemd
 
----
+仓库不附带 `ppp` 的 unit 文件，以下为示例，按需修改路径：
 
-## 硬性要求
+```ini
+# /etc/systemd/system/openppp2-server.service
+[Unit]
+Description=OPENPPP2 server
+After=network-online.target
+Wants=network-online.target
 
-- 需要管理员/root 权限。
-- 需要真实的配置文件。
+[Service]
+Type=simple
+WorkingDirectory=/opt/openppp2
+ExecStart=/opt/openppp2/ppp --mode=server --config=/opt/openppp2/server.json
+Restart=always
+RestartSec=10
+User=root
+LimitNOFILE=1048576
 
-`LoadConfiguration(...)` 按以下顺序搜索：
-1. 显式的 `-c` / `--config` CLI 参数。
-2. 工作目录下的 `./config.json`。
-3. 工作目录下的 `./appsettings.json`。
-
-源文件：`ppp/app/PppApplication.cpp`
-
----
-
-## 客户端部署
-
-客户端部署会创建虚拟网卡，准备 route / DNS / bypass 输入，打开 `VEthernetNetworkSwitcher`，然后建立远程 exchanger 会话。
-
-### 客户端启动顺序
-
-```mermaid
-flowchart TD
-    A[启动 ppp --mode=client] --> B[获取权限]
-    B --> C[载入配置]
-    C --> D[准备 NIC / gateway / TAP]
-    D --> E[打开 VEthernetNetworkSwitcher]
-    E --> F[连接 VEthernetExchanger 到服务端]
-    F --> G[应用路由和 DNS]
-    G --> H[应用 bypass IP 列表]
-    H --> I[进入转发状态]
-    I --> J[Tick loop：保活、VIRR、vBGP 刷新]
+[Install]
+WantedBy=multi-user.target
 ```
 
-### 客户端部署检查清单
-
-| 步骤 | 要求 |
-|------|------|
-| 1 | 权限：Windows 上需要管理员，Linux/macOS/Android 上需要 root |
-| 2 | 已知路径上存在配置文件 |
-| 3 | `client.guid` 设置为有效 UUID |
-| 4 | `client.server` 指向可访问的服务端地址 |
-| 5 | 宿主机支持虚拟网卡 |
-| 6 | 具备 DNS 和路由修改权限 |
-| 7 | 可选：`client.routing.ip.bypass` IP-list 文件或 `--bypass` CLI 文件可访问 |
-| 8 | 可选：`client.routing.dns.rules` 来源或 `--dns-rules` CLI 文件可访问 |
-
-### 客户端平台说明
-
-| 平台 | 网卡类型 | 路由方式 | DNS 方式 |
-|------|---------|---------|---------|
-| Windows | TAP-Windows / WinTUN | IPv4 路由 API | 系统 DNS 覆写 |
-| Linux | TUN/TAP | `ip route` / `rtnetlink` | `/etc/resolv.conf` |
-| macOS | utun | `route` 命令 | `scutil` |
-| Android | VPNService | VPNService 路由 | VPNService DNS |
-| iOS | Packet Tunnel（Network Extension） | `NEIPv4Settings` included routes | `NEDNSSettings`（proxy-only 时不配置） |
-
----
-
-## 服务端部署
-
-服务端部署会打开监听器、防火墙、namespace cache、datagram socket、可选 managed backend，以及通过 `VirtualEthernetSwitcher` 提供的可选 IPv6 transit plumbing。
-
-### 服务端启动顺序
-
-```mermaid
-flowchart TD
-    A[启动 ppp] --> B[获取权限]
-    B --> C[载入配置]
-    C --> D[打开防火墙]
-    D --> E[打开 namespace cache]
-    E --> F[打开 datagram socket]
-    F --> G{server.backend？}
-    G -->|是| H[连接 Go backend]
-    G -->|否| I[跳过]
-    H --> J{server.ipv6？}
-    I --> J
-    J -->|是| K[打开 IPv6 transit plane]
-    J -->|否| L[跳过]
-    K --> M[打开 TCP 监听器]
-    L --> M
-    M --> N[打开 WebSocket 监听器]
-    N --> O{static echo？}
-    O -->|是| P[打开 static echo 会话]
-    O -->|否| Q[服务端就绪]
-    P --> Q
-    Q --> R[接收连接]
-    R --> S[Tick loop：会话维护、backend 刷新]
+```bash
+systemctl daemon-reload
+systemctl enable --now openppp2-server
+journalctl -u openppp2-server -f
 ```
 
-### 服务端部署检查清单
+- 客户端把 `--mode=server` 换成 `--mode=client`（或 `--mode=proxy`），配置换成 `client.json`。
+- `systemctl stop` 发送 SIGTERM，`ppp` 会正常退出并恢复路由和 DNS。
+- 平滑重启（重新读取配置）：`kill -64 <pid>`，或在控制台执行 `openppp2 restart`。
+- 以 systemd 运行时没有交互式控制台，用 `journalctl` 看输出，需要统计时加 `--stats-json=/var/log/openppp2/stats.ndjson`。
 
-| 步骤 | 要求 |
-|------|------|
-| 1 | 权限：Linux 上 root，Windows 上管理员 |
-| 2 | 配置文件存在 |
-| 3 | 至少启用一个监听器（`tcp.listen.port` 或 `websocket.listen.ws`） |
-| 4 | 监听端口设置为可用端口 |
-| 5 | 如果设置了 `server.firewall`，防火墙配置文件存在 |
-| 6 | 如果设置了 `server.backend`，Go backend 可达 |
-| 7 | 如果启用了 `server.ipv6`，NIC 支持 IPv6 |
+## 4. 用 Guardian 托管
 
-### 服务端监听器类型
+Guardian（`go/guardian/`，发行包 `guardian-<平台>.tar.gz` / `.zip`）是本机的 `ppp` 进程守护和配置管理工具：自动重启、日志查看、配置备份 / 回滚，并带网页管理界面。它和 [管理后端](../guides/MANAGEMENT_BACKEND_CN.md) 是两个不同的程序。
 
-| 监听器 | 配置键 | 协议 | TLS |
-|--------|--------|------|-----|
-| TCP | `tcp.listen.port` | 原始 TCP | 否 |
-| WebSocket | `websocket.listen.ws` | HTTP WebSocket | 否 |
-| TLS WebSocket | `websocket.listen.wss` | HTTPS WebSocket | 是 |
-| Static UDP | `udp.listen.port` | 原始 UDP | 否 |
-
----
-
-## Go Backend
-
-Go backend 是可选的，用于 managed deployment，而不是核心 data plane。
-
-```mermaid
-sequenceDiagram
-    participant Server as C++ 服务端
-    participant Backend as Go Backend
-    participant Client as 客户端
-
-    Client->>Server: 携带凭证连接
-    Server->>Backend: Authenticate(user, token)
-    Backend-->>Server: 认证结果 + 配额
-    Server-->>Client: 允许或拒绝
-    loop 流量上报
-        Server->>Backend: ReportTraffic(session_id, in, out)
-        Backend-->>Server: 配额状态
-    end
-    Server->>Backend: SessionEnd(session_id)
+```bash
+./guardian -config guardian.json
 ```
 
-核心特性：
-- 通信使用 WebSocket（`ws://` 或 `wss://`）。
-- backend 不可达时，服务端回退到本地缓存策略。
-- backend 扩展的是策略和管理，永远不接触数据包字节。
-
-源文件：`ppp/app/server/VirtualEthernetManagedServer.h`
-
----
-
-## 各平台权限要求
-
-| 平台 | 要求 | 备注 |
-|------|------|------|
-| Linux | `root` 或 `CAP_NET_ADMIN` | TUN/TAP 创建需要权限 |
-| Windows | 管理员 | TAP 驱动和路由修改 |
-| macOS | `root` | utun 创建 |
-| Android | VPNService 权限 | 在 `AndroidManifest.xml` 中声明 |
-
----
-
-## 网络前置条件
-
-| 要求 | 客户端 | 服务端 |
-|------|--------|--------|
-| 虚拟网卡支持 | 必须 | 不需要 |
-| 开放 TCP 端口 | 不需要 | 必须 |
-| DNS 修改权限 | 必须 | 不需要 |
-| 路由修改权限 | 必须 | 不需要 |
-| IPv6 capable NIC | 如果启用 IPv6 | 如果启用 `server.ipv6` |
-
----
-
-## 启动后的运维预期
-
-部署成功不代表 host state 不再变化。实际运行中还会持续看到：
-
-```mermaid
-stateDiagram-v2
-    [*] --> 已部署
-    已部署 --> 路由已激活 : client 模式
-    已部署 --> 监听器已激活 : server 模式
-    路由已激活 --> Bypass路由 : IP-list 已应用
-    路由已激活 --> 默认路由已重定向 : 全隧道模式
-    路由已激活 --> 默认路由已保护 : 分流模式
-    监听器已激活 --> 接受会话中 : open 完成
-    接受会话中 --> 管理Backend : 如果启用了 backend
-    接受会话中 --> IPv6Transit : 如果启用了 IPv6
-    路由已激活 --> VIRR刷新 : tick 驱动
-    VIRR刷新 --> 路由已激活 : 已刷新
-```
-
-持续的宿主侧预期：
-
-| 预期 | 说明 |
-|------|------|
-| 默认路由受管理 | 客户端可能重定向或保护默认路由 |
-| DNS 服务器稳定 | DNS 服务器路由必须持久存在 |
-| 监听器保持绑定 | 服务端监听器必须持续绑定 |
-| Backend 保持可达 | Go backend 连接必须维持 |
-| IPv6 transit 活跃 | IPv6 transit plane 必须保持运行 |
-
----
-
-## 部署拓扑示例
-
-### 简单服务端 + 客户端
-
-```mermaid
-flowchart LR
-    A[客户端宿主] -->|TCP/WS| B[ppp 服务端]
-    B -->|互联网| C[目标]
-```
-
-### 带 Go Backend 的服务端
-
-```mermaid
-flowchart LR
-    A[客户端宿主] -->|TCP/WS| B[ppp 服务端]
-    B -->|WebSocket| C[Go Backend]
-    B -->|互联网| D[目标]
-    C --> E[数据库 / 认证]
-```
-
-### 多监听器服务端
-
-```mermaid
-flowchart TD
-    A[TCP 客户端] --> B[ppp 服务端]
-    C[WebSocket 客户端] --> B
-    D[TLS WebSocket 客户端] --> B
-    B --> E[会话路由]
-    E --> F[互联网]
-```
-
----
-
-## 部署失败类型
-
-| 类型 | 症状 | 可能原因 |
-|------|------|---------|
-| 权限失败 | 进程立即退出 | 未以管理员/root 运行 |
-| 找不到配置 | "configuration not found" 错误 | 路径错误或文件缺失 |
-| 网卡打开失败 | 虚拟 NIC 未创建 | 驱动缺失或权限不足 |
-| 监听器绑定失败 | 端口被占用或权限不足 | 端口冲突或权限问题 |
-| 路由添加失败 | 流量未经隧道 | 路由修改不被允许 |
-| Backend 不可达 | 会话被拒绝或应用缓存策略 | Backend 未启动或 URL 错误 |
-
----
-
-## 配置文件参考
-
-最简服务端配置：
+`guardian.json` 示例：
 
 ```json
 {
-  "concurrent": 4,
-  "key": {
-    "kf": 154543927,
-    "kx": 128,
-    "kl": 10,
-    "kh": 12,
-    "protocol": "aes-128-cfb",
-    "protocol-key": "OpenPPP2-Test-Protocol-Key",
-    "transport": "aes-256-cfb",
-    "transport-key": "OpenPPP2-Test-Transport-Key"
-  },
-  "tcp": {
-    "listen": { "port": 20000 }
-  },
-  "udp": {
-    "listen": { "port": 20000 }
-  },
-  "websocket": {
-    "path": "/tun"
-  },
-  "server": {
-    "ipv4-pool": {
-      "network": "10.0.0.0",
-      "mask": "255.255.255.0"
+  "listen": "127.0.0.1:18080",
+  "auth": { "enabled": true, "jwtSecret": "", "tokenExpiryHours": 24 },
+  "profilesDir": "./profiles",
+  "binariesDir": "./binaries",
+  "backup": { "enabled": true, "maxBackups": 10, "dir": "./backups" },
+  "instances": [
+    {
+      "name": "server",
+      "enabled": true,
+      "binary": "/opt/openppp2/ppp",
+      "workDir": "/opt/openppp2",
+      "configPath": "/opt/openppp2/server.json",
+      "args": ["--mode=server", "--config=/opt/openppp2/server.json"],
+      "autoRestart": { "enabled": true, "maxRetries": 0, "retryDelayMs": 3000 }
     }
-  }
+  ]
 }
 ```
 
-最简客户端配置：
+- `autoRestart.maxRetries` 为 `0` 表示不限次数；`retryDelayMs` 是每次重启前的等待时间。
+- **启动 `ppp` 时只使用 `args`**，`configPath` 仅用于管理和显示；`--mode` 和 `--config` 必须写在 `args` 里。
+- 网页界面在 `listen` 地址上（默认只监听本机）。登录密码就是 `auth.jwtSecret`；首次启动时为空则自动生成并写回配置文件。这个文件要当作密钥保护，不要打印或提交。
+- 管理 API 前缀为 `/api/v1`。需要远程访问时请走 SSH 隧道或 TLS 反向代理，不要直接对公网开放。
+- 在 Linux 上可以从网页界面（或 `POST /api/v1/service/install`）把 Guardian 自身安装为 systemd 服务 `openppp2-guardian`。
+- Guardian 用伪终端运行 `ppp`，控制台界面和日志都能在网页里查看。
 
-```json
-{
-  "concurrent": 2,
-  "key": {
-    "kf": 154543927,
-    "kx": 128,
-    "kl": 10,
-    "kh": 12,
-    "protocol": "aes-128-cfb",
-    "protocol-key": "OpenPPP2-Test-Protocol-Key",
-    "transport": "aes-256-cfb",
-    "transport-key": "OpenPPP2-Test-Transport-Key"
-  },
-  "client": {
-    "guid": "{F4519CF1-7A8A-4B00-89C8-9172A87B96DB}",
-    "server": "ppp://192.168.0.1:20000/"
-  }
-}
+## 5. Windows
+
+- 以管理员身份运行；`ppp.exe` 旁边保留 `Driver\` 目录（Wintun / TAP 驱动）。
+- 开机自启可用“任务计划程序”：触发器选“系统启动时”，勾选“使用最高权限运行”，操作为 `ppp.exe --mode=client --config=C:\openppp2\client.json`，起始位置设为程序目录。
+- 停止时优先用控制台 `openppp2 exit` 或 `Ctrl+C`，以便恢复路由和 DNS。
+
+## 6. macOS：launchd
+
+```xml
+<!-- /Library/LaunchDaemons/org.openppp2.client.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>org.openppp2.client</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/openppp2/ppp</string>
+    <string>--mode=client</string>
+    <string>--config=/opt/openppp2/client.json</string>
+  </array>
+  <key>WorkingDirectory</key><string>/opt/openppp2</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>
 ```
 
----
+```bash
+sudo launchctl load -w /Library/LaunchDaemons/org.openppp2.client.plist
+```
 
-## 错误码参考
+## 7. 同一台机器运行多个实例
 
-部署相关的 `ppp::diagnostics::ErrorCode` 值：
+同一模式下，**同一个配置文件**只能运行一个实例（第二个会报 `AppAlreadyRunning`）。使用不同的配置文件即可同时运行多个，但要注意：
 
-| ErrorCode | 说明 |
-|-----------|------|
-| `AppPrivilegeRequired` | 进程需要管理员/root 权限 |
-| `ConfigFileNotFound` | 任何搜索路径都找不到配置文件 |
-| `ConfigLoadFailed` | 找到配置文件但解析失败 |
-| `NetworkInterfaceOpenFailed` | 虚拟网卡无法打开 |
-| `SocketBindFailed` | TCP 或 WebSocket 监听器绑定失败 |
-| `FirewallCreateFailed` | 防火墙子系统初始化失败 |
-| `VEthernetManagedConnectUrlEmpty` | Go backend WebSocket 连接失败 |
-| `IPv6TransitTapOpenFailed` | IPv6 transit TAP 打开失败 |
-| `AppAlreadyRunning` | 已有另一个 ppp 实例在运行 |
+- 服务端实例的监听端口不能冲突；
+- 多个 TUN 客户端需要不同的虚拟网卡名（`--tun=`）和不重叠的路由。
 
----
+## 8. 升级与回滚
+
+1. 备份当前的 `ppp` 和配置文件。
+2. 新版本放到新目录，先用 `./ppp --help` 确认能运行，客户端可先用代理模式试连。
+3. 停止服务 → 替换可执行文件 → 启动；查看启动输出中有无 `[security] WARN` 或配置相关警告。
+4. 有问题时换回旧的可执行文件和配置并重启。
+
+升级前请阅读发行说明。v2.1.7 起新增 `client.policy` 与 `ppp policy`；`client.policy` 与旧版分流字段不能混用（见 [策略 v2](../guides/POLICY_CLI_CN.md)）。
+
+## 9. 常见拓扑
+
+| 拓扑 | 参考 |
+|---|---|
+| 单服务端 + 客户端（原生 TCP） | [编写配置文件](../getting-started/CONFIGURE_CN.md) |
+| 服务端在 Nginx / CDN 后面（WS / WSS） | [用户手册 · 放在 Nginx 后面](../getting-started/USER_MANUAL_CN.md) |
+| 多节点 + 集中认证计费 | [管理后端](../guides/MANAGEMENT_BACKEND_CN.md) |
+| 站点互联 | [对端前缀路由](../guides/PEER_PREFIX_ROUTING_CN.md) |
 
 ## 相关文档
 
-- [`CONFIGURATION_CN.md`](../reference/CONFIGURATION_CN.md)
-- [`CLI_REFERENCE_CN.md`](../reference/CLI_REFERENCE_CN.md)
-- [`PLATFORMS_CN.md`](../guides/PLATFORMS_CN.md)
-- [`ROUTING_AND_DNS_CN.md`](../guides/ROUTING_AND_DNS_CN.md)
-- [`OPERATIONS_CN.md`](OPERATIONS_CN.md)
-- [`MANAGEMENT_BACKEND_CN.md`](../guides/MANAGEMENT_BACKEND_CN.md)
-- [`SERVER_ARCHITECTURE_CN.md`](../architecture/SERVER_ARCHITECTURE_CN.md)
-- [`CLIENT_ARCHITECTURE_CN.md`](../architecture/CLIENT_ARCHITECTURE_CN.md)
-
----
-
-## 主结论
-
-OPENPPP2 的部署不是"运行一个二进制"这么简单。它是一个分阶段的 host + node setup，必须让可执行文件、权限、网卡、路由、监听器和可选 backend 一起对齐。只有当所有四个表面——host、listener、data plane 和 management——都正确配置并运行时，部署才算健康。
+- [运维与排障](OPERATIONS_CN.md) · [安全](SECURITY_CN.md) · [平台说明](../guides/PLATFORMS_CN.md)

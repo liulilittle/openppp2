@@ -13,6 +13,7 @@ Start with [System Architecture](ARCHITECTURE.md) for the process and component 
 | Question | Canonical page |
 |---|---|
 | How does the process start, run, stop, or restart? | [Startup and Lifecycle](STARTUP_AND_LIFECYCLE.md) |
+| How are host network changes owned, verified, and restored? | [Network Lifecycle Contract](NETWORK_LIFECYCLE_CONTRACT.md) |
 | What owns client or server sessions? | [Client Architecture](CLIENT_ARCHITECTURE.md) · [Server Architecture](SERVER_ARCHITECTURE.md) |
 | How do carriers, framing, and the handshake fit together? | [Transport and Protected Transmission](TRANSMISSION.md) · [Handshake Sequence](HANDSHAKE_SEQUENCE.md) |
 | How do tunnel actions and packets move through the runtime? | [Tunnel Design](TUNNEL_DESIGN.md) · [Packet Lifecycle](PACKET_LIFECYCLE.md) |
@@ -23,6 +24,8 @@ Start with [System Architecture](ARCHITECTURE.md) for the process and component 
 
 - [System Architecture](ARCHITECTURE.md) · [中文](ARCHITECTURE_CN.md)
 - [Startup and Lifecycle](STARTUP_AND_LIFECYCLE.md) · [中文](STARTUP_AND_LIFECYCLE_CN.md)
+- [Network Lifecycle Contract](NETWORK_LIFECYCLE_CONTRACT.md) · [中文](NETWORK_LIFECYCLE_CONTRACT_CN.md)
+- [Network Lifecycle Issue Pack](NETWORK_LIFECYCLE_ISSUES.md)
 - [Client Architecture](CLIENT_ARCHITECTURE.md) · [中文](CLIENT_ARCHITECTURE_CN.md)
 - [Server Architecture](SERVER_ARCHITECTURE.md) · [中文](SERVER_ARCHITECTURE_CN.md)
 - [Transport and Protected Transmission](TRANSMISSION.md) · [中文](TRANSMISSION_CN.md)
@@ -35,6 +38,7 @@ Start with [System Architecture](ARCHITECTURE.md) for the process and component 
 - [DNS Module Design](DNS_MODULE_DESIGN.md) · [中文](DNS_MODULE_DESIGN_CN.md)
 - [Telemetry and Observability](OTEL_DESIGN.md) · [中文](OTEL_DESIGN_CN.md)
 - [Engineering Concepts](ENGINEERING_CONCEPTS.md) · [中文](ENGINEERING_CONCEPTS_CN.md)
+- [Platform Integration](PLATFORM_INTEGRATION.md) · [中文](PLATFORM_INTEGRATION_CN.md)
 
 ## Experimental or design-bound material
 

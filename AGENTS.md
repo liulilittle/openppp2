@@ -1,163 +1,131 @@
 # AGENTS.md
 
-## Cursor Cloud specific instructions
+## Scope
 
-OPENPPP2 is a cross-platform C++ VPN/tunnel engine (the `ppp` binary) plus
-management tooling (Go Guardian daemon + Svelte Web UI), and mobile apps
-(Android/iOS). The startup update script installs the C++ test toolchain
-(`cmake ninja-build clang llvm libboost-all-dev libssl-dev libstdc++-14-dev`).
-Go 1.22 and Node 22 are already in the base image.
+This guide applies to the repository. Follow explicit user instructions and
+any applicable instructions in a more specific directory. Verify available
+tools and dependencies; do not assume a particular machine or cloud image.
 
-### What the dev environment covers
+## Project Map
 
-| Service | Lint / Test / Build / Run | Notes |
-|---------|---------------------------|-------|
-| C++ standalone unit tests (`tests/cpp`) | lint: `bash tools/check_include_boundaries.sh`, `bash tools/check_vcxproj_sources.sh`; test/build: `scripts/run-cpp-tests.sh` (cmake+ninja+clang → `ctest`); TSan: `scripts/run-cpp-tsan-tests.sh` (separate `build/test-tsan` dir, `ENABLE_TSAN=ON`, mutually exclusive with ASan/UBSan) | Does **not** need the full native dep tree. See `docs/TESTING.md`. XTCP unit tests are opt-in: configure with `-DENABLE_XTCP_TESTS=ON` (requires `third-party/xtcp`; e.g. the `build/xtcp-lab-tests` dir). |
-| XTCP upstream fault suite | `bash tools/run_xtcp_fault_suite.sh` (needs `third-party/xtcp`; prepare via `bash tools/prepare_xtcp.sh`) | Runs the patched upstream lab tests; 20 cases. See `docs/design/XTCP_INTEGRATION_CN.md`. |
-| Linux netns E2E (XTCP) | `XTCP_SOAK_SECONDS=3 XTCP_E2E_CHURN=16 bash tests/integration/linux/xtcp_tap_netns_e2e.sh` (defaults SOAK=60/CHURN=512; needs root + `ip netns`) | Full battery incl. netem, soak, stats-json and route/DNS rollback. |
-| Go Guardian (`go/guardian`) | test: `go test ./...`; build: `go build .`; run: `./guardian --config=guardian.json` | HTTP API + embedded Web UI on `127.0.0.1:18080`. |
-
-### Non-obvious caveats
-
-- **clang needs `libstdc++-14-dev`.** clang-18 selects the GCC-14 toolchain, but
-  the base image only ships `libstdc++-13-dev`, so linking fails with
-  `cannot find -lstdc++` until `libstdc++-14-dev` is installed (in the update
-  script).
-- **Guardian Web UI is pre-built and checked in** at `go/guardian/webui/dist`
-  and embedded via `go:embed`, so the Guardian binary builds/runs without Node.
-  Only run `npm ci && npm run dev` (or `npm run build`) in `go/guardian/webui`
-  if you are changing the frontend.
-- **Guardian login password = `auth.jwtSecret`** in the guardian config JSON. On
-  first run Guardian generates a random secret and persists it to the config
-  file; set a known `jwtSecret` in a `guardian.json` to log into the Web UI. The
-  REST API is under the `/api/v1` prefix (e.g. `POST /api/v1/auth/login` with
-  body `{"password":"<jwtSecret>"}`).
-- **Creating a profile via the Web UI "Add" button** posts empty JSON `{ }`,
-  which the backend rejects (`profile.JSON does not contain a known ppp key`).
-  Seed profiles with valid content via `PUT /api/v1/profiles/{name}`, then
-  edit/validate/save them through the UI.
-
-### Out of scope in this environment
-
-- **The full `ppp` core binary** (top-level `CMakeLists.txt`) is **not** built
-  here: it requires third-party libraries (Boost 1.86, OpenSSL 3.0.13, jemalloc)
-  under `THIRD_PARTY_LIBRARY_DIR` (default `/root/dev`), which is not provisioned.
-  The `tests/cpp` suite covers C++ logic without that tree.
-- **Android / iOS** apps need Flutter + Android NDK / Xcode.
-- **Go managed backend** (`go/ppp`) needs MySQL + Redis (sentinel).
-
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
-
-This project is indexed by GitNexus as **openppp2**. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
-
-## Environment Setup
-
-GitNexus is installed at `/tmp/gx-169/package/dist/cli/index.js` (not on PATH).
-All CLI commands must set these environment variables:
-
-```bash
-export GITNEXUS_HOME=/tmp/gitnexus-home
-export GITNEXUS_DISABLE_CHECKPOINT=1
-export GITNEXUS_LBUG_EXTENSION_INSTALL=never  # use `auto` for analyze (FTS)
-export HF_HOME=/tmp/hf-cache
-export NODE_OPTIONS="--max-old-space-size=4096 --max-semi-space-size=64"
-```
-
-Verify with: `/tmp/gx-169/package/dist/cli/index.js status`
-
-The MCP server is registered as `gitnexus` in Codex config (`codex mcp list`).
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
-
-## Reindexing
-
-Full rebuild (required when the index is stale or corrupted):
-
-```bash
-/tmp/gx-169/package/dist/cli/index.js analyze --force \
-  --skip-git --skip-agents-md --skip-skills \
-  --max-file-size 512 --workers 1 --worker-timeout 300
-```
-
-The `--workers 1 --worker-timeout 300` flags are **required** for the large C++ files
-in this repo (`VEthernetExchanger.cpp`, `XtcpRuntime.cpp`, `TapLinux.cpp`, `sockets.c`
-are 134-223KB). Without them, tree-sitter native workers time out and abort.
-
-FTS-only repair (fast, no full reparse):
-
-```bash
-/tmp/gx-169/package/dist/cli/index.js analyze --repair-fts \
-  --skip-git --skip-agents-md --max-file-size 512
-```
-
-Embedding regeneration (uses local ONNX model cached at `/tmp/hf-cache`):
-
-```bash
-/tmp/gx-169/package/dist/cli/index.js analyze --embeddings \
-  --skip-git --skip-agents-md --skip-skills \
-  --max-file-size 512 --workers 1 --worker-timeout 300
-```
-
-## Known Issues and Workarounds
-
-1. **Tree-sitter crash on large files.** Files >32KB crash the direct string
-   parser with `Invalid argument` or `Napi::Error`. GitNexus's
-   `parseSourceSafe` callback-chunking handles this, but only when the worker
-   has enough time. Always use `--workers 1 --worker-timeout 300`.
-
-2. **WAL corruption after interrupted analysis.** If you see
-   `Storage exception: Checksum verification failed, the WAL file is corrupted`,
-   the index is corrupted. Run `--force` to rebuild. Do NOT use `--repair-fts`
-   on a corrupted index — it will fail with the same error.
-
-3. **Sandbox blocks network.** The HuggingFace embedding model is cached at
-   `/tmp/hf-cache` (one-time download via proxy `10.1.0.36:2091`). If the cache
-   is gone, embeddings cannot regenerate without network access.
-
-4. **`/tmp` is ephemeral.** GitNexus install, index home, and HF cache all live
-   under `/tmp`. After a container restart, the GitNexus binary may be gone but
-   the index at `/home/openppp2/.gitnexus/` persists.
-
-5. **`GITNEXUS_DISABLE_CHECKPOINT=1` is required.** LadybugDB checkpoint
-   segfaults in this sandbox. This env var is already set in the MCP config
-   and must also be set for CLI commands.
-
-6. **Corrupted WAL warnings.** `lbug.wal` without `lbug.shadow` is normal
-   after a clean shutdown — LadybugDB relies on WAL replay. Only treat it as
-   corruption if analyze also fails.
-
-## Resources
-
-| Resource | Use for |
+| Location | Purpose |
 |----------|---------|
-| `gitnexus://repo/openppp2/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/openppp2/clusters` | All functional areas |
-| `gitnexus://repo/openppp2/processes` | All execution flows |
-| `gitnexus://repo/openppp2/process/{name}` | Step-by-step execution trace |
+| `ppp/`, `common/`, `main.cpp` | Cross-platform C++ VPN/tunnel engine and supporting libraries |
+| `desktop/client/` | Svelte frontend and Rust/Tauri Windows desktop client |
+| `go/guardian/` | Guardian daemon, HTTP API, and embedded Svelte management UI |
+| `go/ppp/` | Managed backend requiring MySQL and Redis |
+| `android/`, `ios/` | Mobile clients and platform integration |
+| `windows/`, `linux/`, `darwin/`, `Driver/`, `sln/` | Platform code, drivers, and auxiliary projects |
+| `tests/`, `bench/`, `benchmarks/` | Unit, integration, fault, and performance checks |
+| `cmake/`, `builds/`, `scripts/`, `tools/`, `.github/` | Build definitions, tooling, deployment, and CI |
 
-## CLI
+## Working Rules
 
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+- Read the affected code and its callers before editing. Prefer existing patterns
+  and keep changes limited to the requested behavior.
+- Inspect Git status before editing. Preserve unrelated user changes.
+- Do not treat platform-specific or optional code as unused merely because it is
+  not built on the current host.
+- Before deleting files, check build, packaging, runtime, and documentation
+  references. Inspect generated directories for local configuration and backups.
+- Never launch a PPP client, alter routes or DNS, install drivers, change system
+  proxy settings, or interrupt an active connection without user authorization.
+  If the user requires offline testing, use compilation and isolated unit tests.
+- A running process or startup log alone does not prove a working VPN session.
+- Report what was checked and any unverified platform or runtime behavior.
 
-<!-- gitnexus:end -->
+## Validation
+
+Run relevant checks from the repository root unless stated otherwise. Select
+checks for the affected component; do not run privileged network tests as part
+of an ordinary unit-test pass.
+
+| Component | Commands | Prerequisites and limits |
+|-----------|----------|--------------------------|
+| C++ source layout | `bash tools/check_include_boundaries.sh`; `bash tools/check_vcxproj_sources.sh` | Shell and script dependencies; no PPP startup |
+| Standalone C++ tests | `bash scripts/run-cpp-tests.sh` | CMake, Ninja, compatible C++ compiler, Boost/OpenSSL development dependencies; see `docs/development/TESTING_CN.md` |
+| C++ thread sanitizer | `bash scripts/run-cpp-tsan-tests.sh` | Supported toolchain; separate build directory; do not combine TSan with ASan/UBSan |
+| XTCP fault suite | `bash tools/run_xtcp_fault_suite.sh` | Optional `third-party/xtcp`; prepare with `bash tools/prepare_xtcp.sh` if needed |
+| Linux network E2E | `bash tests/integration/linux/xtcp_tap_netns_e2e.sh` | Explicit authorization, Linux, root, and `ip netns`; exercises network state and rollback |
+| Guardian | `go test ./...`; `go build .` in `go/guardian` | Compatible Go toolchain; service startup is separate from validation |
+| Desktop frontend | `npm ci`; `npm test`; `npm run build` in `desktop/client` | Compatible Node/npm; versions and scripts are defined in `package.json` and its lockfile |
+| Desktop Rust backend | `cargo test --manifest-path src-tauri/Cargo.toml` in `desktop/client` | Rust and Tauri platform dependencies; build frontend assets first |
+
+The full C++ kernel needs its native dependency tree. Consult `CMakeLists.txt`
+and the relevant platform build configuration instead of assuming a globally
+installed dependency version or a fixed `THIRD_PARTY_LIBRARY_DIR`.
+Android requires Flutter and the Android SDK/NDK; iOS requires the appropriate
+Flutter/Xcode environment. Missing dependencies are environment limits, not
+reasons to delete platform code.
+
+### Windows and Desktop
+
+- Build `ppp.vcxproj` from a configured Visual Studio developer environment.
+  Prefer the 64-bit host tools to avoid linker memory limits. A typical command
+  is `MSBuild ppp.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PreferredToolArchitecture=x64 /p:VcpkgTriplet=x64-windows-static /m:2`.
+  Verify that the selected vcpkg triplet is provisioned before building.
+- Keep build output separate from binaries currently in use. Building a kernel
+  does not authorize launching it or replacing an active installation.
+- Driver runtime files are copied by the project build target. Keep `Driver/`
+  and verify packaging when changing Windows build behavior.
+- Desktop development uses Vite and `npm run desktop`; normal Cargo builds use
+  embedded frontend assets. See `desktop/README.md` and
+  `docs/testing/DESKTOP_GUI.md` for the workflow and acceptance checks.
+- The desktop client uses an external compatible `ppp.exe`. Virtual-adapter
+  mode requires elevation; do not invoke it for routine offline testing.
+
+### Guardian
+
+- `go/guardian/webui/dist` is tracked and embedded with `go:embed`. It is a
+  required build input, not disposable output. Rebuild it when changing the UI.
+- Guardian defaults to a loopback HTTP listener. Use an explicit local config
+  to run it; do not expose its management API without authorization.
+- The current login password is `auth.jwtSecret`. First startup can generate
+  and persist that value. Treat the config as secret; never print or commit it.
+  API routes use the `/api/v1` prefix.
+- The profile Add workflow submits the current default form as its initial
+  profile. Empty request bodies to profile save/validate endpoints return HTTP
+  400 with an explicit error; `{}` remains invalid because it has no known PPP
+  key.
+- The API sends no CORS headers: foreign-Origin POST/PUT/DELETE get 403, and
+  loopback listeners reject unknown Host headers (keep Host when proxying).
+  Login/password endpoints rate-limit per IP (HTTP 429). Guardian refuses to
+  start on a non-loopback `listen` with `auth.enabled=false`. Binaries are only
+  executed for version detection when named like ppp and inside `binariesDir`
+  or auto-discovered.
+
+## Code Analysis
+
+Use GitNexus when it is available and its repository index is current:
+
+- Before modifying a function, class, or method, run upstream impact analysis
+  and inspect its callers and affected execution flows. Explain HIGH/CRITICAL
+  findings before proceeding.
+- Use query/context tools to trace unfamiliar behavior and the rename tool for
+  symbol renames. Run change detection before committing.
+- Configure installation paths, storage, model caches, and proxy settings
+  locally. Do not put machine-specific values in this file.
+- Rebuild stale or corrupted indexes using the installed version's documented
+  commands. For large files, use supported worker limits and adequate timeouts.
+
+If GitNexus is unavailable, use `rg`, source inspection, build definitions,
+`git diff`, and focused tests to assess the same scope. State the limitation;
+do not claim GitNexus checks ran or block routine work solely on its absence.
+Before committing, inspect the staged diff and run `git diff --cached --check`.
+
+## Secrets and Local Artifacts
+
+- Never commit real node addresses/configurations, subscription credentials,
+  passwords, private keys, access tokens, or internal infrastructure details.
+  Use clearly marked test values and documentation placeholders.
+- Keep private runtime/deployment material in ignored local locations such as
+  `build/private/`. Ignoring a path does not untrack previously committed files.
+- Avoid printing full configs or connection URLs. Redact credentials in logs,
+  diagnostics, test output, and summaries.
+- Treat node exports, application-data files, backups, and crash dumps as
+  potentially sensitive; do not delete them as caches without inspecting purpose.
+- Before committing, inspect staged filenames and content for sensitive data.
+  Distinguish new findings from existing sample credentials or historical files.
+  Report existing committed secrets without reproducing their values.
+- Removing a secret from the current tree does not remove it from Git history.
+  Rotation and history rewriting are separate actions requiring appropriate scope.

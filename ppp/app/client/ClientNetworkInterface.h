@@ -24,6 +24,9 @@ namespace ppp {
                 ppp::vector<boost::asio::ip::address>                           DnsAddresses;
 
                 boost::asio::ip::address                                        IPAddress;
+                // Global IPv6 addresses on the same physical interface. This
+                // is a snapshot used only for P2P transport candidates.
+                ppp::vector<boost::asio::ip::address>                           IPv6Addresses;
                 boost::asio::ip::address                                        GatewayServer;
                 boost::asio::ip::address                                        SubmaskAddress;
 

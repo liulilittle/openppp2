@@ -62,6 +62,8 @@ namespace ppp {
             bool                                                                                ShutdownSend() noexcept override;
             /** @brief Reports a clean TCP peer FIN observed by ReadBytes. */
             bool                                                                                IsReceiveClosed() const noexcept override;
+            /** @brief Keeps the carrier alive on a clean peer FIN (any role); see ITransmission. */
+            bool                                                                                EnableReceiveHalfClose() noexcept override;
             /**
              * @brief Reads an exact number of bytes from the socket.
              * @param y Coroutine yield context.
@@ -87,12 +89,30 @@ namespace ppp {
              * @return true if write is scheduled; otherwise false.
              */
             virtual bool                                                                        DoWriteBytes(std::shared_ptr<Byte> packet, int offset, int packet_length, const AsynchronousWriteBytesCallback& cb) noexcept;
+            /** @brief TCP is a byte stream, so queued frames may be written with one gathered write. */
+            virtual bool                                                                        CanGatherWrites() noexcept override { return true; }
+            /** @brief Writes several queued frames with one gathered socket write. */
+            virtual bool                                                                        DoWriteBytesGather(const WriteSegments& segments, const AsynchronousWriteBytesCallback& cb) noexcept override;
+
+        private:
+            /** @brief Starts (inline on the socket executor, otherwise posted) one async_write of @p buffers kept alive by @p owner. */
+            template <typename TBuffers, typename TOwner>
+            bool                                                                                StartWrite(const TBuffers& buffers, const TOwner& owner, int packet_length, const AsynchronousWriteBytesCallback& cb) noexcept;
 
         private:
             /** @brief Performs one-time cleanup of socket-related resources. */
             void                                                                                Finalize() noexcept;
             /** @brief Migrates the socket to the scheduler selected by Executors. */
             virtual bool                                                                        ShiftToScheduler() noexcept override;
+            /** @brief Suspends the coroutine until at least @p minimum bytes (up to @p capacity) are read. */
+            void                                                                                ReadAtLeast(YieldContext& y, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket,
+                Byte* buffer, std::size_t capacity, std::size_t minimum, std::size_t& transferred, boost::system::error_code& read_ec) noexcept;
+
+        private:
+            /** @brief Read-ahead buffer size; one socket read can bring in a header and the frame behind it. */
+            static constexpr std::size_t                                                        kReadAheadBufferSize = PPP_BUFFER_SIZE;
+            /** @brief Remainders at least this large are read directly into the caller's buffer. */
+            static constexpr std::size_t                                                        kReadAheadDirectThreshold = PPP_BUFFER_SIZE / 4;
 
         private:
 #if defined(_WIN32)
@@ -105,8 +125,18 @@ namespace ppp {
             std::atomic<bool>                                                                   send_shutdown_ = { false };
             /** @brief Receive direction saw a clean peer FIN rather than a transport failure. */
             std::atomic<bool>                                                                   receive_closed_ = { false };
+            /** @brief Owner opted into receive half-close (server-side per-flow relay). */
+            std::atomic<bool>                                                                   receive_half_close_ = { false };
             /** @brief Owned connected TCP socket. */
             std::shared_ptr<boost::asio::ip::tcp::socket>                                       socket_;
+            /**
+             * @brief Bytes read ahead of the current ReadBytes() request.
+             * @note Only the transmission's single reader coroutine touches these; the socket
+             *       is never read anywhere else, so read-ahead cannot steal bytes.
+             */
+            std::shared_ptr<Byte>                                                               read_buffer_;
+            std::size_t                                                                         read_buffered_begin_ = 0;
+            std::size_t                                                                         read_buffered_end_ = 0;
             /** @brief Cached peer endpoint captured at construction. */
             boost::asio::ip::tcp::endpoint                                                      remoteEP_;
             /** @brief Main VPN session vs mux=0 per-flow child transmission. */

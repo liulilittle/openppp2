@@ -25,3 +25,11 @@ test('release builds use embedded assets while the desktop script stays in dev m
   const packageJson = JSON.parse(readFileSync(resolve(clientDir, 'package.json'), 'utf8'))
   assert.match(packageJson.scripts.desktop, /--no-default-features/)
 })
+
+test('Windows kernel permits ordinary proxy-mode launches', () => {
+  const project = readFileSync(resolve(clientDir, '../../ppp.vcxproj'), 'utf8')
+  const levels = [...project.matchAll(/<UACExecutionLevel>([^<]+)<\/UACExecutionLevel>/g)]
+  assert.equal(levels.length, 6)
+  assert(levels.every((match) => match[1] === 'AsInvoker'))
+  assert.match(project, /<AdditionalOptions>\/utf-8 (?:[^<]* )?%\(AdditionalOptions\)<\/AdditionalOptions>/)
+})

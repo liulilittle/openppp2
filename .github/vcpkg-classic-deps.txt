@@ -8,6 +8,7 @@ boost-asio
 boost-beast
 boost-context
 boost-coroutine
+boost-crc
 boost-date-time
 boost-filesystem
 boost-interprocess

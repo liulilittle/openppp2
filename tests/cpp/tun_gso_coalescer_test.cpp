@@ -11,7 +11,22 @@
 #include <string>
 #include <vector>
 
+BOOST_AUTO_TEST_CASE(write_diagnostic_sum_and_max) {
+    ppp::tap::TunWriteDiagnostics counters;
+    counters.Write(1500, 1);
+    counters.Write(6000, 4);
+    counters.Write(1000, 1);
+    BOOST_TEST(counters.calls.load() == 3u);
+    BOOST_TEST(counters.bytes.load() == 8500u);
+    BOOST_TEST(counters.segments.load() == 6u);
+    BOOST_TEST(counters.max_bytes.load() == 6000u);
+    BOOST_TEST(counters.max_segments.load() == 4u);
+}
+
 namespace {
+// These cases pin the historical 4-segment cap; the production default is larger.
+const bool kPinnedSegmentCap = ::setenv("OPENPPP2_TAP_GSO_SEGMENTS", "4", 1) == 0;
+
 using ppp::tap::TunGsoCoalescer;
 
 struct Spec { uint16_t payload = 100; uint32_t seq = 1000; uint32_t ack = 7; uint16_t window = 42; bool psh = false; bool control = false; bool tcp_options = false; uint16_t dport = 2; };
@@ -83,6 +98,22 @@ BOOST_AUTO_TEST_CASE(cap_four_builds_one_tcpv4_gso_frame) {
     BOOST_TEST(be16(tcp + 16) == expected_partial);
 }
 
+BOOST_AUTO_TEST_CASE(flush_diagnostics_count_only_nonempty_batches) {
+    auto& counter = ppp::tap::TunWriteDiagnostics::Instance().flushes[
+        static_cast<size_t>(TunGsoCoalescer::FlushReason::Explicit)];
+    const auto before = counter.load(std::memory_order_relaxed);
+    Sink sink;
+    TunGsoCoalescer c([&sink](const uint8_t* p, size_t n) { return sink(p, n); });
+    BOOST_REQUIRE(c.Flush());
+    BOOST_TEST(counter.load() == before);
+    const auto p = packet();
+    BOOST_REQUIRE(c.Push(p.data(), p.size(), 1000));
+    BOOST_REQUIRE(c.Flush(TunGsoCoalescer::FlushReason::Explicit, 1001));
+    BOOST_TEST(counter.load() == before + 1);
+    BOOST_REQUIRE(c.Flush());
+    BOOST_TEST(counter.load() == before + 1);
+}
+
 BOOST_AUTO_TEST_CASE(retained_owner_payloads_are_written_as_iovecs) {
     std::vector<uint8_t> frame;
     const auto first = packet({.payload = 100, .seq = 1000});
@@ -137,7 +168,7 @@ BOOST_AUTO_TEST_CASE(runtime_segment_cap_can_reach_maximum_without_overflow) {
         BOOST_REQUIRE(c.Push(value.data(), value.size(), 1000 + i));
     }
     BOOST_REQUIRE(c.Flush());
-    ::unsetenv("OPENPPP2_TAP_GSO_SEGMENTS");
+    ::setenv("OPENPPP2_TAP_GSO_SEGMENTS", "4", 1);
 
     // 45 * 1460 + 40 exceeds IPv4's 16-bit total_length. Even with cap 48,
     // the coalescer must flush the largest legal first frame and continue.

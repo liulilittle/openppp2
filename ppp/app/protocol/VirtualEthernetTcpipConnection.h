@@ -15,6 +15,7 @@ namespace ppp::app::runtime { class XtcpDirectQueueTelemetry; }
 #include <ppp/net/Firewall.h>
 #include <ppp/transmissions/ITransmission.h>
 #include <ppp/app/protocol/XtcpDirectIo.h>
+#include <ppp/app/protocol/XtcpDirectUploadQueue.h>
 #include <ppp/app/protocol/DirectReadWaiterState.h>
 #include <ppp/app/protocol/VirtualEthernetLogger.h>
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
@@ -32,6 +33,9 @@ namespace ppp::app::runtime { class XtcpDirectQueueTelemetry; }
 namespace ppp {
     namespace app {
         namespace protocol {
+            /** @brief Direct-read waiter keyed by anchored wakeups (never a raw coroutine pointer). */
+            typedef BasicDirectReadWaiterState<ppp::coroutines::YieldContext::Anchor> DirectReadWaiterState;
+
             /**
              * @brief Bridges a local TCP socket and a virtual Ethernet transmission channel.
              */
@@ -98,6 +102,15 @@ namespace ppp {
             public:
                 /** @brief Checks whether the bridge is currently linked. @return True when not disposed and connected. @note Lightweight state check. */
                 bool                                                            IsLinked()          noexcept { return !disposed_ && connected_; }
+                /**
+                 * @brief Relays a clean carrier FIN as a TCP half-close of the local socket.
+                 * @return true when the carrier supports receive half-close.
+                 * @note Server-side per-flow relays call this before Run(). Without it a
+                 *       client upload half-close disposed the bridge and closed the target
+                 *       socket while echo/response bytes were unread, so the kernel sent RST
+                 *       and discarded upload bytes still queued for the target.
+                 */
+                bool                                                            EnableReceiveHalfCloseRelay() noexcept;
                 /** @brief Gets a shared self-reference. @return Shared pointer to current object. @note Requires object ownership by `shared_ptr`. */
                 std::shared_ptr<VirtualEthernetTcpipConnection>                 GetReference()      noexcept { return shared_from_this(); }
                 /** @brief Gets IO context. @return Context shared pointer. @note No ownership transfer. */
@@ -200,6 +213,8 @@ namespace ppp {
                 bool                                                            StartDirectBridge(const DirectReadHandler& on_data, const DirectCloseHandler& on_close, const DirectWritableHandler& on_writable) noexcept;
                 DirectIoResult                                                  SendDirectToPeer(const Byte* data, std::uint32_t length,
                     XtcpUploadBudget::Reservation&& credit) noexcept;
+                /** @brief Starts the direct upload writer once for the sends queued by SendDirectToPeer(). */
+                bool                                                            FlushDirectPeerSend() noexcept;
                 void                                                            CompleteDirectDownload(
                     const XtcpDirectReadReservation& reservation,
                     XtcpDirectCompletion completion) noexcept;
@@ -243,9 +258,11 @@ namespace ppp {
                  * @note Loop ends on read/write failure or disposal.
                  */
                 bool                                                            ForwardTransmissionToSocket(YieldContext& y) noexcept;
+                bool                                                            RelayReceiveHalfClose(YieldContext& y) noexcept;
                 bool                                                            RunDirectUpload(YieldContext& y) noexcept;
                 bool                                                            RunDirectDownload(YieldContext& y) noexcept;
                 bool                                                            StartDirectUploadWriter() noexcept;
+                bool                                                            StartDirectUploadWriterIfNeeded() noexcept;
                 /**
                  * @brief Arms asynchronous read from socket.
                  * @param buffer Receive buffer.
@@ -339,11 +356,9 @@ namespace ppp {
                 Int128                                                          id_        = 0; ///< Logical connection identifier assigned at construction time.
                 std::shared_ptr<boost::asio::ip::tcp::socket>                   socket_;        ///< Local TCP socket bridged to the virtual Ethernet transmission.
                 ITransmissionPtr                                                transmission_; ///< Virtual Ethernet transmission channel used for protocol framing.
-                static constexpr size_t                                         kDirectQueueMaxPackets = 4096;
-                static constexpr size_t                                         kDirectQueueLowPackets = kDirectQueueMaxPackets / 2;
-                static constexpr size_t                                         kDirectQueueMaxBytes = 32 * 1024 * 1024;
-                static constexpr size_t                                         kDirectQueueLowBytes = kDirectQueueMaxBytes / 2;
                 static constexpr int                                            kDirectCloseDrainPollMilliseconds = 5;
+                static constexpr int                                            kHalfClosePollMilliseconds = 20;
+                std::atomic<bool>                                               receive_half_close_relay_ = { false };
                 enum class DirectSendCloseState : uint8_t {
                     Open,
                     Draining,
@@ -351,13 +366,10 @@ namespace ppp {
                     Disposed,
                 };
                 std::mutex                                                      direct_sync_;
-                std::deque<std::shared_ptr<XtcpUploadChunk>>                      direct_upload_queue_;
-                size_t                                                          direct_upload_bytes_ = 0;
-                size_t                                                          direct_upload_packets_ = 0;
+                XtcpDirectUploadQueue                                           direct_upload_queue_{XtcpDirectUploadQueue::DefaultMode()};
                 bool                                                            direct_bridge_started_ = false;
                 bool                                                            direct_upload_writer_started_ = false;
                 DirectSendCloseState                                            direct_send_close_state_ = DirectSendCloseState::Open;
-                bool                                                            direct_upload_backpressured_ = false;
                 DirectReadHandler                                               direct_read_handler_;
                 DirectCloseHandler                                              direct_close_handler_;
                 DirectWritableHandler                                           direct_writable_handler_;

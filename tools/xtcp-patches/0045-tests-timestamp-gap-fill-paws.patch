@@ -1,0 +1,80 @@
+diff --git a/tests/test_ts_ooo_drain.cpp b/tests/test_ts_ooo_drain.cpp
+--- a/tests/test_ts_ooo_drain.cpp
++++ b/tests/test_ts_ooo_drain.cpp
+@@ -3,11 +3,13 @@
+  * @brief RFC 7323 s4.3(C): echo the timestamp of the segment filling
+  *        the hole, without replacing it with a cached OOO timestamp.
+  *
+- * After a live handshake, this test hand-builds two timestamped peer
+- * data segments: segment 2 delivered out of order (buffered),
++ * The stack's own data segments carry no TSopt by design, so the
++ * out-of-order-drain anchor only engages for a timestamped peer (Linux
++ * sends TSopt on every data segment). This test hand-builds two
++ * timestamped data segments: segment 2 delivered out of order (buffered),
+  * then segment 1 (in-order, drains segment 2). The receiver's ACK must
+  * echo tsecr == segment 1's TSval. A subsequent stale segment must still
+- * fail PAWS in established and closing states.
++ * fail PAWS, including after application backpressure and ResumeReceive.
+  */
+ 
+ #include <xtcp/buf/bufref.h>
+@@ -155,7 +157,7 @@
+ 
+ }  // namespace
+ 
+-static void RunCase(bool closing) {
++static void RunCase(bool resume, bool closing) {
+     {
+         xtcp::ndi::ManualBackend backend_a, backend_b;
+         xtcp::XtcpStack stack_a(&backend_a);
+@@ -178,8 +180,10 @@
+             server_conn = id;
+             return true;
+         });
++        bool block = false;
+         std::atomic<UInt64> b_recv{0};
+         stack_b.SetRecvHandlerChecked([&](UInt64, const Byte*, UInt32 len) {
++            if (block) return false;
+             b_recv.fetch_add(len, std::memory_order_relaxed);
+             return true;
+         });
+@@ -296,6 +300,7 @@
+         // Segment 1 (seq = frontier): in-order; the app receives both
+         // (segment 2 via the drain). The echo must retain kTs1.
+         b_ecrs.clear();
++        block = resume;
+         const UInt32 n1 = BuildTsSegment(frame, sizeof(frame), frontier, client_ack, kTs1, 0, kPayload);
+         CHECK(0 != n1);
+         {
+@@ -309,6 +314,13 @@
+             backend_b.Inject(std::move(p));
+             pump();
+         }
++        if (resume) {
++            CHECK(b_recv.load() == 1);
++            block = false;
++            b_ecrs.clear();
++            CHECK(stack_b.ResumeReceive(server_conn));
++            pump();
++        }
+         CHECK(1 + 2 * kPayload == b_recv.load());  // probe + both segments delivered
+ 
+         // The server's first ACK after the drain must echo tsecr == kTs1.
+@@ -326,7 +338,7 @@
+             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+         }
+         CHECK(ack_seen);
+-        std::fprintf(stderr, "[ts-ooo-drain] closing=%d ACK tsecr=%08X expected=%08X\n", closing, ack_ecr, kTs1);
++        std::fprintf(stderr, "[ts-ooo-drain] resume=%d closing=%d ACK tsecr=%08X expected=%08X\n", resume, closing, ack_ecr, kTs1);
+         CHECK(ack_ecr == kTs1);
+         auto inject = [&](UInt32 ts) {
+             const UInt32 n = BuildTsSegment(frame, sizeof(frame), frontier + 2 * kPayload,
+@@ -360,7 +372,7 @@
+ int main() {
+     xtcp::buf::InitPools();
+     for (bool closing : {false, true}) {
+-        RunCase(closing);
++        for (bool resume : {false, true}) RunCase(resume, closing);
+     }
+     xtcp::buf::ShutdownPools();
+     std::fprintf(stderr, g_failures ? "TS_OOO_DRAIN: FAILED (%d)\n" : "TS_OOO_DRAIN: ALL PASSED\n", g_failures);

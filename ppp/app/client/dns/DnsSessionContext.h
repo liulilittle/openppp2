@@ -22,6 +22,9 @@ public:
     void Close() noexcept;
     bool IsActive() const noexcept;
     uint64_t Generation() const noexcept;
+    std::shared_ptr<IDnsTunnelTransport> Transport() const noexcept {
+        return IsActive() ? transport_.lock() : nullptr;
+    }
 
 private:
     std::weak_ptr<IDnsTunnelTransport> transport_;

@@ -1,5 +1,10 @@
 # OPENPPP2
 
+可选依赖：实验性 corocc L0 协程后端**默认关闭**，默认仍使用 Boost fcontext。
+参见[构建与测试](docs/development/COROCC_BACKEND_CN.md)及
+[设计说明](docs/adr/0003-corocc-coroutine-backend_CN.md)。
+
+
 > Status: Current
 > Type: Navigation
 > Last verified: 2026-07-22

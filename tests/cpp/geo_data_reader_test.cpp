@@ -297,3 +297,69 @@ BOOST_AUTO_TEST_CASE(binary_and_text_readers_report_missing_files) {
     BOOST_TEST(StatusValue(text_site.status) ==
         StatusValue(routing::GeoDataReadStatus::FileMissing));
 }
+
+BOOST_AUTO_TEST_CASE(memory_binary_readers_preserve_status_and_binary_payloads) {
+    const Bytes ip = MakeGeoIpList("cn", {MakeCidr({192, 0, 2, 7}, 24)});
+    const Bytes site = MakeGeoSiteList("cn", {
+        MakeDomain(routing::GeoDataDomainType::Full, "example.test")});
+    const std::string ip_bytes(ip.begin(), ip.end());
+    const std::string site_bytes(site.begin(), site.end());
+    FixtureFile ip_file(ip), site_file(site);
+    const auto file_ip = routing::GeoDataReader::ReadGeoIp(ip_file.path(), "cn");
+    const auto memory_ip = routing::GeoDataReader::ReadGeoIpBytes(ip_bytes, "geoip:CN");
+    BOOST_REQUIRE(memory_ip.Succeeded());
+    BOOST_TEST(memory_ip.entries[0].cidr == file_ip.entries[0].cidr);
+    BOOST_TEST(memory_ip.ipv4_entries == file_ip.ipv4_entries);
+    const auto memory_site = routing::GeoDataReader::ReadGeoSiteBytes(site_bytes, "cn");
+    BOOST_REQUIRE(memory_site.Succeeded());
+    BOOST_TEST(memory_site.entries[0].value == "example.test");
+    BOOST_TEST(StatusValue(routing::GeoDataReader::ReadGeoIpBytes(ip_bytes, "absent").status) ==
+        StatusValue(routing::GeoDataReadStatus::SelectorMissing));
+    const std::string truncated = site_bytes.substr(0, site_bytes.size() - 1);
+    BOOST_TEST(StatusValue(routing::GeoDataReader::ReadGeoSiteBytes(truncated, "cn").status) ==
+        StatusValue(routing::GeoDataReadStatus::Malformed));
+    BOOST_TEST(routing::GeoDataReader::ReadGeoSiteBytes(truncated, "cn").entries.empty());
+    BOOST_TEST(StatusValue(routing::GeoDataReader::ReadGeoIpBytes({}, "cn").status) ==
+        StatusValue(routing::GeoDataReadStatus::SelectorMissing));
+}
+
+BOOST_AUTO_TEST_CASE(memory_text_readers_preserve_line_numbers_and_skip_diagnostics) {
+    const std::string ip = "# comment\r\n192.0.2.7/24\r\ninvalid\n2001:db8::/32\n";
+    const std::string site = "# comment\r\nfull:example.test\r\nfull:\nplain:tracker\n";
+    FixtureFile ip_file(ip), site_file(site);
+    const auto file_ip = routing::GeoDataReader::ReadGeoIpText(ip_file.path());
+    const auto memory_ip = routing::GeoDataReader::ReadGeoIpTextBytes(ip);
+    BOOST_REQUIRE(memory_ip.Succeeded());
+    BOOST_TEST(memory_ip.entries.size() == file_ip.entries.size());
+    BOOST_TEST(memory_ip.entries[0].cidr == file_ip.entries[0].cidr);
+    BOOST_TEST(memory_ip.entries[0].line == 2u);
+    BOOST_TEST(memory_ip.skipped == file_ip.skipped);
+    BOOST_TEST(memory_ip.diagnostic == file_ip.diagnostic);
+    BOOST_TEST(memory_ip.ipv6_entries == file_ip.ipv6_entries);
+    const auto file_site = routing::GeoDataReader::ReadGeoSiteText(site_file.path());
+    const auto memory_site = routing::GeoDataReader::ReadGeoSiteTextBytes(site);
+    BOOST_REQUIRE(memory_site.Succeeded());
+    BOOST_TEST(memory_site.entries.size() == file_site.entries.size());
+    BOOST_TEST(memory_site.entries[0].value == file_site.entries[0].value);
+    BOOST_TEST(memory_site.entries[1].line == 4u);
+    BOOST_TEST(memory_site.skipped == file_site.skipped);
+    BOOST_TEST(memory_site.diagnostic == file_site.diagnostic);
+    BOOST_TEST(routing::GeoDataReader::ReadGeoIpTextBytes({}).Succeeded());
+    BOOST_TEST(routing::GeoDataReader::ReadGeoSiteTextBytes({}).Succeeded());
+}
+
+BOOST_AUTO_TEST_CASE(memory_readers_reject_oversized_sources_before_parsing) {
+    const std::string oversized(64u * 1024u * 1024u + 1u, '\0');
+    const auto ip = routing::GeoDataReader::ReadGeoIpBytes(oversized, "cn");
+    const auto site = routing::GeoDataReader::ReadGeoSiteBytes(oversized, "cn");
+    const auto text_ip = routing::GeoDataReader::ReadGeoIpTextBytes(oversized);
+    const auto text_site = routing::GeoDataReader::ReadGeoSiteTextBytes(oversized);
+    BOOST_TEST(StatusValue(ip.status) == StatusValue(routing::GeoDataReadStatus::Malformed));
+    BOOST_TEST(StatusValue(site.status) == StatusValue(routing::GeoDataReadStatus::Malformed));
+    BOOST_TEST(StatusValue(text_ip.status) == StatusValue(routing::GeoDataReadStatus::Malformed));
+    BOOST_TEST(StatusValue(text_site.status) == StatusValue(routing::GeoDataReadStatus::Malformed));
+    BOOST_TEST(ip.diagnostic == "source exceeds 64 MiB byte limit");
+    BOOST_TEST(site.entries.empty());
+    BOOST_TEST(text_ip.entries.empty());
+    BOOST_TEST(text_site.entries.empty());
+}

@@ -19,7 +19,7 @@ func (m *Manager) createBackup(name, sourcePath string) error {
 	}
 	id := time.Now().UTC().Format("20060102T150405.000000000Z")
 	backupPath := filepath.Join(m.backupCfg.Dir, name, id+".json")
-	if err := writeFileAtomic(backupPath, data, 0o644); err != nil {
+	if err := writeFileAtomic(backupPath, data, 0o600); err != nil {
 		return err
 	}
 	return nil
@@ -27,7 +27,7 @@ func (m *Manager) createBackup(name, sourcePath string) error {
 
 func (m *Manager) listBackups(name string) ([]BackupInfo, error) {
 	dir := filepath.Join(m.backupCfg.Dir, name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(dir)
@@ -65,7 +65,7 @@ func (m *Manager) restoreBackup(name, backupID string) error {
 			return err
 		}
 	}
-	if err := writeFileAtomic(currentPath, data, 0o644); err != nil {
+	if err := writeFileAtomic(currentPath, data, 0o600); err != nil {
 		return err
 	}
 	return m.pruneBackups(name)

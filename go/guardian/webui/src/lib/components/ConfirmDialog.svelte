@@ -20,8 +20,8 @@
 </script>
 
 {#if open}
-  <div class="overlay" on:click={close}>
-    <div class="dialog" on:click|stopPropagation>
+  <div class="overlay" role="presentation" on:click|self={close}>
+    <div class="dialog" role="dialog" aria-modal="true">
       <h3>{title}</h3>
       <p>{message}</p>
       <div class="actions">

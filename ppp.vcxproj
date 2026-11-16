@@ -33,6 +33,13 @@
     <RootNamespace>ppp</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
+  <PropertyGroup>
+    <PppXtcpLibrary Condition="'$(PppXtcpLibrary)'==''">$(ProjectDir)build-xtcp-win\$(Configuration)\xtcp_static.lib</PppXtcpLibrary>
+  </PropertyGroup>
+  <PropertyGroup Label="OpenPPP2Options">
+    <OpenPPP2EnableSimd Condition="'$(OpenPPP2EnableSimd)' == '' and '$(Platform)' == 'ARM64'">false</OpenPPP2EnableSimd>
+    <OpenPPP2EnableSimd Condition="'$(OpenPPP2EnableSimd)' == ''">true</OpenPPP2EnableSimd>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
@@ -167,7 +174,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;NOMINMAX;BOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT;BOOST_ASIO_NO_DEPRECATED;_WIN32_WINNT=0x0601;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_WINSOCK_DEPRECATED_NO_WARNINGS;JEMALLOC;BUDDY_ALLOC_IMPLEMENTATION;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;__SIMD__;FUNCTION;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;NOMINMAX;BOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT;BOOST_ASIO_NO_DEPRECATED;_WIN32_WINNT=0x0601;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_WINSOCK_DEPRECATED_NO_WARNINGS;JEMALLOC;BUDDY_ALLOC_IMPLEMENTATION;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;__SIMD__;FUNCTION;OPENPPP2_P2P_V2_PRODUCTION=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <DisableSpecificWarnings>4244;4819;4566;%(DisableSpecificWarnings)</DisableSpecificWarnings>
@@ -183,7 +190,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <Profile>false</Profile>
-      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <UACExecutionLevel>AsInvoker</UACExecutionLevel>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -192,7 +199,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;NOMINMAX;BOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT;BOOST_ASIO_NO_DEPRECATED;_WIN32_WINNT=0x0601;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_WINSOCK_DEPRECATED_NO_WARNINGS;JEMALLOC;BUDDY_ALLOC_IMPLEMENTATION;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;__SIMD__;FUNCTION;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;NOMINMAX;BOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT;BOOST_ASIO_NO_DEPRECATED;_WIN32_WINNT=0x0601;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_WINSOCK_DEPRECATED_WARNINGS;JEMALLOC;BUDDY_ALLOC_IMPLEMENTATION;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;__SIMD__;FUNCTION;OPENPPP2_P2P_V2_PRODUCTION=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <Optimization>Full</Optimization>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
@@ -212,7 +219,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <UACExecutionLevel>AsInvoker</UACExecutionLevel>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -224,7 +231,7 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4244;4819;4309;4334;4267;4566;%(DisableSpecificWarnings)</DisableSpecificWarnings>
-      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/bigobj /DOPENPPP2_P2P_V2_PRODUCTION=1 %(AdditionalOptions)</AdditionalOptions>
       <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
       <StringPooling>true</StringPooling>
       <IntelJCCErratum>true</IntelJCCErratum>
@@ -238,7 +245,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <Profile>true</Profile>
-      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <UACExecutionLevel>AsInvoker</UACExecutionLevel>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -257,6 +264,7 @@
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntelJCCErratum>true</IntelJCCErratum>
       <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
+      <AdditionalOptions>/DOPENPPP2_P2P_V2_PRODUCTION=1 %(AdditionalOptions)</AdditionalOptions>
       <StringPooling>true</StringPooling>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4244;4819;4309;4334;4267;4566;%(DisableSpecificWarnings)</DisableSpecificWarnings>
@@ -267,7 +275,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <UACExecutionLevel>AsInvoker</UACExecutionLevel>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
@@ -279,7 +287,7 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4244;4819;4309;4334;4267;4566;%(DisableSpecificWarnings)</DisableSpecificWarnings>
-      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/bigobj /DOPENPPP2_P2P_V2_PRODUCTION=1 %(AdditionalOptions)</AdditionalOptions>
       <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
       <StringPooling>true</StringPooling>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -291,7 +299,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <Profile>true</Profile>
-      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <UACExecutionLevel>AsInvoker</UACExecutionLevel>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
@@ -318,9 +326,32 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <UACExecutionLevel>AsInvoker</UACExecutionLevel>
     </Link>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalOptions>/utf-8 /DOPENPPP2_P2P_V2_PRODUCTION=1 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(OpenPPP2EnableSimd)' != 'true'">
+    <ClCompile>
+      <AdditionalOptions>%(AdditionalOptions) /U__SIMD__</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(PppEnableXtcp)'=='true'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)third-party\xtcp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>PPP_ENABLE_XTCP=1;PPP_XTCP_RUNTIME_WIRED=1;PPP_XTCP_HAS_TIMER_DEADLINE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(PppXtcpLibrary);bcrypt.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <Target Name="ValidatePppXtcpLibrary" BeforeTargets="PrepareForBuild" Condition="'$(PppEnableXtcp)'=='true'">
+    <Error Condition="'$(Platform)'!='x64'" Text="XTCP through ppp.vcxproj is currently supported for x64 only." />
+    <Error Condition="!Exists('$(PppXtcpLibrary)')" Text="XTCP is enabled but $(PppXtcpLibrary) was not found. Build xtcp_static with third-party/xtcp CMake or set PppXtcpLibrary." />
+  </Target>
   <ItemGroup>
     <ClCompile Include="common\aesni\aes.cpp" />
     <ClCompile Include="common\aesni\impl\simd_aes_128_cfb.cpp" />
@@ -404,10 +435,18 @@
     <ClCompile Include="ppp\app\client\routing\GeoDataReader.cpp" />
     <ClCompile Include="ppp\app\client\routing\HumanRoutingRouteSpecs.cpp" />
     <ClCompile Include="ppp\app\client\routing\HumanRoutingRules.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicySourceLoader.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicyCompiler.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicyRuntime.cpp" />
+    <ClCompile Include="ppp\app\client\PolicyTunnelDnsStream.cpp" />
+    <ClCompile Include="ppp\app\client\dns\PolicyResolverService.cpp" />
+    <ClCompile Include="ppp\app\ApplicationPolicyCommand.cpp" />
     <ClCompile Include="ppp\app\client\routing\ProtocolSniffer.cpp" />
     <ClCompile Include="ppp\app\client\routing\TcpRoutingSelector.cpp" />
     <ClCompile Include="ppp\app\client\routing\UdpRoutingSelector.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteCoordinator.cpp" />
+    <ClCompile Include="ppp\app\client\route\NetworkOwnership.cpp" />
+    <ClCompile Include="ppp\app\client\NetworkRecoveryJournal.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteCoordinator_mobile.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteCoordinator_win32.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteCoordinator_darwin.cpp" />
@@ -418,6 +457,8 @@
     <ClCompile Include="ppp\app\client\route\RouteState.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteSpecs.cpp" />
     <ClCompile Include="ppp\app\client\route\WindowsRoutePlatform.cpp" />
+    <ClCompile Include="ppp\app\client\route\WindowsRouteSnapshot.cpp" />
+    <ClCompile Include="ppp\app\client\route\WindowsRouteSnapshotWin32.cpp" />
     <ClCompile Include="ppp\app\client\udp\ClientDatagramPortManager.cpp" />
     <ClCompile Include="ppp\app\client\udp\UdpRelayHost.cpp" />
     <ClCompile Include="ppp\app\server\udp\ServerDatagramPortManager.cpp" />
@@ -427,6 +468,15 @@
     <ClCompile Include="ppp\app\client\dns\DnsRouteDispatcher.cpp" />
     <ClCompile Include="ppp\app\client\dns\DnsUdpRelay.cpp" />
     <ClCompile Include="ppp\app\client\dns\FakeIpPool.cpp" />
+    <ClCompile Include="ppp\app\client\dns\DurableFakeIpStore.cpp" />
+    <ClCompile Include="ppp\app\client\dns\PolicyFakeIpAsync.cpp" />
+    <ClCompile Include="ppp\app\client\policy\DurablePolicyBundle.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicyUpdateFetcher.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicyUpdateService.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicyTunnelUpdateConnector.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicyStatusFile.cpp" />
+    <ClCompile Include="ppp\app\client\policy\LegacyPolicyAdapter.cpp" />
+    <ClCompile Include="ppp\app\client\policy\LegacyPolicyMigration.cpp" />
     <ClCompile Include="ppp\app\client\GeoRuleGenerator.cpp" />
     <ClCompile Include="ppp\dns\DnsResolver.cpp" />
     <ClCompile Include="ppp\dns\DnsProviderCatalog.cpp" />
@@ -467,9 +517,11 @@
     <ClCompile Include="ppp\net\asio\websocket\websocket_ssl_write_websocket.cpp" />
     <ClCompile Include="ppp\net\asio\websocket\websocket_write_websocket.cpp" />
     <ClCompile Include="ppp\net\http\HttpClient.cpp" />
+    <ClCompile Include="ppp\net\http\HttpHeaderReader.cpp" />
     <ClCompile Include="ppp\net\native\dnsx.cpp" />
     <ClCompile Include="ppp\net\rinetd\RinetdConnection.cpp" />
     <ClCompile Include="ppp\app\client\AssignedAddressManager.cpp" />
+    <ClCompile Include="ppp\app\client\WindowsIPv6Snapshot.cpp" />
     <ClCompile Include="ppp\app\client\ClientConnectionTeardown.cpp" />
     <ClCompile Include="ppp\app\client\ClientFrpRegistry.cpp" />
     <ClCompile Include="ppp\app\client\ClientBypassRouteLoader.cpp" />
@@ -553,6 +605,14 @@
     <ClCompile Include="ppp\p2p\P2PDatagramTransport.cpp" />
     <ClCompile Include="ppp\p2p\P2PKeyDerivation.cpp" />
     <ClCompile Include="ppp\p2p\P2PRelayOffer.cpp" />
+    <ClCompile Include="ppp\p2p\P2PRelayOfferV2.cpp" />
+    <ClCompile Include="ppp\p2p\P2PV2ControlCodec.cpp" />
+    <ClCompile Include="ppp\p2p\P2PV2DataCodec.cpp" />
+    <ClCompile Include="ppp\p2p\P2PV2Channel.cpp" />
+    <ClCompile Include="ppp\p2p\P2PProbeCoordinator.cpp" />
+    <ClCompile Include="ppp\p2p\P2PIngressLimiter.cpp" />
+    <ClCompile Include="ppp\app\client\VEthernetP2PV2.cpp" />
+    <ClCompile Include="ppp\app\server\VirtualEthernetP2PV2.cpp" />
     <ClCompile Include="ppp\p2p\P2PClientOfferSession.cpp" />
     <ClCompile Include="ppp\p2p\P2PControlDatagram.cpp" />
     <ClCompile Include="ppp\p2p\P2PDataDatagram.cpp" />
@@ -582,6 +642,15 @@
     <ClCompile Include="ppp\stdafx.cpp" />
     <ClCompile Include="ppp\tap\ITap.cpp" />
     <ClCompile Include="ppp\tap\TapStub.cpp" />
+    <ClCompile Include="ppp\tap\TapUserspace.cpp" />
+    <ClCompile Include="ppp\app\ProxySubnetOptions.cpp" />
+    <ClInclude Include="common\libtcpip\netstack_outbound.h" />
+    <ClInclude Include="ppp\tap\TapUserspace.h" />
+    <ClInclude Include="ppp\app\ProxySubnetOptions.h" />
+    <ClInclude Include="ppp\tap\TapUserspaceRoute.h" />
+    <ClInclude Include="ppp\app\client\proxys\UserspaceSubnetBridge.h" />
+    <ClCompile Include="ppp\app\client\proxys\UserspaceSubnetBridge.cpp" />
+    <ClCompile Include="common\libtcpip\netstack_outbound.cpp" />
     <ClCompile Include="windows\ppp\tap\WintunAdapter.cpp" />
     <ClCompile Include="windows\ppp\win32\network\NetworkInterface.cpp" />
     <ClCompile Include="windows\ppp\win32\network\Win32Firewall.cpp" />
@@ -792,10 +861,36 @@
     <ClInclude Include="ppp\app\client\dns\DnsRouteDispatcher.h" />
     <ClInclude Include="ppp\app\client\dns\DnsUdpRelay.h" />
     <ClInclude Include="ppp\app\client\dns\FakeIpPool.h" />
+    <ClInclude Include="ppp\app\client\dns\DurableFakeIpStore.h" />
+    <ClInclude Include="ppp\app\client\dns\PolicyFakeIpAsync.h" />
+    <ClInclude Include="ppp\app\client\dns\PolicyTelemetry.h" />
     <ClInclude Include="ppp\app\client\dns\HumanDnsQueryPolicy.h" />
     <ClInclude Include="ppp\app\client\routing\GeoDataReader.h" />
     <ClInclude Include="ppp\app\client\routing\HumanRoutingRouteSpecs.h" />
+    <ClInclude Include="ppp\app\client\route\RouteJournalCodec.h" />
+    <ClInclude Include="ppp\app\client\route\RouteSnapshotContract.h" />
+    <ClInclude Include="ppp\app\client\route\WindowsRouteSnapshot.h" />
+    <ClInclude Include="windows\ppp\win32\network\WindowsRouteSnapshotWin32.h" />
     <ClInclude Include="ppp\app\client\routing\HumanRoutingRules.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyModel.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicySourceLoader.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyCompiler.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyEvaluator.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyRuntime.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyTcpFlow.h" />
+    <ClInclude Include="ppp\app\client\policy\DurablePolicyBundle.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyUpdateFetcher.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyUpdateService.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyTunnelUpdateConnector.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyStatusFile.h" />
+    <ClInclude Include="ppp\app\client\policy\LegacyPolicyAdapter.h" />
+    <ClInclude Include="ppp\app\client\policy\LegacyPolicyMigration.h" />
+    <ClInclude Include="ppp\app\client\proxys\LocalProxyPolicyDestination.h" />
+    <ClInclude Include="ppp\app\client\PolicyTunnelDnsStream.h" />
+    <ClInclude Include="ppp\app\client\dns\PolicyResolverService.h" />
+    <ClInclude Include="ppp\app\client\udp\DirectDatagramFlow.h" />
+    <ClInclude Include="ppp\app\client\udp\UdpFlowPolicy.h" />
+    <ClInclude Include="ppp\app\ApplicationPolicyCommand.h" />
     <ClInclude Include="ppp\app\client\routing\ProtocolSniffer.h" />
     <ClInclude Include="ppp\app\client\routing\ResolvedDestination.h" />
     <ClInclude Include="ppp\app\client\routing\TcpRoutingSelector.h" />
@@ -833,9 +928,11 @@
     <ClInclude Include="ppp\net\asio\websocket\websocket_accept_websocket.h" />
     <ClInclude Include="ppp\net\asio\websocket\websocket_async_sslv_websocket.h" />
     <ClInclude Include="ppp\net\http\HttpClient.h" />
+    <ClInclude Include="ppp\net\http\HttpHeaderReader.h" />
     <ClInclude Include="ppp\net\http\httplib.h" />
     <ClInclude Include="ppp\net\rinetd\RinetdConnection.h" />
     <ClInclude Include="ppp\app\client\AssignedAddressManager.h" />
+    <ClInclude Include="ppp\app\client\WindowsIPv6Snapshot.h" />
     <ClInclude Include="ppp\app\client\ClientConnectionTeardown.h" />
     <ClInclude Include="ppp\app\client\ClientBypassRouteLoader.h" />
     <ClInclude Include="ppp\app\client\AggregatorLoader.h" />
@@ -888,6 +985,8 @@
     <ClInclude Include="ppp\threading\BufferblockAllocator.h" />
     <ClInclude Include="ppp\threading\BufferswapAllocator.h" />
     <ClInclude Include="ppp\threading\SpinLock.h" />
+    <ClInclude Include="ppp\threading\SpscHandoff.h" />
+    <ClInclude Include="ppp\app\client\xtcp\XtcpShardPolicy.h" />
     <ClInclude Include="ppp\transmissions\ITransmissionQoS.h" />
     <ClInclude Include="ppp\transmissions\ITransmissionStatistics.h" />
     <ClInclude Include="ppp\collections\Dictionary.h" />
@@ -905,6 +1004,12 @@
     <ClInclude Include="ppp\p2p\P2PControlPacket.h" />
     <ClInclude Include="ppp\p2p\P2PControlStateMachine.h" />
     <ClInclude Include="ppp\p2p\P2PKeyDerivation.h" />
+    <ClInclude Include="ppp\p2p\P2PRelayOfferV2.h" />
+    <ClInclude Include="ppp\p2p\P2PV2Codec.h" />
+    <ClInclude Include="ppp\p2p\P2PV2Channel.h" />
+    <ClInclude Include="ppp\p2p\P2PV2ServerCoordination.h" />
+    <ClInclude Include="ppp\p2p\P2PProbeCoordinator.h" />
+    <ClInclude Include="ppp\p2p\P2PIngressLimiter.h" />
     <ClInclude Include="ppp\p2p\P2POfferToken.h" />
     <ClInclude Include="ppp\p2p\P2PPacketHeader.h" />
     <ClInclude Include="ppp\p2p\P2PReplayWindow.h" />
@@ -920,6 +1025,9 @@
     <ClInclude Include="ppp\ipv6\IPv6Auxiliary.h" />
     <ClInclude Include="ppp\coroutines\asio\asio.h" />
     <ClInclude Include="ppp\coroutines\YieldContext.h" />
+    <ClInclude Include="ppp\coroutines\ContextBackend.h" />
+    <ClInclude Include="ppp\coroutines\backend\BoostFcontextBackend.h" />
+    <ClInclude Include="ppp\coroutines\backend\CoroccBackend.h" />
     <ClInclude Include="ppp\cryptography\EVP.h" />
     <ClInclude Include="ppp\cryptography\noise\NoisePsk.h" />
     <ClInclude Include="ppp\cryptography\md5.h" />
@@ -953,9 +1061,17 @@
     <ClInclude Include="ppp\ssl\SSL.h" />
     <ClInclude Include="ppp\tap\ITap.h" />
     <ClInclude Include="ppp\tap\TxGsoMetadata.h" />
+    <ClInclude Include="ppp\tap\TapOutputLane.h" />
+    <ClInclude Include="ppp\tap\TapLaneEnvelopeQueue.h" />
+    <ClInclude Include="ppp\tap\TapLaneBinding.h" />
+    <ClInclude Include="ppp\app\protocol\XtcpDirectUploadQueue.h" />
+    <ClInclude Include="ppp\tap\TapOutputLanePolicy.h" />
     <ClCompile Include="windows\ppp\tap\TapWindows.cpp" />
     <ClInclude Include="ppp\threading\Timer.h" />
     <ClInclude Include="ppp\net\asio\IAsynchronousWriteIoQueue.h" />
+    <ClInclude Include="ppp\tap\TunWriteError.h" />
+    <ClInclude Include="ppp\collections\SnapshotMap.h" />
+    <ClInclude Include="ppp\net\asio\SharedBufferReceive.h" />
     <ClInclude Include="ppp\transmissions\IAuthenticatedCarrierBinding.h" />
     <ClInclude Include="ppp\transmissions\ITcpipTransmission.h" />
     <ClInclude Include="ppp\transmissions\ITransmission.h" />
@@ -1068,6 +1184,12 @@
     <CopyFileToFolders Include="cmcc.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="CopyDriverRuntime" AfterTargets="Build">
+    <ItemGroup>
+      <DriverRuntime Include="$(ProjectDir)Driver\**\*.dll;$(ProjectDir)Driver\**\*.exe;$(ProjectDir)Driver\**\*.inf;$(ProjectDir)Driver\**\*.cat;$(ProjectDir)Driver\**\*.sys" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DriverRuntime)" DestinationFiles="@(DriverRuntime->'$(OutDir)Driver\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
   <ProjectExtensions>

@@ -1,416 +1,172 @@
-# Deployment Model
+# Deployment
+
 > Status: Active
 > Type: Operations
-> Last verified: 63fc030
+> Last verified: 2026-10-11 (against `ppp/app/ApplicationInitialize.cpp`, `PppApplication.cpp`, `go/guardian/config.go`, `go/guardian/service/systemd.go`, `go/guardian/instance/manager.go`, `.github/workflows/release.yml`)
+>
+> **Purpose:** Run OPENPPP2 as a long-lived system service, plus upgrades, rollback, and multiple instances.
+> **Audience:** Operators deploying a server or an always-on client.
+> **Parent index:** [Operations](README.md) · **Chinese:** [部署](DEPLOYMENT_CN.md)
 
-> **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
-> **Audience:** OPENPPP2 users, operators, and developers.
-> **Status:** Current.
-> **Last verified against:** Current repository structure, implementation paths, and documentation links, 2026-07-18.
-> **Parent index:** [Back to index](README.md) · **Chinese:** [部署模型](DEPLOYMENT_CN.md)
+Get it working in the foreground first (see the [User manual](../getting-started/USER_MANUAL.md)), then turn it into a service with this page.
 
+## 1. Pre-deployment checks
 
-[中文版本](DEPLOYMENT_CN.md)
+| Item | Requirement |
+|---|---|
+| Privileges | Server and TUN client must run as administrator / root (proxy mode excepted), otherwise startup fails with `AppPrivilegeRequired`. |
+| Configuration | Pass `--config=<absolute path>`; write the full `key` block with `"plaintext": false`; a distinct `client.guid` per client. |
+| Ports | Open `tcp.listen.port` in the server firewall / security group, plus any enabled `websocket.listen.ws/wss`, `udp.listen.port`, `cdn`. |
+| Drivers | Linux has `/dev/net/tun`; Windows keeps the release package's `Driver\` directory. |
+| Certificates | WSS certificate and key files readable by the service user. |
+| Time | Accurate server clock (TLS validation depends on it). |
 
-## Scope
+## 2. Directory layout (Linux example)
 
-This document explains how OPENPPP2 is deployed according to the source tree.
-It covers the deployment surfaces, startup order, platform prerequisites, and operational expectations.
-
----
-
-## Core Facts
-
-- The C++ runtime is a single executable: `ppp`.
-- It can run in `client` mode or `server` mode.
-- An optional Go backend can be linked by the server through `server.backend`.
-- Administrator or root privilege is always required.
-
----
-
-## Deployment Is Two Layers
-
-```mermaid
-flowchart TD
-    A[OPENPPP2 Deployment] --> B[Node Layer]
-    A --> C[Host Layer]
-    B --> D[Role: client or server]
-    B --> E[Persistent config JSON]
-    B --> F[Optional Go backend]
-    B --> G[Service intent]
-    C --> H[Virtual adapters]
-    C --> I[Routing table]
-    C --> J[DNS behavior]
-    C --> K[Privileges]
-    C --> L[Local proxy surfaces]
+```text
+/opt/openppp2/
+├── ppp                 # executable
+├── server.json         # or client.json
+├── ip.txt              # split list (client, optional)
+├── dns-rules.txt       # DNS rules (client, optional)
+└── cacert.pem          # custom CA (optional)
 ```
 
-| Layer | Meaning |
-|-------|---------|
-| Node layer | Persistent JSON, role, backend, and service intent |
-| Host layer | Adapters, routes, DNS, privileges, local proxy surfaces |
-
-The source tree treats these as related but not identical concerns.
-
----
-
-## Deployment Surfaces
-
-OPENPPP2 deployment can be read as four surfaces:
-
-```mermaid
-flowchart TD
-    A[Deployment] --> B[Host surface]
-    A --> C[Listener surface]
-    A --> D[Data plane surface]
-    A --> E[Management surface]
-    B --> F[Privileges / adapters / routes / DNS]
-    C --> G[TCP / UDP / WS / WSS]
-    D --> H[Sessions / mappings / IPv6]
-    E --> I[Optional Go backend]
+```bash
+chmod 700 /opt/openppp2
+chmod 600 /opt/openppp2/*.json    # configurations contain keys
 ```
 
-| Surface | Components | Notes |
-|---------|-----------|-------|
-| Host | Privileges, virtual adapters, OS routing, DNS settings | Must be ready before runtime opens |
-| Listener | TCP, WebSocket, TLS WebSocket, static UDP | Configured in `tcp.listen/websocket.listen/udp.listen` |
-| Data plane | Sessions, NAT mappings, IPv6 transit, static echo | Per-session runtime state |
-| Management | Go backend via WebSocket | Optional; extends policy, not packet transport |
+## 3. Linux: systemd
 
----
+The repository does not ship a unit file for `ppp`; this is an example — adjust the paths:
 
-## Hard Requirements
+```ini
+# /etc/systemd/system/openppp2-server.service
+[Unit]
+Description=OPENPPP2 server
+After=network-online.target
+Wants=network-online.target
 
-- Administrator or root privilege is required.
-- A real configuration file is required.
+[Service]
+Type=simple
+WorkingDirectory=/opt/openppp2
+ExecStart=/opt/openppp2/ppp --mode=server --config=/opt/openppp2/server.json
+Restart=always
+RestartSec=10
+User=root
+LimitNOFILE=1048576
 
-`LoadConfiguration(...)` searches in this order:
-1. Explicit `-c` / `--config` CLI argument.
-2. `./config.json` in the working directory.
-3. `./appsettings.json` in the working directory.
-
-Source: `ppp/app/PppApplication.cpp`
-
----
-
-## Client Deployment
-
-The client deployment creates a virtual adapter, prepares route/DNS/bypass inputs, opens `VEthernetNetworkSwitcher`, and establishes the remote exchanger session.
-
-### Client Startup Sequence
-
-```mermaid
-flowchart TD
-    A[Start ppp --mode=client] --> B[Acquire privilege]
-    B --> C[Load configuration]
-    C --> D[Prepare NIC / gateway / TAP]
-    D --> E[Open VEthernetNetworkSwitcher]
-    E --> F[Connect VEthernetExchanger to server]
-    F --> G[Apply routes and DNS]
-    G --> H[Apply bypass IP lists]
-    H --> I[Enter forwarding state]
-    I --> J[Tick loop: keepalive, VIRR, vBGP refresh]
+[Install]
+WantedBy=multi-user.target
 ```
 
-### Client Deployment Checklist
-
-| Step | Requirement |
-|------|-------------|
-| 1 | Privilege: administrator on Windows, root on Linux/macOS/Android |
-| 2 | Configuration file present at known path |
-| 3 | `client.guid` set to a valid UUID |
-| 4 | `client.server` pointing to an accessible server address |
-| 5 | Virtual adapter support available on host |
-| 6 | DNS and routing change permissions available |
-| 7 | Optional: `client.routing.ip.bypass` IP-list files or `--bypass` CLI files accessible |
-| 8 | Optional: `client.routing.dns.rules` sources or `--dns-rules` CLI file accessible |
-
-### Client Platform Notes
-
-| Platform | Adapter Type | Routing Method | DNS Method |
-|----------|-------------|----------------|------------|
-| Windows | TAP-Windows / WinTUN | IPv4 route API | System DNS override |
-| Linux | TUN/TAP | `ip route` / `rtnetlink` | `/etc/resolv.conf` |
-| macOS | utun | `route` command | `scutil` |
-| Android | VPNService | VPNService routes | VPNService DNS |
-| iOS | Packet Tunnel (Network Extension) | `NEIPv4Settings` included routes | `NEDNSSettings` (omitted in proxy-only) |
-
----
-
-## Server Deployment
-
-The server deployment opens listeners, firewall, namespace cache, datagram socket, optional managed backend, and optional IPv6 transit plumbing through `VirtualEthernetSwitcher`.
-
-### Server Startup Sequence
-
-```mermaid
-flowchart TD
-    A[Start ppp] --> B[Acquire privilege]
-    B --> C[Load configuration]
-    C --> D[Open firewall]
-    D --> E[Open namespace cache]
-    E --> F[Open datagram socket]
-    F --> G{server.backend?}
-    G -->|yes| H[Connect to Go backend]
-    G -->|no| I[Skip]
-    H --> J{server.ipv6?}
-    I --> J
-    J -->|yes| K[Open IPv6 transit plane]
-    J -->|no| L[Skip]
-    K --> M[Open TCP listener]
-    L --> M
-    M --> N[Open WebSocket listener]
-    N --> O{static echo?}
-    O -->|yes| P[Open static echo session]
-    O -->|no| Q[Server ready]
-    P --> Q
-    Q --> R[Accept connections]
-    R --> S[Tick loop: session maintenance, backend refresh]
+```bash
+systemctl daemon-reload
+systemctl enable --now openppp2-server
+journalctl -u openppp2-server -f
 ```
 
-### Server Deployment Checklist
+- For a client, replace `--mode=server` with `--mode=client` (or `--mode=proxy`) and use `client.json`.
+- `systemctl stop` sends SIGTERM; `ppp` exits cleanly and restores routes and DNS.
+- Graceful restart (re-reads the configuration): `kill -64 <pid>`, or `openppp2 restart` in the console.
+- Under systemd there is no interactive console; read output with `journalctl`, and add `--stats-json=/var/log/openppp2/stats.ndjson` for statistics.
 
-| Step | Requirement |
-|------|-------------|
-| 1 | Privilege: root on Linux, administrator on Windows |
-| 2 | Configuration file present |
-| 3 | At least one listener enabled (`tcp.listen.port` or `websocket.listen.ws`) |
-| 4 | Listener port set to a valid, available value |
-| 5 | Firewall config file present if `server.firewall` is set |
-| 6 | Go backend reachable if `server.backend` is set |
-| 7 | IPv6 capable interface if `server.ipv6` is enabled |
+## 4. Supervising with Guardian
 
-### Server Listener Types
+Guardian (`go/guardian/`, release asset `guardian-<platform>.tar.gz` / `.zip`) is a local supervisor and configuration manager for `ppp`: automatic restarts, logs, configuration backup / rollback, and a web UI. It is a different program from the [Management backend](../guides/MANAGEMENT_BACKEND.md).
 
-| Listener | Config Key | Protocol | TLS |
-|----------|-----------|----------|-----|
-| TCP | `tcp.listen.port` | Raw TCP | No |
-| WebSocket | `websocket.listen.ws` | HTTP WebSocket | No |
-| TLS WebSocket | `websocket.listen.wss` | HTTPS WebSocket | Yes |
-| Static UDP | `udp.listen.port` | Raw UDP | No |
-
----
-
-## Go Backend
-
-The Go backend is optional and is used for managed deployments — not for the core data plane.
-
-```mermaid
-sequenceDiagram
-    participant Server as C++ Server
-    participant Backend as Go Backend
-    participant Client as Client
-
-    Client->>Server: Connect with credentials
-    Server->>Backend: Authenticate(user, token)
-    Backend-->>Server: auth result + quota
-    Server-->>Client: Allow or deny
-    loop Traffic reporting
-        Server->>Backend: ReportTraffic(session_id, in, out)
-        Backend-->>Server: quota status
-    end
-    Server->>Backend: SessionEnd(session_id)
+```bash
+./guardian -config guardian.json
 ```
 
-Key properties:
-- Communication is over WebSocket (`ws://` or `wss://`).
-- If backend is unreachable, server falls back to local cache policy.
-- Backend extends policy and management; it never touches packet bytes.
-
-Source: `ppp/app/server/VirtualEthernetManagedServer.h`
-
----
-
-## Privilege Requirements By Platform
-
-| Platform | Requirement | Notes |
-|----------|-------------|-------|
-| Linux | `root` or `CAP_NET_ADMIN` | TUN/TAP creation requires privilege |
-| Windows | Administrator | TAP driver and route modification |
-| macOS | `root` | utun creation |
-| Android | VPNService permission | Declared in `AndroidManifest.xml` |
-
----
-
-## Network Prerequisites
-
-| Requirement | Client | Server |
-|-------------|--------|--------|
-| Virtual adapter support | Required | Not required |
-| Open TCP port | Not required | Required |
-| DNS modification permission | Required | Not required |
-| Route modification permission | Required | Not required |
-| IPv6 capable NIC | If IPv6 enabled | If `server.ipv6` enabled |
-
----
-
-## Operational Expectations After Startup
-
-Deployment is not just the first boot. After startup, these host states are expected to remain true:
-
-```mermaid
-stateDiagram-v2
-    [*] --> Deployed
-    Deployed --> RoutesActive : client mode
-    Deployed --> ListenersActive : server mode
-    RoutesActive --> BypassRoutes : IP-list applied
-    RoutesActive --> DefaultRouteRedirected : full-tunnel mode
-    RoutesActive --> DefaultRouteProtected : split-tunnel mode
-    ListenersActive --> AcceptingSessions : open complete
-    AcceptingSessions --> ManagingBackend : if backend enabled
-    AcceptingSessions --> IPv6Transit : if IPv6 enabled
-    RoutesActive --> VIRRRefresh : tick-driven
-    VIRRRefresh --> RoutesActive : refreshed
-```
-
-Ongoing host-side expectations:
-
-| Expectation | Description |
-|-------------|-------------|
-| Default routes managed | Client may redirect or protect the default route |
-| DNS servers stable | DNS server routes must persist |
-| Listeners bound | Server listeners must remain bound |
-| Backend reachable | Go backend connection must be maintained |
-| IPv6 transit active | IPv6 transit plane must stay operational |
-
----
-
-## Deployment Topology Examples
-
-### Simple Server + Client
-
-```mermaid
-flowchart LR
-    A[Client host] -->|TCP/WS| B[ppp server]
-    B -->|Internet| C[Destination]
-```
-
-### Server With Go Backend
-
-```mermaid
-flowchart LR
-    A[Client host] -->|TCP/WS| B[ppp server]
-    B -->|WebSocket| C[Go backend]
-    B -->|Internet| D[Destination]
-    C --> E[Database / auth]
-```
-
-### Multi-Listener Server
-
-```mermaid
-flowchart TD
-    A[TCP clients] --> B[ppp server]
-    C[WebSocket clients] --> B
-    D[TLS WebSocket clients] --> B
-    B --> E[Session routing]
-    E --> F[Internet]
-```
-
----
-
-## Deployment Failure Classes
-
-| Class | Symptom | Likely Cause |
-|-------|---------|-------------|
-| Privilege failure | Process exits immediately | Not running as administrator/root |
-| Config not found | "configuration not found" error | Wrong path or missing file |
-| Adapter open failure | Virtual NIC not created | Driver missing or insufficient privilege |
-| Listener bind failure | Port already in use or permission denied | Port conflict or privilege issue |
-| Route add failure | Traffic not flowing through tunnel | Route modification not permitted |
-| Backend unreachable | Sessions denied or cached policy applied | Backend not started or wrong URL |
-
----
-
-## Configuration File Reference
-
-Minimum viable server configuration:
+Example `guardian.json`:
 
 ```json
 {
-  "concurrent": 4,
-  "key": {
-    "kf": 154543927,
-    "kx": 128,
-    "kl": 10,
-    "kh": 12,
-    "protocol": "aes-128-cfb",
-    "protocol-key": "OpenPPP2-Test-Protocol-Key",
-    "transport": "aes-256-cfb",
-    "transport-key": "OpenPPP2-Test-Transport-Key"
-  },
-  "tcp": {
-    "listen": { "port": 20000 }
-  },
-  "udp": {
-    "listen": { "port": 20000 }
-  },
-  "websocket": {
-    "path": "/tun"
-  },
-  "server": {
-    "ipv4-pool": {
-      "network": "10.0.0.0",
-      "mask": "255.255.255.0"
+  "listen": "127.0.0.1:18080",
+  "auth": { "enabled": true, "jwtSecret": "", "tokenExpiryHours": 24 },
+  "profilesDir": "./profiles",
+  "binariesDir": "./binaries",
+  "backup": { "enabled": true, "maxBackups": 10, "dir": "./backups" },
+  "instances": [
+    {
+      "name": "server",
+      "enabled": true,
+      "binary": "/opt/openppp2/ppp",
+      "workDir": "/opt/openppp2",
+      "configPath": "/opt/openppp2/server.json",
+      "args": ["--mode=server", "--config=/opt/openppp2/server.json"],
+      "autoRestart": { "enabled": true, "maxRetries": 0, "retryDelayMs": 3000 }
     }
-  }
+  ]
 }
 ```
 
-Minimum viable client configuration:
+- `autoRestart.maxRetries` of `0` means unlimited; `retryDelayMs` is the wait before each restart.
+- **Only `args` is used to start `ppp`**; `configPath` is for management and display. Put `--mode` and `--config` in `args`.
+- The web UI is on the `listen` address (local only by default). The login password is `auth.jwtSecret`; if empty at first start it is generated and written back. Protect that file as a secret; never print or commit it.
+- The management API prefix is `/api/v1`. For remote access use an SSH tunnel or a TLS reverse proxy; do not expose it publicly.
+- On Linux, the web UI (or `POST /api/v1/service/install`) can install Guardian itself as the systemd service `openppp2-guardian`.
+- Guardian runs `ppp` in a pseudo-terminal, so the console UI and logs are viewable in the web UI.
 
-```json
-{
-  "concurrent": 2,
-  "key": {
-    "kf": 154543927,
-    "kx": 128,
-    "kl": 10,
-    "kh": 12,
-    "protocol": "aes-128-cfb",
-    "protocol-key": "OpenPPP2-Test-Protocol-Key",
-    "transport": "aes-256-cfb",
-    "transport-key": "OpenPPP2-Test-Transport-Key"
-  },
-  "client": {
-    "guid": "{F4519CF1-7A8A-4B00-89C8-9172A87B96DB}",
-    "server": "ppp://192.168.0.1:20000/"
-  }
-}
+## 5. Windows
+
+- Run as administrator; keep the `Driver\` directory (Wintun / TAP drivers) next to `ppp.exe`.
+- For start at boot, use Task Scheduler: trigger "At startup", check "Run with highest privileges", action `ppp.exe --mode=client --config=C:\openppp2\client.json`, start in the program directory.
+- Stop it preferably with `openppp2 exit` or `Ctrl+C` so routes and DNS are restored.
+
+## 6. macOS: launchd
+
+```xml
+<!-- /Library/LaunchDaemons/org.openppp2.client.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>org.openppp2.client</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/openppp2/ppp</string>
+    <string>--mode=client</string>
+    <string>--config=/opt/openppp2/client.json</string>
+  </array>
+  <key>WorkingDirectory</key><string>/opt/openppp2</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>
 ```
 
----
+```bash
+sudo launchctl load -w /Library/LaunchDaemons/org.openppp2.client.plist
+```
 
-## Error Code Reference
+## 7. Multiple instances on one machine
 
-Deployment-related `ppp::diagnostics::ErrorCode` values:
+Within one mode, **the same configuration file** can run only once (a second instance fails with `AppAlreadyRunning`). Different configuration files can run side by side, but:
 
-| ErrorCode | Description |
-|-----------|-------------|
-| `AppPrivilegeRequired` | Process requires administrator/root |
-| `ConfigFileNotFound` | Config file not found at any search path |
-| `ConfigLoadFailed` | Config file found but failed to parse |
-| `NetworkInterfaceOpenFailed` | Virtual adapter could not be opened |
-| `SocketBindFailed` | TCP or WebSocket listener failed to bind |
-| `FirewallCreateFailed` | Firewall subsystem failed to initialize |
-| `VEthernetManagedConnectUrlEmpty` | Go backend WebSocket connection failed |
-| `IPv6TransitTapOpenFailed` | IPv6 transit TAP failed to open |
-| `AppAlreadyRunning` | Another instance of ppp is already running |
+- server instances must not share listen ports;
+- multiple TUN clients need different adapter names (`--tun=`) and non-overlapping routes.
 
----
+## 8. Upgrade and rollback
 
-## Related Documents
+1. Back up the current `ppp` and configuration files.
+2. Put the new version in a new directory and confirm `./ppp --help` runs; clients can try proxy mode first.
+3. Stop the service → replace the executable → start; check startup output for `[security] WARN` or configuration warnings.
+4. If something is wrong, restore the old executable and configuration and restart.
 
-- [`CONFIGURATION.md`](../reference/CONFIGURATION.md)
-- [`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md)
-- [`PLATFORMS.md`](../guides/PLATFORMS.md)
-- [`ROUTING_AND_DNS.md`](../guides/ROUTING_AND_DNS.md)
-- [`OPERATIONS.md`](OPERATIONS.md)
-- [`MANAGEMENT_BACKEND.md`](../guides/MANAGEMENT_BACKEND.md)
-- [`SERVER_ARCHITECTURE.md`](../architecture/SERVER_ARCHITECTURE.md)
-- [`CLIENT_ARCHITECTURE.md`](../architecture/CLIENT_ARCHITECTURE.md)
+Read the release notes before upgrading. v2.1.7 added `client.policy` and `ppp policy`; `client.policy` cannot be mixed with legacy split fields (see [Policy v2](../guides/POLICY_CLI.md)).
 
----
+## 9. Common topologies
 
-## Main Conclusion
+| Topology | Reference |
+|---|---|
+| Single server + clients (native TCP) | [Writing the configuration file](../getting-started/CONFIGURE.md) |
+| Server behind Nginx / CDN (WS / WSS) | [User manual · behind Nginx](../getting-started/USER_MANUAL.md) |
+| Multiple nodes with central auth and accounting | [Management backend](../guides/MANAGEMENT_BACKEND.md) |
+| Site-to-site | [Peer prefix routing](../guides/PEER_PREFIX_ROUTING.md) |
 
-Deployment in OPENPPP2 is not just "run a binary." It is a staged host-plus-node setup where the executable, privileges, adapters, routes, listeners, and optional backend must all line up correctly. A deployment is healthy only when all four surfaces — host, listener, data plane, and management — are configured and operational.
+## Related documents
+
+- [Operations and troubleshooting](OPERATIONS.md) · [Security](SECURITY.md) · [Platforms](../guides/PLATFORMS.md)

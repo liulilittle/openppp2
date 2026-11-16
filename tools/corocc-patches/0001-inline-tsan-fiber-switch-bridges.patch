@@ -1,0 +1,45 @@
+--- a/src/arch/coro_tsan.h
++++ b/src/arch/coro_tsan.h
+@@ -50,6 +50,15 @@
+ 
+ #if defined(COROCC_TSAN)
+ 
++/* These helpers change the active fiber before returning. Keep their bodies
++   inside the caller so TSan cannot emit entry/exit on different shadow stacks,
++   including in unoptimised builds. Memory accesses remain instrumented. */
++#if defined(_MSC_VER)
++#  define CORO_TSAN_SWITCH_INLINE static __forceinline
++#else
++#  define CORO_TSAN_SWITCH_INLINE static inline __attribute__((always_inline))
++#endif
++
+ extern void* __tsan_create_fiber(unsigned flags);
+ extern void* __tsan_get_current_fiber(void);
+ extern void  __tsan_destroy_fiber(void* fiber);
+@@ -73,7 +82,7 @@
+     return __tsan_get_current_fiber();
+ }
+ 
+-static inline void coro_tsan_switch_to_fiber(void* fiber) {
++CORO_TSAN_SWITCH_INLINE void coro_tsan_switch_to_fiber(void* fiber) {
+     if (fiber) __tsan_switch_to_fiber(fiber, 0);
+ }
+ 
+--- a/src/coroutine/ctx.c
++++ b/src/coroutine/ctx.c
+@@ -56,7 +56,7 @@
+ 
+ /* Announce the switch from `from` to `to` before the assembly jump, so TSan
+    attributes the code that will run to the right fiber. */
+-static void coro_ctx_tsan_switch(coro_ctx* from, coro_ctx* to) {
++CORO_TSAN_SWITCH_INLINE void coro_ctx_tsan_switch(coro_ctx* from, coro_ctx* to) {
+     void* cur = coro_tsan_current_fiber();
+     if (!tsan_thread_fiber) tsan_thread_fiber = cur;
+     /* Record the fiber `from` is running on. This is the context the caller is
+@@ -190,4 +190,4 @@
+     coro_tsan_destroy_fiber(cx->tsan_fiber);
+ #endif
+     memset(cx, 0, sizeof *cx);
+-}
+\ No newline at end of file
++}

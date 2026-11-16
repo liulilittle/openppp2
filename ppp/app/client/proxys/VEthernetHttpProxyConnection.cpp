@@ -8,6 +8,7 @@
 
 #include <ppp/IDisposable.h>
 #include <ppp/io/MemoryStream.h>
+#include <ppp/net/http/HttpHeaderReader.h>
 #include <ppp/tap/ITap.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/Socket.h>
@@ -128,23 +129,7 @@ namespace ppp {
                  * @note Uses CRLF splitting semantics.
                  */
                 bool VEthernetHttpProxyConnection::ProtocolReadHeaders(ppp::io::MemoryStream& ms, ppp::vector<ppp::string>& headers, ppp::string* out_) noexcept {
-                    std::shared_ptr<Byte> protocol = ms.GetBuffer();
-                    if (NULLPTR == protocol) {
-                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryBufferNull);
-                    }
-
-                    int protocol_size = ms.GetPosition();
-                    if (protocol_size < 1) {
-                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::HttpHeaderInvalid);
-                    }
-
-                    if (NULLPTR != out_) {
-                        *out_ = ppp::string((char*)protocol.get(), protocol_size);
-                        return Tokenize<ppp::string>(*out_, headers, "\r\n") > 0;
-                    }
-                    else {
-                        return Tokenize<ppp::string>(ppp::string((char*)protocol.get(), protocol_size), headers, "\r\n") > 0;
-                    }
+                    return ppp::net::http::SplitHttpHeaderLines(ms, headers, out_);
                 }
 
                 /**
@@ -196,44 +181,6 @@ namespace ppp {
                     return protocolRoot;
                 }
 
-                /**
-                 * @brief Reads bytes until the HTTP header terminator is found.
-                 * @param protocol_array Destination buffer stream.
-                 * @param y Coroutine yield context.
-                 * @param socket Source TCP socket.
-                 * @return True when "\r\n\r\n" is found; otherwise false.
-                 * @note Uses manual scanning instead of async_read_until.
-                 */
-                static bool ProtocolReadHttpHeaders(ppp::io::MemoryStream& protocol_array, VEthernetHttpProxyConnection::YieldContext& y, boost::asio::ip::tcp::socket& socket) noexcept {
-                    char buffers[ppp::tap::ITap::Mtu];
-                    for (;;) {
-                        int bytes_transferred = ppp::coroutines::asio::async_read_some(socket, boost::asio::buffer(buffers, sizeof(buffers)), y);
-                        if (bytes_transferred < 1) {
-                            if (0 >= protocol_array.GetPosition()) {
-                                return false;
-                            }
-
-                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketReadFailed);
-                        }
-
-                        if (!protocol_array.Write(buffers, 0, bytes_transferred)) {
-                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
-                        }
-
-                        std::shared_ptr<Byte> protocol_array_ptr = protocol_array.GetBuffer();
-                        if (NULLPTR == protocol_array_ptr) {
-                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryBufferNull);
-                        }
-
-                        // Detect end-of-headers marker in the growing buffer.
-                        int next[4];
-                        int index = FindIndexOf(next, (char*)protocol_array_ptr.get(), protocol_array.GetPosition(), (char*)("\r\n\r\n"), 4); 
-                        if (index > -1) {
-                            return true;
-                        }
-                    } /* nocall: boost::asio::async_read_until(...); */
-                }
-
                 static bool SendHttpProxyErrorResponse(
                     const std::shared_ptr<boost::asio::ip::tcp::socket>& socket,
                     const ppp::string& protocol,
@@ -264,12 +211,7 @@ namespace ppp {
                  * @note Socket must be open before reading.
                  */
                 bool VEthernetHttpProxyConnection::ProtocolReadAllHeaders(ppp::io::MemoryStream& headers, VEthernetHttpProxyConnection::YieldContext& y, boost::asio::ip::tcp::socket& socket) noexcept {
-                    bool opened = socket.is_open();
-                    if (!opened) {
-                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketDisconnected);
-                    }
-
-                    return ProtocolReadHttpHeaders(headers, y, socket);
+                    return ppp::net::http::ReadHttpHeaders(headers, y, socket);
                 }
 
                 /**
@@ -287,7 +229,7 @@ namespace ppp {
                     std::shared_ptr<boost::asio::ip::tcp::socket>& socket_ = GetSocket();
                     Update();
 
-                    if (!ProtocolReadHttpHeaders(protocol_array, y, *socket_)) {
+                    if (!ppp::net::http::ReadHttpHeaders(protocol_array, y, *socket_)) {
                         return false;
                     }
 

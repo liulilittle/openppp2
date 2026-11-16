@@ -1,7 +1,7 @@
 # 桌面客户端
 > Status: Experimental
 > Type: Guide
-> Last verified: 2026-07-22
+> Last verified: 2026-10-04
 >
 > **用途：**用本仓库的 Tauri/Svelte client 管理器评估本地 `ppp` 可执行程序。
 > **适用对象：**桌面开发者和评估人员。
@@ -9,12 +9,14 @@
 
 ## 状态和边界
 
+Windows GUI 已补全多订阅、节点管理、代理/虚拟网卡模式、分流、DNS、日志与诊断、可恢复的当前用户系统代理、显式管理员重启、中英文和明暗主题。设置按常规、内核、网络和高级分区。当前使用方式见 [桌面说明](../../desktop/README.md)，自动验证及待完成的真实网络验收见 [GUI 验证记录](../testing/DESKTOP_GUI.md)。
+
 Desktop Client 位于 `desktop/client/`，是一个**实验性**的 Tauri 2 + Svelte 界面。已提交的 Tauri 配置关闭了 bundling，因此本文只说明从源码运行的评估路径，不把它描述为受支持的安装程序或发布包。
 
 Client 会根据保存的偏好和所选节点生成运行时配置，然后以以下参数启动 `ppp`：
 
 ```text
---mode=client --config=<runtime appsettings.json> --stats-json=<runtime stats.ndjson>
+--mode=<proxy or client> --config=<runtime appsettings.json> --stats-json=<per-session stats file>
 ```
 
 生成文件位于应用数据目录中的 runtime 目录；不要把它们当作可长期维护的配置源来编辑。
@@ -62,6 +64,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - 订阅和手动节点数据会先合并到生成的运行时配置，再建立连接。
 - 进程管理器会丢弃子进程标准输出，只捕获和分类标准错误；UI 不是完整的进程输出控制台。
 - 运行时统计从随 `--stats-json` 提供的生成 NDJSON 路径读取。
+- 分流页（策略 DNS 在 DNS 页）管理本地策略 v2（`<应用数据目录>/policy/policy.json` 与 `routing.rules`），通过内核的 `ppp policy` 离线命令完成模板、检查、规则测试、迁移、状态和手动更新；只有内核版本不低于 2.1.7 时才会调用这些命令。启用后，每次连接前都会先运行 `policy check`，不通过则不启动内核。
+- 节点或本地策略使用 `client.policy` 时，生成的运行时配置会去掉 v1 分流/DNS 字段，相对规则路径按 `<应用数据目录>/policy` 解析。
+- 断开时先向内核发送 Ctrl+C 并等待最多 5 秒完成路由和 DNS 回滚，超时才强制结束。
 - 连接会影响原生 client 进程。在真实主机使用非 proxy 网络模式前，请阅读[用户手册](USER_MANUAL_CN.md)以及平台和运维文档。
 
 仓库主单元测试 workflow 当前不运行 Desktop Client 的 `npm test` 或 Cargo 测试命令。修改此界面时，请运行相应本地检查。

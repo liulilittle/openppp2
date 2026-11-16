@@ -308,7 +308,10 @@ namespace ppp {
             config.mux.debug.set_mode = "";
             config.mux.reliability.enabled = true;
             config.mux.reliability.rtx.bytes = PPP_MUX_RELIABILITY_RTX_BYTES;
+            config.mux.reliability.rtx.flow_bytes = PPP_MUX_RTX_FLOW_MAX_BYTES;
             config.mux.reliability.rtx.max_attempts = PPP_MUX_RELIABILITY_RTX_MAX_ATTEMPTS;
+            config.mux.reliability.rtx.pto = false;
+            config.mux.reliability.rtx.fast = false;
             config.mux.reliability.ack.delay = PPP_MUX_RELIABILITY_ACK_DELAY;
             config.mux.reliability.gap.timeout = PPP_MUX_RELIABILITY_GAP_TIMEOUT;
             config.mux.fec.enabled = false;
@@ -386,6 +389,9 @@ namespace ppp {
             config.client.routing.routes.clear();
             config.client.routing.peer_routes.clear();
             config.client.routing.dns_rules.clear();
+            config.client.policy.reset();
+            config.client.policy_config_path.clear();
+            config.client.policy_config_file_backed = false;
             config.client.http_proxy.bind = "";
             config.client.http_proxy.port = PPP_DEFAULT_HTTP_PROXY_PORT;
             config.client.socks_proxy.bind = "";
@@ -415,11 +421,21 @@ namespace ppp {
             config.telemetry.console_metric = true;
             config.telemetry.console_span = true;
 
-            config.p2p.enabled = false;
+            // P2P v2 is the production-preferred path on Linux and Android.
+            // Windows and desktop macOS default to relay until their socket
+            // protection has been accepted on real NATs; deployments opt in
+            // with p2p.mode=direct-preferred.  The relay also remains the
+            // fallback when capability negotiation cannot complete.
+            config.p2p.enabled = true;
+#if defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE) && !defined(IPHONE))
             config.p2p.mode = "relay";
+#else
+            config.p2p.mode = "direct-preferred";
+#endif
             config.p2p.punch_timeout = 5;
             config.p2p.keep_alived = 15;
             config.p2p.stun_servers.clear();
+            config.p2p.stun_request_profile = "standard";
             config.p2p.max_probes = 2;
             config.p2p.probe_timeout_ms = 2000;
             config.p2p.heartbeat_interval_ms = 1000;
@@ -775,6 +791,13 @@ namespace ppp {
 
             if (config.mux.reliability.rtx.bytes <= 0) {
                 config.mux.reliability.rtx.bytes = PPP_MUX_RELIABILITY_RTX_BYTES;
+            }
+
+            if (config.mux.reliability.rtx.flow_bytes <= 0) {
+                config.mux.reliability.rtx.flow_bytes = PPP_MUX_RTX_FLOW_MAX_BYTES;
+            }
+            if (config.mux.reliability.rtx.flow_bytes > config.mux.reliability.rtx.bytes) {
+                config.mux.reliability.rtx.flow_bytes = config.mux.reliability.rtx.bytes;
             }
 
             if (config.mux.reliability.rtx.max_attempts <= 0) {
@@ -1214,6 +1237,10 @@ namespace ppp {
             }
             config.p2p.punch_timeout = std::max<int>(1, config.p2p.punch_timeout);
             config.p2p.keep_alived = std::max<int>(1, config.p2p.keep_alived);
+            config.p2p.stun_request_profile = ToLower(LTrim(RTrim(config.p2p.stun_request_profile)));
+            if (config.p2p.stun_request_profile != "tailnode") {
+                config.p2p.stun_request_profile = "standard";
+            }
             config.p2p.max_probes = std::clamp<int>(config.p2p.max_probes, 1, 10);
             config.p2p.probe_timeout_ms = std::clamp<int>(config.p2p.probe_timeout_ms, 500, 10000);
             config.p2p.heartbeat_interval_ms = std::clamp<int>(config.p2p.heartbeat_interval_ms, 500, 5000);
@@ -1268,11 +1295,25 @@ namespace ppp {
             }
 
             Json::Value json = JsonAuxiliary::FromString(json_string);
+            if (json.isObject() && json["client"].isObject() &&
+                json["client"].isMember("policy") && !json["client"]["policy"].isNull()) {
+                Json::CharReaderBuilder builder;
+                builder["rejectDupKeys"] = true;
+                builder["failIfExtra"] = true;
+                std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+                Json::Value strict_json;
+                Json::String errors;
+                if (!reader->parse(json_string.data(), json_string.data() + json_string.size(), &strict_json, &errors)) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+                }
+                json = std::move(strict_json);
+            }
             if (!json.isObject()) {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::AppConfigurationLoadJsonNotObject);
             }
             else {
-                bool loaded = Load(json);
+                bool loaded = Load(json, file_path);
+                if (loaded && client.policy) client.policy_config_file_backed = true;
                 if (!loaded && ppp::diagnostics::ErrorCode::Success == ppp::diagnostics::GetLastErrorCode()) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigLoadFailed);
                 }
@@ -1464,7 +1505,7 @@ namespace ppp {
             }
 
             route.network = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["network"])));
-            route.prefix = static_cast<int>(JsonAuxiliary::AsInt64(json["prefix"], 0));
+            route.prefix = JsonAuxiliary::AsInt(json["prefix"], 0);
             route.via = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["via"])));
             route.guid = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["guid"])));
             return !route.network.empty() && route.prefix > 0 && route.prefix <= ppp::net::native::MAX_PREFIX_VALUE_V4;
@@ -1768,9 +1809,46 @@ namespace ppp {
          * @return True when loading and normalization succeed.
          */
         bool AppConfiguration::Load(Json::Value& json) noexcept {
+            return Load(json, ppp::string());
+        }
+
+        bool AppConfiguration::Load(Json::Value& json, const ppp::string& config_path) noexcept {
             Clear();
             if (!json.isObject()) {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+            }
+
+            if (json["client"].isObject() && json["client"].isMember("policy") &&
+                !json["client"]["policy"].isNull()) {
+                const auto& policy = json["client"]["policy"];
+                if (!policy.isObject()) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+                }
+                const auto& version = policy["version"];
+                if ((version.type() != Json::intValue && version.type() != Json::uintValue) ||
+                    !version.isInt() || version.asInt() != 2) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+                }
+                for (const char* field : {"routing", "bypass", "dns-rules"}) {
+                    if (json["client"].isMember(field)) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+                    }
+                }
+                for (const char* field : {"routing", "geo-rules", "dns", "bypass", "dns-rules"}) {
+                    if (json.isMember(field)) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+                    }
+                }
+                if (json["udp"].isObject() && json["udp"].isMember("dns")) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+                }
+                auto definition = ppp::make_shared_object<Json::Value>(policy);
+                if (!definition) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                }
+                client.policy = std::move(definition);
+                client.policy_config_path = config_path.empty() ? "policy-memory.json" : config_path;
+                client.policy_config_file_backed = false;
             }
 
             AppConfiguration& config = *this;
@@ -1807,7 +1885,7 @@ namespace ppp {
 
             config.tcp.inactive.timeout = JsonAuxiliary::AsValue<int>(json["tcp"]["inactive"]["timeout"]);
             config.tcp.connect.timeout = JsonAuxiliary::AsValue<int>(json["tcp"]["connect"]["timeout"]);
-            config.tcp.connect.nexcept = (int)JsonAuxiliary::AsInt64(json["tcp"]["connect"]["nexcept"], PPP_TCP_CONNECT_NEXCEPT);
+            config.tcp.connect.nexcept = JsonAuxiliary::AsInt(json["tcp"]["connect"]["nexcept"], PPP_TCP_CONNECT_NEXCEPT);
 
             config.tcp.listen.port = JsonAuxiliary::AsValue<int>(json["tcp"]["listen"]["port"]);
             config.tcp.turbo = JsonAuxiliary::AsValue<bool>(json["tcp"]["turbo"]);
@@ -1818,7 +1896,7 @@ namespace ppp {
 
             config.mux.inactive.timeout = JsonAuxiliary::AsValue<int>(json["mux"]["inactive"]["timeout"]);
             config.mux.connect.timeout = JsonAuxiliary::AsValue<int>(json["mux"]["connect"]["timeout"]);
-            config.mux.congestions = (int)JsonAuxiliary::AsInt64(json["mux"]["congestions"], -1);
+            config.mux.congestions = JsonAuxiliary::AsInt(json["mux"]["congestions"], -1);
             config.mux.mode = JsonAuxiliary::AsValue<ppp::string>(json["mux"]["mode"]);
             config.mux.turbo = JsonAuxiliary::AsValue<bool>(json["mux"]["turbo"]);
             config.mux.flow.reorder.bytes = JsonAuxiliary::AsValue<int>(json["mux"]["flow"]["reorder"]["bytes"]);
@@ -1831,7 +1909,10 @@ namespace ppp {
             config.mux.tx.ctrl.budget_frames = JsonAuxiliary::AsValue<int>(json["mux"]["tx"]["ctrl"]["budget_frames"]);
             AssignBoolIfPresent(config.mux.reliability.enabled, json["mux"]["reliability"]["enabled"]);
             config.mux.reliability.rtx.bytes = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["rtx"]["bytes"]);
+            config.mux.reliability.rtx.flow_bytes = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["rtx"]["flow_bytes"]);
             config.mux.reliability.rtx.max_attempts = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["rtx"]["max_attempts"]);
+            AssignBoolIfPresent(config.mux.reliability.rtx.pto, json["mux"]["reliability"]["rtx"]["pto"]);
+            AssignBoolIfPresent(config.mux.reliability.rtx.fast, json["mux"]["reliability"]["rtx"]["fast"]);
             config.mux.reliability.ack.delay = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["ack"]["delay"]);
             config.mux.reliability.gap.timeout = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["gap"]["timeout"]);
             AssignBoolIfPresent(config.mux.fec.enabled, json["mux"]["fec"]["enabled"]);
@@ -2037,6 +2118,7 @@ namespace ppp {
                     AssignIfPresent(config.p2p.mode, p2p_json["mode"]);
                     AssignIfPresent(config.p2p.punch_timeout, p2p_json["punch-timeout"]);
                     AssignIfPresent(config.p2p.keep_alived, p2p_json["keep-alived"]);
+                    AssignIfPresent(config.p2p.stun_request_profile, p2p_json["stun"]["request-profile"]);
 
                     const Json::Value& stun_json = p2p_json["stun"]["servers"];
                     if (stun_json.isArray()) {
@@ -2258,7 +2340,10 @@ namespace ppp {
             mux["tx"]["ctrl"]["budget_frames"] = config.mux.tx.ctrl.budget_frames;
             mux["reliability"]["enabled"] = config.mux.reliability.enabled;
             mux["reliability"]["rtx"]["bytes"] = config.mux.reliability.rtx.bytes;
+            mux["reliability"]["rtx"]["flow_bytes"] = config.mux.reliability.rtx.flow_bytes;
             mux["reliability"]["rtx"]["max_attempts"] = config.mux.reliability.rtx.max_attempts;
+            mux["reliability"]["rtx"]["pto"] = config.mux.reliability.rtx.pto;
+            mux["reliability"]["rtx"]["fast"] = config.mux.reliability.rtx.fast;
             mux["reliability"]["ack"]["delay"] = config.mux.reliability.ack.delay;
             mux["reliability"]["gap"]["timeout"] = config.mux.reliability.gap.timeout;
             mux["fec"]["enabled"] = config.mux.fec.enabled;
@@ -2411,6 +2496,9 @@ namespace ppp {
             }
 
             const AppConfiguration::ClientRoutingConfiguration& canonical_routing = config.client.routing;
+            if (config.client.policy) {
+                client["policy"] = *config.client.policy;
+            }
             const bool emit_canonical_routing =
                 canonical_routing.configured ||
                 !canonical_routing.bypass.empty() ||
@@ -2563,6 +2651,7 @@ namespace ppp {
             p2p["mode"] = config.p2p.mode;
             p2p["punch-timeout"] = config.p2p.punch_timeout;
             p2p["keep-alived"] = config.p2p.keep_alived;
+            p2p["stun"]["request-profile"] = config.p2p.stun_request_profile;
             p2p["max-probes"] = config.p2p.max_probes;
             p2p["probe-timeout-ms"] = config.p2p.probe_timeout_ms;
             p2p["heartbeat-interval-ms"] = config.p2p.heartbeat_interval_ms;
@@ -2650,6 +2739,15 @@ namespace ppp {
                 geo_rules["append-dns-rules"] = arr;
             }
             root["geo-rules"] = geo_rules;
+            if (config.client.policy) {
+                for (const char* field : {"routing", "geo-rules", "dns", "bypass", "dns-rules"}) {
+                    root.removeMember(field);
+                }
+                for (const char* field : {"routing", "bypass", "dns-rules"}) {
+                    root["client"].removeMember(field);
+                }
+                root["udp"].removeMember("dns");
+            }
 
             return root;
         }

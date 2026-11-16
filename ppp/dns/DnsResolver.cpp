@@ -428,9 +428,10 @@ namespace ppp {
          *  destroyed across multiple racing lambda destruction frames in the
          *  multi-level DoH async chain.
          */
-        struct CompletionState final {
+        struct CompletionState final : std::enable_shared_from_this<CompletionState> {
             std::atomic<bool>                                                       completed{ false };
             DnsResolver::ResolveCallback                                            callback;
+            ppp::function<bool()>                                                   active;
 
             // Transient resources owned by this query. Populated by SendDoh /
             // SendDot / SendUdp / SendTcp before any async op is started.
@@ -450,11 +451,52 @@ namespace ppp {
             std::shared_ptr<void>                                                   slot2;
             std::shared_ptr<void>                                                   slot3;
 
-            explicit CompletionState(const DnsResolver::ResolveCallback& cb) noexcept : callback(cb) {}
+            std::chrono::steady_clock::time_point                                   deadline;
+
+            explicit CompletionState(const DnsResolver::ResolveCallback& cb,
+                ppp::function<bool()> check = {}) noexcept : callback(cb), active(std::move(check)) {}
 
             /** @brief Returns true if Complete() has already fired. */
-            bool                                                                    IsCompleted() const noexcept {
+            bool                                                                    IsCompleted() noexcept {
+                if (active) {
+                    try {
+                        if (!active()) Complete(ppp::vector<Byte>());
+                    } catch (...) {
+                        Complete(ppp::vector<Byte>());
+                    }
+                }
                 return completed.load(std::memory_order_acquire);
+            }
+
+            const ppp::function<bool()>&                                       ActiveCheck() const noexcept { return active; }
+
+            void                                                                    StartDeadline(std::chrono::milliseconds timeout,
+                const ppp::function<void()>& on_timeout) noexcept {
+                deadline = std::chrono::steady_clock::now() + timeout;
+                ScheduleDeadline(on_timeout);
+            }
+
+            void                                                                    ScheduleDeadline(const ppp::function<void()>& on_timeout) noexcept {
+                if (IsCompleted() || NULLPTR == timer) return;
+                const auto remaining = deadline - std::chrono::steady_clock::now();
+                const auto poll_interval = std::chrono::steady_clock::duration(std::chrono::milliseconds(25));
+                const auto delay = active ? std::min(remaining, poll_interval) : remaining;
+                try {
+                    timer->expires_after(delay > std::chrono::steady_clock::duration::zero()
+                        ? delay : std::chrono::steady_clock::duration::zero());
+                    auto self = shared_from_this();
+                    timer->async_wait([self, on_timeout](const boost::system::error_code& error) noexcept {
+                        if (error || self->IsCompleted()) return;
+                        if (std::chrono::steady_clock::now() >= self->deadline) {
+                            if (on_timeout) on_timeout();
+                            else self->Complete(ppp::vector<Byte>());
+                            return;
+                        }
+                        self->ScheduleDeadline(on_timeout);
+                    });
+                } catch (...) {
+                    Complete(ppp::vector<Byte>());
+                }
             }
 
             /**
@@ -776,6 +818,25 @@ namespace ppp {
 
         void DnsResolver::SetProtectSocketCallback(const ProtectSocketCallback& cb) noexcept {
             UpdateConfig([&cb](Config& config) noexcept { config.protect_socket = cb; });
+        }
+
+        void DnsResolver::SetTcpConnectCallback(const TcpConnectCallback& cb) noexcept {
+            UpdateConfig([&cb](Config& config) noexcept { config.tcp_connect = cb; });
+        }
+
+        void DnsResolver::SetQueryActiveCheck(const ppp::function<bool()>& active) noexcept {
+            UpdateConfig([&active](Config& config) noexcept { config.query_active = active; });
+        }
+
+        void DnsResolver::ConnectTcp(tcp::socket& socket, const tcp::endpoint& remote,
+            const ppp::function<bool()>& active,
+            const ppp::function<void(boost::system::error_code)>& callback) noexcept {
+            const auto config = GetConfig();
+            if (config->tcp_connect) config->tcp_connect(socket, remote, active, callback);
+            else socket.async_connect(remote, [active, callback](const boost::system::error_code& error) {
+                if (active && !active()) callback(boost::asio::error::operation_aborted);
+                else callback(error);
+            });
         }
 
         void DnsResolver::SetUdpFlowRegistry(
@@ -1309,7 +1370,7 @@ namespace ppp {
          * Socket protection helper
          * ======================================================================== */
 
-        bool DnsResolver::ProtectSocket(int native_handle) noexcept {
+        bool DnsResolver::ProtectSocket(NativeSocketHandle native_handle) noexcept {
             std::shared_ptr<const Config> config = GetConfig();
             if (NULLPTR == config->protect_socket) {
                 return true;
@@ -1328,6 +1389,16 @@ namespace ppp {
          * ======================================================================== */
 
         void DnsResolver::TryProtocols(std::shared_ptr<ppp::vector<ServerEntry> > entries, std::size_t index, std::shared_ptr<ppp::vector<Byte> > packet, const ResolveCallback& callback, bool domestic) noexcept {
+            const auto config = GetConfig();
+            if (config->query_active) {
+                bool active = false;
+                try { active = config->query_active(); }
+                catch (...) { active = false; }
+                if (!active) {
+                    callback(ppp::vector<Byte>());
+                    return;
+                }
+            }
             if (NULLPTR == entries || NULLPTR == packet || index >= entries->size()) {
                 ppp::telemetry::Log(Level::kDebug, "dns", "resolve failed: all entries exhausted");
                 ppp::telemetry::Count("dns.resolve.failure", 1);
@@ -1444,7 +1515,7 @@ namespace ppp {
             // owned by `state` so that all lambdas in the chain only need to
             // capture `[state]`. Resource teardown happens exclusively in
             // CompletionState::Complete() under a single CAS guard.
-            std::shared_ptr<CompletionState> state = make_shared_object<CompletionState>(callback);
+            std::shared_ptr<CompletionState> state = make_shared_object<CompletionState>(callback, GetConfig()->query_active);
             std::shared_ptr<tcp::socket> socket = make_shared_object<tcp::socket>(context_);
             std::shared_ptr<boost::asio::steady_timer> timer = make_shared_object<boost::asio::steady_timer>(context_);
             if (NULLPTR == state || NULLPTR == socket || NULLPTR == timer) {
@@ -1466,7 +1537,7 @@ namespace ppp {
             ppp::net::Socket::SetTypeOfService(socket->native_handle());
             ppp::net::Socket::SetSignalPipeline(socket->native_handle(), false);
             ppp::net::Socket::ReuseSocketAddress(socket->native_handle(), true);
-            if (!ProtectSocket(socket->native_handle())) {
+            if (!GetConfig()->tcp_connect && !ProtectSocket(socket->native_handle())) {
                 CountDnsTransport(Protocol::DoH, DnsTransportStage::Socket, DnsTransportReason::ProtectFailed);
                 ppp::net::Socket::Closesocket(socket);
                 state->Complete(ppp::vector<Byte>());
@@ -1534,17 +1605,13 @@ namespace ppp {
             // released).
             // ---------------------------------------------------------------
 
-            timer->expires_after(std::chrono::milliseconds(PPP_DNS_RESOLVER_TLS_TIMEOUT_MS));
-            timer->async_wait([state](const boost::system::error_code& ec_) noexcept {
-                if (ec_ || state->IsCompleted()) {
-                    return;
-                }
+            state->StartDeadline(std::chrono::milliseconds(PPP_DNS_RESOLVER_TLS_TIMEOUT_MS), [state]() noexcept {
                 CountDnsTransport(Protocol::DoH, DnsTransportStage::Timeout);
                 state->Complete(ppp::vector<Byte>());
             });
 
             std::weak_ptr<DnsResolver> weak_self = weak_from_this();
-            stream->lowest_layer().async_connect(remote,
+            ConnectTcp(stream->next_layer(), remote, state->ActiveCheck(),
                 [weak_self, state, packet, host, path, sni_name, host_key](const boost::system::error_code& connect_ec) noexcept {
                     if (state->IsCompleted()) {
                         return;
@@ -1712,7 +1779,7 @@ namespace ppp {
             // SendDoh: every transient resource is owned by `state`, every
             // lambda captures only `[state]`, and Complete() is the sole
             // teardown point.
-            std::shared_ptr<CompletionState> state = make_shared_object<CompletionState>(callback);
+            std::shared_ptr<CompletionState> state = make_shared_object<CompletionState>(callback, GetConfig()->query_active);
             std::shared_ptr<tcp::socket> socket = make_shared_object<tcp::socket>(context_);
             std::shared_ptr<boost::asio::steady_timer> timer = make_shared_object<boost::asio::steady_timer>(context_);
             std::shared_ptr<ppp::vector<Byte> > request = make_shared_object<ppp::vector<Byte> >();
@@ -1751,7 +1818,7 @@ namespace ppp {
             ppp::net::Socket::SetTypeOfService(socket->native_handle());
             ppp::net::Socket::SetSignalPipeline(socket->native_handle(), false);
             ppp::net::Socket::ReuseSocketAddress(socket->native_handle(), true);
-            if (!ProtectSocket(socket->native_handle())) {
+            if (!GetConfig()->tcp_connect && !ProtectSocket(socket->native_handle())) {
                 CountDnsTransport(Protocol::DoT, DnsTransportStage::Socket, DnsTransportReason::ProtectFailed);
                 ppp::net::Socket::Closesocket(socket);
                 state->Complete(ppp::vector<Byte>());
@@ -1804,17 +1871,13 @@ namespace ppp {
                 }
             }
 
-            timer->expires_after(std::chrono::milliseconds(PPP_DNS_RESOLVER_TLS_TIMEOUT_MS));
-            timer->async_wait([state](const boost::system::error_code& ec_) noexcept {
-                if (ec_ || state->IsCompleted()) {
-                    return;
-                }
+            state->StartDeadline(std::chrono::milliseconds(PPP_DNS_RESOLVER_TLS_TIMEOUT_MS), [state]() noexcept {
                 CountDnsTransport(Protocol::DoT, DnsTransportStage::Timeout);
                 state->Complete(ppp::vector<Byte>());
             });
 
             std::weak_ptr<DnsResolver> weak_self = weak_from_this();
-            stream->lowest_layer().async_connect(remote,
+            ConnectTcp(stream->next_layer(), remote, state->ActiveCheck(),
                 [weak_self, state, hostname = entry.hostname, host_key](const boost::system::error_code& connect_ec) noexcept {
                     if (state->IsCompleted()) {
                         return;
@@ -1971,7 +2034,7 @@ namespace ppp {
             // Centralised state, [state]-only lambda captures, single-shot
             // teardown via state->Complete(). Same lifecycle policy as
             // SendDoh/SendDot.
-            std::shared_ptr<CompletionState> state = make_shared_object<CompletionState>(callback);
+            std::shared_ptr<CompletionState> state = make_shared_object<CompletionState>(callback, GetConfig()->query_active);
             std::shared_ptr<udp::socket> socket = make_shared_object<udp::socket>(context_);
             std::shared_ptr<boost::asio::steady_timer> timer = make_shared_object<boost::asio::steady_timer>(context_);
             std::shared_ptr<ppp::vector<Byte> > buffer = make_shared_object<ppp::vector<Byte> >(PPP_DNS_RESOLVER_UDP_BUFFER_SIZE);
@@ -1998,7 +2061,7 @@ namespace ppp {
             ppp::net::Socket::SetTypeOfService(socket->native_handle());
             ppp::net::Socket::SetSignalPipeline(socket->native_handle(), false);
             ppp::net::Socket::ReuseSocketAddress(socket->native_handle(), true);
-            if (!ProtectSocket(socket->native_handle())) {
+            if (!ProtectSocket(static_cast<NativeSocketHandle>(socket->native_handle()))) {
                 CountDnsTransport(Protocol::UDP, DnsTransportStage::Socket, DnsTransportReason::ProtectFailed);
                 state->Complete(ppp::vector<Byte>());
                 return;
@@ -2021,11 +2084,7 @@ namespace ppp {
                 }
             }
 
-            timer->expires_after(std::chrono::milliseconds(PPP_DNS_RESOLVER_UDP_TIMEOUT_MS));
-            timer->async_wait([state](const boost::system::error_code& ec_) noexcept {
-                if (ec_ || state->IsCompleted()) {
-                    return;
-                }
+            state->StartDeadline(std::chrono::milliseconds(PPP_DNS_RESOLVER_UDP_TIMEOUT_MS), [state]() noexcept {
                 CountDnsTransport(Protocol::UDP, DnsTransportStage::Recv, DnsTransportReason::Timeout);
                 CountDnsTransport(Protocol::UDP, DnsTransportStage::Timeout);
                 state->Complete(ppp::vector<Byte>());
@@ -2064,7 +2123,7 @@ namespace ppp {
             // Centralised state, [state]-only lambda captures, single-shot
             // teardown via state->Complete(). Same lifecycle policy as
             // SendDoh/SendDot.
-            std::shared_ptr<CompletionState> state = make_shared_object<CompletionState>(callback);
+            std::shared_ptr<CompletionState> state = make_shared_object<CompletionState>(callback, GetConfig()->query_active);
             std::shared_ptr<tcp::socket> socket = make_shared_object<tcp::socket>(context_);
             std::shared_ptr<boost::asio::steady_timer> timer = make_shared_object<boost::asio::steady_timer>(context_);
             std::shared_ptr<ppp::vector<Byte> > request = make_shared_object<ppp::vector<Byte> >();
@@ -2103,22 +2162,18 @@ namespace ppp {
             ppp::net::Socket::SetTypeOfService(socket->native_handle());
             ppp::net::Socket::SetSignalPipeline(socket->native_handle(), false);
             ppp::net::Socket::ReuseSocketAddress(socket->native_handle(), true);
-            if (!ProtectSocket(socket->native_handle())) {
+            if (!GetConfig()->tcp_connect && !ProtectSocket(socket->native_handle())) {
                 CountDnsTransport(Protocol::TCP, DnsTransportStage::Socket, DnsTransportReason::ProtectFailed);
                 state->Complete(ppp::vector<Byte>());
                 return;
             }
 
-            timer->expires_after(std::chrono::milliseconds(PPP_DNS_RESOLVER_TCP_TIMEOUT_MS));
-            timer->async_wait([state](const boost::system::error_code& ec_) noexcept {
-                if (ec_ || state->IsCompleted()) {
-                    return;
-                }
+            state->StartDeadline(std::chrono::milliseconds(PPP_DNS_RESOLVER_TCP_TIMEOUT_MS), [state]() noexcept {
                 CountDnsTransport(Protocol::TCP, DnsTransportStage::Timeout);
                 state->Complete(ppp::vector<Byte>());
             });
 
-            socket->async_connect(remote, [state](const boost::system::error_code& connect_ec) noexcept {
+            ConnectTcp(*socket, remote, state->ActiveCheck(), [state](const boost::system::error_code& connect_ec) noexcept {
                 if (state->IsCompleted()) {
                     return;
                 }
@@ -2717,7 +2772,7 @@ namespace ppp {
             ppp::net::Socket::SetTypeOfService(socket->native_handle());
             ppp::net::Socket::SetSignalPipeline(socket->native_handle(), false);
             ppp::net::Socket::ReuseSocketAddress(socket->native_handle(), true);
-            if (!ProtectSocket(socket->native_handle())) {
+            if (!ProtectSocket(static_cast<NativeSocketHandle>(socket->native_handle()))) {
                 state->Complete(boost::asio::ip::address());
                 return;
             }

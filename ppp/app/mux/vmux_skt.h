@@ -118,6 +118,10 @@ namespace vmux {
 
         /** @brief Enable or disable transmit acceleration mode. */
         bool                                            tx_acceleration(bool acceleration) noexcept;
+        /** @brief Apply a peer XON/XOFF; a versioned frame older than the last applied one is ignored. */
+        bool                                            tx_acceleration(bool acceleration, bool has_version, uint32_t version) noexcept;
+        /** @brief Send XON/XOFF stamped with the next flow-control version. */
+        bool                                            post_flow_control(Byte state) noexcept;
 
         /** @brief Forward data from local TCP socket to vmux peer. */
         bool                                            forward_to_rx_socket() noexcept;
@@ -155,7 +159,11 @@ namespace vmux {
         uint32_t                                        connection_id_ = 0; ///< Immutable logical connection identifier within the mux session.
 
         packet_queue                                    rx_queue_;          ///< Inbound payload queue pending delivery to local socket.
+        int64_t                                         rx_queue_bytes_ = 0; ///< Bytes currently held in rx_queue_ (hard-cap accounting).
         int64_t                                         rx_congestions_;    ///< Signed congestion counter; negative means backpressure applied.
+        uint32_t                                        fc_tx_version_ = 0;      ///< Version stamped on the next XON/XOFF this socket sends.
+        uint32_t                                        fc_rx_version_ = 0;      ///< Version of the last peer XON/XOFF applied.
+        bool                                            fc_rx_versioned_ = false; ///< True once a versioned peer XON/XOFF was applied.
 
         std::shared_ptr<boost::asio::ip::tcp::socket>   tx_socket_;         ///< Local TCP socket to which inbound data is forwarded.
         std::shared_ptr<Byte>                           tx_buffer_;         ///< Persistent receive buffer for the local socket read loop.

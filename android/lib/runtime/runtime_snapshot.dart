@@ -140,6 +140,7 @@ class RuntimeSnapshot {
     this.muxActiveLinks = 0,
     this.muxFallbackReason = '',
     this.p2pState = P2PState.disabled,
+    this.p2pGateReason = '',
     this.traffic = const RuntimeTrafficSnapshot(),
     this.connectedMonotonicMs = 0,
     this.lastError = const RuntimeErrorSnapshot(),
@@ -160,6 +161,7 @@ class RuntimeSnapshot {
   final int muxActiveLinks;
   final String muxFallbackReason;
   final P2PState p2pState;
+  final String p2pGateReason;
   String get effectivePath => p2pState == P2PState.direct ? 'direct' : 'relay';
   final RuntimeTrafficSnapshot traffic;
 
@@ -206,6 +208,7 @@ class RuntimeSnapshot {
       ),
       muxFallbackReason: json['mux_fallback_reason'] as String? ?? '',
       p2pState: P2PState.parse(json['p2p_state'] as String? ?? 'disabled'),
+      p2pGateReason: json['p2p_gate_reason'] as String? ?? '',
       traffic: RuntimeTrafficSnapshot.fromJson(
         json['traffic'] as Map<String, dynamic>?,
       ),
@@ -244,6 +247,7 @@ class RuntimeSnapshot {
 
   List<String> get p2pDiagnosticLines => <String>[
         'P2P: ${p2pState.displayName}',
+        if (p2pGateReason.isNotEmpty) 'Gate: $p2pGateReason',
         'Effective path: $effectivePathDisplayName',
       ];
 }

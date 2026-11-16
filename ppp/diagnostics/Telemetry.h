@@ -20,11 +20,6 @@
 
 #include <cstdarg>
 
-/* Always compiled — kept for any external code that checks the macro. */
-#ifndef PPP_TELEMETRY
-# define PPP_TELEMETRY 1
-#endif
-
 namespace ppp {
     namespace telemetry {
 

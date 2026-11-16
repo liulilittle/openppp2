@@ -27,8 +27,7 @@ pub fn classify_line(line: &str) -> TelemetryEvent {
     let normalized = line.trim().to_ascii_lowercase();
     let connected = normalized.contains("session established")
         || normalized.contains("exchanger connected")
-        || normalized.contains("client connected")
-        || normalized.contains("proxy-only connected");
+        || normalized.contains("client connected");
     let failed = normalized.contains("handshake failed")
         || normalized.contains("tcp connect failed")
         || normalized.contains("authentication failed")

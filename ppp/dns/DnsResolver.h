@@ -60,15 +60,22 @@ namespace ppp {
 
         class DnsResolver final : public std::enable_shared_from_this<DnsResolver> {
         public:
-            typedef ppp::function<bool(int native_handle)>  ProtectSocketCallback;
+            using NativeSocketHandle = boost::asio::ip::tcp::socket::native_handle_type;
+            typedef ppp::function<bool(NativeSocketHandle native_handle)> ProtectSocketCallback;
             typedef ppp::function<void(ppp::vector<Byte>)>  ResolveCallback;
             typedef ppp::function<void(boost::asio::ip::address)> ExitIpCallback;
+            typedef ppp::function<void(boost::asio::ip::tcp::socket&,
+                const boost::asio::ip::tcp::endpoint&,
+                const ppp::function<bool()>&,
+                const ppp::function<void(boost::system::error_code)>&)> TcpConnectCallback;
 
         public:
             explicit DnsResolver(boost::asio::io_context& context) noexcept;
             ~DnsResolver() noexcept;
 
             void                                            SetProtectSocketCallback(const ProtectSocketCallback& cb) noexcept;
+            void                                            SetTcpConnectCallback(const TcpConnectCallback& cb) noexcept;
+            void                                            SetQueryActiveCheck(const ppp::function<bool()>& active) noexcept;
             void                                            SetUdpFlowRegistry(const std::shared_ptr<DnsUdpFlowRegistry>& registry) noexcept;
 
             /**
@@ -257,7 +264,11 @@ namespace ppp {
                 std::shared_ptr<ppp::vector<Byte> >         packet,
                 const ResolveCallback&                      callback) noexcept;
 
-            bool                                            ProtectSocket(int native_handle) noexcept;
+            bool                                            ProtectSocket(NativeSocketHandle native_handle) noexcept;
+            void                                            ConnectTcp(boost::asio::ip::tcp::socket& socket,
+                const boost::asio::ip::tcp::endpoint& remote,
+                const ppp::function<bool()>& active,
+                const ppp::function<void(boost::system::error_code)>& callback) noexcept;
 
             /**
              * @brief Looks up a previously cached TLS session for a given upstream.
@@ -368,6 +379,8 @@ namespace ppp {
              */
             struct Config {
                 ProtectSocketCallback                       protect_socket;
+                TcpConnectCallback                          tcp_connect;
+                ppp::function<bool()>                        query_active;
                 std::shared_ptr<DnsUdpFlowRegistry>         udp_flow_registry;
                 ppp::string                                 default_domestic;
                 ppp::string                                 default_foreign;

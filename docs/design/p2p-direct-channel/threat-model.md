@@ -2,11 +2,11 @@
 
 > **Purpose:** Define threats and required controls for P2P direct channels.
 > **Audience:** Security, protocol, and platform maintainers.
-> **Status:** Current design evidence; not an enabled production data path.
-> **Last verified against:** P2P integration and fail-closed production capability gate, 2026-07-22.
+> **Status:** Current production control model; direct activation remains fail-closed on capability failure.
+> **Last verified against:** P2P production wiring and isolated tests, 2026-10-07.
 > **Parent index:** [Design Documents](../README.md)
 
-> Status: Draft
+> Status: Implemented; production entry wired
 > Type: Design
 > Last verified: 8c8a888
 
@@ -24,7 +24,7 @@ one compromised session from deriving another session's direct keys.
 
 ## Threats And Controls
 
-> **Implementation boundary:** This table states controls required before any production enablement. The current P2P path remains fail-closed; the table is not proof that every listed control—especially per-source and per-session rate limiting—is enforced today.
+> **Implementation boundary:** This table states controls required for direct activation. The release gate is enabled, but the direct path remains fail-closed; the table is not proof that every listed control—especially per-source and per-session rate limiting—is enforced today.
 
 | Threat | Required control | Failure behavior |
 |---|---|---|
@@ -43,7 +43,7 @@ one compromised session from deriving another session's direct keys.
 | UI reports success early | Publish `direct` only after authenticated ACK | Continue to show relay |
 | Direct path failure tears down VPN | Relay is an invariant independent of P2P state | Base runtime stays Connected |
 
-## Adversarial Tests Required Before Enablement
+## Adversarial Tests Required For Broader Acceptance
 
 - expired, wrong-peer, wrong-session, wrong-direction, wrong-candidate, and
   old-epoch tokens;
@@ -58,8 +58,8 @@ one compromised session from deriving another session's direct keys.
   routing before the first send.
 
 ASan/UBSan must cover parsers, replay, token validation, state transitions, and
-100-cycle start/fallback/stop. Platform evidence is required before the
-experimental capability can be enabled outside tests.
+100-cycle start/fallback/stop. Platform evidence is required before claiming
+cross-platform direct-path acceptance; it does not bypass relay fallback.
 
 See the [protocol](protocol.md), [state machine](state-machine.md), and accepted
 [ADR](../../adr/0002-p2p-direct-channel-security.md).

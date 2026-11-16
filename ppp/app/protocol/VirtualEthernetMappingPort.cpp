@@ -21,6 +21,7 @@
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
+#include <ppp/net/asio/SharedBufferReceive.h>
 
 namespace ppp {
     namespace app {
@@ -359,7 +360,7 @@ namespace ppp {
 
                 // Asynchronously receive UDP datagrams
                 std::shared_ptr<VirtualEthernetMappingPort> self = shared_from_this();
-                server->socket_udp_.async_receive_from(boost::asio::buffer(server->socket_source_buf_.get(), PPP_UDP_BUFFER_SIZE), server->socket_source_ep_,
+                ppp::net::asio::AsyncReceiveFromSharedBuffer(server->socket_udp_, server->socket_source_buf_.get(), PPP_UDP_BUFFER_SIZE, server->socket_source_ep_,
                     [self, this, server](boost::system::error_code ec, std::size_t sz) noexcept {
                         if (ec == boost::system::errc::success) {
                             if (sz > 0) {
@@ -598,8 +599,10 @@ namespace ppp {
 
                 // Perform async write on the TCP socket
                 std::shared_ptr<IAsynchronousWriteIoQueue> self = shared_from_this();
-                boost::asio::async_write(*socket_, boost::asio::buffer((Byte*)packet.get() + offset, packet_length),
-                    [self, this, packet, packet_length, cb](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                // Finalize() moves socket_ out while this composed write may still be in flight;
+                // the completion must keep the socket alive until write_op finishes.
+                boost::asio::async_write(*socket, boost::asio::buffer((Byte*)packet.get() + offset, packet_length),
+                    [self, this, socket, packet, packet_length, cb](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         bool ok = ec == boost::system::errc::success;
                         if (cb) {
                             cb(ok);
@@ -1374,8 +1377,10 @@ namespace ppp {
                 }
 
                 std::shared_ptr<IAsynchronousWriteIoQueue> self = shared_from_this();
-                boost::asio::async_write(*socket_, boost::asio::buffer((Byte*)packet.get() + offset, packet_length),
-                    [self, this, packet, packet_length, cb](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                // Finalize() moves socket_ out while this composed write may still be in flight;
+                // the completion must keep the socket alive until write_op finishes.
+                boost::asio::async_write(*socket, boost::asio::buffer((Byte*)packet.get() + offset, packet_length),
+                    [self, this, socket, packet, packet_length, cb](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         bool ok = ec == boost::system::errc::success;
                         if (cb) {
                             cb(ok);
@@ -1614,7 +1619,7 @@ namespace ppp {
 
                 std::shared_ptr<DatagramPort> self = shared_from_this();
                 // Async receive UDP datagram
-                socket_.async_receive_from(boost::asio::buffer(buffer_chunked_.get(), PPP_UDP_BUFFER_SIZE), source_ep_,
+                ppp::net::asio::AsyncReceiveFromSharedBuffer(socket_, buffer_chunked_.get(), PPP_UDP_BUFFER_SIZE, source_ep_,
                     [self, this](boost::system::error_code ec, std::size_t sz) noexcept {
                         if (ec == boost::system::errc::success) {
                             bool ok = false;

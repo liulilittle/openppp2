@@ -329,7 +329,7 @@ void verify_production_frames(const ProductionScenario& scenario, const std::vec
 }
 
 void verify_production_builder_logical() {
-    if (ppp::tap::TunGsoCoalescer::kSegmentCap != 4) throw std::runtime_error("production coalescer cap contract changed");
+    if (ppp::tap::TunGsoCoalescer::SegmentCap() != 4) throw std::runtime_error("production coalescer cap contract changed");
     for (const ProductionScenario& scenario : production_scenarios()) {
         std::vector<std::vector<uint8_t>> frames;
         WriterCounts counts;
@@ -680,6 +680,8 @@ void usage() { std::cout << "usage: tun_gso_output_probe --self-test|--execute\n
 int main(int argc, char** argv) {
     try {
         if (argc != 2) { usage(); return 2; }
+        // The production-builder cases (cap4, ...) pin the historical 4-segment cap.
+        ::setenv("OPENPPP2_TAP_GSO_SEGMENTS", "4", 1);
         const std::string_view mode(argv[1]);
         if (mode == "--self-test") { for (const size_t count : {2U, 4U, 8U, 16U}) { verify_contract(count, ChecksumMode::Partial); verify_contract(count, ChecksumMode::Complete); } verify_production_builder_logical(); verify_inbound_vnet_codec_contract(); std::cout << "{\"mode\":\"self-test\",\"status\":\"pass\",\"mss\":512,\"checksum_modes\":[\"partial\",\"complete\"],\"segment_contracts\":[2,4,8,16],\"production_builder_cases\":[\"cap4\",\"short_tail\",\"psh_insert\",\"ack_only_insert\"],\"inbound_vnet_codec\":true}\n"; return 0; }
         if (mode == "--execute") return run_execute();

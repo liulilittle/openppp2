@@ -15,6 +15,8 @@
 #include <ppp/net/Ipep.h> // std::hash<udp::endpoint> specialization (must precede the endpoint-keyed tables)
 #include <ppp/app/client/udp/UdpRelayHost.h>
 #include <ppp/app/client/routing/HumanRoutingRules.h>
+#include <ppp/app/client/policy/PolicyCompiler.h>
+#include <tuple>
 
 namespace ppp {
     namespace coroutines {
@@ -26,6 +28,7 @@ namespace ppp {
     namespace app {
         namespace client {
             namespace udp {
+                class DirectDatagramFlow;
 
                 class ClientDatagramPortManager final {
                 public:
@@ -55,6 +58,19 @@ namespace ppp {
                                 const void* packet, int packet_size) noexcept;
                     bool SendTo(const boost::asio::ip::udp::endpoint& source, const boost::asio::ip::udp::endpoint& destination,
                                 const void* packet, int packet_size, routing::RoutingAction action) noexcept;
+                    bool SendTo(const boost::asio::ip::udp::endpoint& source, const boost::asio::ip::udp::endpoint& destination,
+                                const void* packet, int packet_size, routing::RoutingAction action,
+                                const std::string& domain, const std::shared_ptr<const policy::PolicySnapshot>& snapshot,
+                                bool resolve_domain = false) noexcept;
+                    bool TrySendPinned(const boost::asio::ip::udp::endpoint& source,
+                        const boost::asio::ip::udp::endpoint& destination, const void* packet, int packet_size,
+                        const std::string& domain, bool& accepted, bool original_is_fake = false) noexcept;
+                    void RecordPolicyReject() noexcept {
+                        auto value = rejected_packets_.load(std::memory_order_relaxed);
+                        while (value != UINT32_MAX && !rejected_packets_.compare_exchange_weak(
+                            value, value + 1, std::memory_order_relaxed)) {}
+                    }
+                    std::uint32_t PolicyRejectCount() const noexcept { return rejected_packets_.load(std::memory_order_relaxed); }
                     /** @brief Route an inbound datagram to its port, a local handler, or the TUN. */
                     bool ReceiveFromDestination(const boost::asio::ip::udp::endpoint& source, const boost::asio::ip::udp::endpoint& destination,
                                                 ppp::Byte* packet, int packet_length) noexcept;
@@ -88,6 +104,10 @@ namespace ppp {
                     std::mutex                                                          syncobj_;
                     /** @brief Permanent manager-local admission gate, closed by Release(). */
                     bool                                                                closed_ = false;
+                    using FlowKey = std::tuple<std::string, std::string, std::string, int>;
+                    std::map<FlowKey, std::shared_ptr<DirectDatagramFlow>> direct_flows_;
+                    std::uint64_t relay_sequence_ = 1023;
+                    std::atomic<std::uint32_t> rejected_packets_{0};
                     /** @brief Active UDP datagram relay port table. */
                     ppp::unordered_map<boost::asio::ip::udp::endpoint,
                         VEthernetDatagramPortPtr>                                       datagrams_;

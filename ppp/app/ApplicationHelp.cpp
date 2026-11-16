@@ -120,6 +120,9 @@ void PppApplication::PrintHelpInformation() noexcept {
     ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--tun-gw=<ip>", col_description_width, "Virtual adapter gateway", col_default_width, "10.0.0.1");
     ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--tun-mask=<bits>", col_description_width, "Subnet mask bits", col_default_width, "30");
     ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--tun-vnet=[yes|no]", col_description_width, "Enable subnet forwarding", col_default_width, "yes");
+    ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--proxy-subnet=[yes|no]", col_description_width, "Proxy mode: join virtual subnet (no adapter)", col_default_width, "yes");
+    ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--proxy-internet=[yes|no]", col_description_width, "Proxy mode: proxy Internet destinations", col_default_width, "yes");
+    ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--proxy-forward=<ports>", col_description_width, "Virtual TCP port[:loopback port], comma separated", col_default_width, "none");
     ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--tun-host=[yes|no]", col_description_width, "Prefer host network", col_default_width, "yes");
     ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--tun-static=[yes|no]", col_description_width, "Enable static tunnel", col_default_width, "no");
     ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--tun-mux=<connections>", col_description_width, "MUX connection count (0=disabled)", col_default_width, "0");

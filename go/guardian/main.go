@@ -26,6 +26,10 @@ func main() {
 		log.Fatalf("load config failed: %v", err)
 	}
 
+	if err := checkListenSecurity(cfg); err != nil {
+		log.Fatalf("%v", err)
+	}
+
 	if cfg.GeneratedJWTSecret {
 		if err := SaveConfigFile(resolvedConfigPath, cfg); err != nil {
 			log.Fatalf("persist generated auth secret failed: %v", err)

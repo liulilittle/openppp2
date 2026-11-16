@@ -19,7 +19,7 @@ OpenPPP2 already supports server-relayed virtual-subnet traffic via `LAN`/`NAT` 
 **Implementation status (2026-07-17):** authenticated offer/ACK, encrypted data,
 fallback, runtime projection, Android socket protection, and iOS provider-owned
 UDP transport are integrated behind a fail-closed capability gate. Production
-direct mode remains disabled by `ProductionAuthenticatedControlV1Ready = false`
+direct mode is enabled by default by `ProductionAuthenticatedControlV1Ready = true`
 until authenticated control v1 is approved and the physical NAT/device matrix
 passes. Android API 34 socket-protection evidence is green in Actions run
 [29526592987](https://github.com/Miaocchi/openppp2/actions/runs/29526592987)

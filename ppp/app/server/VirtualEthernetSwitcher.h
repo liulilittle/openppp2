@@ -1,5 +1,7 @@
 #pragma once
 
+#include <map>
+
 /**
  * @file VirtualEthernetSwitcher.h
  * @brief Declares the server-side virtual ethernet switcher and its control helpers.
@@ -31,6 +33,7 @@
 
 #include <ppp/stdafx.h>
 #include <ppp/Int128.h>
+#include <ppp/collections/SnapshotMap.h>
 #include <ppp/net/Firewall.h>
 #include <ppp/net/native/rib.h>
 #include <ppp/threading/Timer.h>
@@ -44,6 +47,7 @@ namespace ppp::configurations { class AppConfiguration; }
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
 #include <ppp/app/server/IPv4LeasePool.h>
 #include <ppp/p2p/P2PNatClassifier.h>
+#include <ppp/p2p/P2PV2ServerCoordination.h>
 #include <ppp/tap/ITap.h>
 
 namespace ppp {
@@ -93,6 +97,19 @@ namespace ppp {
                 typedef std::shared_ptr<NatInformation>                 NatInformationPtr;
                 typedef std::unordered_map<uint32_t, NatInformationPtr> NatInformationTable;
                 typedef std::unordered_map<ppp::string, std::shared_ptr<class VirtualEthernetExchanger>> IPv6ExchangerTable;
+                /** @brief Binary IPv6 address (network-order halves) used for lock-free per-packet lookup. */
+                typedef std::pair<uint64_t, uint64_t>                   IPv6LookupKey;
+                struct IPv6LookupKeyHash final {
+                    std::size_t operator()(const IPv6LookupKey& key) const noexcept {
+                        return std::hash<uint64_t>()(key.first ^ (key.second * 0x9E3779B97F4A7C15ULL));
+                    }
+                };
+                typedef std::unordered_map<IPv6LookupKey, std::shared_ptr<class VirtualEthernetExchanger>, IPv6LookupKeyHash> IPv6ExchangerLookup;
+                /** @brief Builds the binary-keyed lookup snapshot from the string-keyed table. */
+                struct IPv6ExchangerLookupProject final {
+                    IPv6ExchangerLookup operator()(const IPv6ExchangerTable& table) const;
+                };
+                static IPv6LookupKey                                    MakeIPv6LookupKey(const boost::asio::ip::address_v6& ip) noexcept;
 
                 /**
                  * @brief Tracks the IPv6 assignment request/response state for one session.
@@ -145,6 +162,8 @@ namespace ppp {
                     ppp::string                                          Mode;                     ///< Client-requested P2P mode.
                     boost::asio::ip::udp::endpoint                       ObservedEndpoint;         ///< Authenticated static-echo UDP source endpoint.
                     ppp::vector<ppp::app::protocol::P2PEndpointCandidate> Candidates;              ///< Client-advertised UDP/STUN candidates.
+                    ppp::vector<std::uint8_t>                           SupportedVersions;
+                    std::uint64_t                                      CandidateRevision = 0;
                     UInt64                                               LastSeen = 0;             ///< Last control update tick.
                     UInt64                                               LastOfferAt = 0;          ///< Last peer-offer send tick for coarse throttling.
                     UInt64                                               LastOfferGeneration = 0;  ///< Unique owner of the current asynchronous offer reservation.
@@ -152,6 +171,13 @@ namespace ppp {
                     ppp::p2p::P2PNatType                                 NatType = ppp::p2p::P2PNatType::Unknown; ///< Inferred NAT type from relay traffic.
                 };
                 typedef ppp::unordered_map<Int128, P2PPeerRecord>        P2PPeerTable;
+
+                struct P2PV2PairRecord : ppp::p2p::P2PV2ServerCoordination {
+                    Int128 InitiatorSession = 0, ResponderSession = 0;
+                    uint32_t InitiatorIP = 0, ResponderIP = 0;
+                    std::weak_ptr<ppp::transmissions::ITransmission> InitiatorTransmission, ResponderTransmission;
+                    ppp::app::protocol::P2PControlMessage InitiatorOffer, ResponderOffer;
+                };
 
                 struct PeerPrefixGatewayRecord {
                     Int128                                               SessionId = 0;            ///< Session that owns the gateway prefixes.
@@ -800,6 +826,9 @@ namespace ppp {
                 NatInformationPtr                                       AddNatInformation(const std::shared_ptr<VirtualEthernetExchanger>& exchanger, uint32_t ip, uint32_t mask) noexcept;
                 /** @brief Updates server-side P2P peer state from an INFO extension. */
                 bool                                                    UpdateP2PPeer(const std::shared_ptr<VirtualEthernetExchanger>& exchanger, const ITransmissionPtr& transmission, const VirtualEthernetInformationExtensions& request, VirtualEthernetInformationExtensions& response) noexcept;
+                bool                                                    OfferP2PPeerHintsV2(const P2PPeerRecord&, const P2PPeerRecord&, const ITransmissionPtr&, const ITransmissionPtr&, UInt64 now, bool renew = false, const std::array<std::uint8_t, 32>& predecessor = {}) noexcept;
+                bool                                                    UpdateP2PV2Control(const std::shared_ptr<VirtualEthernetExchanger>&, const ITransmissionPtr&, const ppp::app::protocol::P2PControlMessage&, ppp::app::protocol::P2PControlMessage&) noexcept;
+                bool                                                    SendP2PV2Offer(const P2PPeerRecord&, const ITransmissionPtr&, const ppp::app::protocol::P2PControlMessage&, const std::string&, std::uint64_t) noexcept;
                 /** @brief Records an authenticated static-echo UDP endpoint after NAT ownership validation. */
                 bool                                                    ObserveP2PUdpEndpoint(const std::shared_ptr<VirtualEthernetExchanger>& exchanger, uint32_t virtual_ip, const boost::asio::ip::udp::endpoint& source) noexcept;
                 /** @brief Removes P2P peer state for a disconnected session. */
@@ -843,12 +872,16 @@ namespace ppp {
                 std::atomic<bool>                                       running_{false};
 
                 VirtualEthernetLoggerPtr                                logger_;                        ///< Session activity logger.
-                NatInformationTable                                     nats_;                          ///< IPv4 NAT ownership table (key = IP).
-                IPv6ExchangerTable                                      ipv6s_;                         ///< IPv6 address → exchanger mapping.
+                /** @brief IPv4 NAT ownership table (key = IP). Written under syncobj_; FindNatInformation() reads its snapshot lock-free. */
+                ppp::collections::SnapshotMap<NatInformationTable>      nats_;
+                /** @brief IPv6 address → exchanger mapping. Written under syncobj_; FindIPv6Exchanger() reads its binary-keyed snapshot lock-free. */
+                ppp::collections::SnapshotMap<IPv6ExchangerTable, IPv6ExchangerLookup, IPv6ExchangerLookupProject> ipv6s_;
                 ppp::unordered_set<ppp::string>                          ipv6_transit_neighbor_owned_;   ///< Permanent transit neighbors created by this switcher.
                 IPv6RequestTable                                        ipv6_requests_;                 ///< Per-session IPv6 request state.
                 IPv6LeaseTable                                          ipv6_leases_;                   ///< Active IPv6 lease records.
                 P2PPeerTable                                            p2p_peers_;                     ///< P2P control-plane peer records (key = session_id).
+                std::map<std::string, P2PV2PairRecord>                  p2p_v2_pairs_;
+                std::uint64_t                                         p2p_v2_generation_ = 0;
                 ppp::unordered_map<uint32_t, Int128>                    p2p_virtual_ips_;               ///< Reverse index: virtual_ip → session_id for dedup and NAT-ownership validation.
                 UInt64                                                  p2p_offer_generation_ = 0;      ///< Monotonic offer reservation identity guarded by syncobj_.
                 PeerPrefixGatewayTable                                  peer_prefix_gateways_;          ///< Prefix gateway records keyed by session_id.

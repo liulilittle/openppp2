@@ -48,6 +48,24 @@ namespace ppp {
         }
 
         /**
+         * @brief Encrypts data through the initialized backend into caller-owned memory.
+         */
+        bool Ciphertext::EncryptTo(Byte* output, int output_capacity, Byte* data, int datalen, int& outlen) noexcept {
+            outlen = -1;
+
+            if (NULLPTR != evp_) {
+                return evp_->EncryptTo(output, output_capacity, data, datalen, outlen);
+            }
+
+            if (NULLPTR != rc4_) {
+                return rc4_->EncryptTo(output, output_capacity, data, datalen, outlen);
+            }
+
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::CryptoAlgorithmUnsupported);
+            return false;
+        }
+
+        /**
          * @brief Decrypts data through the initialized backend.
          * @param allocator Output allocator.
          * @param data Ciphertext bytes.
@@ -68,6 +86,30 @@ namespace ppp {
 
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::CryptoAlgorithmUnsupported);
             return NULLPTR;
+        }
+
+        bool Ciphertext::CanDecryptInPlace() const noexcept {
+            if (NULLPTR != evp_) {
+                return evp_->CanDecryptInPlace();
+            }
+
+            return NULLPTR != rc4_;
+        }
+
+        /**
+         * @brief Decrypts data in place through the initialized backend.
+         */
+        bool Ciphertext::DecryptInPlace(Byte* data, int datalen) noexcept {
+            if (NULLPTR != evp_) {
+                return evp_->DecryptInPlace(data, datalen);
+            }
+
+            if (NULLPTR != rc4_) {
+                return rc4_->DecryptInPlace(data, datalen);
+            }
+
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::CryptoAlgorithmUnsupported);
+            return false;
         }
 
         /**

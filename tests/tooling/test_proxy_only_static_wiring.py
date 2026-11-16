@@ -44,13 +44,18 @@ class ProxyOnlyStaticWiringTests(unittest.TestCase):
 
     def test_ipv4_request_uses_normalized_switcher_mode(self) -> None:
         exchanger = self.source("ppp/app/client/VEthernetExchanger.cpp")
+        bootstrap = self.source("ppp/app/ApplicationClientBootstrap.cpp")
         request = exchanger[
             exchanger.index("ClientIPv4Request ipv4_req;") :
             exchanger.index("request.ClientIPv4Req = ipv4_req;")
         ]
-        self.assertIn("switcher->StaticMode(NULLPTR)", request)
+        self.assertIn("switcher->ManualIPv4()", request)
         self.assertIn('ipv4_req.mode = "manual";', request)
         self.assertGreaterEqual(request.count('ipv4_req.mode = "auto";'), 2)
+        self.assertIn(
+            "ethernet->ManualIPv4(network_interface->ManualIPv4 && !proxy_only_runtime);",
+            bootstrap,
+        )
 
     def test_existing_docs_describe_the_boundary(self) -> None:
         guide = self.source("docs/guides/PROXY_MODE.md")

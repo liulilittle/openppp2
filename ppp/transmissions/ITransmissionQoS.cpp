@@ -54,9 +54,14 @@ namespace ppp {
                 return true;
             }
 
-            resume_ = [&y]() noexcept { return y.R(); };
+            const YieldContext::Anchor anchor = y.Arm();
+            if (!anchor) {
+                return false;
+            }
+
+            resume_ = [anchor]() noexcept { return anchor.R(); };
             scope.unlock();
-            bool suspended = y.Suspend();
+            bool suspended = y.Suspend(anchor);
             scope.lock();
             resume_ = NULLPTR;
             return suspended;

@@ -1,5 +1,11 @@
 # OPENPPP2
 
+Optional dependency: the experimental corocc L0 coroutine backend is **OFF by
+default**. Boost fcontext remains the default. See
+[build and tests](docs/development/COROCC_BACKEND.md) and
+[design](docs/adr/0003-corocc-coroutine-backend.md).
+
+
 > Status: Current
 > Type: Navigation
 > Last verified: 2026-07-22

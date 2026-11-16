@@ -39,6 +39,7 @@
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/xtcp/XtcpFirstLegHooks.h>
 #include <ppp/app/client/routing/TcpRoutingSelector.h>
+#include <ppp/app/client/policy/PolicyTcpFlow.h>
 
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/app/protocol/VirtualEthernetTcpipConnection.h>
@@ -101,6 +102,10 @@ namespace ppp {
                     const std::shared_ptr<const routing::HumanRoutingRules>& routing_rules,
                     bool domain_sniff_candidate) noexcept;
 
+                /** @brief Pins v2 policy and destination-domain evidence until peer setup. */
+                void SetPolicyContext(const std::shared_ptr<const policy::PolicySnapshot>& snapshot,
+                    const std::string& hostname, bool resolve_domain = false) noexcept;
+
                 /**
                  * @brief Releases all owned forwarding channel resources.
                  *
@@ -124,6 +129,8 @@ namespace ppp {
                 virtual void                                                Dispose() noexcept override;
                 virtual xtcp::XtcpDirectResult                              SendToPeer(const std::uint8_t* data, std::uint32_t length,
                     xtcp::XtcpUploadBudget::Reservation&& credit) noexcept override;
+                virtual bool                                                BatchesPeerSend() const noexcept override { return true; }
+                virtual void                                                FlushPeerSend() noexcept override;
                 virtual void                                                OnDownloadComplete(
                     const xtcp::XtcpDirectReadReservation& reservation,
                     xtcp::XtcpDirectCompletion completion) noexcept override;
@@ -276,6 +283,9 @@ namespace ppp {
                 std::shared_ptr<const routing::HumanRoutingRules>            routing_rules_;
                 /** @brief True when peer connection must wait for bounded domain sniffing. */
                 bool                                                        domain_sniff_candidate_ = false;
+                std::shared_ptr<const policy::PolicySnapshot>                policy_snapshot_;
+                std::string                                                 policy_hostname_;
+                bool                                                        policy_resolve_domain_ = false;
                 /** @brief Active VPN tunnel TCP connection; null if not using VPN path. */
                 std::shared_ptr<VirtualEthernetTcpipConnection>             connection_;
                 /** @brief Active rinetd bypass connection; null if not using bypass path. */

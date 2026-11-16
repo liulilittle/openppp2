@@ -14,3 +14,4 @@ ADR 记录持久决策、备选方案、兼容性约束和后果。新的 ADR �
 
 - [ADR 0001：运行时快照是 UI 状态权威](0001-runtime-ui-contract_CN.md)
 - [ADR 0002：以经认证的会话导出器为 P2P 直连通道设门](0002-p2p-direct-channel-security_CN.md)
+- [ADR 0003：可选 corocc L0 协程后端](0003-corocc-coroutine-backend_CN.md)

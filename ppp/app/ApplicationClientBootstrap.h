@@ -21,6 +21,15 @@ namespace client {
 class VEthernetNetworkSwitcher;
 }
 
+struct ClientAddressModes final {
+    bool manual_ipv4;
+    bool static_udp;
+};
+
+inline ClientAddressModes ResolveClientAddressModes(bool has_tun_ip, bool requested_static_udp) noexcept {
+    return {has_tun_ip, requested_static_udp};
+}
+
 /** Proxy-only startup must not enable the static transport. */
 inline bool NormalizeClientStaticMode(bool requested_static_mode, bool proxy_only_runtime) noexcept {
     return requested_static_mode && !proxy_only_runtime;

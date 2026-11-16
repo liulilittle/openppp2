@@ -4,6 +4,8 @@
 #include <ppp/app/ApplicationClientBootstrap.h>
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/policy/LegacyPolicyAdapter.h>
+#include <ppp/app/client/udp/UdpFlowPolicy.h>
 #include <ppp/app/runtime/RuntimeLifecycle.h>
 #include <ppp/app/runtime/RuntimeSnapshotJson.h>
 #include <ppp/auxiliary/JsonAuxiliary.h>
@@ -683,18 +685,43 @@ namespace
         }
         ppp::string resolved_bypass_ip_list;
         ppp::string resolved_dns_rules;
-        if (configuration->client.routing.configured)
+        if (configuration->client.policy)
         {
-            resolved_bypass_ip_list = resolve_routing_sources(configuration->client.routing.bypass);
-            resolved_dns_rules = resolve_routing_sources(configuration->client.routing.dns_rules);
+            resolved_bypass_ip_list.clear();
+            resolved_dns_rules.clear();
         }
         else
         {
-            resolved_bypass_ip_list = resolve_routing_source(options_copy.bypass_ip_list);
-            resolved_dns_rules = resolve_routing_source(options_copy.dns_rules_list);
+            ppp::app::client::policy::LegacyPolicyAdapterInput legacy_input;
+            legacy_input.cli_bypass.emplace_back(options_copy.bypass_ip_list.data(), options_copy.bypass_ip_list.size());
+            legacy_input.cli_dns_rules.emplace_back(options_copy.dns_rules_list.data(), options_copy.dns_rules_list.size());
+            const auto legacy_policy = ppp::app::client::policy::LegacyPolicyAdapter::Adapt(*configuration, legacy_input);
+            if (legacy_policy.canonical_routing)
+            {
+                ppp::vector<ppp::string> bypass_sources;
+                ppp::vector<ppp::string> dns_sources;
+                for (const auto& source : legacy_policy.sources)
+                {
+                    if (source.role == ppp::app::client::policy::LegacySourceRole::Bypass)
+                    {
+                        bypass_sources.emplace_back(source.original.data(), source.original.size());
+                    }
+                    else if (source.role == ppp::app::client::policy::LegacySourceRole::DnsRules)
+                    {
+                        dns_sources.emplace_back(source.original.data(), source.original.size());
+                    }
+                }
+                resolved_bypass_ip_list = resolve_routing_sources(bypass_sources);
+                resolved_dns_rules = resolve_routing_sources(dns_sources);
+            }
+            else
+            {
+                resolved_bypass_ip_list = resolve_routing_source(options_copy.bypass_ip_list);
+                resolved_dns_rules = resolve_routing_source(options_copy.dns_rules_list);
+            }
         }
 
-        if (!proxy_only_runtime && !configure_vdns_servers(configuration, options_copy.dns1, options_copy.dns2))
+        if (!configuration->client.policy && !proxy_only_runtime && !configure_vdns_servers(configuration, options_copy.dns1, options_copy.dns2))
         {
             native_logf("OpenPPP2 native: vdns servers not configured; gateway DNS may fail");
         }
@@ -707,6 +734,13 @@ namespace
         uint32_t gateway = IPEndPoint::AnyAddress;
         if (!normalize_tunnel_addresses(options_copy, ip_address, mask_address, gateway_address, ip, mask, gateway))
         {
+            return false;
+        }
+        if (configuration->client.policy && !proxy_only_runtime && ip_address.is_v4() &&
+            ppp::app::client::udp::UdpRelayIdentity::IsIdentity(ip_address.to_v4().to_uint()))
+        {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ConfigPolicyUdpIdentityConflict);
+            set_last_error("client virtual IPv4 conflicts with the v2 UDP relay identity range");
             return false;
         }
 
@@ -748,6 +782,26 @@ namespace
 #endif
                     Executors::SetMaxThreads(configuration->GetBufferAllocator(), max_concurrent);
                     Executors::SetMaxSchedulers(max_concurrent);
+
+                    set_start_stage(tap, "preparing network switcher policy");
+                    bool lwip = options_copy.lwip != 0;
+                    bool vnet = options_copy.vnet != 0;
+                    bool mta = false;
+                    std::shared_ptr<VEthernetNetworkSwitcher> client =
+                        ppp::make_shared_object<VEthernetNetworkSwitcher>(context, lwip, vnet, mta, configuration);
+                    if (client == nullptr)
+                    {
+                        set_last_error("failed to create OpenPPP2 client");
+                        return complete_start(tap, 1);
+                    }
+                    boost::system::error_code fake_ip_address_error;
+                    const auto fake_ip_tun_address = boost::asio::ip::make_address_v4(ip, fake_ip_address_error);
+                    if (!client->PreparePolicy(fake_ip_address_error ? 0 : fake_ip_tun_address.to_uint(),
+                            configuration->client.proxy_only))
+                    {
+                        set_last_error_from_diagnostics("failed to prepare client policy");
+                        return complete_start(tap, 1);
+                    }
 
                     set_start_stage(tap, "creating TapIos");
                     std::shared_ptr<ppp::tap::TapIos> ios_tap = ppp::tap::TapIos::Create(
@@ -795,19 +849,6 @@ namespace
                     if (!ios_tap->Open())
                     {
                         set_last_error("failed to open iOS packet tap");
-                        return complete_start(tap, 1);
-                    }
-
-                    set_start_stage(tap, "creating network switcher");
-                    bool lwip = options_copy.lwip != 0;
-                    bool vnet = options_copy.vnet != 0;
-                    bool mta = false;
-                    std::shared_ptr<VEthernetNetworkSwitcher> client =
-                        ppp::make_shared_object<VEthernetNetworkSwitcher>(context, lwip, vnet, mta, configuration);
-                    if (client == nullptr)
-                    {
-                        set_last_error("failed to create OpenPPP2 client");
-                        ios_tap->Dispose();
                         return complete_start(tap, 1);
                     }
 

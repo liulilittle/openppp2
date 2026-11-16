@@ -6,7 +6,13 @@
 
 namespace ppp::p2p {
 
-inline constexpr bool ProductionAuthenticatedControlV1Ready = false;
+#if defined(OPENPPP2_P2P_V2_PRODUCTION)
+inline constexpr bool ProductionAuthenticatedControlV1Ready = OPENPPP2_P2P_V2_PRODUCTION != 0;
+#else
+// Standalone consumers use the production default; the root build exposes an
+// explicit ENABLE_P2P_V2_PRODUCTION option for release and emergency rollback.
+inline constexpr bool ProductionAuthenticatedControlV1Ready = true;
+#endif
 
 struct P2PCapabilityDecision {
     bool allowed = false;

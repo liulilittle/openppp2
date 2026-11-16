@@ -25,7 +25,7 @@ env:
 jobs:
   build:
     name: Linux amd64 ${{ matrix.suffix }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"suffix":"","enable_sysnat":"OFF","enable_io_uring":"OFF","enable_simd":"OFF"},{"suffix":"-tc-io-uring-simd","enable_sysnat":"ON","enable_io_uring":"ON","enable_simd":"ON"}]}' || '{"include":[{"suffix":"","enable_sysnat":"OFF","enable_io_uring":"OFF","enable_simd":"OFF"},{"suffix":"-io-uring","enable_sysnat":"OFF","enable_io_uring":"ON","enable_simd":"OFF"},{"suffix":"-simd","enable_sysnat":"OFF","enable_io_uring":"OFF","enable_simd":"ON"},{"suffix":"-tc","enable_sysnat":"ON","enable_io_uring":"OFF","enable_simd":"OFF"},{"suffix":"-tc-io-uring","enable_sysnat":"ON","enable_io_uring":"ON","enable_simd":"OFF"},{"suffix":"-tc-simd","enable_sysnat":"ON","enable_io_uring":"OFF","enable_simd":"ON"},{"suffix":"-io-uring-simd","enable_sysnat":"OFF","enable_io_uring":"ON","enable_simd":"ON"},{"suffix":"-tc-io-uring-simd","enable_sysnat":"ON","enable_io_uring":"ON","enable_simd":"ON"}]}') }}
@@ -42,12 +42,16 @@ jobs:
             autoconf clang libbenchmark-dev \
             liburing-dev libbpf-dev
 
+      - name: Install XTCP E2E diagnostics
+        if: matrix.suffix == ''
+        run: sudo apt-get install -y --no-install-recommends tcpdump
+
       - name: Cache third-party libraries
         id: cache-third
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/third-party
-          key: linux-amd64-third-v2-boost${{ env.BOOST_VERSION }}-openssl${{ env.OPENSSL_VERSION }}-jemalloc${{ env.JEMALLOC_VERSION }}
+          key: linux-amd64-ubuntu24-third-v3-boost${{ env.BOOST_VERSION }}-openssl${{ env.OPENSSL_VERSION }}-jemalloc${{ env.JEMALLOC_VERSION }}
 
       - name: Build Boost
         if: steps.cache-third.outputs.cache-hit != 'true'
@@ -78,6 +82,7 @@ jobs:
 
       - name: Build openppp2
         run: |
+          bash tools/prepare_xtcp.sh
           TP="${{ github.workspace }}/third-party"
           mkdir -p build && cd build
           cmake .. \
@@ -147,20 +152,12 @@ jobs:
           path: bin/openppp2-linux-amd64${{ matrix.suffix }}.zip
           if-no-files-found: error
 
-      # XTCP end-to-end runs after packaging: the root CMake always links the
-      # ppp executable into bin/, so the XTCP-enabled rebuild below overwrites
-      # bin/ppp and must not precede artifact collection.
+      # ENABLE_XTCP defaults to ON for Linux desktop builds and "Build openppp2"
+      # already prepares the pinned XTCP tree, so the packaged bin/ppp is the
+      # XTCP-enabled binary under test; no separate rebuild is needed.
       - name: XTCP TAP netns end-to-end
         if: matrix.suffix == ''
         run: |
-          bash tools/prepare_xtcp.sh
-          TP="${{ github.workspace }}/third-party"
-          cmake -S . -B build-xtcp \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DTHIRD_PARTY_LIBRARY_DIR="$TP" \
-            -DENABLE_XTCP=ON \
-            -DENABLE_SYSNAT=OFF -DENABLE_IO_URING=OFF -DENABLE_SIMD=OFF
-          cmake --build build-xtcp -j$(nproc)
           sudo PPP_BIN="$PWD/bin/ppp" \
             OPENPPP2_NAMESPACE_ARTIFACT_DIR="$PWD/xtcp-e2e-artifacts" \
             bash tests/integration/linux/xtcp_tap_netns_e2e.sh
@@ -179,7 +176,7 @@ jobs:
   build-debian10:
     name: Linux amd64 Debian 10
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: debian:buster
 
     steps:
@@ -250,7 +247,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DTHIRD_PARTY_LIBRARY_DIR="$TP" \
             -DENABLE_SYSNAT=OFF \
-            -DENABLE_IO_URING=OFF
+            -DENABLE_IO_URING=OFF \
+            -DENABLE_XTCP=OFF
           make -j$(nproc)
 
       - name: Collect artifacts
@@ -290,7 +288,7 @@ jobs:
   build-asan:
     name: Linux amd64 ASan
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -309,7 +307,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/third-party
-          key: linux-amd64-asan-third-v1-boost${{ env.BOOST_VERSION }}-openssl${{ env.OPENSSL_VERSION }}
+          key: linux-amd64-ubuntu24-asan-third-v2-boost${{ env.BOOST_VERSION }}-openssl${{ env.OPENSSL_VERSION }}
 
       - name: Build Boost
         if: steps.cache-third-asan.outputs.cache-hit != 'true'
@@ -342,7 +340,8 @@ jobs:
             -DENABLE_VMUX_RECEIVE_SEMANTICS_TEST=ON \
             -DENABLE_SYSNAT=OFF \
             -DENABLE_IO_URING=OFF \
-            -DENABLE_SIMD=OFF
+            -DENABLE_SIMD=OFF \
+            -DENABLE_XTCP=OFF
           make -j$(nproc)
 
       - name: Run VMUX sanitizer tests

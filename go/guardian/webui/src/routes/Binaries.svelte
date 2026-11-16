@@ -166,8 +166,8 @@
   />
 
   {#if discoverOpen}
-    <div class="overlay" on:click={closeDiscover}>
-      <div class="dialog" on:click|stopPropagation>
+    <div class="overlay" role="presentation" on:click|self={closeDiscover}>
+      <div class="dialog" role="dialog" aria-modal="true">
         <div class="dialog-head">
           <div>
             <h3>{t('discoverTitle')}</h3>

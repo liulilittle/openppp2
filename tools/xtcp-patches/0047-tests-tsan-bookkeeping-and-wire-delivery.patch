@@ -1,0 +1,136 @@
+diff --git a/tests/test_thread_data.cpp b/tests/test_thread_data.cpp
+--- a/tests/test_thread_data.cpp
++++ b/tests/test_thread_data.cpp
+@@ -140,7 +140,11 @@
+             std::atomic<bool> stop{false};
+             std::thread pump(Pump, std::ref(backend_a), std::ref(backend_b),
+                              std::ref(stack_a), std::ref(stack_b), std::ref(stop));
+-            for (UInt32 i = 0; i < 100 && crc_b.size() < kThreads * kFlowsPerThread; ++i) {
++            for (UInt32 i = 0; i < 100; ++i) {
++                {
++                    std::lock_guard<std::mutex> g(mx);
++                    if (crc_b.size() == kThreads * kFlowsPerThread) break;
++                }
+                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
+             }
+             stop.store(true);
+diff --git a/tests/test_tso_tx.cpp b/tests/test_tso_tx.cpp
+--- a/tests/test_tso_tx.cpp
++++ b/tests/test_tso_tx.cpp
+@@ -19,6 +19,7 @@
+ #include <chrono>
+ #include <cstdio>
+ #include <cstring>
++#include <deque>
+ #include <thread>
+ #include <vector>
+ 
+@@ -69,12 +70,19 @@
+             last_gso_payload = packet.len - ip_header - tcp_header;
+             gso_tx_calls.fetch_add(1, std::memory_order_relaxed);
+         }
+-        if (peer_) {
+-            peer_(std::move(packet));
+-        }
++        pending_.push_back(std::move(packet));
+         return true;
+     }
+ 
++    // Deliver outside the sender's shard/connection locks, as a NIC would.
++    void PumpTx() {
++        while (!pending_.empty()) {
++            auto packet = std::move(pending_.front());
++            pending_.pop_front();
++            if (peer_) peer_(std::move(packet));
++        }
++    }
++
+     UInt32 TxBatch(xtcp::ndi::Packet* packets, UInt32 count) noexcept override {
+         UInt32 accepted = 0;
+         for (UInt32 i = 0; i < count; ++i) {
+@@ -88,6 +96,7 @@
+ 
+ private:
+     xtcp::ndi::RxHandler rx_;
++    std::deque<xtcp::ndi::Packet> pending_;
+ };
+ 
+ int main() {
+@@ -133,6 +142,8 @@
+         auto pump = [&]() {
+             stack_a.PollAckTimers();
+             stack_b.PollAckTimers();
++            backend_a.PumpTx();
++            backend_b.PumpTx();
+         };
+ 
+         xtcp::core::Endpoint local_a, remote_a;
+diff --git a/tests/test_tx_backpressure.cpp b/tests/test_tx_backpressure.cpp
+--- a/tests/test_tx_backpressure.cpp
++++ b/tests/test_tx_backpressure.cpp
+@@ -14,6 +14,7 @@
+ #include <atomic>
+ #include <cstdio>
+ #include <cstring>
++#include <deque>
+ #include <thread>
+ #include <vector>
+ 
+@@ -47,13 +48,19 @@
+             ++rejected_count;
+             return false;  // ring full: the packet is NOT consumed
+         }
+-        // Accepted: deliver to the peer (adopt the owned ref).
+-        if (peer_) {
+-            peer_(std::move(packet));
+-        }
++        pending_.push_back(std::move(packet));
+         return true;
+     }
+ 
++    // Do not enter the peer stack while holding the sender's locks.
++    void PumpTx() {
++        while (!pending_.empty()) {
++            auto packet = std::move(pending_.front());
++            pending_.pop_front();
++            if (peer_) peer_(std::move(packet));
++        }
++    }
++
+     UInt32 TxBatch(xtcp::ndi::Packet* packets, UInt32 count) noexcept override {
+         UInt32 accepted = 0;
+         for (UInt32 i = 0; i < count; ++i) {
+@@ -67,6 +74,7 @@
+ 
+ private:
+     xtcp::ndi::RxHandler rx_;
++    std::deque<xtcp::ndi::Packet> pending_;
+ };
+ 
+ int main() {
+@@ -99,6 +107,8 @@
+         auto pump = [&]() {
+             stack_a.PollAckTimers();
+             stack_b.PollAckTimers();
++            backend_a.PumpTx();
++            backend_b.PumpTx();
+         };
+ 
+         xtcp::core::Endpoint local_a, remote_a;
+@@ -212,6 +222,8 @@
+         auto pump = [&]() {
+             stack_a.PollAckTimers();
+             stack_b.PollAckTimers();
++            backend_a.PumpTx();
++            backend_b.PumpTx();
+         };
+ 
+         xtcp::core::Endpoint local_a, remote_a;
+@@ -265,6 +277,7 @@
+             pump();
+         }
+         CHECK(target == b_recv.load());
++        CHECK(attribution_ok.load());
+         xtcp::qdisc::DestroyQdisc(fq);
+     }
+     xtcp::buf::ShutdownPools();

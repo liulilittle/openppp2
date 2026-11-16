@@ -100,6 +100,22 @@ fn compact_node_merges_existing_client_defaults() {
 }
 
 #[test]
+fn compact_node_keeps_configured_mappings() {
+    let body = serde_json::to_vec(&json!({
+        "type":"openppp2-subscription", "version":1,
+        "nodes":[{
+            "id":"mapped", "name":"Mapped", "server":"ppp://127.0.0.1:20000/",
+            "key":{"protocol-key":"p","transport-key":"t"},
+            "client":{"mappings":[{"local-ip":"127.0.0.1","local-port":22,"protocol":"tcp","remote-ip":"::","remote-port":10022}]}
+        }]
+    }))
+    .unwrap();
+    let document = parse_subscription(&body).unwrap();
+    let config = build_node_config(&document.nodes[0]).unwrap();
+    assert_eq!(config["client"]["mappings"][0]["remote-port"], 10022);
+}
+
+#[test]
 fn full_config_accepts_object_and_encoded_object() {
     for config in [
         json!({"client":{"server":"ppp://a:1/"}}),

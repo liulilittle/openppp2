@@ -17,20 +17,31 @@ namespace ppp {
                 ClientTeardownRouteActions CompleteAttempt(
                     bool routes_applied,
                     bool cleanup_complete) noexcept {
-                    dns_restore_pending_ = dns_restore_pending_ || routes_applied;
-                    if (!cleanup_complete) {
-                        return {};
+                    if (routes_applied && !dns_restore_attempted_) {
+                        dns_restore_pending_ = true;
+                        dns_restore_attempted_ = true;
                     }
-
                     ClientTeardownRouteActions actions;
                     actions.restore_dns = dns_restore_pending_;
-                    actions.release_network_state = true;
-                    dns_restore_pending_ = false;
+                    // Network state may only be released after both the route
+                    // and DNS rollback have been verified.
+                    actions.release_network_state =
+                        cleanup_complete && !dns_restore_pending_;
+                    if (actions.release_network_state) {
+                        dns_restore_attempted_ = false;
+                    }
                     return actions;
+                }
+
+                void MarkDnsRestoreResult(bool success) noexcept {
+                    if (success) {
+                        dns_restore_pending_ = false;
+                    }
                 }
 
             private:
                 bool dns_restore_pending_ = false;
+                bool dns_restore_attempted_ = false;
             };
 
             class ClientConnectionTeardown {

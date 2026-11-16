@@ -10,6 +10,10 @@
 # Precompiled Headers
 *.gch
 *.pch
+*.aps
+*.vcxproj.user
+/sln/sysproxy32/sysproxy32.user
+*.dmp
 
 # Compiled Dynamic libraries
 # *.so
@@ -69,6 +73,11 @@ ios/App/build/
 
 debug.md
 **/debug.md
+# English halves of tracked debug_CN.md docs
+!android/debug.md
+!go/debug.md
+!go/io/debug.md
+!go/ppp/debug.md
 
 .vscode/*
 !.vscode/settings.json
@@ -93,7 +102,6 @@ ppp.log
 build-*/
 build_*/
 builds/cmake-check/
-AGENTS.md
 CLAUDE.md
 .claude/
 .gitnexusignore
@@ -122,7 +130,12 @@ android/android/keystore/*.p12
 android/android/keystore/*.jks
 android/android/keystore/*.keystore
 android/android/keystore/*.properties
-/third-party
+/third-party/*
+!/third-party/NOTICE
+!/third-party/MIT.txt
+!/third-party/BSL-1.0.txt
+# Optional pinned coroutine backend (prepared locally).
+/third-party/corocc/
 .DS_Store
 
 # Local OTEL/Grafana deploy configs (not for version control)
@@ -147,9 +160,9 @@ docs/superpowers/
 # Python tooling caches
 __pycache__/
 work/
-work/
 .gitnexus/
 
 # Local crash-analysis report and agent workflow state (not for version control)
 docs/CRASH_ANALYSIS_CN.md
+docs/PROJECT_CLEANUP_CN.md
 .opencode/

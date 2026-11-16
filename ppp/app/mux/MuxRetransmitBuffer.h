@@ -14,7 +14,9 @@
  *
  * Bounded: a session-wide byte cap (Track fails when exceeded; the caller
  * degrades to fail_flow / session rebuild) and per-frame attempt accounting
- * (the caller tears down when attempts are exhausted).
+ * (the caller tears down when attempts are exhausted). The caller also uses
+ * bytes() / CidBytes() as a send window before frames go out (see
+ * MuxTxBackpressure.h), so the Track cap is only a hard bound.
  *
  * Not thread-safe: strand-affine by design, like the rest of vmux state.
  */
@@ -85,6 +87,7 @@ public:
         entry.order = (--order_.end());
         entries_.emplace(key, std::move(entry));
         bytes_ += static_cast<std::size_t>(length);
+        cid_bytes_[connection_id] += static_cast<std::size_t>(length);
         return true;
     }
 
@@ -140,6 +143,7 @@ public:
                 }
             }
             bytes_ -= static_cast<std::size_t>(it->second.length);
+            ReleaseCidBytes(connection_id, static_cast<std::size_t>(it->second.length));
             order_.erase(it->second.order);
             entries_.erase(it);
         }
@@ -230,8 +234,31 @@ public:
         }
     }
 
+    /**
+     * Carrier exit: collect, oldest first, every unacked entry whose most recent
+     * (re)transmission went out on @p link_id, and orphan it (last_link_id = 0,
+     * last_sent_tick = 0) so it is re-sent on a live carrier exactly once and a
+     * later carrier reusing the same id cannot claim it. link_id 0 is "unknown"
+     * and never matches.
+     */
+    void TakeLinkInflight(std::uint16_t link_id, std::vector<std::uint64_t>& out) {
+        if (link_id == 0) {
+            return;
+        }
+        for (std::uint64_t key : order_) {
+            auto it = entries_.find(key);
+            if (it == entries_.end() || it->second.last_link_id != link_id) {
+                continue;
+            }
+            it->second.last_link_id = 0;
+            it->second.last_sent_tick = 0;
+            out.push_back(key);
+        }
+    }
+
     /** Drop every entry of one connection space (flow reset / flow release). */
     void EraseCid(std::uint32_t connection_id) {
+        cid_bytes_.erase(connection_id);
         for (auto it = entries_.begin(); it != entries_.end();) {
             if (KeyCid(it->first) == connection_id) {
                 bytes_ -= static_cast<std::size_t>(it->second.length);
@@ -247,17 +274,38 @@ public:
     void Clear() noexcept {
         entries_.clear();
         order_.clear();
+        cid_bytes_.clear();
         bytes_ = 0;
     }
 
     std::size_t size() const noexcept { return entries_.size(); }
     std::size_t bytes() const noexcept { return bytes_; }
 
+    /** Unacked bytes retained for one connection space (released by Ack / EraseCid). */
+    std::size_t CidBytes(std::uint32_t connection_id) const noexcept {
+        auto it = cid_bytes_.find(connection_id);
+        return it == cid_bytes_.end() ? 0 : it->second;
+    }
+
 private:
+    void ReleaseCidBytes(std::uint32_t connection_id, std::size_t length) noexcept {
+        auto it = cid_bytes_.find(connection_id);
+        if (it == cid_bytes_.end()) {
+            return;
+        }
+        if (it->second <= length) {
+            cid_bytes_.erase(it);
+        }
+        else {
+            it->second -= length;
+        }
+    }
+
     // std::list iterators are stable across insert/erase, so each entry can
     // store its position for O(1) removal from the insertion-ordered list.
     std::list<std::uint64_t>                                       order_;
     std::unordered_map<std::uint64_t, MuxRtxEntry>                 entries_;
+    std::unordered_map<std::uint32_t, std::size_t>                 cid_bytes_;
     std::size_t                                                    bytes_ = 0;
 };
 

@@ -31,8 +31,15 @@ namespace ppp {
                 }
 
                 VirtualEthernetDatagramPortPtr ServerDatagramPortManager::ReleaseDatagramPort(
-                    const boost::asio::ip::udp::endpoint& source) noexcept {
-                    return ppp::collections::Dictionary::ReleaseObjectByKey(datagrams_, source);
+                    const boost::asio::ip::udp::endpoint& source, const VirtualEthernetDatagramPort* expected) noexcept {
+                    auto it = datagrams_.find(source);
+                    if (it == datagrams_.end() || (expected && it->second.get() != expected)) {
+                        return nullptr;
+                    }
+                    auto port = std::move(it->second);
+                    datagrams_.erase(it);
+                    port->Dispose();
+                    return port;
                 }
 
                 VirtualEthernetDatagramPortPtr ServerDatagramPortManager::AddNewDatagramPort(
@@ -42,8 +49,12 @@ namespace ppp {
                         return datagram;
                     }
 
-                    // create_port (the exchanger's NewDatagramPort) validates the transmission and
-                    // allocates the concrete port; a null result propagates the failure unchanged.
+                    constexpr size_t max_ports_per_session = 1024;
+                    if (datagrams_.size() >= max_ports_per_session) {
+                        return nullptr;
+                    }
+
+                    // Allocate only after enforcing the per-session socket budget.
                     datagram = ports_.create_port(transmission, source);
                     if (NULLPTR == datagram) {
                         return NULLPTR;

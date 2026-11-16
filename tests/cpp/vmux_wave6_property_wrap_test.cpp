@@ -46,6 +46,8 @@ std::shared_ptr<std::uint8_t> make_frame(int value) {
 // packet_less::before() — wrap-safe signed-subtraction comparison.
 //
 // The logic is: before(a, b) iff (int32_t)a - (int32_t)b < 0.
+// The lambdas below subtract in uint32_t first (well-defined modulo 2^32),
+// which yields the same result without signed-overflow UB at INT32_MIN.
 // This is the standard TCP-style modular sequence comparison.
 // We test it by re-implementing the same logic inline (since packet_less is
 // a private nested template, we validate the mathematical invariant directly).
@@ -54,7 +56,7 @@ std::shared_ptr<std::uint8_t> make_frame(int value) {
 BOOST_AUTO_TEST_CASE(wrap_before_basic_ordering) {
     // Plain ascending: 1 < 5, 5 < 1 is false.
     auto before = [](std::uint32_t a, std::uint32_t b) constexpr {
-        return static_cast<std::int32_t>(a) - static_cast<std::int32_t>(b) < 0;
+        return static_cast<std::int32_t>(a - b) < 0;
     };
 
     BOOST_TEST(before(1, 5) == true);
@@ -65,7 +67,7 @@ BOOST_AUTO_TEST_CASE(wrap_before_basic_ordering) {
 BOOST_AUTO_TEST_CASE(wrap_before_across_uint32_max_boundary) {
     // 0xFFFFFFFF is "before" 0x00000000 (wrap).
     auto before = [](std::uint32_t a, std::uint32_t b) constexpr {
-        return static_cast<std::int32_t>(a) - static_cast<std::int32_t>(b) < 0;
+        return static_cast<std::int32_t>(a - b) < 0;
     };
 
     BOOST_TEST(before(0xFFFFFFFF, 0) == true);
@@ -83,7 +85,7 @@ BOOST_AUTO_TEST_CASE(wrap_before_half_circle_ambiguity) {
     // comparison, and a potential strict-weak-ordering violation if used in
     // ordered containers.
     auto before = [](std::uint32_t a, std::uint32_t b) constexpr {
-        return static_cast<std::int32_t>(a) - static_cast<std::int32_t>(b) < 0;
+        return static_cast<std::int32_t>(a - b) < 0;
     };
 
     // 0 and 0x80000000 are exactly half-circle apart.
@@ -97,7 +99,7 @@ BOOST_AUTO_TEST_CASE(wrap_before_property_all_pairs_consistent) {
     // Property: for any two distinct values a, b that are not exactly
     // half-circle apart, exactly one of before(a,b) or before(b,a) holds.
     auto before = [](std::uint32_t a, std::uint32_t b) constexpr {
-        return static_cast<std::int32_t>(a) - static_cast<std::int32_t>(b) < 0;
+        return static_cast<std::int32_t>(a - b) < 0;
     };
 
     Rng rng(42);

@@ -203,25 +203,7 @@ namespace ssea
             _mm_storeu_si128(reinterpret_cast<__m128i*>(p + i), _mm_xor_si128(v, k));
         }
 
-        int rem = length - i;
-        int32_t* p32 = reinterpret_cast<int32_t*>(p + i);
-        while (rem >= 4)
-        {
-            *p32 = *p32 ^ kf;
-            p32++;
-            rem -= 4;
-        }
-        int16_t* p16 = reinterpret_cast<int16_t*>(p32);
-        if (rem >= 2)
-        {
-            *p16 = static_cast<int16_t>(*p16 ^ kf);
-            p16++;
-        }
-        int8_t* p8 = reinterpret_cast<int8_t*>(p16);
-        if (rem & 1)
-        {
-            *p8 = static_cast<int8_t>(*p8 ^ kf);
-        }
+        masked_xor_fixed_scalar_tail(p + i, length - i, kf);
 
         return true;
 #else
@@ -254,7 +236,7 @@ namespace ssea
             return false;
         }
 
-        kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
+        kf = random_next_from_key_scalar(kf);
 
         int i = 0;
         for (; i + 16 <= length; i += 16)
@@ -263,35 +245,17 @@ namespace ssea
             ks[0] = kf;
             for (int w = 1; w < 4; w++)
             {
-                kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
+                kf = random_next_from_key_scalar(kf);
                 ks[w] = kf;
             }
-            kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
+            kf = random_next_from_key_scalar(kf);
 
             __m128i kv = _mm_set_epi32(ks[3], ks[2], ks[1], ks[0]);
             __m128i v = _mm_lddqu_si128(reinterpret_cast<const __m128i*>(p + i));  // SSE3 LDDQU
             _mm_storeu_si128(reinterpret_cast<__m128i*>(p + i), _mm_xor_si128(v, kv));
         }
 
-        int32_t* p32 = reinterpret_cast<int32_t*>(p + i);
-        while (reinterpret_cast<const uint8_t*>(p32 + 1) <= static_cast<const uint8_t*>(max))
-        {
-            *p32 = *p32 ^ kf;
-            p32++;
-            kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
-        }
-
-        int16_t* p16 = reinterpret_cast<int16_t*>(p32);
-        if (reinterpret_cast<const uint8_t*>(p16 + 1) <= static_cast<const uint8_t*>(max))
-        {
-            *p16 = static_cast<int16_t>(*p16 ^ kf);
-            p16++;
-        }
-        int8_t* p8 = reinterpret_cast<int8_t*>(p16);
-        if (p8 < reinterpret_cast<int8_t*>(const_cast<uint8_t*>(static_cast<const uint8_t*>(max))))
-        {
-            *p8 = static_cast<int8_t>(*p8 ^ kf);
-        }
+        masked_xor_random_next_scalar_tail(p + i, length - i, kf);
 
         return true;
 #else

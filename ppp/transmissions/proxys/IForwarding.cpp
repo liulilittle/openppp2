@@ -19,7 +19,7 @@
 #include <ppp/threading/Executors.h>
 #include <ppp/coroutines/asio/asio.h>
 #include <ppp/auxiliary/UriAuxiliary.h>
-#include <ppp/app/client/proxys/VEthernetHttpProxyConnection.h>
+#include <ppp/net/http/HttpHeaderReader.h>
 
 #include <ppp/stdafx.h>
 #include <common/base64/base64.h>
@@ -27,7 +27,6 @@
 namespace ppp {
     namespace transmissions {
         namespace proxys {
-            using ppp::app::client::proxys::VEthernetHttpProxyConnection;
             using ppp::collections::Dictionary;
             using ppp::io::MemoryStream;
             using ppp::net::Socket;
@@ -348,7 +347,7 @@ namespace ppp {
             /** @brief Validates an HTTP CONNECT success status line from buffered headers. */
             static bool IFORWARDING_HTTP_VERIFY_HANDSHAKE_RESPONSE_PACKET(MemoryStream& protocol_array) noexcept {
                 ppp::vector<ppp::string> headers;
-                if (!VEthernetHttpProxyConnection::ProtocolReadHeaders(protocol_array, headers, NULLPTR)) {
+                if (!ppp::net::http::SplitHttpHeaderLines(protocol_array, headers, NULLPTR)) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::HttpResponseInvalid);
                     return false;
                 }
@@ -438,7 +437,7 @@ namespace ppp {
                 }
 
                 MemoryStream protocol_array;
-                bool ok = VEthernetHttpProxyConnection::ProtocolReadAllHeaders(protocol_array, y, *socket);
+                bool ok = ppp::net::http::ReadHttpHeaders(protocol_array, y, *socket);
                 if (!ok) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketReadFailed);
                     return false;

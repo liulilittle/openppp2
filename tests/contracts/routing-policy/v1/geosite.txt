@@ -1,0 +1,4 @@
+full:api.example.test
+domain:geo.test
+plain:ignored-keyword
+domain:

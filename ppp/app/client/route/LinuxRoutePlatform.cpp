@@ -5,6 +5,8 @@
 
 #if defined(_LINUX) && !defined(_ANDROID) && !defined(_IPHONE)
 #include <linux/ppp/tap/TapLinux.h>
+#include <net/if.h>
+#include <fstream>
 #endif
 
 namespace ppp {
@@ -20,7 +22,13 @@ namespace ppp {
                             : route(std::move(route)) {
                         }
 
+                        explicit LinuxRouteSnapshot(RouteSnapshotRecord record) noexcept
+                            : route(record.route), record(std::move(record)), stable(true) {
+                        }
+
                         RouteSpec route;
+                        RouteSnapshotRecord record;
+                        bool stable = false;
                     };
 
                     std::shared_ptr<const LinuxRouteSnapshot> AsLinuxSnapshot(
@@ -34,6 +42,41 @@ namespace ppp {
                             left.prefix == right.prefix &&
                             left.interface_name == right.interface_name;
                     }
+
+#if defined(_LINUX) && !defined(_ANDROID) && !defined(_IPHONE)
+                    std::string LinuxLinkIdentity(const std::string& name) noexcept {
+                        if (name.empty()) {
+                            return {};
+                        }
+                        std::ifstream address("/sys/class/net/" + name + "/address");
+                        std::string value;
+                        if (!address || !(address >> value) || value.empty()) {
+                            return {};
+                        }
+                        return value;
+                    }
+
+                    bool BuildLinuxRecord(
+                        RouteSpec route,
+                        RouteSnapshotRecord& record) noexcept {
+                        if (route.interface_name.empty()) {
+                            return false;
+                        }
+                        const unsigned int index = if_nametoindex(
+                            route.interface_name.c_str());
+                        const std::string link = LinuxLinkIdentity(route.interface_name);
+                        if (index == 0 || link.empty()) {
+                            return false;
+                        }
+                        record = RouteSnapshotRecord();
+                        record.platform = RouteSnapshotPlatform::Linux;
+                        record.route = std::move(route);
+                        record.identity.interface_index = index;
+                        record.identity.interface_name = record.route.interface_name;
+                        record.identity.link_identity = link;
+                        return record.Complete();
+                    }
+#endif
 
                 }
 
@@ -100,9 +143,30 @@ namespace ppp {
                     if (!operations_.capture_defaults(tap_gateway_, routes)) {
                         return std::nullopt;
                     }
-                    for (RouteSpec route : BuildRouteSpecs(routes)) {
+                    const std::vector<RouteSpec> specs = BuildRouteSpecs(routes);
+                    std::vector<RouteSnapshotRecord> records;
+                    records.reserve(specs.size());
+                    bool complete = !specs.empty();
+                    for (RouteSpec route : specs) {
+                        route = Resolve(std::move(route));
+                        RouteSnapshotRecord record;
+#if defined(_LINUX) && !defined(_ANDROID) && !defined(_IPHONE)
+                        complete = complete && BuildLinuxRecord(route, record);
+#else
+                        complete = false;
+#endif
+                        if (complete) {
+                            records.emplace_back(std::move(record));
+                        }
                         snapshots.emplace_back(
-                            std::make_shared<LinuxRouteSnapshot>(Resolve(std::move(route))));
+                            std::make_shared<LinuxRouteSnapshot>(std::move(route)));
+                    }
+                    if (complete && records.size() == snapshots.size()) {
+                        snapshots.clear();
+                        for (RouteSnapshotRecord& record : records) {
+                            snapshots.emplace_back(
+                                std::make_shared<LinuxRouteSnapshot>(std::move(record)));
+                        }
                     }
                     return snapshots;
                 }
@@ -136,6 +200,23 @@ namespace ppp {
                     if (!snapshot) {
                         return false;
                     }
+#if defined(_LINUX) && !defined(_ANDROID) && !defined(_IPHONE)
+                    if (snapshot->stable) {
+                        // An interface name can be reused after a crash. Do
+                        // not add a restored route until the current kernel
+                        // identity still matches the captured owner.
+                        const unsigned int current_index = if_nametoindex(
+                            snapshot->record.identity.interface_name.c_str());
+                        const std::string current_link = LinuxLinkIdentity(
+                            snapshot->record.identity.interface_name);
+                        if (current_index == 0 ||
+                            current_index != snapshot->record.identity.interface_index ||
+                            current_link.empty() ||
+                            current_link != snapshot->record.identity.link_identity) {
+                            return false;
+                        }
+                    }
+#endif
                     const DefaultRouteCapture current_defaults = CaptureDefaults();
                     if (!current_defaults) {
                         return false;
@@ -144,9 +225,40 @@ namespace ppp {
                         if (SameDefault(route, current)) {
                             return true;
                         }
+                        const auto target_snapshot = AsLinuxSnapshot(route);
+                        const auto current_snapshot = AsLinuxSnapshot(current);
+                        if (target_snapshot && target_snapshot->stable &&
+                            (!current_snapshot || !current_snapshot->stable)) {
+                            // A non-empty query without a stable identity is
+                            // not enough evidence to mutate the route table.
+                            return false;
+                        }
+                        if (target_snapshot && current_snapshot &&
+                            target_snapshot->stable && current_snapshot->stable &&
+                            target_snapshot->route.network == current_snapshot->route.network &&
+                            target_snapshot->route.prefix == current_snapshot->route.prefix) {
+                            // Preserve a destination/prefix changed by another
+                            // actor instead of replacing it with stale state.
+                            return false;
+                        }
                     }
-                    return operations_.add &&
-                        operations_.add(snapshot->route) != RouteAddResult::Failed;
+                    if (!operations_.add ||
+                        operations_.add(snapshot->route) == RouteAddResult::Failed) {
+                        return false;
+                    }
+                    if (!snapshot->stable) {
+                        return true;
+                    }
+                    const DefaultRouteCapture verified = CaptureDefaults();
+                    if (!verified) {
+                        return false;
+                    }
+                    for (const RouteSnapshotPtr& current : *verified) {
+                        if (SameDefault(route, current)) {
+                            return true;
+                        }
+                    }
+                    return false;
                 }
 
                 bool LinuxRoutePlatform::SameDefault(
@@ -155,7 +267,111 @@ namespace ppp {
                     const auto left_snapshot = AsLinuxSnapshot(left);
                     const auto right_snapshot = AsLinuxSnapshot(right);
                     return left_snapshot && right_snapshot &&
-                        SameRoute(left_snapshot->route, right_snapshot->route);
+                        ((left_snapshot->stable && right_snapshot->stable)
+                            ? SameRouteSnapshotRoute(
+                                left_snapshot->record, right_snapshot->record)
+                            : SameRoute(left_snapshot->route, right_snapshot->route));
+                }
+
+                bool LinuxRoutePlatform::TryGetSnapshotRecord(
+                    const RouteSnapshotPtr& snapshot,
+                    RouteSnapshotRecord& record) noexcept {
+                    const auto value = AsLinuxSnapshot(snapshot);
+                    if (!value || !value->stable || !value->record.Complete()) {
+                        return false;
+                    }
+                    record = value->record;
+                    return true;
+                }
+
+                bool LinuxRoutePlatform::SerializeSnapshot(
+                    const RouteSnapshotPtr& snapshot,
+                    std::string& serialized) noexcept {
+                    serialized.clear();
+                    RouteSnapshotRecord record;
+                    return TryGetSnapshotRecord(snapshot, record) &&
+                        record.platform == RouteSnapshotPlatform::Linux &&
+                        SerializeRouteSnapshot(record, serialized);
+                }
+
+                bool LinuxRoutePlatform::DeserializeSnapshot(
+                    std::string_view serialized,
+                    RouteSnapshotPtr& snapshot) noexcept {
+                    snapshot.reset();
+#if defined(_LINUX) && !defined(_ANDROID) && !defined(_IPHONE)
+                    const auto record = DeserializeRouteSnapshot(serialized);
+                    if (!record ||
+                        record->platform != RouteSnapshotPlatform::Linux ||
+                        !record->Complete()) {
+                        return false;
+                    }
+                    snapshot = std::make_shared<LinuxRouteSnapshot>(*record);
+                    return static_cast<bool>(snapshot);
+#else
+                    (void)serialized;
+                    return false;
+#endif
+                }
+
+                bool LinuxRoutePlatform::PrepareRouteRecoverySnapshot(
+                    const RouteSpec& route,
+                    std::string& serialized) noexcept {
+                    serialized.clear();
+#if defined(_LINUX) && !defined(_ANDROID) && !defined(_IPHONE)
+                    RouteSnapshotRecord record;
+                    return BuildLinuxRecord(Resolve(route), record) &&
+                        SerializeRouteSnapshot(record, serialized);
+#else
+                    (void)route;
+                    return false;
+#endif
+                }
+
+                bool LinuxRoutePlatform::DeleteRouteRecovery(
+                    std::string_view serialized) noexcept {
+#if defined(_LINUX) && !defined(_ANDROID) && !defined(_IPHONE)
+                    const auto record = DeserializeRouteSnapshot(serialized);
+                    if (!record || record->platform != RouteSnapshotPlatform::Linux ||
+                        !record->Complete() || !operations_.remove) {
+                        return false;
+                    }
+                    const unsigned int current_index = if_nametoindex(
+                        record->identity.interface_name.c_str());
+                    const std::string current_link = LinuxLinkIdentity(
+                        record->identity.interface_name);
+                    if (current_index == 0 ||
+                        current_index != record->identity.interface_index ||
+                        current_link.empty() ||
+                        current_link != record->identity.link_identity) {
+                        return false;
+                    }
+                    return operations_.remove(record->route);
+#else
+                    (void)serialized;
+                    return false;
+#endif
+                }
+
+                bool LinuxRoutePlatform::RecoverRouteJournalEntry(
+                    std::string_view target) noexcept {
+#if defined(_LINUX) && !defined(_ANDROID) && !defined(_IPHONE)
+                    LinuxRoutePlatform platform(
+                        0, {}, {}, {}, false);
+                    if (target.rfind("default:", 0) == 0) {
+                        RouteSnapshotPtr snapshot;
+                        if (!platform.DeserializeRecoverySnapshot(
+                                target.substr(8), snapshot) || !snapshot) {
+                            return false;
+                        }
+                        return platform.RestoreDefault(snapshot);
+                    }
+                    if (target.rfind("created-v2:", 0) == 0) {
+                        return platform.DeleteRouteRecovery(target.substr(11));
+                    }
+#else
+                    (void)target;
+#endif
+                    return false;
                 }
 
                 RouteSpec LinuxRoutePlatform::Resolve(RouteSpec route) const noexcept {

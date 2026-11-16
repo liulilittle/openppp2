@@ -2,6 +2,17 @@ cmake_minimum_required(VERSION 3.21)
 
 project(openppp2_ios LANGUAGES C CXX ASM)
 
+option(ENABLE_COROCC "Use the experimental corocc L0 coroutine backend" OFF)
+if(ENABLE_COROCC)
+    message(WARNING "corocc is unsupported on iOS; using Boost fcontext")
+    set(ENABLE_COROCC OFF CACHE BOOL "" FORCE)
+endif()
+
+# Production P2P v2 is enabled in iOS artifacts by default. This explicit
+# switch keeps the release setting visible and allows an emergency rollback.
+option(ENABLE_P2P_V2_PRODUCTION
+    "Enable authenticated P2P v2 production capability" ON)
+
 get_filename_component(OPENPPP2_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -63,6 +74,12 @@ list(APPEND OPENPPP2_COMMON_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/boost_context_stack_traits.cpp")
 
 add_library(openppp2_ios STATIC ${OPENPPP2_COMMON_SOURCES})
+
+if(ENABLE_P2P_V2_PRODUCTION)
+    target_compile_definitions(openppp2_ios PRIVATE OPENPPP2_P2P_V2_PRODUCTION=1)
+else()
+    target_compile_definitions(openppp2_ios PRIVATE OPENPPP2_P2P_V2_PRODUCTION=0)
+endif()
 
 target_compile_definitions(openppp2_ios PRIVATE
     _IPHONE

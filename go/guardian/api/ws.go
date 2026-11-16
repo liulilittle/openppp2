@@ -49,7 +49,8 @@ func (s *Server) handleWSEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authorizeStream(r *http.Request) bool {
-	if !s.authCfg.AuthEnabled {
+	enabled, secret := s.authState()
+	if !enabled {
 		return true
 	}
 	token := r.URL.Query().Get("token")
@@ -59,7 +60,7 @@ func (s *Server) authorizeStream(r *http.Request) bool {
 	if token == "" || !s.tokenStore.Validate(token) {
 		return false
 	}
-	_, err := auth.ValidateToken(token, s.jwtSecret)
+	_, err := auth.ValidateToken(token, secret)
 	return err == nil
 }
 

@@ -462,8 +462,8 @@
   {/if}
 
   {#if showInstanceModal}
-    <div class="overlay" role="button" tabindex="0" aria-label={t('cancel')} on:click={closeInstanceModal} on:keydown={handleOverlayKeydown}>
-      <div class="dialog" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation>
+    <div class="overlay" role="button" tabindex="0" aria-label={t('cancel')} on:click|self={closeInstanceModal} on:keydown={handleOverlayKeydown}>
+      <div class="dialog" role="dialog" aria-modal="true" tabindex="-1">
         <h3>{isEditing() ? t('editInstance') : t('newInstanceTitle')}</h3>
         <div class="form-grid">
           <label>

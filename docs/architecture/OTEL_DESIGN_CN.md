@@ -20,7 +20,8 @@
 
 ## Telemetry 启用方式
 
-在本树中 telemetry facade 始终被编译。尽管 CMake 暴露 `PPP_TELEMETRY` 选项，但 `Telemetry.h` 在缺失时把 `PPP_TELEMETRY` 定义为 `1`，实现中也没有 compile-out 的 no-op 分支。不能把该选项写成零二进制成本开关。
+在本树中 telemetry facade 始终被编译。没有编译期开关；master telemetry、count
+和 span 由运行时配置控制。
 
 master telemetry、count 和 span 默认关闭。启动时 `PreparedArgumentEnvironment()` 应用 `telemetry.enabled`、级别、count/span、console、endpoint 与文件路径配置。配置路径即使在 master flag 关闭时仍会调用 `Configure()` 和 `SetLogFile()`，因此源码不支持“禁用 telemetry 永远不创建 backend 状态”的笼统说法。
 

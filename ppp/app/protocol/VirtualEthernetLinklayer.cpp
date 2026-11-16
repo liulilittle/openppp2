@@ -41,6 +41,12 @@ namespace ppp {
 
             namespace checksum = ppp::net::native;
             namespace global {
+                // Per-packet frames are pre-sized so header and payload share one allocation;
+                // a default MemoryStream starts at 256 bytes and reallocates (copying the
+                // header) as soon as a typical payload is appended.
+                // Textual endpoint: length byte + address (IPv6 <= 45 chars) + length byte + port.
+                static constexpr int PACKET_ENDPOINT_RESERVE = 1 + 46 + 1 + 5;
+
                 /** @brief Sets a diagnostic error code and returns false. */
                 static bool PACKET_Fail(ppp::diagnostics::ErrorCode code) noexcept {
                     ppp::diagnostics::SetLastErrorCode(code);
@@ -327,7 +333,7 @@ namespace ppp {
                         return PACKET_Fail(ppp::diagnostics::ErrorCode::SessionTransportMissing);
                     }
 
-                    MemoryStream ms;
+                    MemoryStream ms(packet_length + 4);
                     if (!PACKET_ConnectId(ms, packet_action, connection_id, packet, packet_length)) {
                         return PACKET_Result(false, ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
                     }
@@ -469,7 +475,7 @@ namespace ppp {
                         return PACKET_Fail(ppp::diagnostics::ErrorCode::SessionTransportMissing);
                     }
 
-                    MemoryStream ms;
+                    MemoryStream ms(packet_length + 1);
                     if (ms.WriteByte(static_cast<Byte>(packet_action))) {
                         if (ms.Write(packet, 0, packet_length)) {
                             std::shared_ptr<Byte> buffer = ms.GetBuffer();
@@ -1130,7 +1136,16 @@ namespace ppp {
                     return false;
                 }
 
-                MemoryStream ms;
+                // Multicast is not representable by this relay protocol.
+                // Drop it before encoding instead of returning a send failure:
+                // the UDP port treats a transport send failure as fatal to the
+                // shared carrier, so LAN discovery must not tear it down.
+                if (destinationEP.address().is_multicast()) {
+                    ppp::telemetry::Count("linklayer.udp.drop.multicast", 1);
+                    return true;
+                }
+
+                MemoryStream ms(packet_length + 1 + 2 * global::PACKET_ENDPOINT_RESERVE);
                 if (ms.WriteByte(static_cast<Byte>(PacketAction_SENDTO))) {
                     if (global::PACKET_IPEndPoint(ms, destinationEP)) {
                         if (global::PACKET_IPEndPoint(ms, sourceEP)) {
@@ -1334,7 +1349,7 @@ namespace ppp {
                     return false;
                 }
 
-                MemoryStream ms;
+                MemoryStream ms(packet_length + 4 + global::PACKET_ENDPOINT_RESERVE);
                 if (ms.WriteByte(static_cast<Byte>(PacketAction_FRP_SENDTO))) {
                     if (global::PACKET_IPEndPoint(ms, sourceEP)) {
                         Byte b = in ? 1 : 0;
@@ -1430,7 +1445,7 @@ namespace ppp {
                     return false;
                 }
 
-                MemoryStream ms;
+                MemoryStream ms(packet_length + 8);
                 if (ms.WriteByte(static_cast<Byte>(PacketAction_FRP_PUSH))) {
                     if (global::PACKET_Dword(ms, connection_id)) {
                         Byte b = in ? 1 : 0;

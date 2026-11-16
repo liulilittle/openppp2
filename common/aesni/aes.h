@@ -26,9 +26,14 @@ namespace aesni {
     public:     
         std::shared_ptr<ppp::Byte>          Encrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, ppp::Byte* data, int datalen, int& outlen) noexcept { return Process(allocator, data, datalen, outlen, true); } 
         std::shared_ptr<ppp::Byte>          Decrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, ppp::Byte* data, int datalen, int& outlen) noexcept { return Process(allocator, data, datalen, outlen, false); } 
+        /** @brief Encrypts @p datalen bytes into caller-owned @p output (at least @p datalen bytes, not overlapping @p data). */
+        bool                                EncryptTo(ppp::Byte* output, const ppp::Byte* data, int datalen) noexcept { return ProcessTo(output, data, datalen, true); }
+        /** @brief Decrypts @p datalen bytes into @p output; @p output may equal @p data (in-place), otherwise must not overlap it. */
+        bool                                DecryptTo(ppp::Byte* output, const ppp::Byte* data, int datalen) noexcept { return ProcessTo(output, data, datalen, false); }
 
     private:        
         std::shared_ptr<ppp::Byte>          Process(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, ppp::Byte* data, int datalen, int& outlen, bool enc) noexcept;
+        bool                                ProcessTo(ppp::Byte* output, const ppp::Byte* data, int datalen, bool enc) noexcept;
 
     private:        
         using                               RoundKey             = std::array<uint8_t, 16>;

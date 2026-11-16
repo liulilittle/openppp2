@@ -1,25 +1,24 @@
-# Task Guides
+# Guides
+
 > Status: Active
-> Type: Guide
-> Last verified: 63fc030
+> Type: Index
+> Last verified: 2026-10-11
+>
+> **Purpose:** Find the feature guide for what you want to do.
+> **Audience:** Users with a working basic connection who need a specific feature.
+> **Parent index:** [Documentation](../README.md) · **Chinese:** [指南](README_CN.md)
 
-> **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
-> **Audience:** OPENPPP2 users, operators, and developers.
-> **Status:** Current.
-> **Last verified against:** Current repository structure, implementation paths, and documentation links, 2026-07-18.
-> **Parent index:** [Back to index](../README.md) · **Chinese:** [任务指南](README_CN.md)
+No working connection yet? Start with [Getting started](../getting-started/README.md).
 
+| I want to… | Guide |
+|---|---|
+| Send domestic traffic direct, the rest through the tunnel; choose DNS per domain | [Routing and DNS (split tunneling)](ROUTING_AND_DNS.md) |
+| Finer split control (direct / proxy / reject, regex, rule sets) | [Policy v2 and `ppp policy`](POLICY_CLI.md) |
+| Local HTTP / SOCKS proxies only, no system network changes | [Proxy mode](PROXY_MODE.md) |
+| Assign IPv6 to clients | [IPv6](IPV6.md) |
+| Reach the LAN behind a client (site-to-site) | [Peer prefix routing](PEER_PREFIX_ROUTING.md) |
+| Manage users and nodes centrally, with authentication and accounting | [Management backend](MANAGEMENT_BACKEND.md) |
+| Publish subscription links for users to import | [Remote subscription](REMOTE_SUBSCRIPTION.md) |
+| Understand Windows / Linux / macOS / Android / iOS differences | [Platforms](PLATFORMS.md) |
 
-This section groups current documentation by user task and maintenance responsibility.
-
-For client traffic steering, start with [`client.routing`](ROUTING_AND_DNS.md). It is the canonical configuration entry point; the older client routing fields are compatibility aliases.
-
-- [IPv6 Client Address Assignment Lifecycle](IPV6_CLIENT_ASSIGNMENT.md)
-- [IPv6 Lease Management](IPV6_LEASE_MANAGEMENT.md)
-- [IPv6 NDP Proxy Subsystem](IPV6_NDP_PROXY.md)
-- [IPv6 Transit Plane](IPV6_TRANSIT_PLANE.md)
-- [Management Backend](MANAGEMENT_BACKEND.md)
-- [Peer Prefix Routing (Site-to-Site Gateway) — Design Specification](PEER_PREFIX_ROUTING.md)
-- [Platform Integration](PLATFORMS.md)
-- [Proxy-only mode](PROXY_MODE.md) · [中文](PROXY_MODE_CN.md)
-- [Routing And DNS](ROUTING_AND_DNS.md)
+Exact field behavior is in the [Configuration reference](../reference/CONFIGURATION.md); flags are in the [CLI reference](../reference/CLI_REFERENCE.md).

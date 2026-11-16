@@ -236,7 +236,7 @@
     const name = newProfileName.trim()
     if (!name) return
     try {
-      await saveProfile(name, '{\n  \n}')
+      await saveProfile(name, JSON.stringify(formToJson(getDefaultForm()), null, 2))
       newProfileName = ''
       await loadProfiles()
       await selectProfile(name)

@@ -48,7 +48,7 @@ func (my *ManagedServer) websocket_api_on_echo(ws *io.WebSocket, packet *_Packet
 }
 
 func (my *ManagedServer) websocket_api_on_connect(ws *io.WebSocket, packet *_Packet) bool {
-	if packet.Data != my.configuration.Key {
+	if !secureEqual(packet.Data, my.configuration.Key) {
 		return false
 	}
 
@@ -88,8 +88,14 @@ func (my *ManagedServer) websocket_api_on_authentication(ws *io.WebSocket, packe
 func (my *ManagedServer) http_api_send_response_ex(w http.ResponseWriter, code int, tag string, msg error) {
 	var what string
 
+	// The detail may come from GORM/Redis; log it and return a generic message.
 	if msg != nil {
-		what = msg.Error()
+		LOG_ERROR.Println(msg)
+		if code >= _ERROR_DB {
+			what = "internal error"
+		} else {
+			what = "invalid argument"
+		}
 	}
 
 	my.http_api_send_response(w, code, tag, what)
@@ -115,7 +121,7 @@ func (my *ManagedServer) http_api_send_response(w http.ResponseWriter, code int,
 // The server interfaces return node records carrying protocol and transport
 // keys, so they require the same shared key the consumer interfaces do.
 func (my *ManagedServer) http_api_require_key(w http.ResponseWriter, r *http.Request) bool {
-	if io.HttpQuery(r.URL.Query(), "key") == my.configuration.Key {
+	if my.http_api_key_authorized(r) {
 		return true
 	}
 
@@ -190,9 +196,8 @@ func (my *ManagedServer) http_api_server_load(w http.ResponseWriter, r *http.Req
 
 func (my *ManagedServer) http_api_consumer_set_or_new(w http.ResponseWriter, r *http.Request, set_or_new bool) bool {
 	q := r.URL.Query()
-	key := io.HttpQuery(q, "key")
 
-	if key != my.configuration.Key {
+	if !my.http_api_key_authorized(r) {
 		my.http_api_send_response(w, _ERROR_ARG_KEY, "", "")
 		return false
 	}
@@ -265,9 +270,8 @@ func (my *ManagedServer) http_api_consumer_new(w http.ResponseWriter, r *http.Re
 
 func (my *ManagedServer) http_api_consumer_load(w http.ResponseWriter, r *http.Request, reload bool) bool {
 	q := r.URL.Query()
-	key := io.HttpQuery(q, "key")
 
-	if key != my.configuration.Key {
+	if !my.http_api_key_authorized(r) {
 		my.http_api_send_response(w, _ERROR_ARG_KEY, "", "")
 		return false
 	}

@@ -22,6 +22,17 @@ DATAPATH_TELEMETRY=false
 XTCP_PERF=false
 XTCP_CC=""
 XTCP_SHARDS=""
+XTCP_SPSC_INGRESS=""
+XTCP_AFFINITY=""
+XTCP_IO_CPUS=""
+XTCP_AFFINITY_STRICT=""
+XTCP_DIRECT_SPSC=""
+XTCP_AUTO_SHARDS=""
+POLICY_UNSET=(-u OPENPPP2_XTCP_SHARDS -u OPENPPP2_XTCP_SPSC_INGRESS
+  -u OPENPPP2_XTCP_AFFINITY -u OPENPPP2_XTCP_IO_CPUS
+  -u OPENPPP2_XTCP_AFFINITY_STRICT -u OPENPPP2_XTCP_AUTO_SHARDS
+  -u OPENPPP2_XTCP_SHARD_ROUTE -u OPENPPP2_TAP_LANE_RX_CPUS
+  -u OPENPPP2_XTCP_DIRECT_SPSC)
 XTCP_SHARD_ROUTE=""
 XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES=""
 XTCP_SEND_RETRY_US=""
@@ -41,6 +52,7 @@ TCP_INFO_SAMPLING=false
 VETH_GSO_MODE=default
 TRANSPORT_CIPHER="aes-256-cfb"
 CPU_PROFILE="none"
+KERNEL_STEERING="on"
 AFFINITY_CPUS=""
 SYSTEM_CPU_STAT=false
 PROCESS_PERF_STAT=false
@@ -56,6 +68,8 @@ Usage: run_datapath_linux_matrix.sh --artifacts DIR [options]
 
 Collects fresh-netns paired native/lwip/XTCP iperf3 measurements. P denotes
 iperf3 parallel flows, not OpenPPP2's client.concurrent setting.
+Execution requires tools/run_m3_isolated.sh; --dry-run is offline.
+IRQ affinity writes are prohibited. M3 can explicitly disable kernel steering.
 
   --artifacts DIR            Required output directory
   --ppp-bin PATH             XTCP-enabled ppp binary (default: bin/ppp)
@@ -66,11 +80,13 @@ iperf3 parallel flows, not OpenPPP2's client.concurrent setting.
   --duration SEC             iperf3 formal duration (default: 10)
   --omit SEC                 iperf3 warm-up omit (default: 2)
   --iperf-timeout SEC        Per-cell iperf watchdog; default duration + omit + 30
+                             Same-core UL P>=64 disables periodic iperf statistics
   --client-concurrent N      OpenPPP2 client.concurrent; default: 1
   --tap-gso LIST             off,on list (default: off)
   --xtcp-tap-gso-psh-boundary MODE  XTCP client PSH GSO boundary: off|on (default: off)
   --xtcp-tap-gso-retained-writev MODE XTCP client retained-owner writev: on|off (default: on)
   --cpu-profile PROFILE      none|client-vnet-isolated|client-single-core|client-cpuset
+  --kernel-steering MODE     on|off; strict single-core RPS/XPS lifecycle (default: on)
   --affinity-cpus LIST       Distinct online client CPU IDs, required by CPU profile
   --system-cpu-stat          Record selected-CPU capacity perf stat (non-none profiles)
   --process-perf-stat        Record PPP process perf stat (automatic for client-single-core)
@@ -84,7 +100,13 @@ iperf3 parallel flows, not OpenPPP2's client.concurrent setting.
   --datapath-telemetry       Retain datapath NDJSON plus boundary signals
   --xtcp-perf                Retain optional 1-second XTCP diagnostic NDJSON
   --xtcp-cc NAME             XTCP congestion control (kcc/bbr/cubic/reno; default kcc)
-  --xtcp-shards N            XTCP runtime shards via OPENPPP2_XTCP_SHARDS (XTCP stack only)
+  --xtcp-shards POLICY       auto|unset|1..8 (unset omits the environment variable)
+  --xtcp-spsc-ingress VALUE  0|1|unset
+  --xtcp-affinity VALUE      off|workers|queues|unset
+  --xtcp-io-cpus LIST        Ordered worker CPU IDs, or unset
+  --xtcp-affinity-strict VALUE 0|1|unset
+  --xtcp-direct-spsc VALUE   0|1|unset (client OPENPPP2_XTCP_DIRECT_SPSC)
+  --xtcp-auto-shards VALUE   0|1|unset (0 disables auto policy)
   --xtcp-shard-route NAME    Opt-in 2-shard route: source-port-bit6|source-port-xor-1-2-8
   --xtcp-direct-download-chunk-bytes BYTES  XTCP direct-download single flight: 16384|32768
   --xtcp-send-retry-us USEC  XTCP laboratory send retry interval
@@ -92,7 +114,7 @@ iperf3 parallel flows, not OpenPPP2's client.concurrent setting.
   --tap-gso-hold-us USEC     TAP GSO hold window (10..1000; default 100)
   --xtcp-gso-rx VALUE        XTCP GSO receive override
   --xtcp-unix-bridge VALUE   XTCP Unix bridge override
-  --xtcp-sndbuf BYTES        XTCP per-conn send buffer (bytes; default 64K upstream)
+  --xtcp-sndbuf BYTES        XTCP per-conn send buffer (bytes; default 1 MiB)
   --xtcp-memory-bridge       Enable the opt-in single-owner userspace bridge
   --xtcp-no-memory-bridge    Disable the XTCP single-owner userspace bridge (default runtime behavior is enabled)
   --xtcp-ndi-tso-tx         Enable the opt-in NDI TSO transmit capability
@@ -132,6 +154,7 @@ while (($#)); do
     --xtcp-tap-gso-psh-boundary) need_value "$@"; XTCP_TAP_GSO_PSH_BOUNDARY="$2"; shift 2 ;;
     --xtcp-tap-gso-retained-writev) need_value "$@"; XTCP_TAP_GSO_RETAINED_WRITEV="$2"; shift 2 ;;
     --cpu-profile) need_value "$@"; CPU_PROFILE="$2"; shift 2 ;;
+    --kernel-steering) need_value "$@"; KERNEL_STEERING="$2"; shift 2 ;;
     --affinity-cpus) need_value "$@"; AFFINITY_CPUS="$2"; shift 2 ;;
     --system-cpu-stat) SYSTEM_CPU_STAT=true; shift ;;
     --process-perf-stat) PROCESS_PERF_STAT=true; shift ;;
@@ -144,6 +167,12 @@ while (($#)); do
     --xtcp-perf) XTCP_PERF=true; shift ;;
     --xtcp-cc) need_value "$@"; XTCP_CC="$2"; shift 2 ;;
     --xtcp-shards) need_value "$@"; XTCP_SHARDS="$2"; shift 2 ;;
+    --xtcp-spsc-ingress) need_value "$@"; XTCP_SPSC_INGRESS="$2"; shift 2 ;;
+    --xtcp-affinity) need_value "$@"; XTCP_AFFINITY="$2"; shift 2 ;;
+    --xtcp-io-cpus) need_value "$@"; XTCP_IO_CPUS="$2"; shift 2 ;;
+    --xtcp-affinity-strict) need_value "$@"; XTCP_AFFINITY_STRICT="$2"; shift 2 ;;
+    --xtcp-direct-spsc) need_value "$@"; XTCP_DIRECT_SPSC="$2"; shift 2 ;;
+    --xtcp-auto-shards) need_value "$@"; XTCP_AUTO_SHARDS="$2"; shift 2 ;;
     --xtcp-shard-route) need_value "$@"; XTCP_SHARD_ROUTE="$2"; shift 2 ;;
     --xtcp-direct-download-chunk-bytes) need_value "$@"; XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES="$2"; shift 2 ;;
     --xtcp-send-retry-us) need_value "$@"; XTCP_SEND_RETRY_US="$2"; shift 2 ;;
@@ -170,6 +199,27 @@ while (($#)); do
 done
 
 [[ -n "$ARTIFACT_DIR" ]] || { echo "--artifacts is required" >&2; exit 2; }
+[[ "$KERNEL_STEERING" == on || "$KERNEL_STEERING" == off ]] || { echo "--kernel-steering must be on or off" >&2; exit 2; }
+[[ -z "$XTCP_SHARDS" || "$XTCP_SHARDS" =~ ^(auto|unset|[1-8])$ ]] || { echo "--xtcp-shards must be auto|unset|1..8" >&2; exit 2; }
+for policy_value in "$XTCP_SPSC_INGRESS" "$XTCP_AFFINITY_STRICT" "$XTCP_AUTO_SHARDS" "$XTCP_DIRECT_SPSC"; do
+  [[ -z "$policy_value" || "$policy_value" =~ ^(0|1|unset)$ ]] || { echo "policy boolean must be 0|1|unset" >&2; exit 2; }
+done
+[[ -z "$XTCP_AFFINITY" || "$XTCP_AFFINITY" =~ ^(off|workers|queues|unset)$ ]] || { echo "--xtcp-affinity must be off|workers|queues|unset" >&2; exit 2; }
+if [[ -n "$XTCP_IO_CPUS" && "$XTCP_IO_CPUS" != unset ]]; then
+  [[ "$XTCP_IO_CPUS" =~ ^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*))*$ ]] || { echo "invalid ordered worker CPU list" >&2; exit 2; }
+  IFS=, read -r -a worker_cpus <<<"$XTCP_IO_CPUS"
+  declare -A seen_worker_cpus=()
+  for cpu in "${worker_cpus[@]}"; do
+    [[ -z "${seen_worker_cpus[$cpu]:-}" ]] || { echo "duplicate worker CPU" >&2; exit 2; }
+    seen_worker_cpus[$cpu]=1
+  done
+fi
+POLICY_ENV=()
+for policy_name in SHARDS SPSC_INGRESS AFFINITY IO_CPUS AFFINITY_STRICT AUTO_SHARDS DIRECT_SPSC; do
+  policy_variable="XTCP_${policy_name}"
+  policy_value="${!policy_variable}"
+  [[ -z "$policy_value" || "$policy_value" == unset ]] || POLICY_ENV+=("OPENPPP2_XTCP_${policy_name}=$policy_value")
+done
 [[ "$VETH_GSO_MODE" == default || "$VETH_GSO_MODE" == off ]] || { echo "--veth-gso must be default or off" >&2; exit 2; }
 [[ "$TRANSPORT_CIPHER" == aes-128-cfb || "$TRANSPORT_CIPHER" == aes-256-cfb ]] || { echo "--transport-cipher must be aes-128-cfb or aes-256-cfb" >&2; exit 2; }
 [[ "$XTCP_MEMORY_BRIDGE" == default || "$XTCP_MEMORY_BRIDGE" == true || "$XTCP_MEMORY_BRIDGE" == false ]] || { echo "invalid memory bridge state" >&2; exit 2; }
@@ -230,6 +280,10 @@ cpu_in_kernel_list() {
 }
 
 CPU_LIST=()
+if [[ ( "$XTCP_AFFINITY" == workers || "$XTCP_AFFINITY" == queues ) && "$CPU_PROFILE" != client-cpuset ]]; then
+  echo '--xtcp-affinity workers|queues requires --cpu-profile client-cpuset' >&2
+  exit 2
+fi
 case "$CPU_PROFILE" in
   none)
     [[ -z "$AFFINITY_CPUS" && "$SYSTEM_CPU_STAT" == false && "$PROCESS_PERF_STAT" == false && "$PROCESS_SYSCALL_PERF" == false && "$PROCESS_PERF_RECORD" == false ]] || { echo "CPU affinity/perf options require a non-none --cpu-profile" >&2; exit 2; }
@@ -281,6 +335,16 @@ list_contains() {
   return 1
 }
 
+iperf_report_interval() {
+  # iperf 3.18 gathers TCP_INFO synchronously on its main thread. With many
+  # same-core senders, socket-lock waits can delay the end timer past watchdog.
+  if [[ "$CPU_PROFILE" == client-single-core && "$1" == ul ]] && (( 10#$2 >= 64 )); then
+    printf '0'
+  else
+    printf '1'
+  fi
+}
+
 CANONICAL_MODES=(native/off lwip/off xtcp/off native/on lwip/on xtcp/on)
 MODE_LIST=()
 for mode in "${CANONICAL_MODES[@]}"; do
@@ -299,6 +363,9 @@ if [[ "$DRY_RUN" == true ]]; then
           mode_slot=$(( (mode_index + round - 1) % ${#MODE_LIST[@]} ))
           mode="${MODE_LIST[$mode_slot]}"
           IFS=/ read -r stack tap_gso <<<"$mode"
+          printf 'iperf_report_interval=%s ' "$(iperf_report_interval "$direction" "$p")"
+          printf 'xtcp_shards_requested=%s xtcp_spsc_ingress=%s xtcp_affinity=%s xtcp_io_cpus=%s xtcp_affinity_strict=%s xtcp_auto_shards=%s xtcp_direct_spsc=%s startup_cpu_envelope=%s irq_writes=disabled kernel_steering=%s ' \
+            "${XTCP_SHARDS:-unset}" "${XTCP_SPSC_INGRESS:-unset}" "${XTCP_AFFINITY:-unset}" "${XTCP_IO_CPUS:-unset}" "${XTCP_AFFINITY_STRICT:-unset}" "${XTCP_AUTO_SHARDS:-unset}" "${XTCP_DIRECT_SPSC:-unset}" "${AFFINITY_CPUS:-inherited}" "$KERNEL_STEERING"
           printf 'round=%s stack=%s tap_gso=%s parallel_flows=%s direction=%s transport_cipher=%s cpu_profile=%s affinity_cpus=%s xtcp_memory_bridge=%s xtcp_memory_bridge_override=%s xtcp_ndi_tso_tx=%s xtcp_tap_gso_psh_boundary=%s xtcp_tap_gso_retained_writev=%s xtcp_direct_upload_gather_bytes=%s xtcp_direct_upload_gather_wait_ms=%s tcp_info_sampling=%s veth_gso_mode=%s paired_performance_gate=%s paired_performance_threshold=%s cell_path=round-%s/%s-gso-%s-p%s-%s\n' \
             "$round" "$stack" "$tap_gso" "$p" "$direction" "$TRANSPORT_CIPHER" "$CPU_PROFILE" "${AFFINITY_CPUS:-none}" "$XTCP_MEMORY_BRIDGE_EFFECTIVE" "$XTCP_MEMORY_BRIDGE" "$XTCP_NDI_TSO_TX" "$XTCP_TAP_GSO_PSH_BOUNDARY" "$XTCP_TAP_GSO_RETAINED_WRITEV" "${XTCP_DIRECT_UPLOAD_GATHER_BYTES:-default}" "${XTCP_DIRECT_UPLOAD_GATHER_WAIT_MS:-1}" "$TCP_INFO_SAMPLING" "$VETH_GSO_MODE" "$PAIRED_PERFORMANCE_GATE" "$PAIRED_PERFORMANCE_THRESHOLD" "$round" "$stack" "$tap_gso" "$p" "$direction"
         done
@@ -308,10 +375,14 @@ if [[ "$DRY_RUN" == true ]]; then
   exit 0
 fi
 
+python3 "$ROOT/tools/datapath_matrix_metadata.py" --check-isolation
 [[ -x "$PPP_BIN" ]] || { echo "PPP binary is not executable: $PPP_BIN" >&2; exit 1; }
 [[ "$(id -u)" -eq 0 ]] || { echo "root is required for netns/TUN" >&2; exit 1; }
 for command in ip iperf3 python3 stdbuf ss; do command -v "$command" >/dev/null || { echo "missing command: $command" >&2; exit 1; }; done
 if [[ "$CPU_PROFILE" != none ]]; then command -v taskset >/dev/null || { echo "--cpu-profile requires taskset" >&2; exit 1; }; fi
+if [[ "$CPU_PROFILE" == client-single-core && "$KERNEL_STEERING" == on ]]; then
+  for command in unshare mount; do command -v "$command" >/dev/null || { echo "kernel steering requires $command" >&2; exit 1; }; done
+fi
 if [[ "$SYSTEM_CPU_STAT" == true || "$PROCESS_PERF_STAT" == true || "$PROCESS_SYSCALL_PERF" == true || "$PROCESS_PERF_RECORD" == true ]]; then command -v perf >/dev/null || { echo "CPU perf requested but perf is unavailable" >&2; exit 1; }; fi
 if [[ "$VETH_GSO_MODE" == off ]]; then command -v ethtool >/dev/null || { echo "--veth-gso off requires ethtool" >&2; exit 1; }; fi
 
@@ -320,7 +391,7 @@ python3 "$ROOT/tools/datapath_matrix_metadata.py" --root "$ROOT" --ppp-bin "$PPP
   --json-output "$ARTIFACT_DIR/version-fingerprint.json" --text-output "$ARTIFACT_DIR/version-fingerprint.txt"
 printf 'label=%s\nppp_bin=%s\nstacks=%s\nparallel=%s\ndirections=%s\nrounds=%s\nduration=%s\nomit=%s\niperf_timeout=%s\nclient_concurrent=%s\ntap_gso_modes=%s\ntransport_cipher=%s\ndatapath_telemetry=%s\nxtcp_perf=%s\nxtcp_cc=%s\nxtcp_shards=%s\nxtcp_send_retry_us=%s\ntap_gso_segments=%s\nxtcp_tap_gso_psh_boundary=%s\nxtcp_tap_gso_retained_writev=%s\nxtcp_gso_rx=%s\nxtcp_unix_bridge=%s\nxtcp_sndbuf=%s\nxtcp_direct_upload_gather_bytes=%s\nxtcp_direct_upload_gather_wait_ms=%s\nxtcp_gro_bytes=%s\nxtcp_ingress_items=%s\nxtcp_ingress_bytes=%s\nxtcp_connector_batch_bytes=%s\nxtcp_write_cap_bytes=%s\nxtcp_global_queue_bytes=%s\nxtcp_memory_bridge=%s\nxtcp_memory_bridge_override=%s\nxtcp_ndi_tso_tx=%s\nnetem_delay_ms=%s\nstall_diagnostics=%s\ntcp_info_sampling=%s\ncpu_profile=%s\naffinity_cpus=%s\nsystem_cpu_stat=%s\nprocess_perf_stat=%s\nprocess_syscall_perf=%s\npaired_performance_gate_mode=%s\npaired_performance_gate_threshold=%s\ntun_output_diagnostics=stall_diagnostics_xtcp_only\nxtcp_output_rejection_json=stall_diagnostics_xtcp_only\n' \
   "$LABEL" "$PPP_BIN" "$STACKS" "$PARALLEL" "$DIRECTIONS" "$ROUNDS" "$DURATION" "$OMIT" "$IPERF_TIMEOUT" \
-  "${CLIENT_CONCURRENT:-per-P}" "$TAP_GSO_MODES" "$TRANSPORT_CIPHER" "$DATAPATH_TELEMETRY" "$XTCP_PERF" "${XTCP_CC:-${OPENPPP2_XTCP_CC:-default}}" "${XTCP_SHARDS:-${OPENPPP2_XTCP_SHARDS:-default}}" \
+  "${CLIENT_CONCURRENT:-per-P}" "$TAP_GSO_MODES" "$TRANSPORT_CIPHER" "$DATAPATH_TELEMETRY" "$XTCP_PERF" "${XTCP_CC:-${OPENPPP2_XTCP_CC:-default}}" "${XTCP_SHARDS:-unset}" \
   "${XTCP_SEND_RETRY_US:-${OPENPPP2_XTCP_LAB_SEND_RETRY_US:-default}}" "$XTCP_TAP_GSO_SEGMENTS_EFFECTIVE" "$XTCP_TAP_GSO_PSH_BOUNDARY" "$XTCP_TAP_GSO_RETAINED_WRITEV" "${XTCP_GSO_RX:-${OPENPPP2_XTCP_GSO_RX:-default}}" "${XTCP_UNIX_BRIDGE:-${OPENPPP2_XTCP_UNIX_BRIDGE:-default}}" "$XTCP_SNDBUF_EFFECTIVE" \
   "${XTCP_DIRECT_UPLOAD_GATHER_BYTES:-default}" "${XTCP_DIRECT_UPLOAD_GATHER_WAIT_MS:-1}" "${OPENPPP2_XTCP_GRO_BYTES:-default}" "${OPENPPP2_XTCP_INGRESS_ITEMS:-default}" "${OPENPPP2_XTCP_INGRESS_BYTES:-default}" "${OPENPPP2_XTCP_CONNECTOR_BATCH_BYTES:-default}" \
   "${OPENPPP2_XTCP_WRITE_CAP_BYTES:-default}" "${OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES:-default}" "$XTCP_MEMORY_BRIDGE_EFFECTIVE" "$XTCP_MEMORY_BRIDGE" "$XTCP_NDI_TSO_TX" "${NETEM_DELAY_MS:-none}" "$STALL_DIAGNOSTICS" "$TCP_INFO_SAMPLING" "$CPU_PROFILE" "${AFFINITY_CPUS:-none}" \
@@ -333,6 +404,8 @@ printf 'xtcp_shard_route=%s\n' "${XTCP_SHARD_ROUTE:-tuple-hash}" >>"$ARTIFACT_DI
 printf 'xtcp_direct_download_chunk_bytes=%s\n' "$XTCP_DIRECT_DOWNLOAD_CHUNK_EFFECTIVE" >>"$ARTIFACT_DIR/matrix-metadata.txt"
 printf 'xtcp_dl_gso_perf_profile=%s\n' "$XTCP_DL_GSO_PROFILE_ENABLED" >>"$ARTIFACT_DIR/matrix-metadata.txt"
 printf 'veth_gso_mode=%s\n' "$VETH_GSO_MODE" >>"$ARTIFACT_DIR/matrix-metadata.txt"
+printf 'xtcp_shards_requested=%s\nxtcp_spsc_ingress=%s\nxtcp_affinity=%s\nxtcp_io_cpus=%s\nxtcp_affinity_strict=%s\nxtcp_auto_shards=%s\nxtcp_direct_spsc=%s\nstartup_cpu_envelope=%s\nirq_writes=disabled\nkernel_steering=%s\n' \
+  "${XTCP_SHARDS:-unset}" "${XTCP_SPSC_INGRESS:-unset}" "${XTCP_AFFINITY:-unset}" "${XTCP_IO_CPUS:-unset}" "${XTCP_AFFINITY_STRICT:-unset}" "${XTCP_AUTO_SHARDS:-unset}" "${XTCP_DIRECT_SPSC:-unset}" "${AFFINITY_CPUS:-inherited}" "$KERNEL_STEERING" >>"$ARTIFACT_DIR/matrix-metadata.txt"
 
 run_cell() (
   set -euo pipefail
@@ -394,7 +467,10 @@ run_cell() (
       else
         target="$remaining_cpus"; [[ "$tid" == "${vnet_tids[0]}" ]] && target="$single_core_cpu"
       fi
-      if ! taskset -pc "$target" "$tid" >>"$state_dir/cpu-affinity.txt" 2>&1; then cpu_affinity_verified=false; fi
+      if [[ "$CPU_PROFILE" == client-cpuset ]]; then
+        # Preserve narrower startup worker bindings; only verify the envelope.
+        if ! python3 -c 'import os,sys; assert os.sched_getaffinity(int(sys.argv[1])) <= set(map(int,sys.argv[2].split(",")))' "$tid" "$target"; then cpu_affinity_verified=false; fi
+      elif ! taskset -pc "$target" "$tid" >>"$state_dir/cpu-affinity.txt" 2>&1; then cpu_affinity_verified=false; fi
       printf 'tid=%s requested_cpus=%s\n' "$tid" "$target" >>"$state_dir/cpu-affinity.txt"
       if ! readback="$(taskset -pc "$tid" 2>&1)"; then cpu_affinity_verified=false; fi
       printf 'tid=%s readback=%s\n' "$tid" "$readback" >>"$state_dir/cpu-affinity.txt"
@@ -504,10 +580,17 @@ run_cell() (
       "$cpu_affinity_verified" "$cpu_snapshots_verified" "$cpu_process_perf_failed" "$cpu_iperf_perf_failed" "$cpu_system_perf_failed" "$cpu_syscall_perf_failed" "$cpu_process_record_failed" "$clock_ticks" "$cpu_start_ns" "$cpu_end_ns" >"$state_dir/cpu-measurement-status.txt"
   }
 
+  isolation_helper() {
+    # Resolve sysfs only after entering this cell's netns and mounting its view.
+    ip netns exec "$ns_c" unshare --mount --propagation private sh -ec \
+      'mount -t sysfs -o nosuid,nodev,noexec sysfs /sys; exec "$@"' \
+      m3-steering python3 "$ROOT/tools/datapath_cpu_isolation.py" "$@"
+  }
+
   isolation_phase() {
     local phase="$1"
-    [[ "$CPU_PROFILE" == client-single-core ]] || return 0
-    if ! ip netns exec "$ns_c" python3 "$ROOT/tools/datapath_cpu_isolation.py" "$phase" --state "$isolation_state"; then
+    [[ "$CPU_PROFILE" == client-single-core && "$KERNEL_STEERING" == on ]] || return 0
+    if ! isolation_helper "$phase" --state "$isolation_state"; then
       cp "$isolation_state" "$state_dir/cpu-isolation-${phase}.json" 2>/dev/null || true
       return 1
     fi
@@ -515,8 +598,9 @@ run_cell() (
   }
 
   setup_cpu_isolation() {
-    [[ "$CPU_PROFILE" == client-single-core ]] || return 0
-    if ! ip netns exec "$ns_c" python3 "$ROOT/tools/datapath_cpu_isolation.py" snapshot \
+    printf '{"irq_writes":"disabled","rps_xps":"%s"}\n' "$KERNEL_STEERING" >"$state_dir/kernel-steering.json"
+    [[ "$CPU_PROFILE" == client-single-core && "$KERNEL_STEERING" == on ]] || return 0
+    if ! isolation_helper snapshot \
       --state "$isolation_state" --target-cpu "${CPU_LIST[0]}" --namespace "$ns_c" \
       --device xc-veth --persistent-device xc-veth --device "$tun_dev"; then
       cp "$isolation_state" "$state_dir/cpu-isolation-snapshot.json" 2>/dev/null || true
@@ -524,7 +608,7 @@ run_cell() (
     fi
     cp "$isolation_state" "$state_dir/cpu-isolation-snapshot.json"
     isolation_active=true
-    isolation_phase apply
+    isolation_phase apply || return 1
     isolation_phase readback
   }
 
@@ -627,6 +711,9 @@ run_cell() (
     [[ -z "$watchdog_pid" ]] || wait "$watchdog_pid" 2>/dev/null || true
     [[ -z "$tcp_info_pid" ]] || wait "$tcp_info_pid" 2>/dev/null || true
     wait "${pids[@]:-}" 2>/dev/null || true
+    for pid in "$client_pid" "$iperf_pid" "$cpu_process_perf_pid" "$cpu_iperf_perf_pid" "$cpu_system_perf_pid" "$cpu_syscall_perf_pid" "$cpu_process_record_pid"; do
+      [[ -z "$pid" ]] || wait "$pid" 2>/dev/null || true
+    done
     [[ -d "$state_dir" ]] && cp -a "$state_dir"/. "$cell_dir"/ || true
     ip netns del "$ns_c" 2>/dev/null || true
     ip netns del "$ns_s" 2>/dev/null || true
@@ -751,9 +838,8 @@ PY
     client_env+=("OPENPPP2_XTCP_LAB_SEND_RETRY_US=${XTCP_SEND_RETRY_US}")
     server_env+=("OPENPPP2_XTCP_LAB_SEND_RETRY_US=${XTCP_SEND_RETRY_US}")
   fi
-  if [[ -n "$XTCP_SHARDS" && "$stack" == xtcp ]]; then
-    client_env+=("OPENPPP2_XTCP_SHARDS=${XTCP_SHARDS}")
-    server_env+=("OPENPPP2_XTCP_SHARDS=${XTCP_SHARDS}")
+  if [[ "$stack" == xtcp ]]; then
+    client_env+=("${POLICY_ENV[@]}")
   fi
   if [[ -n "$XTCP_SHARD_ROUTE" && "$stack" == xtcp ]]; then
     client_env+=("OPENPPP2_XTCP_SHARD_ROUTE=${XTCP_SHARD_ROUTE}")
@@ -772,7 +858,7 @@ PY
     client_env+=("OPENPPP2_DATAPATH_GSO_LEDGER=1")
   fi
 
-  ip netns exec "$ns_s" env -u OPENPPP2_TAP_GSO_MERGE -u OPENPPP2_TAP_GSO_MERGE_DISABLE -u OPENPPP2_TAP_GSO_HOLD_US \
+  ip netns exec "$ns_s" env "${POLICY_UNSET[@]}" -u OPENPPP2_TAP_GSO_MERGE -u OPENPPP2_TAP_GSO_MERGE_DISABLE -u OPENPPP2_TAP_GSO_HOLD_US \
     -u OPENPPP2_TAP_GSO_PSH_BOUNDARY -u OPENPPP2_TAP_GSO_RETAINED_WRITEV_DISABLE \
     -u OPENPPP2_DATAPATH_PERF_JSON -u OPENPPP2_DATAPATH_PERF_MEASUREMENT_BOUNDARIES -u OPENPPP2_XTCP_PERF_JSON \
     -u OPENPPP2_XTCP_SEND_ADMISSION_JSON -u OPENPPP2_XTCP_ACK_RELEASE_JSON -u OPENPPP2_DATAPATH_GSO_LEDGER \
@@ -787,11 +873,14 @@ PY
   kill -0 "${pids[0]}" 2>/dev/null || { echo "server exited: $cell_dir/server.log" >&2; exit 1; }
   ip netns exec "$ns_t" iperf3 -s -1 -p "$iperf_port" >"$state_dir/iperf-server.log" 2>&1 & pids+=("$!")
   local -a client_cpu_prefix=() iperf_cpu_prefix=()
+  if [[ "$CPU_PROFILE" != none ]]; then
+    client_cpu_prefix=(taskset -c "$AFFINITY_CPUS")
+  fi
   if [[ "$CPU_PROFILE" == client-single-core ]]; then
     client_cpu_prefix=(taskset -c "${CPU_LIST[0]}")
     iperf_cpu_prefix=(taskset -c "${CPU_LIST[0]}")
   fi
-  ip netns exec "$ns_c" env -u OPENPPP2_TAP_GSO_MERGE -u OPENPPP2_TAP_GSO_MERGE_DISABLE -u OPENPPP2_TAP_GSO_HOLD_US \
+  ip netns exec "$ns_c" env "${POLICY_UNSET[@]}" -u OPENPPP2_TAP_GSO_MERGE -u OPENPPP2_TAP_GSO_MERGE_DISABLE -u OPENPPP2_TAP_GSO_HOLD_US \
     -u OPENPPP2_TAP_GSO_PSH_BOUNDARY -u OPENPPP2_TAP_GSO_RETAINED_WRITEV_DISABLE \
     -u OPENPPP2_DATAPATH_PERF_JSON -u OPENPPP2_DATAPATH_PERF_MEASUREMENT_BOUNDARIES -u OPENPPP2_XTCP_PERF_JSON \
     -u OPENPPP2_XTCP_SEND_ADMISSION_JSON -u OPENPPP2_XTCP_ACK_RELEASE_JSON -u OPENPPP2_DATAPATH_GSO_LEDGER \
@@ -801,7 +890,9 @@ PY
     -u OPENPPP2_XTCP_DIRECT_UPLOAD_GATHER_BYTES \
     -u OPENPPP2_XTCP_DIRECT_UPLOAD_GATHER_WAIT_MS \
     -u OPENPPP2_XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES \
-    "${client_env[@]}" "${client_cpu_prefix[@]}" stdbuf -oL -eL "$PPP_BIN" --mode=client --config="$state_dir/client.json" \
+    "${client_env[@]}" "${client_cpu_prefix[@]}" python3 "$ROOT/tools/datapath_startup_exec.py" \
+    --output "$state_dir/startup-envelope.json" --requested "${AFFINITY_CPUS:-inherited}" -- \
+    stdbuf -oL -eL "$PPP_BIN" --mode=client --config="$state_dir/client.json" \
     "--tcp-stack=${stack}" --stats-json="$state_dir/stats.ndjson" >"$state_dir/client.log" 2>&1 &
   client_pid=$!
   sleep 3
@@ -823,7 +914,10 @@ PY
   printf 'xtcp_tun_csum_partial=%s\n' "$([[ "$XTCP_TUN_CSUM_PARTIAL" == true && "$stack" == xtcp && "$tap_gso" == on ]] && echo true || echo false)" >>"$state_dir/metadata.txt"
   printf 'process_perf_record=%s\n' "$PROCESS_PERF_RECORD" >>"$state_dir/metadata.txt"
 
-  local -a iperf_args=(-c "$target_ip" -p "$iperf_port" -P "$p" -t "$DURATION" -O "$OMIT" --json)
+  local iperf_interval
+  iperf_interval="$(iperf_report_interval "$direction" "$p")"
+  printf 'iperf_report_interval=%s\n' "$iperf_interval" >>"$state_dir/metadata.txt"
+  local -a iperf_args=(-c "$target_ip" -p "$iperf_port" -P "$p" -t "$DURATION" -O "$OMIT" --json --interval "$iperf_interval")
   local iperf_status=0
   [[ "$direction" == dl ]] && iperf_args+=(-R)
   ip netns exec "$ns_c" "${iperf_cpu_prefix[@]}" iperf3 "${iperf_args[@]}" >"$state_dir/iperf-${direction}-p${p}.json" 2>&1 &
@@ -939,6 +1033,8 @@ if tap_samples:
 if tap_gso == "on" and active_tap_gso != "on":
     raise SystemExit("GSO runtime proof failed: requested on but Linux VNET header/GSO merge is inactive or unavailable")
 stats = {
+    "startup": json.loads((state / "startup-envelope.json").read_text()),
+    "kernel_steering": json.loads((state / "kernel-steering.json").read_text()),
     "present": True,
     "records": len(records),
     "tcp_stack": {"requested": stack, "active": stack},
@@ -957,6 +1053,8 @@ if stack == "xtcp":
     if len(records) < 2 or aggregate_xtcp.get("flows_opened", 0) < p or aggregate_xtcp.get("ingress_injected", 0) <= 0 or aggregate_xtcp.get("output_bytes", 0) <= 0:
         raise SystemExit(f"XTCP stats insufficient for P={p}: {aggregate_xtcp}")
     stats["xtcp"] = aggregate_xtcp
+    from datapath_matrix_metadata import runtime_policy_metadata
+    stats["xtcp_policy"] = runtime_policy_metadata(records)
 min_bps, max_bps = min(flow_bps), max(flow_bps)
 zero_rate_flows = sum(rate == 0 for rate in flow_bps)
 max_min_ratio = None if min_bps == 0 else max_bps / min_bps
@@ -1010,6 +1108,7 @@ result = {
     "transport_cipher": transport_cipher,
     "parallel_flows": p, "direction": direction,
     "iperf_json": iperf_path.name, "goodput_bps": aggregate["bits_per_second"],
+    "iperf_report_interval": iperf.get("start", {}).get("test_start", {}).get("interval"),
     "retransmits": aggregate.get("retransmits"), "flow_bps": flow_bps,
     "fairness": {"min_bps": min_bps, "p10_bps": percentile(flow_bps, .10), "p50_bps": percentile(flow_bps, .50), "p90_bps": percentile(flow_bps, .90), "max_bps": max_bps, "max_min_ratio": max_min_ratio, "zero_rate_flows": zero_rate_flows},
     "runtime_stats": stats,

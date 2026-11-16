@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"ppp/guardian/service"
@@ -35,7 +36,7 @@ func (s *Server) handleServiceInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	execStart := fmt.Sprintf("%s -config guardian.json", s.authCfg.GuardianBinary)
+	execStart := fmt.Sprintf("%s -config guardian.json", strconv.Quote(s.authCfg.GuardianBinary))
 	if err := service.InstallSystemd(service.SystemdConfig{
 		ServiceName: serviceName,
 		Description: "OpenPPP2 Guardian Daemon",

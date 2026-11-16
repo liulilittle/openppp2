@@ -218,7 +218,7 @@ namespace ppp {
                         log += "/" + protocol;
                     }
                     else {
-                        log += "/" + protocol + " X-Forwarded-For:" + x_forwarded_for;
+                        log += "/" + protocol + " Claimed-Client-IP(untrusted):" + x_forwarded_for;
                     }
                     return log;
                 }

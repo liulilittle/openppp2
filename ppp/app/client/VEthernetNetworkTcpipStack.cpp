@@ -67,7 +67,11 @@ namespace ppp {
                 std::shared_ptr<VEthernetNetworkTcpipConnection> connection =
                     std::dynamic_pointer_cast<VEthernetNetworkTcpipConnection>(base);
                 if (NULLPTR == connection) {
+#if defined(_WIN32)
+                    ppp::net::Socket::Closesocket(fd);
+#else
                     ::close(fd);
+#endif
                     return false;
                 }
                 connection->SetExternalFirstLeg(
@@ -75,7 +79,11 @@ namespace ppp {
                 if (!RegisterExternalClient(source_port, runtime_generation,
                         flow_generation, connection)) {
                     connection->Dispose();
+#if defined(_WIN32)
+                    ppp::net::Socket::Closesocket(fd);
+#else
                     ::close(fd);
+#endif
                     return false;
                 }
                 const boost::asio::ip::tcp::endpoint natEP(
@@ -121,6 +129,17 @@ namespace ppp {
                         std::shared_ptr<VEthernetNetworkTcpipStack::TapTcpClient>(NULLPTR));
                 }
 
+                const bool policy_v2 = ethernet->HasPolicyV2();
+                const auto policy_snapshot = policy_v2 ? ethernet->GetPolicySnapshot() : nullptr;
+                bool domain_sniff_candidate = false;
+#if !defined(_IPHONE) && !defined(IPHONE)
+                const bool sniff_enabled = (policy_v2
+                    ? policy_snapshot && policy_snapshot->TcpDomainSniff()
+                    : configuration_ && configuration_->routing.tcp_domain_sniff) &&
+                    remoteEP.address().is_v4() && !destination.is_fake_ip;
+                domain_sniff_candidate = policy_v2 && policy_snapshot && sniff_enabled;
+#endif
+
                 routing::TcpRoutingSelectorInput selector_input;
                 selector_input.action = destination.action;
                 selector_input.is_fake_ip = destination.is_fake_ip;
@@ -128,13 +147,47 @@ namespace ppp {
 #if defined(_IPHONE) || defined(IPHONE)
                 selector_input.direct_supported = false;
 #endif
-                const routing::TcpRoutingMode routing_mode =
+                routing::TcpRoutingMode routing_mode =
                     routing::TcpRoutingSelector::Select(selector_input);
-                if (routing_mode == routing::TcpRoutingMode::Reject) {
+                std::string policy_reason;
+                bool policy_resolution_pending = false;
+                if (policy_v2) {
+                    policy::PolicyTcpFlowInput input;
+                    input.hostname = destination.hostname;
+                    input.ipv6 = !remoteEP.address().is_v4() ||
+                        destination.connect_endpoint.GetAddressFamily() != ppp::net::AddressFamily::InterNetwork;
+                    if (!input.ipv6) input.ipv4 = ppp::net::IPEndPoint::ToEndPoint<boost::asio::ip::tcp>(
+                        destination.connect_endpoint).address().to_string();
+                    input.is_fake_ip = destination.is_fake_ip;
+                    // Resolve fake identities under the pinned policy, rather than reuse legacy cached IPs.
+                    input.is_resolved = !destination.is_fake_ip;
+                    input.direct_supported = selector_input.direct_supported;
+                    const auto decision = policy::EvaluatePolicyTcpFlow(policy_snapshot, input);
+                    policy_reason = decision.reason;
+                    policy_resolution_pending = decision.needs_dns_resolution;
+                    if (!decision.needs_dns_resolution) {
+                        if (Ethernet) Ethernet->RecordPolicyDecision(
+                            decision.disposition == policy::PolicyTcpDisposition::Direct ? policy::PolicyAction::Direct :
+                            decision.disposition == policy::PolicyTcpDisposition::Proxy ? policy::PolicyAction::Proxy :
+                            policy::PolicyAction::Reject);
+                    }
+                    routing_mode = decision.disposition == policy::PolicyTcpDisposition::Direct
+                        ? routing::TcpRoutingMode::ForceDirect
+                        : decision.disposition == policy::PolicyTcpDisposition::Proxy
+                            ? routing::TcpRoutingMode::ForceProxy : routing::TcpRoutingMode::Reject;
+                    // A sniffed domain can override an IP/default action; infrastructure failures cannot.
+                    if (decision.reason == "policy_unavailable" || decision.reason == "unsupported_ipv6" ||
+                        decision.reason == "unresolved_fake_ip" || decision.reason == "unresolved_destination")
+                        domain_sniff_candidate = false;
+                }
+                if (routing_mode == routing::TcpRoutingMode::Reject && !domain_sniff_candidate && !policy_resolution_pending) {
                     ppp::telemetry::Log(
                         ppp::telemetry::Level::kInfo,
                         "tcpip_stack",
-                        "begin accept rejected by routing policy fake=%d resolved=%d action=%d remote=%s:%u",
+                        "begin accept rejected by routing policy v2=%d reason=%s mode=%d fake=%d resolved=%d action=%d remote=%s:%u",
+                        policy_v2 ? 1 : 0,
+                        policy_reason.c_str(),
+                        static_cast<int>(routing_mode),
                         destination.is_fake_ip ? 1 : 0,
                         destination.is_resolved ? 1 : 0,
                         static_cast<int>(destination.action),
@@ -172,12 +225,8 @@ namespace ppp {
                         destination.connect_endpoint);
 
                 std::shared_ptr<const routing::HumanRoutingRules> routing_rules;
-                bool domain_sniff_candidate = false;
 #if !defined(_IPHONE) && !defined(IPHONE)
-                if (configuration_ &&
-                    configuration_->routing.tcp_domain_sniff &&
-                    remoteEP.address().is_v4() &&
-                    !destination.is_fake_ip) {
+                if (!policy_v2 && sniff_enabled) {
                     routing_rules = ethernet->GetHumanRoutingRulesSnapshot();
                     domain_sniff_candidate = routing_rules &&
                         routing_rules->HasDomainRules();
@@ -192,6 +241,7 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed, std::shared_ptr<VEthernetNetworkTcpipStack::TapTcpClient>(NULLPTR));
                 }
 
+                if (policy_v2) connection->SetPolicyContext(policy_snapshot, destination.hostname, policy_resolution_pending);
                 connection->Open(localEP, connectEP);
                 ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip_stack", "begin accept client local=%s:%u remote=%s:%u",
                     localEP.address().to_string().c_str(),

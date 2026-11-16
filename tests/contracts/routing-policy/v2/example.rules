@@ -1,0 +1,17 @@
+default proxy
+dns direct local
+dns proxy remote
+
+[direct]
+=local.example.test
+192.0.2.0/24
+set:sample-domains
+
+[proxy]
+=proxy.example.test
+
+[reject]
+=blocked.example.test
+
+[dns:remote]
+=dns-override.example.test

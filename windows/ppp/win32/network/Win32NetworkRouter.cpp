@@ -1,3 +1,4 @@
+#include <ppp/diagnostics/TelemetryFwd.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/diagnostics/Error.h>
 #include <windows/ppp/win32/network/Router.h>
@@ -52,6 +53,8 @@ namespace ppp
                 int err = ::GetBestInterface(ip, &dwBestIfIndex);
                 if (err != NO_ERROR)
                 {
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                        "windows_route", "GetBestInterface failed: win32_error=%d", err);
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteQueryFailed);
                     return -1;
                 }
@@ -115,8 +118,9 @@ namespace ppp
                 PMIB_IPFORWARDTABLE pRouteTable = NULLPTR;
                 DWORD dwSize = 0;
                 DWORD dwErr = ::GetIpForwardTable(pRouteTable, &dwSize, true);
-                if (dwErr == ERROR_INSUFFICIENT_BUFFER)
+                for (int attempt = 0; attempt < 5 && dwErr == ERROR_INSUFFICIENT_BUFFER; attempt++)
                 {
+                    Mfree(pRouteTable);
                     pRouteTable = (PMIB_IPFORWARDTABLE)Malloc(dwSize);
                     if (NULLPTR == pRouteTable)
                     {
@@ -134,6 +138,9 @@ namespace ppp
                     });
                 if (dwErr != ERROR_SUCCESS)
                 {
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                        "windows_route", "GetIpForwardTable failed: win32_error=%lu",
+                        static_cast<unsigned long>(dwErr));
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteQueryFailed);
                     pRouteTablePtr.reset();
                 }
@@ -190,6 +197,9 @@ namespace ppp
                 int err = ::GetIpInterfaceEntry(&mib);
                 if (err != NO_ERROR)
                 {
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                        "windows_route", "GetIpInterfaceEntry failed: win32_error=%d interface_index=%d",
+                        err, interface_index);
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteQueryFailed);
                     return false;
                 }
@@ -204,6 +214,11 @@ namespace ppp
             bool Router::Add(MIB_IPFORWARDROW& route) noexcept
             {
                 int err = ::CreateIpForwardEntry(&route);
+                if (err != NO_ERROR) {
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                        "windows_route", "CreateIpForwardEntry failed: win32_error=%d interface_index=%lu",
+                        err, static_cast<unsigned long>(route.dwForwardIfIndex));
+                }
                 return err == NO_ERROR;
             }
         }

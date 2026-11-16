@@ -1,0 +1,50 @@
+diff -ruN '--exclude=*.orig' '--exclude=*.rej' a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+--- a/src/core/tcp_fsm.cpp	2026-11-01 18:48:23.454602100 +0800
++++ b/src/core/tcp_fsm.cpp	2026-11-01 18:48:23.518602088 +0800
+@@ -5392,6 +5392,7 @@
+             if (PendingSendEmptyNoLock()) {
+                 pending_send_.clear();
+                 pending_send_offset_ = 0;
++                tx_waiter_.Cancel();
+             }
+         }
+ 
+@@ -5433,6 +5434,8 @@
+             // instead of one MSS per host event-loop iteration - the latter
+             // pins throughput at MSS / loop-iteration regardless of RTT/cwnd.
+             UInt64 pacing_budget = 0;
++            TimePoint pacing_before_tick = 0;
++            bool pacing_tick_unused = false;
+             for (; off < data.size();) {
+                 const bool tso_candidate = data.size() - off > DataPayloadCap();
+                 bool tso_gate_classified = false;
+@@ -5492,6 +5495,8 @@
+                         catch_up = (cc_.pacing_rate * late_us) / 1000000ull;
+                     }
+                     pacing_budget = quantum + catch_up;
++                    pacing_before_tick = pacing_deadline_;
++                    pacing_tick_unused = true;
+                     pacing_deadline_ = now + (quantum * 1000000ull) / cc_.pacing_rate;
+                 }
+                 UInt32 n = static_cast<UInt32>(data.size() - off);
+@@ -5621,9 +5626,11 @@
+                 if (packet.IsEmpty()) {
+                     MarkPoolLimited(inflight);
+                     ack_release_pending_flush_packet_allocation_.fetch_add(1, std::memory_order_relaxed);
++                    if (pacing_tick_unused) pacing_deadline_ = pacing_before_tick;
+                     RequeuePendingSendNoLock(data, off);
+                     return;
+                 }
++                pacing_tick_unused = false;
+                 if (tso_flush) {
+                     tso_gate_flush_emitted_.fetch_add(1, std::memory_order_relaxed);
+                 }
+@@ -5687,7 +5694,7 @@
+             // Bug(close): when Close() deferred the FIN because buffered data
+             // was window-constrained, this drain is what unlocks it - the FIN
+             // must follow every data byte on the wire (RFC 793).
+-            if (pending_send_.empty()) tx_waiter_.Cancel();
++            if (PendingSendEmptyNoLock()) tx_waiter_.Cancel();
+             MaybeFinishClose(now);
+         }
+ 

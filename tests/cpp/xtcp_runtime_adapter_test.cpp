@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -17,6 +18,11 @@ std::shared_ptr<Byte> MakeTestBuffer(const Byte* bytes, std::size_t length) noex
         std::make_shared<std::vector<Byte>>(bytes, bytes + length);
     return std::shared_ptr<Byte>(holder, holder->data());
 }
+}
+
+namespace ppp::app::client::xtcp {
+std::size_t GsoSplitForTesting(const uint8_t* frame, std::size_t length,
+    std::size_t target_mtu, ::xtcp::buf::BufRef* out, std::size_t out_cap) noexcept;
 }
 
 namespace {
@@ -59,6 +65,77 @@ void TestIngressCapsStopAndGeneration() {
     CHECK(!budget.IsReady());
     budget.MarkReady(second);
     CHECK(budget.IsReady());
+}
+
+void TestFlowCallbackIdentity() {
+    using ppp::app::client::xtcp::IsCurrentXtcpFlowCallback;
+    using ppp::app::client::xtcp::XtcpFlowCallbackIdentity;
+    const XtcpFlowCallbackIdentity queued_old_event{7, 41};
+    CHECK(IsCurrentXtcpFlowCallback(queued_old_event, 7, 41));
+    CHECK(!IsCurrentXtcpFlowCallback(queued_old_event, 7, 42));
+    CHECK(!IsCurrentXtcpFlowCallback(queued_old_event, 8, 41));
+}
+
+void TestGsoSplitFlagPlacement() {
+    using ppp::app::client::xtcp::XtcpGsoSplitSegmentFlags;
+    constexpr std::uint8_t kFinPshAckCwr = 0x01 | 0x08 | 0x10 | 0x80;
+    CHECK(XtcpGsoSplitSegmentFlags(kFinPshAckCwr, 0, 3) == (0x10 | 0x80));
+    CHECK(XtcpGsoSplitSegmentFlags(kFinPshAckCwr, 1, 3) == 0x10);
+    CHECK(XtcpGsoSplitSegmentFlags(kFinPshAckCwr, 2, 3) == (0x01 | 0x08 | 0x10));
+    CHECK(XtcpGsoSplitSegmentFlags(kFinPshAckCwr, 0, 1) == kFinPshAckCwr);
+
+    // A client half-close can reach the TUN as one super-frame carrying the
+    // data tail plus FIN. Only the last split may carry FIN; otherwise the
+    // stack consumes FIN mid-stream and trims a byte of the next split.
+    constexpr std::size_t kPayload = 3000;
+    std::vector<std::uint8_t> frame(40 + kPayload);
+    frame[0] = 0x45;
+    frame[2] = static_cast<std::uint8_t>(frame.size() >> 8);
+    frame[3] = static_cast<std::uint8_t>(frame.size());
+    frame[8] = 64;
+    frame[9] = 6;
+    const std::uint8_t src[4] = { 10, 0, 0, 2 };
+    const std::uint8_t dst[4] = { 192, 0, 2, 2 };
+    std::memcpy(&frame[12], src, 4);
+    std::memcpy(&frame[16], dst, 4);
+    std::uint8_t* tcp = &frame[20];
+    tcp[0] = 0xC3; tcp[1] = 0x50;  // 50000
+    tcp[2] = 0x4D; tcp[3] = 0x54;  // 19796
+    const std::uint32_t seq0 = 0xFFFFF000u;  // crosses the 2^32 wrap
+    tcp[4] = static_cast<std::uint8_t>(seq0 >> 24);
+    tcp[5] = static_cast<std::uint8_t>(seq0 >> 16);
+    tcp[6] = static_cast<std::uint8_t>(seq0 >> 8);
+    tcp[7] = static_cast<std::uint8_t>(seq0);
+    tcp[12] = 5 << 4;
+    tcp[13] = 0x01 | 0x08 | 0x10;  // FIN|PSH|ACK
+    tcp[14] = 0xFF; tcp[15] = 0xFF;
+    for (std::size_t i = 0; i < kPayload; ++i) {
+        frame[40 + i] = static_cast<std::uint8_t>(i);
+    }
+    ::xtcp::buf::BufRef parts[8];
+    const std::size_t count = ppp::app::client::xtcp::GsoSplitForTesting(
+        frame.data(), frame.size(), 1500, parts, 8);
+    CHECK(count == 3);
+    std::size_t carried = 0;
+    std::size_t fins = 0;
+    for (std::size_t k = 0; k < count; ++k) {
+        const std::uint8_t* w = parts[k].Data();
+        const std::uint8_t* t = w + 20;
+        const std::uint32_t seq = (static_cast<std::uint32_t>(t[4]) << 24) |
+            (static_cast<std::uint32_t>(t[5]) << 16) |
+            (static_cast<std::uint32_t>(t[6]) << 8) | t[7];
+        CHECK(seq == static_cast<std::uint32_t>(seq0 + carried));
+        const bool last = k + 1 == count;
+        CHECK(((t[13] & 0x01) != 0) == last);
+        CHECK(((t[13] & 0x08) != 0) == last);
+        CHECK((t[13] & 0x10) != 0);
+        fins += (t[13] & 0x01) != 0 ? 1u : 0u;
+        const std::size_t payload = parts[k].Len() - 40;
+        CHECK(w[40] == static_cast<std::uint8_t>(carried));
+        carried += payload;
+    }
+    CHECK(carried == kPayload);
+    CHECK(fins == 1);
 }
 
 void TestExternalLoopbackGate() {
@@ -600,12 +677,140 @@ void TestRuntimeRepeatedStartStop() {
     runtime->Stop();
     context->run_for(std::chrono::milliseconds(10));
 }
+
+void TestPrivateRuntimeLifecycle() {
+    const char* old_shards = std::getenv("OPENPPP2_XTCP_SHARDS");
+    const char* old_private = std::getenv("OPENPPP2_XTCP_PRIVATE_IO");
+    const bool had_shards = old_shards != nullptr;
+    const bool had_private = old_private != nullptr;
+    const std::string saved_shards = old_shards ? old_shards : "";
+    const std::string saved_private = old_private ? old_private : "";
+    setenv("OPENPPP2_XTCP_SHARDS", "1", 1);
+
+    for (bool private_io : {false, true}) {
+        setenv("OPENPPP2_XTCP_PRIVATE_IO", private_io ? "1" : "0", 1);
+        auto context = std::make_shared<boost::asio::io_context>();
+        using Runtime = ppp::app::client::xtcp::XtcpRuntime;
+        auto runtime = std::make_shared<Runtime>(context,
+            Runtime::OutputHandler(), Runtime::ListenerEndpointHandler(),
+            Runtime::ExternalAcceptHandler(), Runtime::ExternalCancelHandler());
+        CHECK(runtime->Start());
+        runtime->MarkReady();
+        const auto generation = runtime->Generation();
+        runtime->Stop();
+
+        bool restarted = false;
+        if (private_io) {
+            // The supplied context is deliberately never run: shutdown and
+            // restart must progress entirely on the runtime's private worker.
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!(restarted = runtime->Start()) && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            CHECK(restarted);
+        }
+        else {
+            CHECK(!runtime->Start());
+        }
+        if (!restarted) {
+            context->run_for(std::chrono::milliseconds(10));
+            context->restart();
+            CHECK(runtime->Start());
+        }
+        CHECK(runtime->Generation() != generation);
+        runtime->MarkReady();
+        CHECK(runtime->IsReady());
+        runtime->Stop();
+        const std::weak_ptr<Runtime> weak = runtime;
+        runtime.reset();
+        context->restart();
+        context->run_for(std::chrono::milliseconds(10));
+        CHECK(weak.expired());
+    }
+
+    if (had_shards) setenv("OPENPPP2_XTCP_SHARDS", saved_shards.c_str(), 1);
+    else unsetenv("OPENPPP2_XTCP_SHARDS");
+    if (had_private) setenv("OPENPPP2_XTCP_PRIVATE_IO", saved_private.c_str(), 1);
+    else unsetenv("OPENPPP2_XTCP_PRIVATE_IO");
+}
+
+void TestSpscIngressLifecycle() {
+    const char* previous = std::getenv("OPENPPP2_XTCP_SPSC_INGRESS");
+    const std::string saved = previous ? previous : "";
+    const char* shards = std::getenv("OPENPPP2_XTCP_SHARDS");
+    const std::string saved_shards = shards ? shards : "";
+    setenv("OPENPPP2_XTCP_SPSC_INGRESS", "1", 1);
+    setenv("OPENPPP2_XTCP_SHARDS", "1", 1);
+    auto context = std::make_shared<boost::asio::io_context>();
+    using Runtime = ppp::app::client::xtcp::XtcpRuntime;
+    auto runtime = std::make_shared<Runtime>(context, Runtime::OutputHandler{},
+        Runtime::ListenerEndpointHandler{}, Runtime::ExternalAcceptHandler{}, Runtime::ExternalCancelHandler{});
+    CHECK(runtime->Start());
+    runtime->MarkReady();
+    CHECK(runtime->SnapshotStats().spsc_ingress);
+    // Invalid L3 packets are deliberately routed to shard zero and discarded by
+    // production validation. They exercise handoff without creating any socket.
+    const unsigned char packet[40] = {};
+    std::vector<unsigned char> gro(3000, 0);
+    gro[0] = 0x45; gro[2] = 0x0b; gro[3] = 0xb8; gro[9] = 6;
+    gro[20] = 0x12; gro[21] = 0x34; gro[22] = 0x56; gro[23] = 0x78;
+    gro[32] = 0x50; gro[33] = 0x10; // ACK only: no new second-leg connection
+    // Three MSS chunks cannot fit into the last two slots. All credits and
+    // packets remain with the caller until the whole batch can be admitted.
+    for (unsigned i = 0; i < 1022; ++i) CHECK(runtime->SubmitIPv4Tcp(packet, sizeof(packet)));
+    CHECK(!runtime->SubmitIPv4Tcp(gro.data(), static_cast<int>(gro.size())));
+    CHECK(runtime->SnapshotStats().shards[0].queue_items == 1022);
+    CHECK(runtime->SnapshotStats().ingress_dropped == 1);
+    context->run_for(std::chrono::milliseconds(20));
+    CHECK(runtime->SubmitIPv4Tcp(gro.data(), static_cast<int>(gro.size())));
+    CHECK(runtime->SnapshotStats().shards[0].queue_items == 3);
+    context->run_for(std::chrono::milliseconds(20));
+    auto before = runtime->SnapshotStats();
+    std::atomic<unsigned> accepted{0};
+    auto producer = [&] {
+        for (unsigned i = 0; i < 700; ++i)
+            if (runtime->SubmitIPv4Tcp(packet, sizeof(packet))) ++accepted;
+    };
+    std::thread first(producer), second(producer);
+    first.join(); second.join();
+    CHECK(accepted == 1024);
+    auto snapshot = runtime->SnapshotStats();
+    CHECK(snapshot.shards[0].queue_items == 1024);
+    CHECK(snapshot.shards[0].items_highwater == 1024);
+    CHECK(snapshot.shards[0].bytes_highwater == 1024 * sizeof(packet));
+    CHECK(snapshot.shards[0].wake_posts == before.shards[0].wake_posts + 1);
+    context->run_for(std::chrono::milliseconds(20));
+    snapshot = runtime->SnapshotStats();
+    CHECK(snapshot.shards[0].dispatched == before.shards[0].dispatched + accepted);
+    CHECK(snapshot.shards[0].queue_items == 0 && snapshot.shards[0].queue_bytes == 0);
+    CHECK(snapshot.shards[0].quanta >= 16);
+    // Stop with accepted work still queued, then restart while old captures are
+    // retained by the context. Old callbacks must not claim the new endpoint.
+    CHECK(runtime->SubmitIPv4Tcp(packet, sizeof(packet)));
+    runtime->Stop();
+    context->run_for(std::chrono::milliseconds(10));
+    context->restart();
+    CHECK(runtime->Start());
+    runtime->MarkReady();
+    CHECK(runtime->SubmitIPv4Tcp(packet, sizeof(packet)));
+    context->run_for(std::chrono::milliseconds(10));
+    snapshot = runtime->SnapshotStats();
+    CHECK(snapshot.shards[0].queue_items == 0);
+    runtime->Stop();
+    context->run_for(std::chrono::milliseconds(10));
+    if (saved.empty()) unsetenv("OPENPPP2_XTCP_SPSC_INGRESS");
+    else setenv("OPENPPP2_XTCP_SPSC_INGRESS", saved.c_str(), 1);
+    if (saved_shards.empty()) unsetenv("OPENPPP2_XTCP_SHARDS");
+    else setenv("OPENPPP2_XTCP_SHARDS", saved_shards.c_str(), 1);
+}
 } // namespace
 
 int main() {
     xtcp::buf::InitPools();
     TestConsumePolicy();
     TestIngressCapsStopAndGeneration();
+    TestFlowCallbackIdentity();
+    TestGsoSplitFlagPlacement();
     TestExternalLoopbackGate();
     TestIPv4PolicyHelpers();
     TestProductionNdiOwnership();
@@ -617,6 +822,8 @@ int main() {
     xtcp::buf::ShutdownPools();
     TestRuntimeRejectsNullContext();
     TestRuntimeRepeatedStartStop();
+    TestPrivateRuntimeLifecycle();
+    TestSpscIngressLifecycle();
 
     if (failures != 0) {
         std::fprintf(stderr, "xtcp_runtime_adapter_test: %d failure(s)\n", failures);

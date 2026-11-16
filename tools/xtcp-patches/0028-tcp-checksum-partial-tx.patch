@@ -1,6 +1,7 @@
+diff --git a/include/xtcp/buf/bufref.h b/include/xtcp/buf/bufref.h
 --- a/include/xtcp/buf/bufref.h
 +++ b/include/xtcp/buf/bufref.h
-@@ -42,6 +42,7 @@
+@@ -43,6 +43,7 @@
              UInt32 gso_size = 0;  /**< Bytes per GSO segment */
              UInt16 mss      = 0;  /**< TCP MSS */
              UInt16 segs     = 0;  /**< Segment count */
@@ -8,6 +9,27 @@
          };
  
          /**
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -819,6 +819,8 @@
+             void SetTsoTx(bool on) noexcept { tso_tx_ = on; }
+             /** @brief Whether TSO direct-sends are enabled. */
+             bool TsoTx() const noexcept { return tso_tx_; }
++            /** @brief Enable partial TCP checksum emission for a capable backend. */
++            void SetChecksumPartialTx(bool on) noexcept { checksum_partial_tx_ = on; }
+             /** @brief Number of unacknowledged segments (diagnostics/tests:
+              *         the TSO-direct gate requires an empty queue). */
+             UInt32 RetransQueueSize() const noexcept {
+@@ -1570,6 +1572,7 @@
+             UInt32      ts_recent_ = 0;          /**< RFC 7323: TsRecent - the peer's TSval of the last in-order segment (PAWS anchor + ts_ecr source) */
+             UInt32      ts_recent_stamp_ = 0;    /**< RFC 7323 s5.5: ms clock when TsRecent was stored (PAWS aging - a 24-day idle relaxes the check) */
+             bool        tso_tx_ = false;         /**< TSO direct-sends enabled (backend kCapTsoTx + no qdisc) */
++            bool        checksum_partial_tx_ = false; /**< Backend accepts TCP pseudo-header checksum seeds */
+             UInt32      retransmit_count_ = 0;   /**< Total retransmissions (RTO + fast) */
+             /**
+              * @brief Kernel tp->total_retrans (PACKETS): every retransmission
+diff --git a/include/xtcp/ndi.h b/include/xtcp/ndi.h
 --- a/include/xtcp/ndi.h
 +++ b/include/xtcp/ndi.h
 @@ -44,6 +44,14 @@
@@ -25,26 +47,10 @@
          };
  
          /**
---- a/include/xtcp/core/tcp.h
-+++ b/include/xtcp/core/tcp.h
-@@ -746,6 +746,8 @@
-             void SetTsoTx(bool on) noexcept { tso_tx_ = on; }
-             /** @brief Whether TSO direct-sends are enabled. */
-             bool TsoTx() const noexcept { return tso_tx_; }
-+            /** @brief Enable partial TCP checksum emission for a capable backend. */
-+            void SetChecksumPartialTx(bool on) noexcept { checksum_partial_tx_ = on; }
-             /** @brief Number of unacknowledged segments (diagnostics/tests:
-              *         the TSO-direct gate requires an empty queue). */
-             UInt32 RetransQueueSize() const noexcept {
-@@ -1313,4 +1315,5 @@
-             UInt32      ts_recent_stamp_ = 0;    /**< RFC 7323: TsRecent - the peer's TSval of the last in-order segment (PAWS anchor + ts_ecr source) */
-             bool        tso_tx_ = false;         /**< TSO direct-sends enabled (backend kCapTsoTx + no qdisc) */
-+            bool        checksum_partial_tx_ = false; /**< Backend accepts TCP pseudo-header checksum seeds */
-             UInt32      retransmit_count_ = 0;   /**< Total retransmissions (RTO + fast) */
-             UInt32      rack_losses_ = 0;        /**< RFC 8985 RACK: loss verdicts that entered recovery */
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1342,6 +1342,8 @@
+@@ -1387,6 +1387,8 @@
          // uniformly; signed flows remain software-segmented because hardware
          // segmentation cannot reproduce the TCP-MD5 option per segment.
          conn.SetTsoTx(0 != (caps_ & ndi::kCapTsoTx) && NULLPTR == tx_qdisc_ && !conn.Md5Enabled());
@@ -53,9 +59,10 @@
          // Bug(state-cb): timer-driven transitions (RTO exhaustion, keepalive
          // abort, FIN-WAIT-2 timeout) never reached the application - the only
          // handler call sat on the packet path (OnPacket). Route the
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -346,8 +346,10 @@
+@@ -455,8 +455,10 @@
                                             const Byte* tfo_cookie = NULLPTR,
                                             bool mark_ect = false,
                                             bool include_ts = false, UInt32 ts_val = 0, UInt32 ts_ecr = 0,
@@ -67,7 +74,7 @@
                  // SYN options: MSS (RFC 879) + SACK-permitted (RFC 2018) +
                  // window scale (RFC 7323) + TFO cookie (RFC 7413);
                  // TCP-MD5 (RFC 2385) on all segments. TFO and MD5 are
-@@ -623,8 +625,13 @@
+@@ -739,8 +741,13 @@
                  // a single pass (payload is read once, not twice).
                  UInt16 payload_sum = 0;
                  if (0 < payload_len) {
@@ -83,7 +90,7 @@
                  }
                  if (include_md5) {
                      Md5Update(md5_ctx, md5_key, md5_key_len);
-@@ -638,14 +645,15 @@
+@@ -754,14 +761,15 @@
                  // TCP checksum with pseudo header: covers the real on-wire
                  // bytes including the MD5 digest (checksum field still zero).
                  const UInt16 pseudo_sum = Checksum(pseudo, pseudo_len);
@@ -101,7 +108,7 @@
                  return packet;
              }
  
-@@ -660,8 +668,9 @@
+@@ -776,8 +784,9 @@
                                     const Byte* tfo_cookie = NULLPTR,
                                     bool mark_ect = false,
                                     bool include_ts = false, UInt32 ts_val = 0, UInt32 ts_ecr = 0,
@@ -113,13 +120,13 @@
                  if (!packet.IsEmpty() && sink) {
                      sink(std::move(packet));
                  }
-@@ -3817,7 +3826,8 @@
-                 buf::BufRef packet = BuildSegmentPacket(local_, remote_, seq, rcv_nxt_,
+@@ -5548,7 +5557,8 @@
+                     packet = BuildSegmentPacket(local_, remote_, seq, rcv_nxt_,
                                                          data_flags, data.data() + off, n,
                                                          AdvertisedWindow(), rcv_wscale_,
 -                                                        Md5Key(), Md5KeyLen(), NULLPTR, 0, NULLPTR, ecn_active_);
 +                                                        Md5Key(), Md5KeyLen(), NULLPTR, 0, NULLPTR, ecn_active_,
 +                                                        false, 0, 0, no_sack_permitted_, checksum_partial_tx_);
+                 }
                  if (packet.IsEmpty()) {
-                     ack_release_pending_flush_packet_allocation_.fetch_add(1, std::memory_order_relaxed);
-                     RequeuePendingSendNoLock(data, off);
+                     MarkPoolLimited(inflight);

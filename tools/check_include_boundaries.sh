@@ -21,6 +21,16 @@ if search_sources '#include <ppp/app/server/' ppp/app/client/ 2>/dev/null; then
 fi
 
 # application internal hub must not pull client+server switcher headers
+if search_sources '#include <(ppp/app/|ppp/ethernet/|ppp/net/asio/vdns|common/libtcpip/)' ppp/threading/ 2>/dev/null; then
+  echo "FAIL: threading layer includes app/ethernet/DNS/netstack headers (wire them through Executors hooks)"
+  violations=$((violations + 1))
+fi
+
+if search_sources '#include <ppp/app/client/' ppp/transmissions/ 2>/dev/null; then
+  echo "FAIL: transmissions include client headers"
+  violations=$((violations + 1))
+fi
+
 if search_headers '#include <ppp/app/(client/VEthernetNetworkSwitcher|server/VirtualEthernetSwitcher)\.h>' ppp/app/PppApplicationInternal.h 2>/dev/null; then
   echo "FAIL: PppApplicationInternal includes switcher headers"
   violations=$((violations + 1))

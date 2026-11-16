@@ -1,0 +1,25 @@
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -6092,10 +6092,6 @@
+                     pending_frontier_ = std::move(segment);
+                     return ReceiveResumeResult::kReceiveWindowFull;
+                 }
+-                if (0 != segment->ts_val) {
+-                    ts_recent_ = segment->ts_val;
+-                    ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
+-                }
+                 if (segment->fin) {
+                     ++rcv_nxt_;
+                     if (TcpState::kEstablished == state_) {
+@@ -6156,10 +6152,6 @@
+                     ooo_bytes_ += bytes;
+                     break;
+                 }
+-                if (0 != segment.ts_val) {
+-                    ts_recent_ = segment.ts_val;
+-                    ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
+-                }
+                 if (fin) {
+                     ++rcv_nxt_;
+                     if (TcpState::kEstablished == state_) {

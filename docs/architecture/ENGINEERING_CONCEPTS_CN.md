@@ -1,4 +1,9 @@
 # 工程概念
+
+协程后端是编译期切换原语选择，与 Anchor 状态机和 Asio 调度独立。
+`ENABLE_COROCC` 仅使用 L0，默认关闭，不引入 corocc token、worker 或 scope。
+参见 [ADR 0003](../adr/0003-corocc-coroutine-backend_CN.md)。
+
 > Status: Active
 > Type: Architecture vocabulary
 > Last verified: current application, diagnostics, and executor sources, 2026-07-22

@@ -13,6 +13,16 @@
 namespace ppp {
     namespace net {
         namespace asio {
+            void sslwebsocket::AbortHandshake() noexcept {
+                auto self = shared_from_this();
+                ppp::threading::Executors::Post(context_, strand_, [self, this]() noexcept {
+                    std::lock_guard<std::mutex> lock(exporter_mutex_);
+                    if (ssl_websocket_) {
+                        Socket::Closesocket(ssl_websocket_->next_layer().next_layer());
+                    }
+                    if (socket_native_) { Socket::Closesocket(*socket_native_); }
+                });
+            }
             /**
              * @brief Disposes the SSL WebSocket and closes underlying transport layers.
              * @return This function does not return a value.

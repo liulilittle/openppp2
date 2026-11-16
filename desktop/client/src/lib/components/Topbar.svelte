@@ -1,34 +1,15 @@
 <script>
-  import { connectionStates, subscriptionNotice } from '../runtime/model.js'
-  import { formatDateTime } from '../format.js'
-
+  import { Sun, Moon, Monitor } from 'lucide-svelte'
+  import { t } from '../i18n.js'
   export let state
   export let runtime
-
-  $: notice = subscriptionNotice(state.subscription)
-  const previewStates = ['connected', 'connecting', 'disconnected', 'error']
+  let error = ''
+  $: sources = state.subscription.sources || []
+  async function theme(value) { try { await runtime.updateSetting('appearance',value) } catch(cause) { error=String(cause) } }
 </script>
-
-<header>
-  <div class="sync-line">
-    {#if notice}<span class="cache">{notice}</span>{:else}订阅已同步 · updatedAt {formatDateTime(state.subscription.updatedAt)}{/if}
+<header><span>{#if runtime.kind === 'demo'}{$t('Preview','预览')} · {/if}{sources.filter((source) => source.enabled).length} {$t('subscriptions','个订阅')} · {state.subscription.nodes.length} {$t('nodes','个节点')}</span>
+  <div class="toolbar">{#if error}<span role="alert">{error}</span>{/if}
+    {#each [['light',Sun,'Light','浅色'],['dark',Moon,'Dark','深色'],['system',Monitor,'System','跟随系统']] as [value,icon,en,zh]}<button class="icon-button" class:active={state.settings.appearance === value} title={$t(en,zh)} aria-label={$t(en,zh)} aria-pressed={state.settings.appearance === value} on:click={() => theme(value)}><svelte:component this={icon} size={16}/></button>{/each}
   </div>
-  {#if import.meta.env.DEV && runtime.kind === 'demo'}
-    <div class="state-preview" aria-label="状态预览">
-      {#each previewStates as item}
-        <button class:active={state.connection.status === item} on:click={() => runtime.simulate(item)}>{connectionStates[item].label}</button>
-      {/each}
-    </div>
-  {/if}
 </header>
-
-<style>
-  header { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-  .sync-line { color: #7fa5c9; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .cache { color: #e3bd68; }
-  .state-preview { display: flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; flex: none; }
-  .state-preview button { height: 26px; padding: 0 12px; border: 0; border-right: 1px solid var(--border); background: transparent; color: var(--text-2); font-size: 11px; cursor: pointer; }
-  .state-preview button:last-child { border-right: 0; }
-  .state-preview button.active { background: rgba(255,255,255,.07); color: #fff; }
-  @media (max-width: 760px) { .state-preview { display: none; } }
-</style>
+<style>header { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--text-3); font-size:12px; } .active { color:var(--accent); background:var(--accent-soft); }</style>

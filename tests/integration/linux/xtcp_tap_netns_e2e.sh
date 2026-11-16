@@ -27,6 +27,12 @@
 #   XTCP_E2E_CHURN              churn connections per round (default: 512)
 #   XTCP_E2E_SKIP_NETEM=1       skip the tc netem / MTU phase (local escape
 #                               hatch; without it a tc failure is an error)
+#   XTCP_E2E_RECONNECT=1        restart the isolated server and verify that
+#                               client session reconnect preserves TAP lanes
+#   XTCP_E2E_PCAP=1             capture the echo port on the client TUN and the
+#                               target veth (echo-tun.pcap / echo-target.pcap)
+#   OPENPPP2_XTCP_*             runtime startup switches passed to the client
+#   OPENPPP2_TAP_GSO_MERGE=1    request VNET/GSO so queue lanes can be created
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -34,6 +40,7 @@ PPP_BIN="${PPP_BIN:-${ROOT}/bin/ppp}"
 SOAK_SECONDS="${XTCP_SOAK_SECONDS:-60}"
 CHURN="${XTCP_E2E_CHURN:-512}"
 SKIP_NETEM="${XTCP_E2E_SKIP_NETEM:-0}"
+RECONNECT="${XTCP_E2E_RECONNECT:-0}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "xtcp_tap_netns_e2e.sh must run as root" >&2
@@ -59,8 +66,29 @@ TARGET_IP="192.0.2.2"
 SERVER_IP="198.51.100.1"
 
 pids=()
+pcap_pid=""
+diag_pcap_pids=()
+TUN_DEV=""
+NETEM_ACTIVE=0
 cleanup() {
+  local exit_status=$?
   set +e
+  if [[ 0 -ne "${exit_status}" && 1 -eq "${NETEM_ACTIVE}" && -n "${TUN_DEV}" ]] && ip netns list | grep -Fq "${NS_C}"; then
+    ip netns exec "${NS_C}" ss -tinap >"${STATE_DIR}/netem-ss.txt" 2>&1
+    ip -n "${NS_C}" -s link show dev "${TUN_DEV}" >"${STATE_DIR}/netem-link.txt" 2>&1
+    ip netns exec "${NS_C}" tc -s qdisc show dev "${TUN_DEV}" >"${STATE_DIR}/netem-qdisc.txt" 2>&1
+    ip netns exec "${NS_C}" cat /proc/net/snmp >"${STATE_DIR}/netem-snmp.txt" 2>&1
+  fi
+  if [[ -n "${pcap_pid}" ]]; then
+    kill "${pcap_pid}" 2>/dev/null || true
+    wait "${pcap_pid}" 2>/dev/null || true
+    pcap_pid=""
+  fi
+  for pid in "${diag_pcap_pids[@]:-}"; do
+    [[ -n "${pid}" ]] || continue
+    kill "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+  done
   if [[ -n "${OPENPPP2_NAMESPACE_ARTIFACT_DIR:-}" ]]; then
     mkdir -p "${OPENPPP2_NAMESPACE_ARTIFACT_DIR}"
     cp -f "${STATE_DIR}"/* "${OPENPPP2_NAMESPACE_ARTIFACT_DIR}/" 2>/dev/null || true
@@ -125,6 +153,11 @@ client["tcp"]["listen"]["port"] = 0
 client["udp"]["listen"]["port"] = 0
 client["client"]["server"] = f"ppp://{server_ip}:{server_port}/"
 client["client"].pop("mappings", None)
+# Keep startup failures diagnosable; the proxy compatibility fixtures disable
+# telemetry, which otherwise hides the failing TUN initialization stage.
+for config in (server, client):
+    config["telemetry"] = {"enabled": True, "console-log": True,
+                           "console-metric": False, "console-span": False}
 (out / "server.json").write_text(json.dumps(server, indent=2) + "\n", encoding="utf-8")
 (out / "client.json").write_text(json.dumps(client, indent=2) + "\n", encoding="utf-8")
 PY
@@ -136,27 +169,33 @@ pids+=("$!")
 sleep 2
 kill -0 "${pids[0]}" 2>/dev/null || { echo "server exited during startup; see server.log" >&2; exit 1; }
 
-ip netns exec "${NS_T}" python3 -u - "${TARGET_IP}" "${ECHO_PORT}" \
+ip netns exec "${NS_T}" python3 -u - "${TARGET_IP}" "${ECHO_PORT}" "${STATE_DIR}" \
   >"${STATE_DIR}/echo.log" 2>&1 <<'PY' &
-import socket, sys, threading
+import pathlib, socket, sys, threading
 
 echo_port = int(sys.argv[2])
+artifact_dir = pathlib.Path(sys.argv[3])
 
 def serve_echo(conn):
     # Echo until the peer closes. The per-connection byte count is logged on
     # close (also on RST) so the caller can assert upload integrity.
     total = 0
+    payload = bytearray()
     try:
         while True:
             data = conn.recv(65536)
             if not data:
                 break
+            if total < 200000:
+                payload += data
             total += len(data)
             conn.sendall(data)
     except OSError:
         pass
     finally:
         conn.close()
+        if 65536 <= total < 200000:
+            (artifact_dir / "half-close-server-upload.bin").write_bytes(payload)
         print(f"conn closed port={echo_port} bytes={total}", flush=True)
 
 def serve_echo_close(conn):
@@ -203,7 +242,14 @@ PY
 pids+=("$!")
 sleep 1
 
-ip netns exec "${NS_C}" stdbuf -oL -eL "${PPP_BIN}" --mode=client --config="${STATE_DIR}/client.json" \
+# Pass only explicit test switches; an unset variable leaves production defaults intact.
+client_env=()
+for name in OPENPPP2_XTCP_SHARDS OPENPPP2_XTCP_AFFINITY OPENPPP2_XTCP_IO_CPUS \
+  OPENPPP2_XTCP_AFFINITY_STRICT OPENPPP2_XTCP_DIRECT_SPSC OPENPPP2_XTCP_GSO_RX \
+  OPENPPP2_TAP_GSO_MERGE; do
+  if [[ "${!name+x}" == x ]]; then client_env+=("${name}=${!name}"); fi
+done
+ip netns exec "${NS_C}" env "${client_env[@]}" stdbuf -oL -eL "${PPP_BIN}" --mode=client --config="${STATE_DIR}/client.json" \
   --tcp-stack=xtcp --stats-json="${STATE_DIR}/stats.ndjson" \
   >"${STATE_DIR}/client.log" 2>&1 &
 pids+=("$!")
@@ -243,12 +289,150 @@ case "${ROUTE_OUT}" in
   *) echo "target traffic is not routed via ${TUN_DEV}; tunnel is not carrying the flow" >&2; exit 1 ;;
 esac
 
-# ---------------------------------------------------------------- traffic
-ip netns exec "${NS_C}" python3 -u - "${TARGET_IP}" "${ECHO_PORT}" "${CHURN}" \
-  >"${STATE_DIR}/battery.log" 2>&1 <<'PY'
+# Optional byte-level evidence: capture the echo port on the client TUN (kernel
+# TCP <-> XTCP) and on the target veth (server-side kernel TCP <-> echo).
+if [[ "${XTCP_E2E_PCAP:-0}" == 1 ]]; then
+  # tcpdump is optional on lab hosts: a small AF_PACKET writer produces the
+  # same classic pcap (raw IP link type for the TUN, Ethernet for the veth).
+  capture_echo() {
+    local ns="$1" dev="$2" out="$3"
+    ip netns exec "${ns}" python3 -u - "${dev}" "${out}" "${ECHO_PORT}" <<'PY' >"${out}.log" 2>&1 &
+import socket, struct, sys, time
+dev, out, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+sock.bind((dev, 0))
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 << 20)
+first = sock.recvfrom(65535)
+linktype = 1 if first[1][3] == 1 or len(first[1][4]) == 6 else 101
+with open(out, "wb", buffering=0) as f:
+    f.write(struct.pack("<IHHiIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, linktype))
+    pkt = first[0]
+    while True:
+        ip = pkt[14:] if linktype == 1 else pkt
+        if len(ip) >= 24 and ip[0] >> 4 == 4 and ip[9] == 6:
+            ihl = (ip[0] & 15) * 4
+            sport, dport = struct.unpack("!HH", ip[ihl:ihl + 4])
+            if port in (sport, dport):
+                now = time.time()
+                f.write(struct.pack("<IIII", int(now), int((now % 1) * 1e6), len(pkt), len(pkt)) + pkt)
+        pkt = sock.recvfrom(65535)[0]
+PY
+    diag_pcap_pids+=("$!")
+  }
+  capture_echo "${NS_C}" "${TUN_DEV}" "${STATE_DIR}/echo-tun.pcap"
+  capture_echo "${NS_T}" xt-veth "${STATE_DIR}/echo-target.pcap"
+  sleep 1
+fi
+
+# Restart only the isolated server process. The client PPP process and its TAP
+# remain alive, exercising the production exchanger reconnect path in place.
+if [[ "${RECONNECT}" == 1 ]]; then
+  ip netns exec "${NS_C}" python3 -u - "${TARGET_IP}" "${ECHO_PORT}" 128 \
+    >>"${STATE_DIR}/battery.log" 2>&1 <<'PY'
 import socket, sys, time
 
+target_ip, echo_port, flows = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+deadline = time.time() + 45
+for i in range(flows):
+    message = f"before-reconnect-{i}".encode()
+    while True:
+        try:
+            with socket.create_connection((target_ip, echo_port), timeout=4) as sock:
+                sock.settimeout(6)
+                sock.sendall(message)
+                data = bytearray()
+                while len(data) < len(message):
+                    part = sock.recv(len(message) - len(data))
+                    if not part:
+                        break
+                    data += part
+                assert bytes(data) == message, (i, bytes(data))
+            break
+        except OSError:
+            if time.time() >= deadline:
+                raise
+            time.sleep(0.25)
+print(f"pre-reconnect bidirectional flows x{flows} OK", flush=True)
+PY
+
+  echo "restarting isolated server to exercise client session reconnect"
+  kill -TERM "${pids[0]}"
+  wait "${pids[0]}" 2>/dev/null || true
+  ip netns exec "${NS_S}" stdbuf -oL -eL "${PPP_BIN}" --mode=server --config="${STATE_DIR}/server.json" \
+    >>"${STATE_DIR}/server.log" 2>&1 &
+  SERVER_PID="$!"
+  pids+=("${SERVER_PID}")
+  sleep 1
+  kill -0 "${SERVER_PID}" 2>/dev/null || { echo "replacement server failed to start" >&2; exit 1; }
+
+  ip netns exec "${NS_C}" python3 -u - "${TARGET_IP}" "${ECHO_PORT}" 128 \
+    >>"${STATE_DIR}/battery.log" 2>&1 <<'PY'
+import socket, sys, time
+
+target_ip, echo_port, flows = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+deadline = time.time() + 90
+for i in range(flows):
+    message = f"after-reconnect-{i}".encode()
+    while True:
+        try:
+            with socket.create_connection((target_ip, echo_port), timeout=4) as sock:
+                sock.settimeout(6)
+                sock.sendall(message)
+                data = bytearray()
+                while len(data) < len(message):
+                    part = sock.recv(len(message) - len(data))
+                    if not part:
+                        break
+                    data += part
+                assert bytes(data) == message, (i, bytes(data))
+            break
+        except OSError:
+            if time.time() >= deadline:
+                raise
+            time.sleep(0.25)
+print(f"post-reconnect bidirectional flows x{flows} OK", flush=True)
+PY
+
+  python3 - "${STATE_DIR}/stats.ndjson" "${STATE_DIR}/client.log" \
+    "${OPENPPP2_XTCP_AFFINITY:-off}" "${OPENPPP2_XTCP_SHARDS:-1}" <<'PY'
+import json, pathlib, sys, time
+
+stats_path, log_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+mode, shards = sys.argv[3], int(sys.argv[4])
+deadline = time.time() + 30
+before = after = None
+while time.time() < deadline:
+    rows = [json.loads(line) for line in stats_path.read_text().splitlines() if line.strip()]
+    samples = [row for row in rows if row.get("xtcp") and row.get("tap_linux")]
+    if samples:
+        before, after = samples[0]["xtcp"].get("runtime_instance_id"), samples[-1]["xtcp"].get("runtime_instance_id")
+        lanes = samples[-1]["tap_linux"].get("bound_output_lanes", 0)
+        connected = log_path.read_text(errors="replace").count("exchanger connected")
+        if connected >= 2 and before and after and lanes >= (shards if mode == "queues" else 0):
+            assert before == after, f"XTCP runtime restarted across session reconnect: {before} -> {after}"
+            assert samples[-1]["xtcp"].get("affinity_mode") == mode, samples[-1]["xtcp"].get("affinity_mode")
+            shard_stats = samples[-1]["xtcp"].get("shards", [])
+            assert len(shard_stats) >= shards and all(s.get("enqueued", 0) > 0 for s in shard_stats[:shards]), shard_stats
+            if mode == "queues":
+                assert samples[-1]["xtcp"].get("queue_mode_active") is True
+                assert samples[-1]["tap_linux"].get("vnet_header") is True
+                assert samples[-1]["tap_linux"].get("gso_merge_active") is True
+                assert lanes >= shards, f"only {lanes}/{shards} queue lanes remain bound"
+            print(f"reconnect preserved runtime={after}, mode={mode}, bound_lanes={lanes}")
+            break
+    time.sleep(0.5)
+else:
+    raise SystemExit(f"reconnect evidence did not converge: runtime {before}->{after}, mode={mode}")
+PY
+fi
+
+# ---------------------------------------------------------------- traffic
+ip netns exec "${NS_C}" python3 -u - "${TARGET_IP}" "${ECHO_PORT}" "${CHURN}" "${STATE_DIR}" \
+  >"${STATE_DIR}/battery.log" 2>&1 <<'PY'
+import pathlib, socket, sys, time
+
 target_ip, echo_port, churn = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+artifact_dir = pathlib.Path(sys.argv[4])
 deadline = time.time() + 30
 
 def connect(timeout=3):
@@ -305,7 +489,14 @@ with connect() as sock:
             terminated = "eof"
             break
         received += chunk
-    assert bytes(received) == blob[:len(received)], "half-close prefix corrupted"
+    expected = blob[:len(received)]
+    if bytes(received) != expected:
+        mismatch = next((i for i, (actual, wanted) in enumerate(zip(received, expected))
+                         if actual != wanted), min(len(received), len(expected)))
+        (artifact_dir / "half-close-client-echo.bin").write_bytes(received)
+        print(f"half-close mismatch offset={mismatch} actual={received[mismatch:mismatch + 16].hex()} "
+              f"expected={expected[mismatch:mismatch + 16].hex()}", flush=True)
+        raise AssertionError("half-close prefix corrupted")
     assert terminated, "half-close connection never terminated"
 print(f"half-close OK: uploaded {len(blob)} bytes, drained {len(received)} before {terminated}", flush=True)
 
@@ -379,7 +570,12 @@ def fold(lines):
         xtcp = sample.get("xtcp")
         assert xtcp is not None, f"stats line without xtcp block: {line!r}"
         for key, value in xtcp.items():
-            agg[key] = max(agg.get(key, 0), value)
+            # Only numeric counters fold by max; labels (affinity_mode) and
+            # per-shard arrays are kept as the latest sample.
+            if isinstance(value, (int, float)) and not isinstance(agg.get(key, 0), (str, list, dict)):
+                agg[key] = max(agg.get(key, 0), value)
+            else:
+                agg[key] = value
     return agg
 
 lines, agg, last_err = [], {}, "stats file missing"
@@ -410,9 +606,21 @@ if [[ "${SKIP_NETEM}" != 1 ]]; then
   ip netns exec "${NS_C}" tc qdisc replace dev "${TUN_DEV}" root netem loss 1% reorder 25% delay 10ms || {
     echo "tc netem setup failed" >&2; exit 1; }
   ip -n "${NS_C}" link set dev "${TUN_DEV}" mtu 1280
+  NETEM_ACTIVE=1
+  if command -v tcpdump >/dev/null; then
+    ip netns exec "${NS_C}" tcpdump -U -i "${TUN_DEV}" -nn -s 1600 -c 200000 \
+      -w "${STATE_DIR}/netem-tun.pcap" 'tcp or icmp or icmp6' \
+      >"${STATE_DIR}/netem-tcpdump.log" 2>&1 &
+    pcap_pid=$!
+    sleep 0.2
+    if ! kill -0 "${pcap_pid}" 2>/dev/null; then
+      wait "${pcap_pid}" || true
+      pcap_pid=""
+    fi
+  fi
   ip netns exec "${NS_C}" python3 -u - "${TARGET_IP}" "${ECHO_PORT}" \
     >>"${STATE_DIR}/battery.log" 2>&1 <<'PY'
-import socket, sys
+import socket, sys, threading
 
 target_ip, echo_port = sys.argv[1], int(sys.argv[2])
 
@@ -427,24 +635,39 @@ def recv_exact(sock, want):
 
 # 1 MiB across a lossy/reordering path exercises XTCP retransmit + SACK on the
 # TUN leg. The echo-side byte count (asserted from echo.log below) proves the
-# upload recovered every segment; the download side races the teardown after
-# the upload half closes (same close semantics as the plain half-close case),
-# so it asserts an intact prefix plus prompt termination.
+# upload recovered every segment. Drain the echo concurrently with upload to
+# avoid filling the receive window while the full-duplex transfer is active.
 blob = bytes((i * 7) & 0xFF for i in range(1024 * 1024))
 with socket.create_connection((target_ip, echo_port), timeout=10) as sock:
     sock.settimeout(30)
-    sock.sendall(blob)
-    sock.shutdown(socket.SHUT_WR)
     received = bytearray()
-    while True:
+    send_error = []
+
+    def upload_blob():
         try:
-            chunk = sock.recv(65536)
-        except ConnectionResetError:
-            break
-        if not chunk:
-            break
-        received += chunk
-    assert bytes(received) == blob[:len(received)], "netem round-trip prefix corrupted"
+            sock.sendall(blob)
+        except BaseException as exc:
+            send_error.append(exc)
+
+    sender = threading.Thread(target=upload_blob, daemon=True)
+    sender.start()
+    try:
+        while len(received) < len(blob):
+            chunk = sock.recv(min(65536, len(blob) - len(received)))
+            if not chunk:
+                break
+            received += chunk
+    finally:
+        if len(received) < len(blob) and sender.is_alive():
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        sender.join(timeout=5)
+    assert not sender.is_alive(), "netem upload did not finish after full echo"
+    if send_error:
+        raise send_error[0]
+    assert bytes(received) == blob, "netem echo was truncated, duplicated, or corrupted"
 for i in range(64):
     with socket.create_connection((target_ip, echo_port), timeout=10) as sock:
         sock.settimeout(10)

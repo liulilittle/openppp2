@@ -1,7 +1,7 @@
 # Reference
 > Status: Active
 > Type: Reference index
-> Last verified: 8c8a888
+> Last verified: 2026-10-07
 > Parent index: [Documentation](../README.md)
 > Peer link: [中文](README_CN.md)
 
@@ -10,6 +10,7 @@ This index covers current, source-backed interfaces in this `openppp2/` tree. Re
 ## Start or configure `ppp`
 
 - [CLI Reference](CLI_REFERENCE.md) — options, startup order, aliases, and side effects.
+- [Policy CLI guide](../guides/POLICY_CLI.md) — policy check, explain, migration, export, update, and status workflows.
 - [Configuration Model](CONFIGURATION.md) — accepted JSON shape, normalization, and safe configuration practices.
 
 ## Diagnose a running process

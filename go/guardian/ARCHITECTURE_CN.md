@@ -52,7 +52,7 @@ Guardian 是 `go/guardian` 下独立的 Go 1.22 模块。它监督配置的 `ppp
 
 认证默认启用。普通受保护 `/api/` 端点要求有效的、内存中已签发的 Bearer 令牌；`/api/v1/status` 刻意公开。SSE 在认证启用时自行校验令牌/JWT，允许 query `token` 或 Bearer header，因此中间件对 SSE 的豁免不代表 SSE 无认证。
 
-当前 CORS 允许 `*`，Guardian 未配置 TLS。除非前方有经过审查的 TLS、认证、授权和暴露控制边界，否则应保持默认回环绑定。
+不再输出 CORS 头：仅同源浏览器请求可用（Origin 主机必须等于请求 Host），带外域 Origin 的状态变更请求返回 403；回环监听时 Host 头必须是回环地址或配置的监听主机（防 DNS 重绑定），使用反向代理时需保留 Host 头。请求体上限 1 MiB（profile 为 4 MiB），登录/改密接口按 IP 失败退避（HTTP 429），非回环 `listen` 且 `auth.enabled=false` 时拒绝启动。实例 `binary` 未限制为已注册 ID，健康检查 `httpEndpoint` 可指向任意主机（存在 SSRF 风险，不跟随重定向），因此应把 API 视为等同管理员权限。Guardian 未配置 TLS。除非前方有经过审查的 TLS、认证、授权和暴露控制边界，否则应保持默认回环绑定。
 
 ## Web UI 与 TUI 构建边界
 

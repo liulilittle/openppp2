@@ -10,9 +10,9 @@ fn close_request_hides_only_when_close_to_tray_is_enabled() {
 }
 
 #[test]
-fn explicit_exit_obeys_disconnect_preference() {
+fn explicit_exit_always_disconnects() {
     assert!(should_disconnect_on_exit(true));
-    assert!(!should_disconnect_on_exit(false));
+    assert!(should_disconnect_on_exit(false));
 }
 
 #[test]

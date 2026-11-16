@@ -13,6 +13,7 @@
 | 问题 | 权威页面 |
 |---|---|
 | 进程如何启动、运行、停止或重启？ | [启动与生命周期](STARTUP_AND_LIFECYCLE_CN.md) |
+| VPN 如何修改并恢复系统网络状态？ | [网络生命周期合同](NETWORK_LIFECYCLE_CONTRACT_CN.md) |
 | client 或 server 会话由谁持有？ | [客户端架构](CLIENT_ARCHITECTURE_CN.md) · [服务端架构](SERVER_ARCHITECTURE_CN.md) |
 | 承载、成帧和握手如何衔接？ | [传输与受保护会话层](TRANSMISSION_CN.md) · [握手序列](HANDSHAKE_SEQUENCE_CN.md) |
 | 隧道动作和数据包如何流经运行时？ | [隧道设计](TUNNEL_DESIGN_CN.md) · [数据包生命周期](PACKET_LIFECYCLE_CN.md) |
@@ -23,6 +24,8 @@
 
 - [系统架构](ARCHITECTURE_CN.md) · [English](ARCHITECTURE.md)
 - [启动与生命周期](STARTUP_AND_LIFECYCLE_CN.md) · [English](STARTUP_AND_LIFECYCLE.md)
+- [网络生命周期合同](NETWORK_LIFECYCLE_CONTRACT_CN.md)
+- [网络生命周期 Issue 拆分包](NETWORK_LIFECYCLE_ISSUES.md)
 - [客户端架构](CLIENT_ARCHITECTURE_CN.md) · [English](CLIENT_ARCHITECTURE.md)
 - [服务端架构](SERVER_ARCHITECTURE_CN.md) · [English](SERVER_ARCHITECTURE.md)
 - [传输与受保护会话层](TRANSMISSION_CN.md) · [English](TRANSMISSION.md)
@@ -35,6 +38,7 @@
 - [DNS 模块设计](DNS_MODULE_DESIGN_CN.md) · [English](DNS_MODULE_DESIGN.md)
 - [可观测性](OTEL_DESIGN_CN.md) · [English](OTEL_DESIGN.md)
 - [工程概念](ENGINEERING_CONCEPTS_CN.md) · [English](ENGINEERING_CONCEPTS.md)
+- [平台集成](PLATFORM_INTEGRATION_CN.md) · [English](PLATFORM_INTEGRATION.md)
 
 ## 实验性或设计边界材料
 

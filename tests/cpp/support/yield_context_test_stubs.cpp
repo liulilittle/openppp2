@@ -12,6 +12,8 @@
 namespace ppp {
 namespace threading {
 
+    BufferswapAllocator::~BufferswapAllocator() noexcept = default;
+
     void* BufferswapAllocator::Alloc(uint32_t) noexcept {
         return nullptr;
     }

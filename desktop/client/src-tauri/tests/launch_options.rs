@@ -75,3 +75,20 @@ fn invalid_supported_values_are_rejected_and_blank_values_are_skipped() {
     }
     assert!(merge_launch_options(&BTreeMap::new(), Some(&json!([]))).is_err());
 }
+
+#[test]
+fn tcp_stack_and_ipv6_request_map_to_kernel_flags() {
+    let mut args = Vec::new();
+    append_launch_args(
+        &map(json!({"tcpStack": "lwip", "tunIpv6": "2001:db8::42"})),
+        &mut args,
+    )
+    .unwrap();
+    assert_eq!(args, ["--tcp-stack=lwip", "--tun-ipv6=2001:db8::42"]);
+    for invalid in [json!({"tcpStack": "gvisor"}), json!({"tunIpv6": "10.0.0.2"})] {
+        assert!(append_launch_args(&map(invalid), &mut Vec::new()).is_err());
+    }
+    let mut blank = Vec::new();
+    append_launch_args(&map(json!({"tcpStack": "", "tunIpv6": " "})), &mut blank).unwrap();
+    assert!(blank.is_empty());
+}

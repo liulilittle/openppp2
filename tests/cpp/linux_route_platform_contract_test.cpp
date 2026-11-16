@@ -27,6 +27,21 @@ BOOST_AUTO_TEST_CASE(interface_selection_uses_tap_known_nic_then_tap_fallback) {
     BOOST_TEST(route::SelectLinuxInterface(30u, 10u, "tap0", "eth0", nics) == "tap0");
 }
 
+BOOST_AUTO_TEST_CASE(explicit_underlying_default_does_not_use_tap_fallback) {
+    route::LinuxRouteOperations operations;
+    std::string added_interface;
+    operations.add = [&added_interface](const route::RouteSpec& spec) noexcept {
+        added_interface = spec.interface_name;
+        return route::RouteAddResult::Unchanged;
+    };
+    route::LinuxRoutePlatform platform(
+        10u, "tap0", "eth0", {}, false, std::move(operations));
+    const route::RouteSpec physical_default{0u, 20u, 0, "eth0"};
+    BOOST_TEST(static_cast<int>(platform.Add(physical_default)) ==
+        static_cast<int>(route::RouteAddResult::Unchanged));
+    BOOST_TEST(added_interface == "eth0");
+}
+
 BOOST_AUTO_TEST_CASE(production_route_add_result_requires_exact_eexist) {
     using Result = ppp::tap::TapLinux::RouteMutationResult;
 
@@ -111,6 +126,178 @@ BOOST_AUTO_TEST_CASE(captured_defaults_are_stable_itemized_routes) {
         "capture:10", "add:1:1:tap0"
     };
     BOOST_TEST(calls == expected, boost::test_tools::per_element());
+}
+
+BOOST_AUTO_TEST_CASE(captured_linux_defaults_include_kernel_interface_identity) {
+    auto defaults = std::make_shared<ppp::net::native::RouteInformationTable>();
+    defaults->GetAllRoutes()[1u] = { { 1u, 0, 20u } };
+
+    route::LinuxRouteOperations operations;
+    operations.capture_defaults = [defaults](uint32_t,
+        route::RouteInformationTablePtr& routes) noexcept {
+        routes = defaults;
+        return true;
+    };
+    operations.remove = [](const route::RouteSpec&) noexcept { return true; };
+    operations.add = [](const route::RouteSpec&) noexcept {
+        return route::RouteAddResult::Created;
+    };
+
+    route::LinuxRoutePlatform platform(
+        10u, "tap0", "lo", { { 20u, "lo" } }, false,
+        std::move(operations));
+    const route::DefaultRouteCapture captured = platform.CaptureDefaults();
+    BOOST_REQUIRE(captured.has_value());
+    BOOST_REQUIRE(captured->size() == 1u);
+    route::RouteSnapshotRecord record;
+    BOOST_REQUIRE(route::LinuxRoutePlatform::TryGetSnapshotRecord(
+        captured->front(), record));
+    BOOST_CHECK(static_cast<int>(record.platform) ==
+        static_cast<int>(route::RouteSnapshotPlatform::Linux));
+    BOOST_TEST(record.identity.interface_name == "lo");
+    BOOST_TEST(record.identity.interface_index != 0u);
+    BOOST_TEST(!record.identity.link_identity.empty());
+}
+
+BOOST_AUTO_TEST_CASE(stable_linux_snapshot_round_trips_through_wire_format) {
+    auto defaults = std::make_shared<ppp::net::native::RouteInformationTable>();
+    defaults->GetAllRoutes()[1u] = { { 1u, 0, 20u } };
+
+    route::LinuxRouteOperations operations;
+    operations.capture_defaults = [defaults](uint32_t,
+        route::RouteInformationTablePtr& routes) noexcept {
+        routes = defaults;
+        return true;
+    };
+    operations.remove = [](const route::RouteSpec&) noexcept { return true; };
+    operations.add = [](const route::RouteSpec&) noexcept {
+        return route::RouteAddResult::Created;
+    };
+
+    route::LinuxRoutePlatform platform(
+        10u, "tap0", "lo", { { 20u, "lo" } }, false,
+        std::move(operations));
+    const route::DefaultRouteCapture captured = platform.CaptureDefaults();
+    BOOST_REQUIRE(captured.has_value());
+    BOOST_REQUIRE(captured->size() == 1u);
+
+    std::string wire;
+    BOOST_REQUIRE(route::LinuxRoutePlatform::SerializeSnapshot(
+        captured->front(), wire));
+    route::RouteSnapshotPtr decoded;
+    BOOST_REQUIRE(route::LinuxRoutePlatform::DeserializeSnapshot(wire, decoded));
+    BOOST_REQUIRE(decoded);
+    BOOST_TEST(platform.SameDefault(captured->front(), decoded));
+
+    // A Darwin record must not be accepted by the Linux adapter, even though
+    // both use the same versioned wire codec.
+    const auto parsed = route::DeserializeRouteSnapshot(wire);
+    BOOST_REQUIRE(parsed.has_value());
+    route::RouteSnapshotRecord wrong_platform = *parsed;
+    wrong_platform.platform = route::RouteSnapshotPlatform::Darwin;
+    std::string foreign_wire;
+    BOOST_REQUIRE(route::SerializeRouteSnapshot(wrong_platform, foreign_wire));
+    decoded.reset();
+    BOOST_TEST(!route::LinuxRoutePlatform::DeserializeSnapshot(
+        foreign_wire, decoded));
+    BOOST_TEST(!decoded);
+}
+
+BOOST_AUTO_TEST_CASE(created_route_recovery_requires_current_interface_identity) {
+    int deletes = 0;
+    route::LinuxRouteOperations operations;
+    operations.remove = [&deletes](const route::RouteSpec&) noexcept {
+        ++deletes;
+        return true;
+    };
+    route::LinuxRoutePlatform platform(
+        10u, "tap0", "lo", { { 20u, "lo" } }, false,
+        std::move(operations));
+
+    const route::RouteSpec route_spec{ 0x0a000000u, 0x01020304u, 24, "lo" };
+    std::string encoded;
+    BOOST_REQUIRE(platform.PrepareRouteRecoverySnapshot(route_spec, encoded));
+    BOOST_REQUIRE(!encoded.empty());
+
+    const auto parsed = route::DeserializeRouteSnapshot(encoded);
+    BOOST_REQUIRE(parsed.has_value());
+    route::RouteSnapshotRecord changed = *parsed;
+    changed.identity.interface_index += 1;
+    std::string conflicting;
+    BOOST_REQUIRE(route::SerializeRouteSnapshot(changed, conflicting));
+    BOOST_TEST(!platform.DeleteRouteRecovery(conflicting));
+    BOOST_TEST(deletes == 0);
+
+    BOOST_TEST(platform.DeleteRouteRecovery(encoded));
+    BOOST_TEST(deletes == 1);
+}
+
+BOOST_AUTO_TEST_CASE(stable_restore_preserves_a_later_default_route_change) {
+    auto defaults = std::make_shared<ppp::net::native::RouteInformationTable>();
+    defaults->GetAllRoutes()[1u] = { { 1u, 0, 20u } };
+    int add_attempts = 0;
+
+    route::LinuxRouteOperations operations;
+    operations.capture_defaults = [defaults](uint32_t,
+        route::RouteInformationTablePtr& routes) noexcept {
+        routes = defaults;
+        return true;
+    };
+    operations.remove = [](const route::RouteSpec&) noexcept { return true; };
+    operations.add = [&add_attempts](const route::RouteSpec&) noexcept {
+        ++add_attempts;
+        return route::RouteAddResult::Created;
+    };
+
+    route::LinuxRoutePlatform platform(
+        10u, "tap0", "lo", { { 20u, "lo" }, { 30u, "lo" } }, false,
+        std::move(operations));
+    const route::DefaultRouteCapture captured = platform.CaptureDefaults();
+    BOOST_REQUIRE(captured.has_value());
+    BOOST_REQUIRE(captured->size() == 1u);
+    const route::RouteSnapshotPtr target = captured->front();
+
+    defaults->GetAllRoutes()[1u] = { { 1u, 0, 30u } };
+    BOOST_TEST(!platform.RestoreDefault(target));
+    BOOST_TEST(add_attempts == 0);
+}
+
+BOOST_AUTO_TEST_CASE(stable_restore_rejects_reused_interface_identity_before_add) {
+    auto defaults = std::make_shared<ppp::net::native::RouteInformationTable>();
+    defaults->GetAllRoutes()[1u] = { { 1u, 0, 20u } };
+    int add_attempts = 0;
+
+    route::LinuxRouteOperations operations;
+    operations.capture_defaults = [defaults](uint32_t,
+        route::RouteInformationTablePtr& routes) noexcept {
+        routes = defaults;
+        return true;
+    };
+    operations.remove = [](const route::RouteSpec&) noexcept { return true; };
+    operations.add = [&add_attempts](const route::RouteSpec&) noexcept {
+        ++add_attempts;
+        return route::RouteAddResult::Created;
+    };
+
+    route::LinuxRoutePlatform platform(
+        10u, "tap0", "lo", { { 20u, "lo" } }, false,
+        std::move(operations));
+    const route::DefaultRouteCapture captured = platform.CaptureDefaults();
+    BOOST_REQUIRE(captured.has_value());
+    BOOST_REQUIRE(captured->size() == 1u);
+    route::RouteSnapshotRecord record;
+    BOOST_REQUIRE(route::LinuxRoutePlatform::TryGetSnapshotRecord(
+        captured->front(), record));
+    record.identity.link_identity = "00:11:22:33:44:55";
+    std::string wire;
+    BOOST_REQUIRE(route::SerializeRouteSnapshot(record, wire));
+    route::RouteSnapshotPtr reused_interface;
+    BOOST_REQUIRE(route::LinuxRoutePlatform::DeserializeSnapshot(
+        wire, reused_interface));
+
+    defaults->GetAllRoutes().clear();
+    BOOST_TEST(!platform.RestoreDefault(reused_interface));
+    BOOST_TEST(add_attempts == 0);
 }
 
 BOOST_AUTO_TEST_CASE(promiscuous_mode_does_not_remove_or_restore_defaults) {

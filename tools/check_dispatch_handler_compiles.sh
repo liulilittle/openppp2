@@ -23,6 +23,14 @@ for hint in /usr/include /usr/local/include /opt/homebrew/include; do
     fi
 done
 
+# Windows vcpkg layouts keep boost outside the default compiler search path.
+for hint in /c/vcpkg/installed/x64-windows-static/include /c/vcpkg/installed/x64-windows/include; do
+    if [[ -f "$hint/boost/version.hpp" ]]; then
+        INCLUDES+=("-I$hint")
+        break
+    fi
+done
+
 "$CXX" -std=gnu++17 -DFUNCTION "${INCLUDES[@]}" \
     -c "$ROOT/ppp/app/client/ClientPacketDispatchHandler.cpp" \
     -o "$OUT"

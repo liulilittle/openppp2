@@ -89,6 +89,9 @@ def test_runner_help() -> None:
     invalid("--xtcp-shard-route", "source-port-bit6")
     invalid("--xtcp-shards", "1", "--xtcp-shard-route", "source-port-bit6")
     invalid("--xtcp-direct-download-chunk-bytes", "65536")
+    invalid("--xtcp-direct-spsc", "2")
+    invalid("--xtcp-affinity", "pinned")
+    invalid("--xtcp-affinity", "queues")
     valid_route = subprocess.run(
         [str(RUNNER), "--artifacts", "/tmp/datapath-matrix-plan", "--dry-run",
          "--stacks", "xtcp", "--parallel", "16", "--directions", "dl",
@@ -133,6 +136,27 @@ def test_tcp_info_sampling_planner_flag() -> None:
     )
     assert len(lines) == 1
     assert field(lines[0], "tcp_info_sampling") == "true"
+
+
+def test_high_parallel_upload_report_interval() -> None:
+    cpu = str(min(os.sched_getaffinity(0)))
+    lines = plan("--stacks", "native,xtcp", "--parallel", "16,64,128",
+                 "--directions", "ul,dl", "--cpu-profile", "client-single-core",
+                 "--affinity-cpus", cpu)
+    for line in lines:
+        expected = "0" if field(line, "direction") == "ul" and int(field(line, "parallel_flows")) >= 64 else "1"
+        assert field(line, "iperf_report_interval") == expected
+    for line in plan("--parallel", "64", "--directions", "ul,dl"):
+        assert field(line, "iperf_report_interval") == "1"
+    # Exercise the actual argv construction without starting iperf or PPP.
+    source = RUNNER.read_text()
+    command = next(line.strip() for line in source.splitlines() if "local -a iperf_args=" in line)
+    command = command.replace("local -a", "declare -a", 1)
+    result = subprocess.run(["bash", "-c", "target_ip=192.0.2.2; iperf_port=5201; p=64; DURATION=20; OMIT=2; iperf_interval=0; " + command + '; printf "%s\\n" "${iperf_args[@]}"'],
+                            check=True, capture_output=True, text=True)
+    args = result.stdout.splitlines()
+    assert args[args.index("--interval") + 1] == "0"
+    assert args[args.index("-P") + 1] == "64"
 
 
 def test_veth_gso_planner_flag() -> None:
@@ -333,16 +357,14 @@ def test_cpu_isolation() -> None:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("00000003\n", encoding="utf-8")
         proc_root.mkdir(parents=True)
-        (proc_root / "interrupts").write_text(
-            "           CPU0 CPU1\n 55: 1 2 PCI-MSI xc-veth\n", encoding="utf-8"
-        )
+        (proc_root / "interrupts").write_text("           CPU0 CPU1\n", encoding="utf-8")
         irq_dir = proc_root / "irq/55"
         irq_dir.mkdir(parents=True)
         (irq_dir / "smp_affinity").write_text("00000003\n", encoding="utf-8")
         (irq_dir / "effective_affinity").write_text("00000003\n", encoding="utf-8")
         state = root / "evidence.json"
         evidence = snapshot(state, ["xc-veth", "tun0"], 32, persistent_devices={"xc-veth"}, sys_root=sys_root, proc_root=proc_root, namespace="fake")
-        assert evidence["devices"]["xc-veth"]["irq_status"] == "applicable"
+        assert evidence["devices"]["xc-veth"]["irq_status"] == "not_applicable"
         assert evidence["devices"]["tun0"]["irq_status"] == "not_applicable"
         assert evidence["devices"]["tun0"]["queue_support"] == "supported"
         assert apply(state)["phases"]["apply"]["status"] == "pass"
@@ -642,6 +664,7 @@ def main() -> None:
     invalid("--xtcp-direct-upload-gather-wait-ms", "3")
     test_runner_help()
     test_tcp_info_sampling_planner_flag()
+    test_high_parallel_upload_report_interval()
     test_veth_gso_planner_flag()
     test_performance_gate()
     test_matrix_qualification_aggregates_every_cpu_profile()
@@ -654,3 +677,15 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def test_runner_m3_queue_and_direct_spsc_policy() -> None:
+    cpus = sorted(os.sched_getaffinity(0))
+    cpu_list = ",".join(str(cpu) for cpu in cpus[:2])
+    lines = plan("--stacks", "xtcp", "--tap-gso", "on", "--parallel", "16", "--directions", "dl",
+                 "--xtcp-shards", "2", "--xtcp-affinity", "queues", "--xtcp-direct-spsc", "1",
+                 "--cpu-profile", "client-cpuset", "--affinity-cpus", cpu_list)
+    assert field(lines[0], "xtcp_affinity") == "queues"
+    assert field(lines[0], "xtcp_direct_spsc") == "1"
+    default = plan("--stacks", "xtcp", "--tap-gso", "on", "--parallel", "1", "--directions", "dl")
+    assert field(default[0], "xtcp_direct_spsc") == "unset"

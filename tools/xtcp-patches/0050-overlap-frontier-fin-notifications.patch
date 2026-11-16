@@ -1,0 +1,158 @@
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -2429,11 +2429,18 @@
+                 // discarded.
+                 const UInt32 seg_end = seq + payload_len;
+                 if (SeqLt(rcv_nxt_, seg_end)) {
++                    if (pending_frontier_) {
++                        rcv_blocked_ = true;
++                        ArmWindowUpdateAck(now);
++                        return false;
++                    }
+                     const UInt32 trim_off = rcv_nxt_ - seq;
+                     const UInt32 fresh = payload_len - trim_off;
+                     const UInt32 prev_trim = rcv_nxt_;
+                     rcv_nxt_ = seg_end;  // advance before callback (piggyback ACK)
+                     if (0 == fresh || !recv_cb_ || recv_cb_(payload + trim_off, fresh)) {
++                        if (rcv_blocked_) ArmWindowUpdateAck(now);
++                        rcv_blocked_ = false;
+                         // Fresh suffix delivered (or backpressure-free):
+                         // the frontier already advanced past the segment's data.
+                         while (!ooo_.empty()) {
+@@ -6096,10 +6103,13 @@
+                     ++rcv_nxt_;
+                     if (TcpState::kEstablished == state_) {
+                         Transition(TcpState::kCloseWait);
++                        NotifyStateChanged();
+                     } else if (TcpState::kFinWait1 == state_) {
+                         Transition(TcpState::kClosing);
++                        NotifyStateChanged();
+                     } else if (TcpState::kFinWait2 == state_) {
+                         Transition(TcpState::kTimeWait);
++                        NotifyStateChanged();
+                         if (TcpState::kTimeWait == state_) EnterTimeWait(now);
+                     }
+                     SendAck();
+@@ -6156,10 +6166,13 @@
+                     ++rcv_nxt_;
+                     if (TcpState::kEstablished == state_) {
+                         Transition(TcpState::kCloseWait);
++                        NotifyStateChanged();
+                     } else if (TcpState::kFinWait1 == state_) {
+                         Transition(TcpState::kClosing);
++                        NotifyStateChanged();
+                     } else if (TcpState::kFinWait2 == state_) {
+                         Transition(TcpState::kTimeWait);
++                        NotifyStateChanged();
+                         if (TcpState::kTimeWait == state_) EnterTimeWait(now);
+                     }
+                     break;
+@@ -7132,6 +7145,11 @@
+                             dsack_pending_ = true;
+                         }
+                         if (SeqLt(rcv_nxt_, seg_end)) {
++                            if (pending_frontier_) {
++                                rcv_blocked_ = true;
++                                ArmWindowUpdateAck(now);
++                                break;
++                            }
+                             const UInt32 trim_off = rcv_nxt_ - hdr.seq;
+                             const UInt32 fresh = payload_len - trim_off;
+                             // Advance before the callback (piggyback ACK must
+@@ -7140,6 +7158,8 @@
+                             const UInt32 prev_trim = rcv_nxt_;
+                             rcv_nxt_ = hdr.seq + payload_len;
+                             if (0 == fresh || !recv_cb_ || recv_cb_(payload + trim_off, fresh)) {
++                                if (rcv_blocked_) ArmWindowUpdateAck(now);
++                                rcv_blocked_ = false;
+                                 // Fresh suffix delivered (or backpressure-free):
+                                 // the frontier already advanced past the
+                                 // segment's data.
+@@ -7155,6 +7175,7 @@
+                                     ++rcv_nxt_;
+                                     SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
+                                     Transition(TcpState::kCloseWait);
++                                    NotifyStateChanged();
+                                     break;
+                                 }
+                                 while (!ooo_.empty()) {
+@@ -7191,6 +7212,7 @@
+                                         ++rcv_nxt_;
+                                         SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
+                                         Transition(TcpState::kCloseWait);
++                                        NotifyStateChanged();
+                                         break;
+                                     }
+                                 }
+--- a/tests/test_ooo_frontier.cpp
++++ b/tests/test_ooo_frontier.cpp
+@@ -21,10 +21,16 @@
+     std::vector<Byte> bytes(64000), received;
+     for (std::size_t i = 0; i < bytes.size(); ++i) bytes[i] = Byte(i * 37 + i / 251);
+     unsigned calls = 0;
+-    bool reject_tail = scenario == 6;
++    unsigned close_notifications = 0;
++    conn.SetStateChangeCallback([&](TcpState s) {
++        if (s == TcpState::kCloseWait) ++close_notifications;
++    });
++    bool reject_frontier = scenario == 9 || scenario == 11;
++    bool reject_tail = scenario == 6 || scenario == 12;
+     conn.SetRecvHandler([&](const Byte* p, UInt32 n) {
+         CHECK(n != 0);
+         ++calls;
++        if (reject_frontier && calls == 2) return false;
+         if (reject_tail && calls == 2) return false;
+         received.insert(received.end(), p, p + n);
+         return true;
+@@ -43,6 +49,30 @@
+     UInt32 expected = 0;
+     bool expected_fin = false;
+     switch (scenario) {
++    case 12:
++        inject(0, 500); inject(0, 1000);
++        CHECK(conn.ReceiveState().rcv_blocked);
++        reject_tail = false;
++        inject(0, 1000);
++        CHECK(!conn.ReceiveState().rcv_blocked);
++        expected = 1000;
++        break;
++    case 9:
++    case 11:
++        inject(0, 500);
++        inject(500, 500, scenario == 11);
++        CHECK(conn.RcvNxt() == irs + 501);
++        reject_frontier = false;
++        inject(0, 1000);
++        CHECK(calls == 2);
++        CHECK(conn.RcvNxt() == irs + 501);
++        CHECK(conn.ResumeReceiveDetailed() == ReceiveResumeResult::kResumed);
++        expected = 1000; expected_fin = scenario == 11;
++        break;
++    case 10:
++        inject(0, 500); inject(0, 1000, true);
++        expected = 1000; expected_fin = true;
++        break;
+     case 0:
+         inject(1000, 31000); inject(32000, 31207); inject(0, 64000);
+         expected = 64000;
+@@ -99,6 +129,7 @@
+     CHECK(received.size() <= bytes.size() && std::equal(received.begin(), received.end(), bytes.begin()));
+     CHECK(conn.RcvNxt() == irs + 1 + expected + (expected_fin ? 1 : 0));
+     if (expected_fin) {
++        if (state == TcpState::kEstablished) CHECK(close_notifications == 1);
+         CHECK(conn.State() == (state == TcpState::kEstablished ? TcpState::kCloseWait : TcpState::kTimeWait));
+     }
+ }
+@@ -107,10 +138,10 @@
+     xtcp::buf::InitPools();
+     for (UInt32 irs : {200U, 0xfffff000U}) {
+         for (auto state : {xtcp::core::TcpState::kEstablished, xtcp::core::TcpState::kFinWait2}) {
+-            for (int scenario = 0; scenario < 9; ++scenario) CheckOverlap(irs, state, scenario);
++            for (int scenario = 0; scenario < 13; ++scenario) CheckOverlap(irs, state, scenario);
+         }
+     }
+     xtcp::buf::ShutdownPools();
+-    std::printf("OOO frontier: 36 scenarios, %d failures\n", failures);
++    std::printf("OOO frontier: 52 scenarios, %d failures\n", failures);
+     return failures ? 1 : 0;
+ }

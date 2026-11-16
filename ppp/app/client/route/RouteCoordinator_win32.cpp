@@ -15,7 +15,8 @@ std::unique_ptr<IRoutePlatform> RouteCoordinator::NewPlatform(
     return std::make_unique<WindowsRoutePlatform>(
         input.tap_gateway,
         input.underlying_interface.index,
-        input.underlying_interface.gateway.to_string());
+        input.underlying_interface.gateway.to_string(),
+        input.tap_interface.index);
 }
 
 }

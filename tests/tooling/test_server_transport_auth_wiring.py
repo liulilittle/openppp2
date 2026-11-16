@@ -188,7 +188,8 @@ class ServerTransportAuthWiringTest(unittest.TestCase):
             "bool VirtualEthernetSwitcher::Accept(const ContextPtr& context",
             "bool VirtualEthernetSwitcher::FlowerArrangement(",
         )
-        self.assertIn("auto& strand = transmission->GetStrand()", accept)
+        self.assertIn("auto strand = transmission->GetStrand()", accept)
+        self.assertIn("transmission->SetStrand(strand)", accept)
         self.assertIn("context->get_executor()", accept)
         self.assertIn("YieldContext::Spawn(allocator.get(), *context, strand.get()", accept)
 

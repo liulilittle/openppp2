@@ -207,7 +207,17 @@ bool ValidCandidate(const P2PCandidateV1& candidate) noexcept {
             [](std::uint8_t byte) { return byte != 0; });
         return mapped && payload_nonzero;
     }
-    return !mapped;
+    if (mapped) return false;
+    const bool loopback = std::all_of(candidate.address.begin(),
+        candidate.address.end() - 1, [](std::uint8_t byte) { return byte == 0; }) &&
+        candidate.address.back() == 1;
+    const bool multicast = candidate.address[0] == 0xff;
+    const bool link_local = candidate.address[0] == 0xfe &&
+        (candidate.address[1] & 0xc0) == 0x80;
+    const bool site_local = candidate.address[0] == 0xfe &&
+        (candidate.address[1] & 0xc0) == 0xc0;
+    const bool unique_local = (candidate.address[0] & 0xfe) == 0xfc;
+    return !loopback && !multicast && !link_local && !site_local && !unique_local;
 }
 
 }

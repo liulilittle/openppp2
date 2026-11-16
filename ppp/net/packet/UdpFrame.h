@@ -134,6 +134,19 @@ namespace ppp {
                 std::shared_ptr<IPFrame>                        ToIp(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator);
 
                 /**
+                 * @brief Builds the same IPv4 datagram as ToIp() + IPFrame::ToArray() in one buffer.
+                 * @return Null when IPv4 fragmentation would be required or on failure.
+                 */
+                static std::shared_ptr<Byte>                    ToIPv4Packet(
+                    const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator,
+                    const IPEndPoint&                                           source,
+                    const IPEndPoint&                                           destination,
+                    Byte                                                        ttl,
+                    const void*                                                 payload,
+                    int                                                         payload_size,
+                    int&                                                        packet_length) noexcept;
+
+                /**
                  * @brief Parses an IPv4 frame as a UDP datagram.
                  *
                  * Extracts the UDP header from @p frame's payload, validates the length,

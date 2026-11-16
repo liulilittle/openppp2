@@ -1,4 +1,10 @@
 # 并发模型
+
+默认协程原语仍为 Boost fcontext。实验性 `ENABLE_COROCC` 默认关闭，仅替换
+L0 栈切换；Asio 执行器、Anchor 唤醒协议、shard 归属保持不变。
+transfer 与 sanitizer 语义见 [ADR 0003](../adr/0003-corocc-coroutine-backend_CN.md)，
+实测范围见[验证记录](../development/COROCC_VALIDATION_CN.md)。
+
 > Status: Active
 > Type: Architecture
 > Last verified: `ppp/threading/`, `ppp/coroutines/`, and runtime startup sources, 2026-07-22
@@ -20,7 +26,7 @@
 | 默认 `io_context` | 由 `Executors::Run()` 附着并由调用线程驱动。application start callback 被 post 到这里。 |
 | Worker context | 由 `SetMaxThreads()` 创建；每个有受管 worker 线程与缓存缓冲区。`GetExecutor()` 在它们之间轮转，缺失时回退到默认 context。 |
 | Scheduler context | 由 `SetMaxSchedulers()` 一次性创建并由 scheduler 线程驱动。socket 迁移可将 socket 绑定到该 context 的 strand。 |
-| Tick 线程 | 在 executor internal 仍存在时维护缓存时间和低层周期工作。它是 detached 的；源码没有证明一个 join 的 tick-thread shutdown 契约。 |
+| Tick 线程 | 通过原子变量发布缓存的 tick 计数与时间（读取方不加锁），并约每秒运行一次经 `Executors::SetSecondTickHandler()` 安装的处理函数；`global::cctor` 在此接入 DNS 缓存与 ICMP 维护。`Executors::Exit()` 最后停止并 join 该线程。 |
 
 `AppConfiguration::concurrent` 默认是处理器数量，但启动代码没有施加源码级 CPU 数量上限。`concurrent - 1` 为正时会请求 scheduler 线程；非 client 启动路径还会请求 worker context。最终拓扑依赖配置。
 
@@ -34,7 +40,7 @@
 
 ## 生命周期含义
 
-- executor 关闭会向已知 context post stop、join 受管 worker、尝试关闭 netstack，再停止 scheduler 和默认 context。
+- executor 关闭会向已知 context post stop、join 受管 worker、运行 workers-stopped 钩子（`global::cctor` 在此安装 netstack 关闭），再停止 scheduler 和默认 context。
 - `Executors::Awaitable` 是一个条件变量桥接，只有 `Processed()` 被调用才会解除阻塞；当前实现没有取消唤醒路径。
 - `YieldContext` 在内部守护状态转换，但调用方仍须保持周边对象的所有权与 dispatch 要求。
 - `nullof<T>()` 使用空地址引用约定。它存在于当前代码中，但本文不对该约定作可移植安全性声明，也不推荐新增使用。

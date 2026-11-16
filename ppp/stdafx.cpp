@@ -1395,8 +1395,15 @@ namespace ppp {
         namespace asio {
             namespace vdns {
                 void vdns_ctor() noexcept;
+                void UpdateAsync() noexcept;
             }
+
+            void InternetControlMessageProtocol_DoEvents() noexcept;
         }
+    }
+
+    namespace ethernet {
+        bool NetstackTryExit() noexcept;
     }
 
     namespace global {
@@ -1421,6 +1428,18 @@ namespace ppp {
             ppp::threading::Executors_cctor();
             ppp::cryptography::EVP_cctor();
             ppp::net::asio::vdns::vdns_ctor();
+
+            // The executor layer exposes hooks instead of calling up into DNS, ICMP and
+            // the netstack; this composition root wires them.
+            ppp::threading::Executors::SetSecondTickHandler(
+                []() noexcept {
+                    ppp::net::asio::vdns::UpdateAsync();
+                    ppp::net::asio::InternetControlMessageProtocol_DoEvents();
+                });
+            ppp::threading::Executors::SetWorkersStoppedHandler(
+                []() noexcept {
+                    ppp::ethernet::NetstackTryExit();
+                });
 
             ppp::app::client::proxys::VEthernetHttpProxyConnection_cctor();
         }

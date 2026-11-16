@@ -2,8 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"strings"
 )
 
 type profileContentRequest struct {
@@ -93,6 +95,9 @@ func readProfileBody(r *http.Request) ([]byte, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(string(body)) == "" {
+		return nil, errors.New("profile request body is empty")
 	}
 	var req profileContentRequest
 	if err := json.Unmarshal(body, &req); err == nil && req.Content != "" {

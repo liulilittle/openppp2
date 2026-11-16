@@ -32,13 +32,41 @@ using ppp::net::packet::BufferSegment;
 
 namespace ppp
 {
-    namespace threading
-    {
-        bool Executors_NetstackTryExit() noexcept;
-    }
-
     namespace ethernet
     {
+        /**
+         * @brief Attempts graceful netstack shutdown and waits for completion signal.
+         * @return true when shutdown processing was observed; otherwise false.
+         */
+        bool NetstackTryExit() noexcept
+        {
+            std::shared_ptr<Executors::Awaitable> awaitable =
+                make_shared_object<Executors::Awaitable>();
+            if (NULLPTR == awaitable)
+            {
+                lwip::netstack::close();
+                return false;
+            }
+
+            /*
+             * Each shutdown owns its completion state. netstack::close() is
+             * required to complete the callback even when its context has
+             * already stopped, so Await() never runs under an external lock.
+             */
+            lwip::netstack::close(
+                [awaitable]() noexcept
+                {
+                    awaitable->Processed();
+                });
+
+            bool processed = awaitable->Await();
+            if (processed)
+            {
+                lwip::netstack::wait_closed();
+            }
+            return processed;
+        }
+
         /**
          * @brief Initializes VEthernet runtime flags and context.
          */
@@ -371,7 +399,7 @@ namespace ppp
                     SynchronizedObjectScope scope(syncobj_);
                     if (exchangeof(opened_, false))
                     {
-                        ppp::threading::Executors_NetstackTryExit();
+                        NetstackTryExit();
                     }
                 }
 

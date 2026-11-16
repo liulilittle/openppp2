@@ -13,6 +13,16 @@
 namespace ppp::app::client::routing {
 namespace {
 
+    constexpr std::size_t MaxSourceBytes = 64u * 1024u * 1024u;
+
+    template <typename TResult>
+    bool CheckSourceSize(std::string_view bytes, TResult& result) {
+        if (bytes.size() <= MaxSourceBytes) return true;
+        result.status = GeoDataReadStatus::Malformed;
+        result.diagnostic = "source exceeds 64 MiB byte limit";
+        return false;
+    }
+
     enum class WireStep {
         Field,
         End,
@@ -383,9 +393,9 @@ namespace {
         return true;
     }
 
-    bool ParseGeoIpList(const std::vector<std::uint8_t>& bytes,
+    bool ParseGeoIpList(std::string_view bytes,
                         const std::string& selector, GeoIpReadResult& result) {
-        WireReader reader(bytes.data(), bytes.size());
+        WireReader reader(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
         bool selector_found = false;
         std::string diagnostic;
 
@@ -493,9 +503,9 @@ namespace {
         return true;
     }
 
-    bool ParseGeoSiteList(const std::vector<std::uint8_t>& bytes,
+    bool ParseGeoSiteList(std::string_view bytes,
                           const std::string& selector, GeoSiteReadResult& result) {
-        WireReader reader(bytes.data(), bytes.size());
+        WireReader reader(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
         bool selector_found = false;
         std::string diagnostic;
 
@@ -747,22 +757,9 @@ namespace {
     }
 
     template <typename TParseLine>
-    bool ReadTextLines(std::string_view path, GeoDataReadStatus& status,
+    bool ParseTextLines(std::istream& stream, GeoDataReadStatus& status,
                        std::string& diagnostic, std::size_t& skipped,
                        TParseLine&& parse_line) {
-        const std::string file_path(path);
-        if (file_path.empty()) {
-            status = GeoDataReadStatus::FileMissing;
-            diagnostic = "source path is empty";
-            return false;
-        }
-        std::ifstream stream(file_path, std::ios::binary);
-        if (!stream) {
-            status = GeoDataReadStatus::FileMissing;
-            diagnostic = "source file not found or cannot be opened: " + file_path;
-            return false;
-        }
-
         std::string raw_line;
         std::size_t line_number = 0;
         while (std::getline(stream, raw_line)) {
@@ -788,10 +785,61 @@ namespace {
         }
         if (stream.bad()) {
             status = GeoDataReadStatus::Malformed;
-            diagnostic = "unable to read source file: " + file_path;
+            diagnostic = "unable to read source bytes";
             return false;
         }
         status = GeoDataReadStatus::Success;
+        return true;
+    }
+
+    template <typename TParseLine>
+    bool ReadTextLines(std::string_view path, GeoDataReadStatus& status,
+                       std::string& diagnostic, std::size_t& skipped,
+                       TParseLine&& parse_line) {
+        const std::string file_path(path);
+        if (file_path.empty()) {
+            status = GeoDataReadStatus::FileMissing;
+            diagnostic = "source path is empty";
+            return false;
+        }
+        std::ifstream stream(file_path, std::ios::binary);
+        if (!stream) {
+            status = GeoDataReadStatus::FileMissing;
+            diagnostic = "source file not found or cannot be opened: " + file_path;
+            return false;
+        }
+        if (!ParseTextLines(stream, status, diagnostic, skipped,
+                           std::forward<TParseLine>(parse_line))) {
+            diagnostic = "unable to read source file: " + file_path;
+            return false;
+        }
+        return true;
+    }
+
+    template <typename TParseLine>
+    bool ReadTextBytes(std::string_view bytes, GeoDataReadStatus& status,
+                      std::string& diagnostic, std::size_t& skipped,
+                      TParseLine&& parse_line) {
+        std::istringstream stream{std::string(bytes)};
+        return ParseTextLines(stream, status, diagnostic, skipped,
+                              std::forward<TParseLine>(parse_line));
+    }
+
+    bool AddTextCidr(GeoIpReadResult& result, std::string value, std::size_t line) {
+        GeoDataCidr cidr;
+        if (!ParseTextCidr(std::move(value), cidr)) return false;
+        cidr.line = line;
+        if (cidr.address.size() == 4) ++result.ipv4_entries;
+        else ++result.ipv6_entries;
+        result.entries.emplace_back(std::move(cidr));
+        return true;
+    }
+
+    bool AddTextDomain(GeoSiteReadResult& result, std::string value, std::size_t line) {
+        GeoDataDomain domain;
+        if (!ParseTextDomain(std::move(value), domain)) return false;
+        domain.line = line;
+        result.entries.emplace_back(std::move(domain));
         return true;
     }
 
@@ -806,6 +854,32 @@ GeoIpReadResult GeoDataReader::ReadGeoIp(
         if (!ReadFile(path, bytes, result.status, result.diagnostic)) {
             return result;
         }
+        if (!ParseGeoIpList(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
+                            NormalizeSelector(selector), result)) {
+            result.status = GeoDataReadStatus::Malformed;
+            result.entries.clear();
+            result.ipv4_entries = 0;
+            result.ipv6_entries = 0;
+        }
+    }
+    catch (const std::exception& exception) {
+        result = GeoIpReadResult{};
+        result.status = GeoDataReadStatus::Malformed;
+        result.diagnostic = exception.what();
+    }
+    catch (...) {
+        result = GeoIpReadResult{};
+        result.status = GeoDataReadStatus::Malformed;
+        result.diagnostic = "unknown GeoIP reader failure";
+    }
+    return result;
+}
+
+GeoIpReadResult GeoDataReader::ReadGeoIpBytes(
+    std::string_view bytes, std::string_view selector) noexcept {
+    GeoIpReadResult result;
+    try {
+        if (!CheckSourceSize(bytes, result)) return result;
         if (!ParseGeoIpList(bytes, NormalizeSelector(selector), result)) {
             result.status = GeoDataReadStatus::Malformed;
             result.entries.clear();
@@ -835,6 +909,30 @@ GeoSiteReadResult GeoDataReader::ReadGeoSite(
         if (!ReadFile(path, bytes, result.status, result.diagnostic)) {
             return result;
         }
+        if (!ParseGeoSiteList(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
+                              NormalizeSelector(selector), result)) {
+            result.status = GeoDataReadStatus::Malformed;
+            result.entries.clear();
+        }
+    }
+    catch (const std::exception& exception) {
+        result = GeoSiteReadResult{};
+        result.status = GeoDataReadStatus::Malformed;
+        result.diagnostic = exception.what();
+    }
+    catch (...) {
+        result = GeoSiteReadResult{};
+        result.status = GeoDataReadStatus::Malformed;
+        result.diagnostic = "unknown GeoSite reader failure";
+    }
+    return result;
+}
+
+GeoSiteReadResult GeoDataReader::ReadGeoSiteBytes(
+    std::string_view bytes, std::string_view selector) noexcept {
+    GeoSiteReadResult result;
+    try {
+        if (!CheckSourceSize(bytes, result)) return result;
         if (!ParseGeoSiteList(bytes, NormalizeSelector(selector), result)) {
             result.status = GeoDataReadStatus::Malformed;
             result.entries.clear();
@@ -858,19 +956,7 @@ GeoIpReadResult GeoDataReader::ReadGeoIpText(std::string_view path) noexcept {
     try {
         ReadTextLines(path, result.status, result.diagnostic, result.skipped,
             [&result](std::string value, std::size_t line) {
-                GeoDataCidr cidr;
-                if (!ParseTextCidr(std::move(value), cidr)) {
-                    return false;
-                }
-                cidr.line = line;
-                if (cidr.address.size() == 4) {
-                    ++result.ipv4_entries;
-                }
-                else {
-                    ++result.ipv6_entries;
-                }
-                result.entries.emplace_back(std::move(cidr));
-                return true;
+                return AddTextCidr(result, std::move(value), line);
             });
     }
     catch (const std::exception& exception) {
@@ -891,13 +977,7 @@ GeoSiteReadResult GeoDataReader::ReadGeoSiteText(std::string_view path) noexcept
     try {
         ReadTextLines(path, result.status, result.diagnostic, result.skipped,
             [&result](std::string value, std::size_t line) {
-                GeoDataDomain domain;
-                if (!ParseTextDomain(std::move(value), domain)) {
-                    return false;
-                }
-                domain.line = line;
-                result.entries.emplace_back(std::move(domain));
-                return true;
+                return AddTextDomain(result, std::move(value), line);
             });
     }
     catch (const std::exception& exception) {
@@ -908,6 +988,46 @@ GeoSiteReadResult GeoDataReader::ReadGeoSiteText(std::string_view path) noexcept
     catch (...) {
         result = GeoSiteReadResult{};
         result.status = GeoDataReadStatus::Malformed;
+        result.diagnostic = "unknown GeoSite text reader failure";
+    }
+    return result;
+}
+
+GeoIpReadResult GeoDataReader::ReadGeoIpTextBytes(std::string_view bytes) noexcept {
+    GeoIpReadResult result;
+    try {
+        if (!CheckSourceSize(bytes, result)) return result;
+        ReadTextBytes(bytes, result.status, result.diagnostic, result.skipped,
+            [&result](std::string value, std::size_t line) {
+                return AddTextCidr(result, std::move(value), line);
+            });
+    }
+    catch (const std::exception& exception) {
+        result = GeoIpReadResult{};
+        result.diagnostic = exception.what();
+    }
+    catch (...) {
+        result = GeoIpReadResult{};
+        result.diagnostic = "unknown GeoIP text reader failure";
+    }
+    return result;
+}
+
+GeoSiteReadResult GeoDataReader::ReadGeoSiteTextBytes(std::string_view bytes) noexcept {
+    GeoSiteReadResult result;
+    try {
+        if (!CheckSourceSize(bytes, result)) return result;
+        ReadTextBytes(bytes, result.status, result.diagnostic, result.skipped,
+            [&result](std::string value, std::size_t line) {
+                return AddTextDomain(result, std::move(value), line);
+            });
+    }
+    catch (const std::exception& exception) {
+        result = GeoSiteReadResult{};
+        result.diagnostic = exception.what();
+    }
+    catch (...) {
+        result = GeoSiteReadResult{};
         result.diagnostic = "unknown GeoSite text reader failure";
     }
     return result;

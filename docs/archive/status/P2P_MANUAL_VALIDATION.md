@@ -28,7 +28,7 @@ backgrounding, roaming, and physical-device behavior.
 The production integration is intentionally guarded by:
 
 ```cpp
-ProductionAuthenticatedControlV1Ready = false;
+ProductionAuthenticatedControlV1Ready = true;
 ```
 
 Consequently, `p2p.enabled=true` with `direct-preferred` currently evaluates to

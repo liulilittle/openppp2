@@ -1,69 +1,90 @@
-# 安全模型
+# 安全
 
-> **状态：**当前加固边界；不是正式安全评估
-> **类型：**运维指南
-> **最后核对：**配置校验、运行时、原生管理器与订阅源码，2026-07-22
-> **上一层索引：**[部署与运维](README_CN.md) · **English：**[Security Model](SECURITY.md)
+> Status: Active
+> Type: Operations
+> Last verified: 2026-10-11（对照 `AppConfiguration.cpp` 安全诊断、`ppp/diagnostics/ErrorCodes.def`、`TransportAuthConfiguration.cpp`、`ApplicationMode.cpp`、`VEthernetLocalProxySwitcher.cpp`、`go/ppp/Admin.go`、`go/guardian/config.go`）
+>
+> **用途：** 部署时需要保护的资产、必须避免的配置，以及加固清单。
+> **读者：** 部署和维护 OPENPPP2 的运维人员。
+> **上级索引：** [运维](README_CN.md) · **English:** [Security](SECURITY.md)
 
-## 范围与非目标
+本页是运维加固说明，不是正式的安全评估，也不声称提供前向保密、防泄漏开关或自动防火墙管理。
 
-本文只说明本树中可观察到的运维控制项。不宣称完美前向保密、形式化密码学证明、防泄漏 kill switch、自动宿主机防火墙管理或通用 TLS。
+## 1. 需要保护的资产
 
-应把隧道配置、管理凭据和已发布订阅文档都视为敏感部署资产。
+| 资产 | 位置 | 泄露后果 |
+|---|---|---|
+| 隧道密钥 | 配置文件 `key.protocol-key` / `transport-key` | 可伪造客户端接入服务器、解密流量 |
+| `transport-auth` 密钥文件 | `keys[].secret-file` | 可通过连接认证 |
+| 管理端密钥与 Token | 管理端 `key`、`admin.token`；C++ `server.backend-key` | 可冒充节点或控制管理端 |
+| 订阅链接与文档 | `/sub/{token}` | 文档包含节点地址和密钥 |
+| 管理端数据 | `manager-data.json` | 用户、节点、订阅全部信息 |
+| Guardian 配置 | `guardian.json`（`auth.jwtSecret` 即登录密码） | 可控制本机 `ppp` 进程和配置 |
+| 策略存储、状态文件、日志 | `.ppp-policy`、`dns-fake-ip`、`server.log`、遥测日志 | 访问记录、内部地址 |
 
-## 保护配置材料
+以上文件只允许服务账户读取（如 `chmod 600`），不要提交到代码仓库、贴到工单或截图里。
 
-`key` 配置包含 protocol/transport key 材料。至少应做到：
+## 2. 加密配置
 
-- 每个部署使用唯一秘密；
-- 只允许预期服务账号/运维读取 `key.protocol-key`、`key.transport-key` 及相关配置；
-- 除受控测试外保持 `key.plaintext` 为关闭；
-- 不把正在使用的配置、密钥、订阅文档或导出的管理器数据提交到源代码管理；
-- 审查运行时关于弱/默认/遗留设置的配置警告，但不能把警告当成强制策略或安全审计。
+启动时会对以下情况打印 `[security] WARN`（只警告，**不会阻止启动**）：
 
-不要在文档中发布可直接复制的“强密钥”。应通过部署自身的秘密管理流程生成和分发密钥。
+| 告警 | 触发条件 | 处理 |
+|---|---|---|
+| `ConfigPlaintextEnabled` | `key.plaintext` 为 `true`——**省略该字段时就是 `true`** | 显式写 `"plaintext": false` |
+| `ConfigWeakKeyDefault` | 密钥等于内置默认值 `"ppp"`（密钥为空时也会回退到它） | 为每个部署生成独立随机密钥 |
+| `ConfigWeakKeyShort` | 密钥短于 8 字节 | 使用 16 位以上随机字符串 |
+| `ConfigLegacyCipherAlgorithm` / `ShortKey` | RC4、DES、Blowfish、CAST5、SEED、IDEA，或密钥长度低于 128 位 | 使用默认的 `aes-128-cfb` / `aes-256-cfb` |
+| `ConfigLegacyKdfMd5` | 每次都会出现：密钥派生内部使用 `EVP_BytesToKey`（MD5） | 已知的历史设计；用足够长的随机密钥弥补 |
 
-## 保护管理与订阅
+补充说明：
 
-| 表面 | 必需加固 |
-|---|---|
-| 原生管理器 admin API | 限制监听地址/网络，保护 bearer token；不在可信网络时使用由运维管理的 TLS 边界。 |
-| C++ 托管链路 | 保护 `server.backend-key` 和 Go `key`；要求 `server.node`、URL/path、管理器记录匹配。 |
-| 公开订阅 URL | 将 `/sub/{token}` 视为含凭据 capability；需要终止访问时轮换、禁用或删除。 |
-| `manager-data.json` | 独立模式中将其按敏感本地控制数据保护。 |
+- 算法名写错会**静默回退**为默认算法，而不是报错；两端都写错同一个名字时仍能连通，但实际算法不是你以为的那个。
+- 默认的 CFB 模式本身不提供完整性校验。需要在密钥之外再做连接认证时启用 `transport-auth`；穿越不可信网络时可以叠加 WSS（TLS）承载。
+- 生成随机密钥示例：`openssl rand -base64 24`。不要使用文档或仓库示例里的密钥。
 
-直接 Go HTTP 服务不会终止 TLS。`public-base-url` 只会改变返回 URL，不会保护监听器。
+## 3. `transport-auth`（可选的连接认证）
 
-## 宿主机网络是安全边界的一部分
+- 使用 32 字节预共享密钥文件（64 个小写十六进制字符），文件必须属于运行用户且权限为 `600`，否则加载失败。生成：`openssl rand -hex 32 | tr -d '\n' > k.hex && chmod 600 k.hex`。
+- 启用时必须恰好一个 `active` 密钥；轮换时先把新密钥以 `verify-only` 加到所有节点，再切换为 `active`，最后把旧密钥改为 `revoked`。
+- Windows 无法读取 secret-file。字段说明见 [配置文件参考 · transport-auth](../reference/CONFIGURATION_CN.md)。
 
-普通客户端/服务端运行可改变虚拟接口、路由、DNS、IPv6 和监听状态。即使隧道 key 正确，错误的路由或 resolver 策略仍可能把流量送到非预期位置。
+## 4. 监听面与暴露范围
 
-- 每次发布前审查 bypass 列表和 DNS 规则输入。
-- 在受控环境测试普通客户端路由/DNS 变更。
-- 宿主机防火墙策略、端口暴露、路由持久化和 DNS 服务策略仍由运维控制。
-- 不要声称默认路由保护阻止所有流量/DNS 泄漏；它是依赖宿主机的路由管理，不是通用 kill switch。
-- 将 Linux 服务端 GUA/NAT66/NDP 设置视为带有独立上游/防火墙要求的特权宿主机集成。
+| 监听 | 默认 | 建议 |
+|---|---|---|
+| 服务端隧道端口（`tcp` / `websocket` / `udp` / `cdn`） | 所有地址 | 只开放实际使用的端口；需要时用 `ip.interface` 绑定到指定网卡 |
+| 客户端本地代理（代理模式） | 强制 `127.0.0.1` | 无需处理 |
+| 客户端本地代理（TUN 模式） | `bind` 为空时监听**所有地址** | 只给本机用时写 `127.0.0.1`；对局域网开放时为 SOCKS5 设置用户名密码 |
+| 管理端（`go/`） | `:10000`（所有地址），**不带 TLS** | 绑定到内网 / 回环；对外通过 TLS 反向代理；设置固定 `admin.token`（否则每次启动生成临时 Token） |
+| Guardian | `127.0.0.1:18080` | 保持仅本机；远程用 SSH 隧道或 TLS 反向代理 |
 
-## 传输与 TLS 边界
+## 5. 主机网络也是安全边界
 
-源码包含已配置 protocol/transport key 材料和会话运行时行为，但本文不会将其扩大为完整攻击者模型的声明。控制服务应位于可信传输/网络边界；服务暴露到可信网络外时，应提供 TLS 终止。
+TUN 客户端会修改路由和 DNS，服务端可能修改 IPv6、NDP、NAT 规则。
 
-对于 WSS 或其他 TLS 承载部署路径，应在实际部署中验证证书、名称和反向代理行为。不能仅由 URL 字段推断 TLS 已正确建立。
+- 上线前审查分流列表和 DNS 规则：错误的规则会让流量或 DNS 查询走出隧道。
+- 客户端异常退出可能留下残余路由；默认路由保护不是“断网保护开关”，不能保证零泄漏。
+- 主机防火墙、路由持久化、DNS 服务策略应由运维自己掌控，程序不会自动管理防火墙。
+- Linux 服务端的 GUA / NAT66 / NDP 属于特权主机操作，需要单独评估上游和防火墙。
 
-## 运维加固检查清单
+## 6. 订阅与管理面
 
-1. 将客户端/服务端配置、管理器数据和日志放在最小权限访问控制下。
-2. 为每个环境使用不同的隧道/管理器 key，并制定可执行的轮换流程。
-3. 只把监听器绑定到预期接口，并用宿主机防火墙策略约束暴露。
-4. 将公开管理/订阅表面放在 HTTPS/TLS 终止之后，并监控访问日志。
-5. 发布前审查订阅文档，因为其中可能带有节点密钥材料。
-6. 升级或拓扑变化后重新核对路由、DNS、IPv6 和 peer-prefix 策略。
-7. 若凭据可能泄漏，应轮换受影响 key/token、限制监听器、重新部署受影响配置，并确认新客户端无法使用旧 capability。
+- 订阅链接即凭证，token 不会过期。用户离开或链接泄露时，在管理端轮换 token 或停用订阅。
+- 订阅只通过 HTTPS 发布（`admin.public-base-url` 只改变生成的链接，不会给监听加 TLS）。
+- 管理端 `key` 与 C++ `server.backend-key` 必须一致且保密；不同环境使用不同的值。
 
-## 相关页面
+## 7. 加固清单
 
-- [部署模型](DEPLOYMENT_CN.md)
-- [运维与故障排查](OPERATIONS_CN.md)
-- [管理后端](../guides/MANAGEMENT_BACKEND_CN.md)
-- [远程订阅格式](../guides/REMOTE_SUBSCRIPTION_CN.md)
-- [路由与 DNS](../guides/ROUTING_AND_DNS_CN.md)
+1. 配置、密钥文件、管理数据、日志只允许服务账户读取。
+2. `key` 块写全，`"plaintext": false`，每个环境使用不同的随机密钥；启动输出中没有 `[security] WARN`（MD5 KDF 一条除外）。
+3. 每台客户端使用独立的 `client.guid`。
+4. 只开放用到的端口；管理端、Guardian 不直接暴露到公网。
+5. 对外的管理 / 订阅入口使用 HTTPS，并监控访问日志。
+6. 发布订阅前检查内容，确认没有多余节点或测试密钥。
+7. 升级或拓扑变更后，重新验证路由、DNS、IPv6 和对端前缀策略。
+8. 怀疑泄露时：更换受影响的密钥 / Token，收紧监听，重新下发配置，并确认旧凭证已无法使用。
+
+## 相关文档
+
+- [部署](DEPLOYMENT_CN.md) · [运维与排障](OPERATIONS_CN.md)
+- [管理后端](../guides/MANAGEMENT_BACKEND_CN.md) · [远程订阅](../guides/REMOTE_SUBSCRIPTION_CN.md) · [配置文件参考](../reference/CONFIGURATION_CN.md)

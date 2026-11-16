@@ -17,20 +17,27 @@ PPP_help() {
     echo "    ./$PPP_SCRIPT_NAME x64"
     echo "    ./$PPP_SCRIPT_NAME arm"
     echo "    ./$PPP_SCRIPT_NAME arm64"
+    echo "    PPP_ENABLE_XTCP=ON ./$PPP_SCRIPT_NAME arm64"
 }
 
 PPP_build() {
+    if [[ ("${PPP_ENABLE_XTCP:-OFF}" == "ON" || "${PPP_ENABLE_XTCP:-OFF}" == "1") && "${PPP_XTCP_PREPARED:-0}" != "1" ]]; then
+        (cd .. && bash tools/prepare_xtcp.sh)
+        PPP_XTCP_PREPARED=1
+    fi
     rm -rf build/
     mkdir -p build/
     cd build/
     export PPP_ANDROID_ABI=$1
     cmake .. \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_POLICY_DEFAULT_CMP0057=NEW \
         -DCMAKE_TOOLCHAIN_FILE=$NDK_ROOT/build/cmake/android.toolchain.cmake \
         -DCMAKE_SYSTEM_NAME=Android \
         -DANDROID_ABI=$2 \
         -DANDROID_NATIVE_API_LEVEL=21 \
         -DANDROID_STL=c++_static \
+        -DENABLE_XTCP="${PPP_ENABLE_XTCP:-OFF}" \
         $OTHER_ARGS
     make -j $(lscpu | grep "^CPU(s):" | awk '{print $2}')
     cd ..

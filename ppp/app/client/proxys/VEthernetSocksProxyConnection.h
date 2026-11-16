@@ -8,9 +8,14 @@
 #include <ppp/app/client/proxys/VEthernetLocalProxyConnection.h>
 
 namespace ppp {
+    namespace tap {
+        class TapUserspace;
+    }
+
     namespace app {
         namespace client {
             class VEthernetExchanger;
+            class VEthernetNetworkSwitcher;
 
             namespace proxys {
                 class VEthernetSocksProxySwitcher;
@@ -106,6 +111,13 @@ namespace ppp {
                      * @return true if the response datagram was sent.
                      */
                     bool                                                                SendUdpAssociatePacketToClient(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, void* packet, int packet_length) noexcept;
+                    /**
+                     * @brief Sends a virtual-subnet datagram from the virtual IP through the in-process adapter.
+                     * @note Proxy-only without a host adapter: a host socket would leave through the physical default route.
+                     */
+                    bool                                                                SendUserspaceDatagram(const std::shared_ptr<VEthernetNetworkSwitcher>& switcher,
+                        const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP,
+                        const void* payload, int payload_length) noexcept;
 
                 protected:
                     /**
@@ -127,6 +139,8 @@ namespace ppp {
                     boost::asio::ip::udp::endpoint                                      udp_remote_ep_;
                     boost::asio::ip::udp::endpoint                                      udp_client_ep_;
                     UdpAssociateEndpointTable                                           udp_destination_clients_;
+                    std::weak_ptr<ppp::tap::TapUserspace>                               userspace_tap_;
+                    uint16_t                                                            userspace_udp_port_ = 0;
                 };
             }
         }

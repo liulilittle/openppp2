@@ -1,14 +1,15 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.0.0) 
+CMAKE_MINIMUM_REQUIRED(VERSION 3.5) 
 
 # Define the solutions name.
 SET(NAME ppp)
-PROJECT(${NAME} VERSION 2.1.6.0 LANGUAGES C CXX)# CMAKE_CURRENT_SOURCE_DIR
+PROJECT(${NAME} VERSION 2.1.9.0 LANGUAGES C CXX)# CMAKE_CURRENT_SOURCE_DIR
 
 # C/CXX compiler configurations.
 IF(MSVC)
     SET(CMAKE_C_FLAGS "")
     SET(CMAKE_CXX_FLAGS "")
     SET(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} /nologo")
+    ADD_COMPILE_OPTIONS(/utf-8)
     ADD_COMPILE_OPTIONS(/EHsc)
     ADD_COMPILE_OPTIONS(/MP)
     ADD_COMPILE_OPTIONS(/bigobj)
@@ -18,6 +19,7 @@ IF(MSVC)
     ADD_COMPILE_OPTIONS(/wd4309)
     ADD_COMPILE_OPTIONS(/wd4334)
     ADD_COMPILE_OPTIONS(/wd4267)
+    ADD_DEFINITIONS(-DNOMINMAX)
     ADD_DEFINITIONS(-D_WIN32_WINNT=0x0601)
     ADD_DEFINITIONS(-D_CONSOLE)
     ADD_DEFINITIONS(-DUNICODE)
@@ -30,7 +32,6 @@ IF(MSVC)
     ADD_DEFINITIONS(-D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
     ADD_DEFINITIONS(-D_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS)
     ADD_DEFINITIONS(-D_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS)
-    ADD_DEFINITIONS(-D__SIMD__)
     ADD_DEFINITIONS(-DJEMALLOC)
     ADD_DEFINITIONS(-DFUNCTION)
     ADD_DEFINITIONS(-DBUDDY_ALLOC_IMPLEMENTATION)
@@ -67,6 +68,13 @@ ENDIF()
 # vmux teardown heap-corruption only.
 OPTION(ENABLE_ASAN "Build with AddressSanitizer (diagnostic only; disables jemalloc)" OFF)
 OPTION(ENABLE_UBSAN "Build with UndefinedBehaviorSanitizer (diagnostic only)" OFF)
+OPTION(ENABLE_TSAN "Build with ThreadSanitizer (Linux diagnostic only; disables jemalloc)" OFF)
+IF(ENABLE_TSAN AND (ENABLE_ASAN OR ENABLE_UBSAN))
+    MESSAGE(FATAL_ERROR "ENABLE_TSAN must use a separate build from ASan/UBSan")
+ENDIF()
+IF(ENABLE_TSAN AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    MESSAGE(FATAL_ERROR "ENABLE_TSAN is supported only for Linux diagnostic builds")
+ENDIF()
 SET(PPP_SANITIZER_FLAGS "")
 IF(ENABLE_ASAN)
     SET(PPP_SANITIZER_FLAGS "${PPP_SANITIZER_FLAGS} -fsanitize=address")
@@ -74,11 +82,15 @@ ENDIF()
 IF(ENABLE_UBSAN)
     SET(PPP_SANITIZER_FLAGS "${PPP_SANITIZER_FLAGS} -fsanitize=undefined")
 ENDIF()
-IF((ENABLE_ASAN OR ENABLE_UBSAN) AND NOT MSVC)
+IF(ENABLE_TSAN)
+    SET(PPP_SANITIZER_FLAGS "${PPP_SANITIZER_FLAGS} -fsanitize=thread")
+    ADD_DEFINITIONS(-DPPP_COROUTINES_TSAN_ENABLED=1)
+ENDIF()
+IF((ENABLE_ASAN OR ENABLE_UBSAN OR ENABLE_TSAN) AND NOT MSVC)
     SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${PPP_SANITIZER_FLAGS} -fno-omit-frame-pointer -g")
     SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${PPP_SANITIZER_FLAGS} -fno-omit-frame-pointer -g")
 ENDIF()
-IF(NOT ENABLE_ASAN AND NOT ENABLE_UBSAN)
+IF(NOT ENABLE_ASAN AND NOT ENABLE_UBSAN AND NOT ENABLE_TSAN)
     ADD_DEFINITIONS(-DJEMALLOC)
 ENDIF()
 ADD_DEFINITIONS(-DFUNCTION)
@@ -189,6 +201,14 @@ SET(ENABLE_SIMD_DEFAULT OFF)
 IF(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|X86_64|amd64|AMD64)$")
     SET(ENABLE_SIMD_DEFAULT ON)
 ENDIF()
+IF(MSVC)
+    IF(CMAKE_GENERATOR_PLATFORM MATCHES "^(ARM64|arm64)$"
+        OR CMAKE_VS_PLATFORM_NAME MATCHES "^(ARM64|arm64)$")
+        SET(ENABLE_SIMD_DEFAULT OFF)
+    ELSE()
+        SET(ENABLE_SIMD_DEFAULT ON)
+    ENDIF()
+ENDIF()
 OPTION(ENABLE_SIMD "Enable x86/x64 SIMD AES-NI implementation" ${ENABLE_SIMD_DEFAULT})
 
 # Enable SSEA SIMD acceleration (SSSE3/SSE4.1/SSE4.2/AVX/AVX2) for the
@@ -199,25 +219,34 @@ OPTION(ENABLE_SIMD "Enable x86/x64 SIMD AES-NI implementation" ${ENABLE_SIMD_DEF
 # corresponding -m flags are passed.
 OPTION(ENABLE_SSEA_SIMD "Enable SSEA SIMD acceleration (SSSE3+AVX2, requires ENABLE_SIMD)" OFF)
 
-# Optional telemetry/observability facade (default OFF for zero-cost on low-end hardware).
-OPTION(PPP_TELEMETRY "Enable optional telemetry/OTel facade (adds non-zero runtime cost)" OFF)
-IF(PPP_TELEMETRY)
-    ADD_COMPILE_DEFINITIONS(PPP_TELEMETRY=1)
-ENDIF()
-
 OPTION(ENABLE_TESTS "Build unit tests (GTest)" OFF)
+OPTION(ENABLE_XTCP_WINDOWS_TESTS "Build the offline Windows XTCP lifecycle test" OFF)
+INCLUDE(cmake/Corocc.cmake)
+OPTION(ENABLE_P2P_RECOVERY_TESTS "Build isolated actual Exchanger recovery tests (test-only seams)" OFF)
+OPTION(ENABLE_P2P_V2_PRODUCTION "Enable authenticated P2P v2 production capability" ON)
 OPTION(ENABLE_VMUX_CHURN_TEST "Build the root-linked VMUX carrier churn test" OFF)
 OPTION(ENABLE_VMUX_RECEIVE_SEMANTICS_TEST "Build the root-linked VMUX receive-semantics test" OFF)
 OPTION(ENABLE_COVERAGE "Enable LLVM source coverage instrumentation" OFF)
-OPTION(ENABLE_XTCP "Build with the pinned XTCP userspace TCP/IP stack (Linux desktop only)" OFF)
+SET(ENABLE_XTCP_DEFAULT OFF)
+IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+    SET(ENABLE_XTCP_DEFAULT ON)
+ENDIF()
+# Linux desktop builds retain their existing default. Windows and Android can
+# opt in explicitly while their platform build paths receive broader coverage.
+OPTION(ENABLE_XTCP "Build with the pinned XTCP userspace TCP/IP stack" ${ENABLE_XTCP_DEFAULT})
 SET(XTCP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third-party/xtcp" CACHE PATH "Path to the pinned XTCP source tree")
 IF(ENABLE_COVERAGE AND NOT MSVC)
     INCLUDE(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Coverage.cmake)
 ENDIF()
 
 IF(ENABLE_XTCP)
-    IF(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
-        MESSAGE(FATAL_ERROR "ENABLE_XTCP is supported only for Linux desktop builds.")
+    IF(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT WIN32 AND NOT ANDROID)
+        MESSAGE(FATAL_ERROR "ENABLE_XTCP is supported only for Linux, Windows, and Android builds.")
+    ENDIF()
+    IF(WIN32 AND (NOT CMAKE_SIZEOF_VOID_P EQUAL 8
+        OR CMAKE_CXX_COMPILER_ARCHITECTURE_ID MATCHES "ARM"
+        OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$"))
+        MESSAGE(FATAL_ERROR "Windows XTCP currently supports x64 only.")
     ENDIF()
     IF(NOT EXISTS "${XTCP_SOURCE_DIR}/CMakeLists.txt")
         MESSAGE(FATAL_ERROR "XTCP source tree not found at ${XTCP_SOURCE_DIR}; run tools/prepare_xtcp.sh first.")
@@ -248,13 +277,22 @@ ELSEIF(MSVC AND (CMAKE_SIZEOF_VOID_P EQUAL 8 OR CMAKE_SIZEOF_VOID_P EQUAL 4))
     SET(PLATFORM_ARCH_X86 TRUE)
 ENDIF()
 
+# CMake's MSVC host pointer size describes the compiler host, not the selected
+# target platform. Correct the architecture flags for ARM64 generators so an
+# explicit ENABLE_SIMD=OFF remains effective and ARM64 never receives x86 AES.
+IF(MSVC AND (CMAKE_GENERATOR_PLATFORM MATCHES "^(ARM64|arm64)$"
+    OR CMAKE_VS_PLATFORM_NAME MATCHES "^(ARM64|arm64)$"))
+    SET(PLATFORM_ARCH_X86 FALSE)
+    SET(PLATFORM_ARCH_ARM64 TRUE)
+ENDIF()
+
 # For MSVC ARM64 cross-compilation, detect at compile time
 IF(MSVC AND NOT PLATFORM_ARCH_X86 AND NOT PLATFORM_ARCH_ARM64)
     # This will be handled by _M_ARM64 in source code
 ENDIF()
 
 SET(__SIMD__ FALSE)
-IF(PLATFORM_SYSTEM_WINDOWS AND PLATFORM_ARCH_X86)
+IF(PLATFORM_SYSTEM_WINDOWS AND PLATFORM_ARCH_X86 AND ENABLE_SIMD)
     SET(__SIMD__ TRUE)
 ENDIF()
 
@@ -332,7 +370,7 @@ ELSE()
     # When the __MUSL__ macro is enabled and compilation errors are encountered, you can add the connector option: -static
     # -rdynamic -Wl,-Bstatic -Wl,-Bdynamic -lstdc++ -lpthread -ldl -lz -lrt
     IF(NOT MSVC)
-        IF(ENABLE_ASAN OR ENABLE_UBSAN)
+        IF(ENABLE_ASAN OR ENABLE_UBSAN OR ENABLE_TSAN)
             # Sanitizers need their runtimes dynamically linked; do not force -Bstatic.
             SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -rdynamic ${PPP_SANITIZER_FLAGS}")
         ELSE()
@@ -483,8 +521,29 @@ IF(PLATFORM_SYSTEM_WINDOWS)
 ENDIF()
 
 ADD_LIBRARY(openppp2_lib STATIC ${PPP_LIBRARY_SOURCES})
+IF(ENABLE_P2P_V2_PRODUCTION)
+    TARGET_COMPILE_DEFINITIONS(openppp2_lib PUBLIC OPENPPP2_P2P_V2_PRODUCTION=1)
+ELSE()
+    TARGET_COMPILE_DEFINITIONS(openppp2_lib PUBLIC OPENPPP2_P2P_V2_PRODUCTION=0)
+ENDIF()
+IF(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+    AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9
+    AND NOT ANDROID)
+    TARGET_LINK_LIBRARIES(openppp2_lib stdc++fs)
+ENDIF()
+IF(ENABLE_P2P_RECOVERY_TESTS)
+    TARGET_COMPILE_DEFINITIONS(openppp2_lib PUBLIC OPENPPP2_P2P_RECOVERY_TESTING=1)
+ENDIF()
+IF(ENABLE_COROCC)
+    TARGET_LINK_LIBRARIES(openppp2_lib ppp_context_backend)
+ENDIF()
 IF(ENABLE_XTCP)
     TARGET_LINK_LIBRARIES(openppp2_lib xtcp_static)
+    IF(WIN32)
+        # The pinned vendor target only declares these for MinGW. MSVC/Ninja
+        # must link the same system libraries as the opt-in vcxproj build.
+        TARGET_LINK_LIBRARIES(openppp2_lib bcrypt winmm)
+    ENDIF()
     TARGET_COMPILE_DEFINITIONS(openppp2_lib PRIVATE
         PPP_ENABLE_XTCP=1
         PPP_XTCP_RUNTIME_WIRED=1
@@ -582,7 +641,7 @@ ELSEIF(PLATFORM_COMPILER_CLANG)
         libboost_context.a
         libboost_regex.a
         libboost_filesystem.a)
-    IF(NOT ENABLE_ASAN AND NOT ENABLE_UBSAN)
+    IF(NOT ENABLE_ASAN AND NOT ENABLE_UBSAN AND NOT ENABLE_TSAN)
         LIST(APPEND PPP_CLANG_LINK_LIBS libjemalloc.a)
     ENDIF()
     LIST(APPEND PPP_CLANG_LINK_LIBS z zstd)
@@ -595,7 +654,7 @@ ELSEIF(PLATFORM_COMPILER_CLANG)
     TARGET_LINK_LIBRARIES(openppp2_lib ${PPP_CLANG_LINK_LIBS})
     TARGET_LINK_LIBRARIES(${NAME} openppp2_lib)
 ELSEIF(NOT MSVC)
-    IF(ENABLE_ASAN OR ENABLE_UBSAN)
+    IF(ENABLE_ASAN OR ENABLE_UBSAN OR ENABLE_TSAN)
         # ASan variant: drop libc.a (no full-static libc) and libjemalloc.a (let
         # ASan's allocator intercept malloc/free). Diagnostic build only.
         SET(PPP_LINUX_LINK_LIBS
@@ -672,4 +731,29 @@ ENDIF()
 IF(ENABLE_TESTS)
     ENABLE_TESTING()
     ADD_SUBDIRECTORY(tests)
+ENDIF()
+
+IF(ENABLE_P2P_RECOVERY_TESTS)
+    ENABLE_TESTING()
+    ADD_EXECUTABLE(p2p_v2_exchanger_recovery_test
+        tests/cpp/p2p_v2_exchanger_recovery_test.cpp)
+    TARGET_LINK_LIBRARIES(p2p_v2_exchanger_recovery_test openppp2_lib)
+    ADD_TEST(NAME p2p_v2_exchanger_recovery_test COMMAND p2p_v2_exchanger_recovery_test)
+    SET_TESTS_PROPERTIES(p2p_v2_exchanger_recovery_test PROPERTIES TIMEOUT 120)
+ENDIF()
+
+IF(ENABLE_XTCP_WINDOWS_TESTS)
+    IF(NOT WIN32 OR NOT ENABLE_XTCP)
+        MESSAGE(FATAL_ERROR "ENABLE_XTCP_WINDOWS_TESTS requires Windows and ENABLE_XTCP=ON.")
+    ENDIF()
+    ENABLE_TESTING()
+    ADD_EXECUTABLE(xtcp_windows_lifecycle_test tests/cpp/xtcp_windows_lifecycle_test.cpp)
+    TARGET_LINK_LIBRARIES(xtcp_windows_lifecycle_test openppp2_lib)
+    ADD_TEST(NAME xtcp_windows_lifecycle_test COMMAND xtcp_windows_lifecycle_test)
+    SET_TESTS_PROPERTIES(xtcp_windows_lifecycle_test PROPERTIES TIMEOUT 30)
+    ADD_EXECUTABLE(xtcp_runtime_bridge_test tests/cpp/xtcp_runtime_bridge_test.cpp)
+    TARGET_LINK_LIBRARIES(xtcp_runtime_bridge_test openppp2_lib)
+    TARGET_INCLUDE_DIRECTORIES(xtcp_runtime_bridge_test PRIVATE "${XTCP_SOURCE_DIR}/tests")
+    ADD_TEST(NAME xtcp_runtime_bridge_test COMMAND xtcp_runtime_bridge_test)
+    SET_TESTS_PROPERTIES(xtcp_runtime_bridge_test PROPERTIES TIMEOUT 120)
 ENDIF()

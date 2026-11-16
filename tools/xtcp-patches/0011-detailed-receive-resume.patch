@@ -1,6 +1,30 @@
+diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
+--- a/include/xtcp/core/stack.h
++++ b/include/xtcp/core/stack.h
+@@ -139,11 +139,15 @@
+          */
+         bool Send(UInt64 conn_id, const Byte* data, UInt32 len) noexcept;
+         /**
+-         * @brief Reopens a receive window blocked by the checked receive
+-         *        handler and emits an immediate window-update ACK.
+-         * @return True only when the connection existed and was blocked.
++         * @brief Attempts to reopen a checked-handler-blocked receive window.
++         * @param state Optional post-attempt receive state snapshot.
+          */
+-        bool ResumeReceive(UInt64 conn_id) noexcept;
++        core::ReceiveResumeResult ResumeReceiveDetailed(
++            UInt64 conn_id, core::ReceiveStateSnapshot* state = NULLPTR) noexcept;
++        bool ResumeReceive(UInt64 conn_id) noexcept {
++            return core::ReceiveResumeResult::kResumed == ResumeReceiveDetailed(conn_id);
++        }
++        bool ReceiveState(UInt64 conn_id, core::ReceiveStateSnapshot& state) const noexcept;
+         /**
+          * @brief Sends a SYN with early data (TCP Fast Open, RFC 7413).
+          * @return True when the SYN was emitted (SynSent); the data rides
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -214,6 +214,19 @@
+@@ -253,6 +253,19 @@
           * @brief Output sink: receives complete IP packets to transmit.
           */
          typedef std::function<void(buf::BufRef&&)> TxSink;
@@ -20,7 +44,7 @@
          /**
           * @brief Received in-order data callback.
           * @param data Buffer (valid only during the callback).
-@@ -331,12 +344,17 @@
+@@ -370,12 +383,17 @@
               */
              void SendAck() noexcept;
              /**
@@ -28,11 +52,10 @@
 -             *        an immediate nonzero window-update ACK.
 -             * @return True only when a latched blocked state was cleared.
 -             * @note Does not advance RCV.NXT; repeated calls are no-ops.
--             */
--            bool ResumeReceive() noexcept;
 +             * @brief Attempts to reopen an application-blocked receive window.
 +             * @return Detailed outcome distinguishing latch/window state.
-+             */
+              */
+-            bool ResumeReceive() noexcept;
 +            ReceiveResumeResult ResumeReceiveDetailed() noexcept;
 +            bool ResumeReceive() noexcept {
 +                return ReceiveResumeResult::kResumed == ResumeReceiveDetailed();
@@ -44,61 +67,10 @@
              /**
               * @brief Sends the SYN segment (active-open path, SynSent).
               * @note Caller invokes after creating the connection in SynSent.
---- a/include/xtcp/core/stack.h
-+++ b/include/xtcp/core/stack.h
-@@ -139,11 +139,15 @@
-          */
-         bool Send(UInt64 conn_id, const Byte* data, UInt32 len) noexcept;
-         /**
--         * @brief Reopens a receive window blocked by the checked receive
--         *        handler and emits an immediate window-update ACK.
--         * @return True only when the connection existed and was blocked.
--         */
--        bool ResumeReceive(UInt64 conn_id) noexcept;
-+         * @brief Attempts to reopen a checked-handler-blocked receive window.
-+         * @param state Optional post-attempt receive state snapshot.
-+         */
-+        core::ReceiveResumeResult ResumeReceiveDetailed(
-+            UInt64 conn_id, core::ReceiveStateSnapshot* state = NULLPTR) noexcept;
-+        bool ResumeReceive(UInt64 conn_id) noexcept {
-+            return core::ReceiveResumeResult::kResumed == ResumeReceiveDetailed(conn_id);
-+        }
-+        bool ReceiveState(UInt64 conn_id, core::ReceiveStateSnapshot& state) const noexcept;
-         /**
-          * @brief Sends a SYN with early data (TCP Fast Open, RFC 7413).
-          * @return True when the SYN was emitted (SynSent); the data rides
---- a/src/core/tcp_fsm.cpp
-+++ b/src/core/tcp_fsm.cpp
-@@ -3790,21 +3790,19 @@
-             SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
-         }
- 
--        bool TcpConn::ResumeReceive() noexcept {
-+        ReceiveResumeResult TcpConn::ResumeReceiveDetailed() noexcept {
-             std::lock_guard<std::recursive_mutex> scope(syncobj_);
-             if (!rcv_blocked_) {
--                return false;
-+                return ReceiveResumeResult::kNotBlocked;
-             }
-             rcv_blocked_ = false;
--            if (AdvertisedWindow() == 0) {
--                rcv_blocked_ = true;
--                return false;
--            }
-             ack_pending_ = false;
-             ack_count_ = 0;
-             ack_deadline_ = 0;
-             SendAck();
--            return true;
-+            return AdvertisedWindow() == 0
-+                ? ReceiveResumeResult::kReceiveWindowFull
-+                : ReceiveResumeResult::kResumed;
-         }
- 
-         void TcpConn::SendSyn() noexcept {
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1424,14 +1424,35 @@
+@@ -1470,14 +1470,35 @@
          return it->second->conn->SendData(data, len, GetTickUs());
      }
  
@@ -136,31 +108,37 @@
      }
  
      bool XtcpStack::ConnLastSendAdmission(
---- a/tests/test_zero_window_backpressure.cpp
-+++ b/tests/test_zero_window_backpressure.cpp
-@@ -295,7 +295,21 @@
-             (void)backend_b.PollTx(resume_ack);  // discard pre-resume zero-window ACKs
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -5776,21 +5776,19 @@
+             SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
          }
-         const UInt64 accepted_conn = conn_b.load(std::memory_order_relaxed);
--        CHECK(stack_b.ResumeReceive(accepted_conn));
-+        xtcp::core::ReceiveStateSnapshot receive_state;
-+        CHECK(stack_b.ReceiveState(accepted_conn, receive_state));
-+        CHECK(receive_state.rcv_blocked);
-+        CHECK(receive_state.window == 65535);
-+        CHECK(receive_state.ooo_bytes < receive_state.window);
-+        CHECK(receive_state.advertised_window == 0);
-+        CHECK(stack_b.ResumeReceiveDetailed(accepted_conn, &receive_state) ==
-+            xtcp::core::ReceiveResumeResult::kResumed);
-+        CHECK(!receive_state.rcv_blocked);
-+        CHECK(receive_state.advertised_window != 0);
-+        CHECK(stack_b.ResumeReceiveDetailed(accepted_conn, &receive_state) ==
-+            xtcp::core::ReceiveResumeResult::kNotBlocked);
-+        CHECK(stack_b.ResumeReceiveDetailed(~UInt64{0}, &receive_state) ==
-+            xtcp::core::ReceiveResumeResult::kConnectionMissing);
-+        CHECK(!stack_b.ReceiveState(~UInt64{0}, receive_state));
-         CHECK(!stack_b.ResumeReceive(accepted_conn));
-         CHECK(backend_b.TxPending() == 1);
-         const UInt32 resume_ack_len = backend_b.PollTx(resume_ack);
+ 
+-        bool TcpConn::ResumeReceive() noexcept {
++        ReceiveResumeResult TcpConn::ResumeReceiveDetailed() noexcept {
+             std::lock_guard<std::recursive_mutex> scope(syncobj_);
+             if (!rcv_blocked_) {
+-                return false;
++                return ReceiveResumeResult::kNotBlocked;
+             }
+             rcv_blocked_ = false;
+-            if (AdvertisedWindow() == 0) {
+-                rcv_blocked_ = true;
+-                return false;
+-            }
+             ack_pending_ = false;
+             ack_count_ = 0;
+             ack_deadline_ = 0;
+             SendAck();
+-            return true;
++            return AdvertisedWindow() == 0
++                ? ReceiveResumeResult::kReceiveWindowFull
++                : ReceiveResumeResult::kResumed;
+         }
+ 
+         void TcpConn::SendSyn() noexcept {
+diff --git a/tests/test_ooo_capacity.cpp b/tests/test_ooo_capacity.cpp
 --- a/tests/test_ooo_capacity.cpp
 +++ b/tests/test_ooo_capacity.cpp
 @@ -167,10 +167,58 @@
@@ -222,3 +200,29 @@
      xtcp::buf::ShutdownPools();
      std::fprintf(stderr, g_failures ? "OOO_CAPACITY: FAILED (%d)\n" : "OOO_CAPACITY: ALL PASSED\n", g_failures);
      return g_failures ? 1 : 0;
+diff --git a/tests/test_zero_window_backpressure.cpp b/tests/test_zero_window_backpressure.cpp
+--- a/tests/test_zero_window_backpressure.cpp
++++ b/tests/test_zero_window_backpressure.cpp
+@@ -295,7 +295,21 @@
+             (void)backend_b.PollTx(resume_ack);  // discard pre-resume zero-window ACKs
+         }
+         const UInt64 accepted_conn = conn_b.load(std::memory_order_relaxed);
+-        CHECK(stack_b.ResumeReceive(accepted_conn));
++        xtcp::core::ReceiveStateSnapshot receive_state;
++        CHECK(stack_b.ReceiveState(accepted_conn, receive_state));
++        CHECK(receive_state.rcv_blocked);
++        CHECK(receive_state.window == 65535);
++        CHECK(receive_state.ooo_bytes < receive_state.window);
++        CHECK(receive_state.advertised_window == 0);
++        CHECK(stack_b.ResumeReceiveDetailed(accepted_conn, &receive_state) ==
++            xtcp::core::ReceiveResumeResult::kResumed);
++        CHECK(!receive_state.rcv_blocked);
++        CHECK(receive_state.advertised_window != 0);
++        CHECK(stack_b.ResumeReceiveDetailed(accepted_conn, &receive_state) ==
++            xtcp::core::ReceiveResumeResult::kNotBlocked);
++        CHECK(stack_b.ResumeReceiveDetailed(~UInt64{0}, &receive_state) ==
++            xtcp::core::ReceiveResumeResult::kConnectionMissing);
++        CHECK(!stack_b.ReceiveState(~UInt64{0}, receive_state));
+         CHECK(!stack_b.ResumeReceive(accepted_conn));
+         CHECK(backend_b.TxPending() == 1);
+         const UInt32 resume_ack_len = backend_b.PollTx(resume_ack);

@@ -12,6 +12,7 @@ set "CONFIG=Release"
 set "TARGET=all"
 set "BUILD_JOBS=%NUMBER_OF_PROCESSORS%"
 set "SHOW_HELP=0"
+set "ENABLE_XTCP=OFF"
 
 call :parse_args %*
 if errorlevel 1 goto :help
@@ -24,6 +25,7 @@ echo   build_windows.bat help
 echo   build_windows.bat /?
 echo   build_windows.bat [Debug^|Release] [x86^|x64^|arm64^|all]
 echo   build_windows.bat [x86^|x64^|arm64^|all] [Debug^|Release]
+echo   build_windows.bat [Debug^|Release] [x86^|x64^|arm64^|all] xtcp
 echo.
 echo Examples:
 echo   build_windows.bat
@@ -47,6 +49,7 @@ echo   - Debug/Release are case-insensitive.
 echo   - Output goes to bin\Debug or bin\Release.
 echo   - Build directories are temporary and removed after success.
 echo   - Default behavior is Release all.
+echo   - XTCP is opt-in: append xtcp (requires third-party\xtcp prepared).
 echo   - vcpkg discovery prefers environment variables first.
 echo.
 echo vcpkg discovery priority:
@@ -151,13 +154,19 @@ if /I "%~1"=="all" (
     goto :parse_args_loop
 )
 
+if /I "%~1"=="xtcp" (
+    set "ENABLE_XTCP=ON"
+    shift
+    goto :parse_args_loop
+)
+
 exit /b 1
 
 :parse_args_done
 if %ARG_COUNT%==0 (
     exit /b 0
 )
-if %ARG_COUNT% gtr 2 exit /b 1
+if %ARG_COUNT% gtr 3 exit /b 1
 exit /b 0
 
 :build_one
@@ -176,7 +185,7 @@ echo VCPKG_INSTALLED_DIR=%VCPKG_INSTALLED_DIR%
 
 pushd "%BUILD_DIR%"
 echo Configuring %ARCH% %CONFIG%
-cmake -G Ninja -DCMAKE_BUILD_TYPE=%CONFIG% "-DCMAKE_TOOLCHAIN_FILE=%TOOLCHAIN_FILE%" -DVCPKG_INSTALLED_DIR="%VCPKG_INSTALLED_DIR%" -DVCPKG_TARGET_TRIPLET=%TRIPLET% -DVCPKG_HOST_TRIPLET=x64-windows -DPPP_OUTPUT_DIR=%OUTPUT_DIR% -DCMAKE_CXX_STANDARD=17 "%ROOT_DIR%"
+cmake -G Ninja -DCMAKE_BUILD_TYPE=%CONFIG% "-DCMAKE_TOOLCHAIN_FILE=%TOOLCHAIN_FILE%" -DVCPKG_INSTALLED_DIR="%VCPKG_INSTALLED_DIR%" -DVCPKG_TARGET_TRIPLET=%TRIPLET% -DVCPKG_HOST_TRIPLET=x64-windows -DPPP_OUTPUT_DIR=%OUTPUT_DIR% -DENABLE_XTCP=%ENABLE_XTCP% -DCMAKE_CXX_STANDARD=17 "%ROOT_DIR%"
 if errorlevel 1 (
     popd
     exit /b 1

@@ -38,7 +38,8 @@ namespace ppp {
                     /** @brief Look up the datagram port for source, or null. */
                     VirtualEthernetDatagramPortPtr GetDatagramPort(const boost::asio::ip::udp::endpoint& source) noexcept;
                     /** @brief Remove, dispose, and return the datagram port for source, or null. */
-                    VirtualEthernetDatagramPortPtr ReleaseDatagramPort(const boost::asio::ip::udp::endpoint& source) noexcept;
+                    VirtualEthernetDatagramPortPtr ReleaseDatagramPort(const boost::asio::ip::udp::endpoint& source,
+                        const VirtualEthernetDatagramPort* expected = nullptr) noexcept;
 
                     /**
                      * @brief Forward a client UDP payload to its destination via the per-source relay port.

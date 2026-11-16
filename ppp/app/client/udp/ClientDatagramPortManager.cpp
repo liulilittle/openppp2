@@ -3,6 +3,7 @@
 #include <ppp/app/client/VEthernetDatagramPort.h>
 #include <ppp/collections/Dictionary.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/app/client/udp/DirectDatagramFlow.h>
 
 /**
  * @file ClientDatagramPortManager.cpp
@@ -108,6 +109,15 @@ namespace ppp {
                 bool ClientDatagramPortManager::SendTo(const boost::asio::ip::udp::endpoint& source,
                     const boost::asio::ip::udp::endpoint& destination, const void* packet, int packet_size,
                     routing::RoutingAction action) noexcept {
+#if defined(_ANDROID)
+                    if (action == routing::RoutingAction::Auto && destination.address().is_v4() &&
+                        ports_.is_bypass_ip && ports_.is_bypass_ip(destination.address())) {
+                        return SendTo(source, destination, packet, packet_size, routing::RoutingAction::Direct, "", nullptr);
+                    }
+#endif
+                    if (action == routing::RoutingAction::Direct) {
+                        return SendTo(source, destination, packet, packet_size, action, "", nullptr);
+                    }
                     if (NULLPTR == packet || packet_size < 1) {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::UdpPacketInvalid);
                     }
@@ -129,6 +139,116 @@ namespace ppp {
                     return datagram->SendTo(packet, packet_size, destination, action);
                 }
 
+                bool ClientDatagramPortManager::SendTo(const boost::asio::ip::udp::endpoint& source,
+                    const boost::asio::ip::udp::endpoint& destination, const void* packet, int packet_size,
+                    routing::RoutingAction action, const std::string& domain,
+                    const std::shared_ptr<const policy::PolicySnapshot>& snapshot, bool resolve_domain) noexcept {
+                    if (action != routing::RoutingAction::Direct && !resolve_domain && !snapshot) {
+                        return SendTo(source, destination, packet, packet_size, action);
+                    }
+                    if (!packet || packet_size < 1 || packet_size > 65507 || !destination.address().is_v4() ||
+                        !destination.port() || (ports_.is_disposed && ports_.is_disposed())) return false;
+                    if (snapshot && source.address().is_v4() && UdpRelayIdentity::IsIdentity(source.address().to_v4().to_uint()))
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                    try {
+                        const auto normalized = NormalizeUdpFlowDomain(domain);
+                        const auto key = FlowKey(source.address().to_string() + ":" + std::to_string(source.port()),
+                            (normalized.empty() || resolve_domain ? destination.address().to_string() : normalized) + ":" + std::to_string(destination.port()),
+                            normalized, snapshot ? -1 : static_cast<int>(action));
+                        std::shared_ptr<DirectDatagramFlow> flow;
+                        {
+                            std::lock_guard<std::mutex> lock(syncobj_);
+                            if (closed_) return false;
+                            for (auto it = direct_flows_.begin(); it != direct_flows_.end();) {
+                                if (it->second->IsClosed()) it = direct_flows_.erase(it);
+                                else ++it;
+                            }
+                            auto found = direct_flows_.find(key);
+                            if (found != direct_flows_.end()) {
+                                if (!found->second->IsClosed()) flow = found->second;
+                                else direct_flows_.erase(found);
+                            }
+                        }
+                        if (!flow) {
+                            auto context = ports_.get_context ? ports_.get_context() : nullptr;
+                            auto owner = ports_.get_owner ? ports_.get_owner() : nullptr;
+                            if (!context || !owner) return false;
+                            auto address = !resolve_domain && ports_.rewrite_fakeip ? ports_.rewrite_fakeip(destination.address()) : destination.address();
+                            if (!address.is_v4() || address.is_unspecified()) return false;
+                            auto protector = ports_.get_direct_protector ? ports_.get_direct_protector() : ClientUnderlyingSocketProtector();
+                            auto provider = ports_.create_direct_transport ? ports_.create_direct_transport() : nullptr;
+                            if (!resolve_domain && action == routing::RoutingAction::Direct && !protector && !provider) return false;
+                            auto config = ports_.get_configuration();
+                            if (!config) return false;
+                            auto relay = std::make_shared<boost::asio::ip::udp::endpoint>();
+                            DirectDatagramFlow::Resolve resolve;
+                            DirectDatagramFlow::TunnelSend tunnel_send = [this, owner, relay](const boost::asio::ip::udp::endpoint& target, const void* data, int length) {
+                                return SendTo(*relay, target, data, length, routing::RoutingAction::Proxy);
+                            };
+                            if (resolve_domain) {
+                                if (!snapshot || domain.empty() || !ports_.resolve_policy_destination) return false;
+                                resolve = [this, owner, domain, snapshot](ppp::coroutines::YieldContext& y, boost::asio::ip::address& address) {
+                                    return ports_.resolve_policy_destination(domain, snapshot, y, address);
+                                };
+                            }
+                            auto candidate = std::make_shared<DirectDatagramFlow>(context, owner,
+                                boost::asio::ip::udp::endpoint(address, destination.port()), destination,
+                                protector, provider, snapshot, destination.port() == 53 ? config->udp.dns.timeout : config->udp.inactive.timeout,
+                                [this, owner, source](const boost::asio::ip::udp::endpoint& remote, void* data, int length) {
+                                    if (!TryHandleDatagram(source, remote, data, length))
+                                        ports_.datagram_output(source, remote, nullptr, data, length, false);
+                                }, resolve, tunnel_send, domain, action == routing::RoutingAction::Proxy,
+                                [this, owner, relay]() { if (relay->port()) ReleaseDatagramHandler(*relay); }, config->udp.dns.timeout,
+                                [this, owner]() { RecordPolicyReject(); });
+                            {
+                                std::lock_guard<std::mutex> lock(syncobj_);
+                                if (closed_) return false;
+                                // Globally bound outstanding direct sessions as well as per-flow buffers.
+                                if (direct_flows_.size() >= 4096) return false;
+                                auto inserted = direct_flows_.emplace(key, candidate);
+                                flow = inserted.first->second;
+                                if (inserted.second) {
+                                    // Reserved internal identity is carried by the existing SENDTO
+                                    // protocol only; it is never installed as a host address/route.
+                                    std::uint32_t relay_address;
+                                    std::uint16_t relay_port;
+                                    if (!UdpRelayIdentity::Next(relay_sequence_, relay_address, relay_port)) {
+                                        direct_flows_.erase(inserted.first); return false;
+                                    }
+                                    *relay = {boost::asio::ip::address_v4(relay_address), relay_port};
+                                    auto weak = std::weak_ptr<DirectDatagramFlow>(flow);
+                                    datagram_handlers_.emplace(*relay, [weak](const auto&, const auto& remote, void* data, int length) {
+                                        if (auto locked = weak.lock()) locked->TunnelReply(remote, data, length);
+                                        return true;
+                                    });
+                                }
+                            }
+                        }
+                        return flow->Send(packet, packet_size);
+                    } catch (...) { return false; }
+                }
+
+                bool ClientDatagramPortManager::TrySendPinned(const boost::asio::ip::udp::endpoint& source,
+                    const boost::asio::ip::udp::endpoint& destination, const void* packet, int packet_size,
+                    const std::string& domain, bool& accepted, bool original_is_fake) noexcept {
+                    accepted = false;
+                    try {
+                        const auto normalized = NormalizeUdpFlowDomain(domain);
+                        const auto key = FlowKey(source.address().to_string() + ":" + std::to_string(source.port()),
+                            (normalized.empty() || original_is_fake ? destination.address().to_string() : normalized) + ":" + std::to_string(destination.port()), normalized, -1);
+                        std::shared_ptr<DirectDatagramFlow> flow;
+                        {
+                            std::lock_guard<std::mutex> lock(syncobj_);
+                            if (closed_) return false;
+                            auto found = direct_flows_.find(key);
+                            if (found == direct_flows_.end() || found->second->IsClosed()) return false;
+                            flow = found->second;
+                        }
+                        accepted = flow->Send(packet, packet_size);
+                        return true;
+                    } catch (...) { return false; }
+                }
+
                 bool ClientDatagramPortManager::ReceiveFromDestination(const boost::asio::ip::udp::endpoint& source,
                     const boost::asio::ip::udp::endpoint& destination, ppp::Byte* packet, int packet_length) noexcept {
                     if (ports_.is_disposed && ports_.is_disposed()) {
@@ -138,6 +258,11 @@ namespace ppp {
                     if (NULLPTR != packet && packet_length > 0) {
                         if (TryHandleDatagram(source, destination, packet, packet_length)) {
                             return true;
+                        }
+                        if (source.address().is_v4() && UdpRelayIdentity::IsIdentity(source.address().to_v4().to_uint())) {
+                            const auto identity = (static_cast<std::uint64_t>(source.address().to_v4().to_uint() & 0xffffu) << 16) | source.port();
+                            std::lock_guard<std::mutex> lock(syncobj_);
+                            if (identity > 1023 && identity <= relay_sequence_) return true;
                         }
                     }
 
@@ -205,11 +330,18 @@ namespace ppp {
                 bool ClientDatagramPortManager::ReleaseDatagramHandler(const boost::asio::ip::udp::endpoint& source) noexcept {
                     bool removed = false;
                     VEthernetDatagramPortPtr datagram;
+                    std::vector<std::shared_ptr<DirectDatagramFlow>> direct;
                     {
                         std::lock_guard<std::mutex> scope(syncobj_);
                         removed = datagram_handlers_.erase(source) > 0;
                         datagram = ppp::collections::Dictionary::ReleaseObjectByKey(datagrams_, source);
+                        const auto identity = source.address().to_string() + ":" + std::to_string(source.port());
+                        for (auto it = direct_flows_.begin(); it != direct_flows_.end();) {
+                            if (std::get<0>(it->first) == identity) { direct.push_back(it->second); it = direct_flows_.erase(it); }
+                            else ++it;
+                        }
                     }
+                    for (auto& flow : direct) flow->Close();
 
                     if (NULLPTR != datagram) {
                         datagram->MarkFinalize();
@@ -265,6 +397,13 @@ namespace ppp {
                 }
 
                 void ClientDatagramPortManager::Tick(UInt64 now) noexcept {
+                    {
+                        std::lock_guard<std::mutex> lock(syncobj_);
+                        for (auto it = direct_flows_.begin(); it != direct_flows_.end();) {
+                            if (it->second->IsClosed()) it = direct_flows_.erase(it);
+                            else ++it;
+                        }
+                    }
                     // Phase 1: snapshot the table under the lock.
                     ppp::vector<std::pair<boost::asio::ip::udp::endpoint, VEthernetDatagramPortPtr>> candidates;
                     {
@@ -312,9 +451,12 @@ namespace ppp {
 
                 void ClientDatagramPortManager::Release() noexcept {
                     ppp::vector<VEthernetDatagramPortPtr> stale;
+                    std::vector<std::shared_ptr<DirectDatagramFlow>> direct;
                     {
                         std::lock_guard<std::mutex> scope(syncobj_);
                         closed_ = true;
+                        for (auto& item : direct_flows_) direct.push_back(item.second);
+                        direct_flows_.clear();
                         for (auto&& kv : datagrams_) {
                             if (NULLPTR != kv.second) {
                                 stale.emplace_back(kv.second);
@@ -323,6 +465,7 @@ namespace ppp {
                         datagrams_.clear();
                         datagram_handlers_.clear();
                     }
+                    for (auto& flow : direct) flow->Close();
 
                     for (auto&& datagram : stale) {
                         datagram->Dispose();

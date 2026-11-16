@@ -147,14 +147,16 @@ namespace ppp {
         public:
             /** @brief Gets current transmission configuration. */
             AppConfigurationPtr                                                                     GetConfiguration() noexcept { return configuration_; }
-            /** @brief Gets mutable shared io_context reference. */
-            ContextPtr&                                                                             GetContext() noexcept { return context_; }
-            /** @brief Gets immutable shared io_context reference. */
-            const ContextPtr&                                                                       GetContext() const noexcept { return context_; }
-            /** @brief Gets mutable shared strand reference. */
-            StrandPtr&                                                                              GetStrand() noexcept { return strand_; }
-            /** @brief Gets immutable shared strand reference. */
-            const StrandPtr&                                                                        GetStrand() const noexcept { return strand_; }
+            /** @brief Atomically snapshots the shared io_context. */
+            ContextPtr                                                                              GetContext() noexcept { return std::atomic_load(&context_); }
+            /** @brief Atomically snapshots the shared io_context. */
+            ContextPtr                                                                             GetContext() const noexcept { return std::atomic_load(&context_); }
+            /** @brief Atomically snapshots the shared strand. */
+            StrandPtr                                                                               GetStrand() noexcept { return std::atomic_load(&strand_); }
+            /** @brief Atomically snapshots the shared strand. */
+            StrandPtr                                                                              GetStrand() const noexcept { return std::atomic_load(&strand_); }
+            void SetStrand(const StrandPtr& strand) noexcept { std::atomic_store(&strand_, strand); }
+            void SetContext(const ContextPtr& context) noexcept { std::atomic_store(&context_, context); }
             /** @brief Reports whether the authenticated OpenPPP2 handshake completed. */
             virtual bool                                                                            IsHandshakeComplete() const noexcept { return handshaked_.load(std::memory_order_acquire); }
             /** @brief Reports whether the peer advertised transport-auth-v1 support. */
@@ -181,6 +183,13 @@ namespace ppp {
             virtual bool                                                                            ShutdownSend() noexcept { return false; }
             /** @brief Reports a clean peer close of the carrier receive direction. */
             virtual bool                                                                            IsReceiveClosed() const noexcept { return false; }
+            /**
+             * @brief Opts a per-flow carrier into receive half-close: a clean peer FIN
+             *        marks IsReceiveClosed() instead of disposing, so the owner can keep
+             *        sending (graceful TCP half-close relay).
+             * @return true when the carrier supports it.
+             */
+            virtual bool                                                                            EnableReceiveHalfClose() noexcept { return false; }
             /** @brief Identifies the installed authenticated carrier mechanism. */
             virtual AuthenticatedCarrierMethod                                                      GetAuthenticatedCarrierMethod() const noexcept;
             /** @brief Reports current lifecycle-valid authenticated carrier availability. */

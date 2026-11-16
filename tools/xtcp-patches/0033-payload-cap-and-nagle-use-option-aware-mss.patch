@@ -1,0 +1,67 @@
+diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
+--- a/include/xtcp/core/stack.h
++++ b/include/xtcp/core/stack.h
+@@ -472,6 +472,20 @@
+             return it->second->conn->PeerMss();
+         }
+         /**
++         * @brief Largest data payload a segment of this connection carries:
++         *        the effective MSS minus the option space it reserves
++         *        (timestamps or TCP-MD5). 0 for an unknown connection.
++         */
++        UInt16 ConnPayloadCap(UInt64 conn_id) const noexcept {
++            Shard* shard = ShardOf(conn_id);
++            std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
++            auto it = shard->conns_.find(conn_id);
++            if (it == shard->conns_.end() || NULLPTR == it->second->conn) {
++                return 0;
++            }
++            return it->second->conn->DataPayloadCap();
++        }
++        /**
+          * @brief Number of unacknowledged segments on a connection
+          *        (diagnostics / tests: the TSO-direct gate requires an
+          *        empty retransmission queue).
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+--- a/include/xtcp/core/tcp.h
++++ b/include/xtcp/core/tcp.h
+@@ -632,13 +632,21 @@
+              *       but reserves the option space a later fresh-TS RTO rebuild
+              *       needs. MD5 and timestamps are mutually exclusive on this
+              *       stack, so MD5 retains its larger 20-byte reservation.
++             *       The MSS excludes TCP options (RFC 6691), so the option
++             *       space comes off the smaller of the effective MSS (which a
++             *       path-MTU reduction lowers) and the 1500-byte wire bound.
++             *       Subtracting it only from the wire bound let an MD5
++             *       segment exceed a reduced path MTU by the 20-byte option
++             *       (DF drop, then a stalled transfer).
+              */
+             UInt16 DataPayloadCap() const noexcept {
+                 static constexpr UInt32 kMaxWirePacketBytes = 1500;
+                 const UInt32 ip_hdr_len = (6 == remote_.family) ? 40 : 20;
+                 const UInt32 option_len = Md5Enabled() ? 20 : (timestamps_ok_ ? 12 : 0);
+-                const UInt32 wire_cap = kMaxWirePacketBytes - ip_hdr_len - 20 - option_len;
+-                return static_cast<UInt16>((peer_mss_ < wire_cap) ? peer_mss_ : wire_cap);
++                const UInt32 wire_mss = kMaxWirePacketBytes - ip_hdr_len - 20;
++                const UInt32 mss = (peer_mss_ < wire_mss) ? peer_mss_ : wire_mss;
++                // The 256-byte MSS floor keeps this well above the option length.
++                return static_cast<UInt16>((mss > option_len) ? (mss - option_len) : 1);
+             }
+             /** @brief TCP_MAXSEG ceiling (Linux semantics); 0 = unset. */
+             void SetUserMss(UInt32 mss) noexcept { user_mss_ = mss; }
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -4834,7 +4834,11 @@
+             // flight - gating on any nonzero inflight strands small sends
+             // behind a 1-byte persist probe or a drained pipe (RFC 1122
+             // 4.2.3.4: transmit immediately when inflight < MSS).
+-            const bool nagle = (!nodelay_ && len < peer_mss_ && inflight >= peer_mss_);
++            // A "small" segment is one below the data payload cap: with the
++            // cap reserving option space, a full segment is shorter than
++            // peer_mss_, and comparing against peer_mss_ would hold every
++            // full segment behind Nagle once one cap of data is in flight.
++            const bool nagle = (!nodelay_ && len < payload_cap && inflight >= payload_cap);
+             if (!PendingSendEmptyNoLock() || inflight + len > limit || pipe_gated || nagle ||
+                 (0 < cc_.pacing_rate && now < pacing_deadline_)) {
+                 if (snd_buf_ < PendingSendSizeNoLock() + len + inflight) {

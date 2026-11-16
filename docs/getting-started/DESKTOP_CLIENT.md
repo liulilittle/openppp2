@@ -1,7 +1,7 @@
 # Desktop Client
 > Status: Experimental
 > Type: Guide
-> Last verified: 2026-07-22
+> Last verified: 2026-10-04
 >
 > **Purpose:** Run and evaluate the repository's Tauri/Svelte client manager against a local `ppp` executable.
 > **Audience:** Desktop developers and evaluators.
@@ -9,12 +9,14 @@
 
 ## Status and boundary
 
+The daily-client implementation now targets Windows, with independent subscriptions, node management, proxy/virtual-adapter modes, Routing and DNS pages, logs and diagnostics, reversible current-user system proxy, explicit administrator restart, Chinese/English and light/dark/system themes. Settings groups General, Kernel, Network and Advanced controls. See [desktop overview](../../desktop/README.md) for current workflows and [GUI verification](../testing/DESKTOP_GUI.md) for tested behavior and remaining live acceptance.
+
 The Desktop Client lives in `desktop/client/` and is an **experimental** Tauri 2 + Svelte surface. Its checked-in Tauri configuration has bundling disabled, so this guide describes source-run evaluation rather than a supported installer or release package.
 
 The client creates a runtime configuration from stored preferences and a selected node, then starts `ppp` with:
 
 ```text
---mode=client --config=<runtime appsettings.json> --stats-json=<runtime stats.ndjson>
+--mode=<proxy or client> --config=<runtime appsettings.json> --stats-json=<per-session stats file>
 ```
 
 The generated files are placed in the application data runtime directory; do not edit them as a durable source of configuration.
@@ -62,6 +64,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - Subscription and manual-node data are merged into a generated runtime configuration before connection.
 - The process manager discards the child process's standard output and captures standard error for classification; the UI is not a complete process-output console.
 - Runtime statistics are read from the generated NDJSON path supplied with `--stats-json`.
+- The Routing page (with policy DNS on the DNS page) manages a local policy v2 (`<app data>/policy/policy.json` and `routing.rules`) through the kernel's offline `ppp policy` commands: templates, check, rule testing, migration, status and manual update. These commands run only when the kernel version is 2.1.7 or later. When enabled, every connection first runs `policy check` and does not start the kernel if it fails.
+- When a node or the local policy uses `client.policy`, the generated runtime configuration drops the v1 routing/DNS fields and resolves relative rule paths under `<app data>/policy`.
+- Disconnect sends Ctrl+C to the kernel and waits up to 5 seconds for route and DNS rollback before forcing it to stop.
 - Connecting affects a native client process. Follow the [User Manual](USER_MANUAL.md) and platform/operations documentation before using a non-proxy network mode on a real host.
 
 The repository's primary unit-test workflow does not currently run the Desktop Client's `npm test` or Cargo test commands. Run the relevant local checks when changing this surface.

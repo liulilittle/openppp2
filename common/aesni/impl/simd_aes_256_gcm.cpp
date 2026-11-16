@@ -141,6 +141,27 @@ namespace aesni {
         return block;
     }
 
+    // Encrypts four independent blocks with their rounds interleaved so the
+    // AESENC latency of one block overlaps with the others.
+    static inline void aes256_encrypt_blocks4(__m128i& b0, __m128i& b1,
+        __m128i& b2, __m128i& b3, const __m128i* round_key) noexcept {
+        b0 = _mm_xor_si128(b0, round_key[0]);
+        b1 = _mm_xor_si128(b1, round_key[0]);
+        b2 = _mm_xor_si128(b2, round_key[0]);
+        b3 = _mm_xor_si128(b3, round_key[0]);
+        for (int r = 1; r < 14; r++) {
+            const __m128i k = round_key[r];
+            b0 = _mm_aesenc_si128(b0, k);
+            b1 = _mm_aesenc_si128(b1, k);
+            b2 = _mm_aesenc_si128(b2, k);
+            b3 = _mm_aesenc_si128(b3, k);
+        }
+        b0 = _mm_aesenclast_si128(b0, round_key[14]);
+        b1 = _mm_aesenclast_si128(b1, round_key[14]);
+        b2 = _mm_aesenclast_si128(b2, round_key[14]);
+        b3 = _mm_aesenclast_si128(b3, round_key[14]);
+    }
+
     // Shift right 128-bit register
     static inline __m128i shift_right(__m128i v) noexcept {
         return _mm_srli_si128(v, 8);
@@ -209,32 +230,56 @@ namespace aesni {
     }
 
     // GCTR mode encryption/decryption
+    // Counter blocks are independent, so encrypt four of them per iteration in
+    // an interleaved schedule to hide AESENC latency. The counter is the
+    // big-endian low 32 bits of the block and wraps modulo 2^32 (inc32).
+    static inline __m128i gctr_block(__m128i prefix, uint32_t counter) noexcept {
+        __m128i be = _mm_cvtsi32_si128((int)__builtin_bswap32(counter));
+        return _mm_or_si128(prefix, _mm_slli_si128(be, 12));
+    }
+
     static inline void gctr(uint8_t* out, const uint8_t* in, size_t len, const __m128i* round_key, __m128i icb) noexcept {
-        __m128i cb = icb;
+        const __m128i prefix = _mm_and_si128(icb, _mm_set_epi32(0, -1, -1, -1));
+        uint32_t counter;
+        {
+            uint32_t counter_be;
+            memcpy(&counter_be, reinterpret_cast<const uint8_t*>(&icb) + 12, 4);
+            counter = __builtin_bswap32(counter_be);
+        }
+
         size_t blocks = len / 16;
         size_t remaining = len % 16;
+        size_t i = 0;
 
-        // Handle full blocks
-        for (size_t i = 0; i < blocks; i++) {
-            __m128i keystream = aes256_encrypt_block(cb, round_key);
+        for (; i + 4 <= blocks; i += 4) {
+            __m128i b0 = gctr_block(prefix, counter + 0);
+            __m128i b1 = gctr_block(prefix, counter + 1);
+            __m128i b2 = gctr_block(prefix, counter + 2);
+            __m128i b3 = gctr_block(prefix, counter + 3);
+            counter += 4;
+
+            aes256_encrypt_blocks4(b0, b1, b2, b3, round_key);
+
+            const __m128i i0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + (i + 0) * 16));
+            const __m128i i1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + (i + 1) * 16));
+            const __m128i i2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + (i + 2) * 16));
+            const __m128i i3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + (i + 3) * 16));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + (i + 0) * 16), _mm_xor_si128(i0, b0));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + (i + 1) * 16), _mm_xor_si128(i1, b1));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + (i + 2) * 16), _mm_xor_si128(i2, b2));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + (i + 3) * 16), _mm_xor_si128(i3, b3));
+        }
+
+        // Handle remaining full blocks
+        for (; i < blocks; i++) {
+            __m128i keystream = aes256_encrypt_block(gctr_block(prefix, counter++), round_key);
             __m128i in_block = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i * 16));
-            __m128i out_block = _mm_xor_si128(in_block, keystream);
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + i * 16), out_block);
-
-            // Fix counter increment (big-endian handling)
-            uint8_t* cb_ptr = reinterpret_cast<uint8_t*>(&cb);
-            uint32_t counter_val;
-            memcpy(&counter_val, cb_ptr + 12, 4);
-
-            counter_val = __builtin_bswap32(counter_val);
-            counter_val++;
-            counter_val = __builtin_bswap32(counter_val);
-            memcpy(cb_ptr + 12, &counter_val, 4);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + i * 16), _mm_xor_si128(in_block, keystream));
         }
 
         // Handle remaining bytes
         if (remaining > 0) {
-            __m128i keystream = aes256_encrypt_block(cb, round_key);
+            __m128i keystream = aes256_encrypt_block(gctr_block(prefix, counter), round_key);
             const uint8_t* src = in + blocks * 16;
             uint8_t* dst = out + blocks * 16;
 
@@ -246,10 +291,7 @@ namespace aesni {
 
     // AES-256-GCM encryption
     void aes256_gcm_encrypt(uint8_t* ciphertext, const uint8_t* plaintext, size_t len, const uint8_t* iv, size_t iv_len, const __m128i* round_key) noexcept {
-        // Step 1: Compute H = E_k(0^128)
-        __m128i H = aes256_encrypt_block(_mm_setzero_si128(), round_key);
-
-        // Step 2: Generate initial counter block J0
+        // Generate initial counter block J0
         __m128i J0;
         if (iv_len == 12) {
             uint8_t j0_bytes[16];
@@ -262,10 +304,11 @@ namespace aesni {
             J0 = _mm_loadu_si128(reinterpret_cast<__m128i*>(j0_bytes));
         }
         else {
-            J0 = ghash(H, iv, iv_len);
+            // H = E_k(0^128) is only needed to hash a non-96-bit IV into J0.
+            J0 = ghash(aes256_encrypt_block(_mm_setzero_si128(), round_key), iv, iv_len);
         }
 
-        // Step 3: Encrypt data
+        // Encrypt data
         __m128i icb = J0;
         uint8_t* icb_ptr = reinterpret_cast<uint8_t*>(&icb);
         uint32_t counter_val;
@@ -281,10 +324,7 @@ namespace aesni {
 
     // AES-256-GCM decryption
     void aes256_gcm_decrypt(uint8_t* plaintext, const uint8_t* ciphertext, size_t len, const uint8_t* iv, size_t iv_len, const __m128i* round_key) noexcept {
-        // Step 1: Compute H = E_k(0^128)
-        __m128i H = aes256_encrypt_block(_mm_setzero_si128(), round_key);
-
-        // Step 2: Generate initial counter block J0
+        // Generate initial counter block J0
         __m128i J0;
         if (iv_len == 12) {
             uint8_t j0_bytes[16];
@@ -297,7 +337,8 @@ namespace aesni {
             J0 = _mm_loadu_si128(reinterpret_cast<__m128i*>(j0_bytes));
         }
         else {
-            J0 = ghash(H, iv, iv_len);
+            // H = E_k(0^128) is only needed to hash a non-96-bit IV into J0.
+            J0 = ghash(aes256_encrypt_block(_mm_setzero_si128(), round_key), iv, iv_len);
         }
 
         __m128i icb = J0;

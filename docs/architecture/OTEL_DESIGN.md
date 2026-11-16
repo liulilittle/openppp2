@@ -20,7 +20,9 @@ Neither surface is a replacement for `RuntimeLifecycle` when an operator needs l
 
 ## Telemetry enablement
 
-The telemetry facade is always compiled in this tree. Although CMake exposes a `PPP_TELEMETRY` option, `Telemetry.h` defines `PPP_TELEMETRY` to `1` when absent and the implementation has no compile-out no-op branch. Do not document the option as a zero-binary-cost switch.
+The telemetry facade is always compiled in this tree. There is no compile-time
+telemetry switch; master telemetry, counts, and spans are controlled by runtime
+configuration.
 
 Master telemetry, counts, and spans default to disabled. Startup applies `telemetry.enabled`, level, count/span, console, endpoint, and file-path configuration through `PreparedArgumentEnvironment()`. The configuration path calls `Configure()` and `SetLogFile()` even when the master flag is disabled, so source does not support a blanket claim that disabled telemetry never creates backend state.
 

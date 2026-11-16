@@ -4,6 +4,7 @@
 
 #include <string>
 #include <vector>
+#include <algorithm>
 
 namespace ppp::app::tui {
 
@@ -41,7 +42,40 @@ inline const char* P2PDisplayName(ppp::p2p::P2PState state) noexcept {
 inline std::vector<std::string> BuildStatusLines(
     const runtime::RuntimeSnapshot& snapshot) {
     std::vector<std::string> lines;
-    lines.emplace_back(PhaseDisplayName(snapshot.phase));
+    lines.emplace_back(std::string("Phase: ") + PhaseDisplayName(snapshot.phase));
+    if (!snapshot.role.empty() || !snapshot.server.empty()) {
+        std::string session = "Session:";
+        if (!snapshot.role.empty()) session += " role=" + snapshot.role;
+        lines.emplace_back(std::move(session));
+    }
+    if (!snapshot.server.empty()) {
+        lines.emplace_back("Server: " + snapshot.server);
+    }
+    if (!snapshot.transport.empty()) {
+        lines.emplace_back("Transport: " + snapshot.transport);
+    }
+
+    lines.emplace_back(std::string("Path: ") +
+        (ppp::p2p::EffectivePath(snapshot.p2p_state) == std::string("direct")
+            ? "Direct"
+            : "Relay"));
+    lines.emplace_back(std::string("P2P: ") + P2PDisplayName(snapshot.p2p_state));
+    lines.emplace_back("Priority: " + (snapshot.p2p_priority.empty() ? std::string("ipv6-first") : snapshot.p2p_priority));
+
+    auto format_ipv4 = [](std::uint32_t value) {
+        return std::to_string(value & 0xffu) + "." +
+            std::to_string((value >> 8) & 0xffu) + "." +
+            std::to_string((value >> 16) & 0xffu) + "." +
+            std::to_string((value >> 24) & 0xffu);
+    };
+    lines.emplace_back("Peers: " + std::to_string(snapshot.peers.size()) + "/16");
+    for (std::size_t index = 0; index < snapshot.peers.size(); ++index) {
+        lines.emplace_back("Peer " + std::to_string(index + 1) +
+            ": " + format_ipv4(snapshot.peers[index].virtual_ip));
+    }
+
+    lines.emplace_back("Traffic: rx=" + std::to_string(snapshot.traffic.rx_bytes) +
+        "B tx=" + std::to_string(snapshot.traffic.tx_bytes) + "B");
 
     if (!snapshot.effective_mux_mode.empty()) {
         lines.emplace_back(snapshot.effective_mux_mode == "compat"
@@ -71,24 +105,79 @@ inline std::vector<std::string> BuildStatusLines(
         lines.emplace_back("active mux links=" + std::to_string(snapshot.mux_active_links));
     }
 
-    lines.emplace_back(std::string("Path: ") +
-        (ppp::p2p::EffectivePath(snapshot.p2p_state) == std::string("direct")
-            ? "Direct"
-            : "Relay"));
-    lines.emplace_back(std::string("P2P: ") + P2PDisplayName(snapshot.p2p_state));
-
-    if (snapshot.phase == runtime::RuntimePhase::Failed) {
-        std::string error = "error code=" + std::to_string(snapshot.last_error.code);
-        error += " severity=";
-        error += snapshot.last_error.severity.empty() ? "-" : snapshot.last_error.severity;
-        error += " key=";
-        error += snapshot.last_error.user_message_key.empty()
-            ? "-"
-            : snapshot.last_error.user_message_key;
-        lines.emplace_back(std::move(error));
+    if (snapshot.last_error.HasError()) {
+        lines.emplace_back("code: " + std::to_string(snapshot.last_error.code));
+        lines.emplace_back("severity: " + (snapshot.last_error.severity.empty()
+            ? std::string("-") : snapshot.last_error.severity));
+        lines.emplace_back("key: " + (snapshot.last_error.user_message_key.empty()
+            ? std::string("-") : snapshot.last_error.user_message_key));
         if (!snapshot.last_error.diagnostic_detail.empty()) {
             lines.emplace_back(snapshot.last_error.diagnostic_detail);
         }
+    }
+    for (auto& line : lines) {
+        const auto separator = line.find_first_of(":=");
+        if (separator == std::string::npos) continue;
+        auto label = line.substr(0, separator);
+        const auto first = label.find_first_not_of(' ');
+        if (first != std::string::npos) label.erase(0, first);
+        const auto last = label.find_last_not_of(' ');
+        if (last != std::string::npos) label.erase(last + 1);
+        auto value = line.substr(separator + 1);
+        const auto start = value.find_first_not_of(' ');
+        if (start != std::string::npos) value.erase(0, start);
+        label.resize(std::max<std::size_t>(22, label.size()), ' ');
+        line = label + ": " + value;
+    }
+    return lines;
+}
+
+inline std::vector<std::string> BuildPeerStatusLines(
+    const runtime::RuntimeSnapshot& snapshot) {
+    std::vector<std::string> lines;
+    lines.emplace_back(std::string("P2P: ") + P2PDisplayName(snapshot.p2p_state));
+    lines.emplace_back("Priority: " + (snapshot.p2p_priority.empty() ? std::string("ipv6-first") : snapshot.p2p_priority));
+    lines.emplace_back(std::string("Path: ") +
+        (ppp::p2p::EffectivePath(snapshot.p2p_state) == std::string("direct") ? "Direct" : "Relay"));
+    lines.emplace_back("Peers: " + std::to_string(snapshot.peers.size()) + "/16");
+    if (snapshot.peers.empty()) {
+        lines.emplace_back("No peer snapshot available");
+        return lines;
+    }
+    for (std::size_t index = 0; index < snapshot.peers.size(); ++index) {
+        const auto& peer = snapshot.peers[index];
+        const auto format_ipv4 = [](std::uint32_t value) {
+            return std::to_string(value & 0xffu) + "." +
+                std::to_string((value >> 8) & 0xffu) + "." +
+                std::to_string((value >> 16) & 0xffu) + "." +
+                std::to_string((value >> 24) & 0xffu);
+        };
+        lines.emplace_back("Peer " + std::to_string(index + 1));
+        lines.emplace_back(std::string(96, '-'));
+        lines.emplace_back("UUID:       " + (peer.peer_uuid.empty() ? "-" : peer.peer_uuid));
+        lines.emplace_back("Priority:   " + (peer.p2p_priority.empty() ? "ipv6-first" : peer.p2p_priority));
+        lines.emplace_back("Virtual IP: " + format_ipv4(peer.virtual_ip));
+        lines.emplace_back(std::string("State:      ") + P2PDisplayName(peer.state));
+        lines.emplace_back("Path:       " + (peer.effective_path.empty() ? "-" : peer.effective_path));
+        lines.emplace_back("Generation: " + std::to_string(peer.generation));
+        lines.emplace_back("Key:        " + std::to_string(peer.key_generation));
+        lines.emplace_back(std::string("Pending:    ") + (peer.has_pending ? "yes" : "no"));
+        lines.emplace_back(std::string("Previous:   ") + (peer.has_previous ? "yes" : "no"));
+        lines.emplace_back(std::string("Migration:  ") + (peer.migration_pending ? "pending" : "idle"));
+        lines.emplace_back("Local:      " + (peer.local_candidate.empty() ? "-" : peer.local_candidate));
+        lines.emplace_back("Remote:     " + (peer.peer_candidate.empty() ? "-" : peer.peer_candidate));
+    }
+    for (auto& line : lines) {
+        const auto separator = line.find_first_of(":=");
+        if (separator == std::string::npos) continue;
+        auto label = line.substr(0, separator);
+        const auto last = label.find_last_not_of(' ');
+        if (last != std::string::npos) label.erase(last + 1);
+        auto value = line.substr(separator + 1);
+        const auto start = value.find_first_not_of(' ');
+        if (start != std::string::npos) value.erase(0, start);
+        label.resize(std::max<std::size_t>(22, label.size()), ' ');
+        line = label + ": " + value;
     }
     return lines;
 }

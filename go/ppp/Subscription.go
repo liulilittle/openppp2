@@ -66,7 +66,7 @@ func (my *ManagedServer) adminListSubscriptions(w http.ResponseWriter, r *http.R
 	}
 	var subscriptions []tb_subscription
 	if err := my.FetchDB(true).LoadDB().Order("updated_at DESC").Find(&subscriptions).Error; err != nil {
-		adminError(w, http.StatusInternalServerError, err.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	views := make([]adminSubscriptionView, 0, len(subscriptions))
@@ -89,20 +89,20 @@ func (my *ManagedServer) adminCreateSubscription(w http.ResponseWriter, r *http.
 	}
 	item.Token, err = newSubscriptionToken()
 	if err != nil {
-		adminError(w, http.StatusInternalServerError, err.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	if my.local != nil {
 		item, err = my.local.CreateSubscription(item)
 		if err != nil {
-			adminError(w, http.StatusConflict, err.Error())
+			adminInternal(w, http.StatusConflict, "request conflicts with existing data", err)
 			return
 		}
 		adminJSON(w, http.StatusCreated, my.subscriptionView(r, item))
 		return
 	}
 	if err := my.FetchDB(false).LoadDB().Create(&item).Error; err != nil {
-		adminError(w, http.StatusConflict, err.Error())
+		adminInternal(w, http.StatusConflict, "request conflicts with existing data", err)
 		return
 	}
 	adminJSON(w, http.StatusCreated, my.subscriptionView(r, item))
@@ -147,7 +147,7 @@ func (my *ManagedServer) adminUpdateSubscription(w http.ResponseWriter, r *http.
 	next.Token = current.Token
 	next.CreatedAt = current.CreatedAt
 	if err := db.Save(&next).Error; err != nil {
-		adminError(w, http.StatusInternalServerError, err.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	adminJSON(w, http.StatusOK, my.subscriptionView(r, next))
@@ -166,7 +166,7 @@ func (my *ManagedServer) adminDeleteSubscription(w http.ResponseWriter, r *http.
 			return
 		}
 		if err != nil {
-			adminError(w, http.StatusInternalServerError, err.Error())
+			adminInternal(w, http.StatusInternalServerError, "internal error", err)
 			return
 		}
 		adminJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -174,7 +174,7 @@ func (my *ManagedServer) adminDeleteSubscription(w http.ResponseWriter, r *http.
 	}
 	result := my.FetchDB(false).LoadDB().Delete(&tb_subscription{}, uint(id))
 	if result.Error != nil {
-		adminError(w, http.StatusInternalServerError, result.Error.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", result.Error)
 		return
 	}
 	if result.RowsAffected == 0 {
@@ -193,7 +193,7 @@ func (my *ManagedServer) adminRotateSubscriptionToken(w http.ResponseWriter, r *
 	if my.local != nil {
 		token, err := newSubscriptionToken()
 		if err != nil {
-			adminError(w, http.StatusInternalServerError, err.Error())
+			adminInternal(w, http.StatusInternalServerError, "internal error", err)
 			return
 		}
 		item, err := my.local.RotateSubscriptionToken(uint(id), token)
@@ -202,7 +202,7 @@ func (my *ManagedServer) adminRotateSubscriptionToken(w http.ResponseWriter, r *
 			return
 		}
 		if err != nil {
-			adminError(w, http.StatusInternalServerError, err.Error())
+			adminInternal(w, http.StatusInternalServerError, "internal error", err)
 			return
 		}
 		adminJSON(w, http.StatusOK, my.subscriptionView(r, item))
@@ -216,11 +216,11 @@ func (my *ManagedServer) adminRotateSubscriptionToken(w http.ResponseWriter, r *
 	}
 	item.Token, err = newSubscriptionToken()
 	if err != nil {
-		adminError(w, http.StatusInternalServerError, err.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	if err := db.Save(&item).Error; err != nil {
-		adminError(w, http.StatusInternalServerError, err.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	adminJSON(w, http.StatusOK, my.subscriptionView(r, item))

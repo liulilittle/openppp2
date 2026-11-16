@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transactional IRQ/RPS/XPS isolation evidence for Linux datapath tests."""
+"""Transactional RPS/XPS isolation; host-global IRQ mutation is prohibited."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import socket
 import tempfile
 import time
 from pathlib import Path
@@ -115,6 +116,9 @@ def snapshot(
     namespace: str | None = None,
 ) -> dict[str, Any]:
     persistent_devices = persistent_devices or set()
+    if sys_root == Path("/sys"):
+        if not namespace or not os.path.samefile("/proc/self/ns/net", Path("/run/netns") / namespace):
+            raise ValueError("steering requires the cell's network namespace")
     evidence: dict[str, Any] = {
         "schema_version": 1,
         "namespace": namespace,
@@ -142,6 +146,15 @@ def snapshot(
         if not net_path.exists():
             errors.append(f"device missing: {device}")
             continue
+        if sys_root == Path("/sys"):
+            try:
+                ifindex = socket.if_nametoindex(device)
+                if int(_read(net_path / "ifindex")) != ifindex:
+                    raise ValueError("sysfs interface does not match current namespace")
+                device_entry["namespace_ifindex"] = ifindex
+            except (OSError, ValueError) as error:
+                errors.append(f"namespace ownership failed for {device}: {error}")
+                continue
         for kind, pattern in (("rps", "queues/rx-*/rps_cpus"), ("xps", "queues/tx-*/xps_cpus")):
             for path in sorted(net_path.glob(pattern)):
                 try:
@@ -166,7 +179,8 @@ def snapshot(
             evidence["settings"].append(entry)
             device_entry["irqs"].append(irq)
         if device_entry["irqs"]:
-            device_entry["irq_status"] = "applicable"
+            device_entry["irq_status"] = "forbidden"
+            errors.append(f"physical IRQ detected for {device}; IRQ affinity writes are prohibited")
     evidence["phases"]["snapshot"] = {
         "status": "fail" if errors else "pass",
         "errors": errors,
@@ -180,6 +194,19 @@ def _load(state_path: Path) -> dict[str, Any]:
     return json.loads(state_path.read_text(encoding="utf-8"))
 
 
+def _queue_write_path(entry: dict[str, Any]) -> Path:
+    path = Path(entry["path"])
+    resolved = path.resolve()
+    kind = entry["kind"]
+    # Also rejects legacy IRQ entries, mislabeled paths and symlinks to IRQ files.
+    if (kind not in {"rps", "xps"} or resolved.name != f"{kind}_cpus"
+            or resolved.parent.parent.name != "queues"
+            or not re.fullmatch(r"rx-\d+" if kind == "rps" else r"tx-\d+", resolved.parent.name)
+            or "irq" in resolved.parts):
+        raise ValueError("IRQ writes and non-queue affinity writes are prohibited")
+    return path
+
+
 def apply(state_path: Path) -> dict[str, Any]:
     evidence = _load(state_path)
     target = evidence["target_mask"]
@@ -187,6 +214,7 @@ def apply(state_path: Path) -> dict[str, Any]:
     for entry in evidence["settings"]:
         path = Path(entry["path"])
         try:
+            path = _queue_write_path(entry)
             current = normalize_cpumask(_read(path))
             if current != entry["original"]:
                 entry["apply"] = {"status": "conflict_external_change", "observed": current}
@@ -234,6 +262,9 @@ def readback(state_path: Path) -> dict[str, Any]:
     for device_name, device in evidence["devices"].items():
         if device["irq_status"] == "not_applicable":
             device["irq_qualification"] = {"status": "pass", "result": "not_applicable"}
+        elif device["irq_status"] == "forbidden":
+            device["irq_qualification"] = {"status": "fail", "result": "IRQ mutation prohibited"}
+            errors.append(f"physical IRQ detected for {device_name}; steering experiment refused")
         else:
             irq_entries = [entry for entry in evidence["settings"] if entry["device"] == device_name and entry["kind"] == "irq_affinity"]
             passed = bool(irq_entries) and all(entry.get("readback", {}).get("status") == "pass" for entry in irq_entries)
@@ -256,6 +287,7 @@ def restore(state_path: Path, *, sys_root: Path = Path("/sys")) -> dict[str, Any
         device = evidence["devices"][entry["device"]]
         net_path = sys_root / "class" / "net" / entry["device"]
         try:
+            path = _queue_write_path(entry)
             if not path.exists():
                 if not net_path.exists() and not device["persistent"]:
                     entry["restore"] = {"status": "no_persistent_leak"}

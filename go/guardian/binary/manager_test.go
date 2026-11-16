@@ -3,6 +3,7 @@ package binary
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -80,5 +81,59 @@ func TestIsPPPBinaryName(t *testing.T) {
 				t.Fatalf("isPPPBinaryName(%q) = %v, want %v", tt.name, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRegisterDoesNotExecuteImplausibleFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	script := filepath.Join(dir, "evil")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(t.TempDir())
+	info, err := m.Register(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.execOK {
+		t.Fatal("non-ppp file must not be executable for version detection")
+	}
+	_ = detectVersion(script, info.execOK)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("registered file was executed")
+	}
+}
+
+func TestMayExecuteRequiresPlausibleNameAndTrustedLocation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX exec bits")
+	}
+	binDir := t.TempDir()
+	other := t.TempDir()
+	m := NewManager(binDir)
+	write := func(dir, name string) (string, os.FileInfo) {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		st, _ := os.Stat(p)
+		return p, st
+	}
+	if p, st := write(binDir, "ppp"); !m.mayExecute(p, st, false) {
+		t.Error("ppp inside binaries dir should be executable")
+	}
+	if p, st := write(binDir, "notppp"); m.mayExecute(p, st, true) {
+		t.Error("implausible name must never execute")
+	}
+	p, st := write(other, "ppp")
+	if m.mayExecute(p, st, false) {
+		t.Error("ppp outside binaries dir must not execute unless trusted")
+	}
+	if !m.mayExecute(p, st, true) {
+		t.Error("auto-discovered ppp should be executable")
 	}
 }

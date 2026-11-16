@@ -210,7 +210,21 @@ namespace ppp {
                         handshake_type = HandshakeType::HandshakeType_Client;
                     }
 
-                    return HandshakeWebsocket(configuration, socket, handshake_type, y);
+                    // HTTP upgrade (and TLS for WSS) precedes the transmission timer.
+                    // Close the transport directly: sending a NOP cannot unblock HTTP read.
+                    auto context = GetContext();
+                    auto strand = GetStrand();
+                    auto timer = strand ? std::make_shared<boost::asio::steady_timer>(*strand)
+                                        : std::make_shared<boost::asio::steady_timer>(*context);
+                    timer->expires_after(std::chrono::seconds(configuration->tcp.connect.timeout));
+                    auto pending = std::make_shared<std::atomic_bool>(true);
+                    timer->async_wait([socket, pending](const boost::system::error_code& ec) noexcept {
+                        if (!ec && pending->exchange(false)) { socket->AbortHandshake(); }
+                    });
+                    bool ok = HandshakeWebsocket(configuration, socket, handshake_type, y);
+                    ok = pending->exchange(false) && ok;
+                    ppp::net::Socket::Cancel(*timer);
+                    return ok;
                 }
                 /** @brief Finalizes websocket resources and platform QoS objects. */
                 void                                                        Finalize() noexcept {

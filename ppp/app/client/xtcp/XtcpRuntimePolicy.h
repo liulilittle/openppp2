@@ -1,11 +1,47 @@
 #pragma once
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 
 namespace ppp::app::client::xtcp {
+
+// TCP flags of segment `index` (0-based) out of `count` when an ingress
+// super-frame is split. RFC 793/1122 (and Linux tcp_gso_segment): FIN, PSH and
+// URG belong to the final segment only, CWR to the first. Copying FIN onto an
+// earlier split made the stack consume the peer FIN mid-stream, enter
+// CLOSE-WAIT and then trim the first byte of the real tail segment as "old"
+// (one-byte deletion in the upload stream after a half-close).
+constexpr std::uint8_t XtcpGsoSplitSegmentFlags(
+    std::uint8_t flags, std::size_t index, std::size_t count) noexcept {
+    constexpr std::uint8_t kFin = 0x01;
+    constexpr std::uint8_t kPsh = 0x08;
+    constexpr std::uint8_t kUrg = 0x20;
+    constexpr std::uint8_t kCwr = 0x80;
+    if (index + 1 < count) {
+        flags = static_cast<std::uint8_t>(flags & ~(kFin | kPsh | kUrg));
+    }
+    if (index != 0) {
+        flags = static_cast<std::uint8_t>(flags & ~kCwr);
+    }
+    return flags;
+}
+
+struct XtcpFlowCallbackIdentity final {
+    std::uint64_t runtime_generation = 0;
+    std::uint64_t flow_generation = 0;
+};
+
+constexpr bool IsCurrentXtcpFlowCallback(
+    const XtcpFlowCallbackIdentity& identity,
+    std::uint64_t runtime_generation,
+    std::uint64_t flow_generation) noexcept {
+    return identity.runtime_generation != 0 && identity.flow_generation != 0 &&
+        identity.runtime_generation == runtime_generation &&
+        identity.flow_generation == flow_generation;
+}
 
 // Ingress admission budget (XTCP-STRAND-DISPATCH-001 lock-free rework).
 // Hot paths (TryAdmit/Release) run on the packet-ingress and strand threads
@@ -22,7 +58,8 @@ public:
         : max_items_(static_cast<std::uint32_t>(max_items)),
           max_bytes_(static_cast<std::uint32_t>(max_bytes)) {}
 
-    bool TryAdmit(std::uint64_t generation, std::size_t bytes) noexcept {
+    bool TryAdmit(std::uint64_t generation, std::size_t bytes,
+        std::uint64_t* admitted_state = nullptr) noexcept {
         if (!running_.load(std::memory_order_acquire) ||
             !ready_.load(std::memory_order_acquire) || bytes == 0 ||
             generation == 0 || generation != generation_.load(std::memory_order_acquire) ||
@@ -44,6 +81,7 @@ public:
                 static_cast<std::uint64_t>(used_bytes + byte_delta);
             if (state_.compare_exchange_weak(current, updated,
                     std::memory_order_relaxed, std::memory_order_relaxed)) {
+                if (admitted_state) *admitted_state = updated;
                 return true;
             }
         }
@@ -78,8 +116,10 @@ public:
         }
     }
 
-    std::uint64_t Start() noexcept {
-        std::uint64_t generation = generation_.load(std::memory_order_relaxed) + 1;
+    // `after` lets an owner that rebuilds its budgets keep generations
+    // monotonic across restarts: the new generation is greater than both.
+    std::uint64_t Start(std::uint64_t after = 0) noexcept {
+        std::uint64_t generation = std::max(generation_.load(std::memory_order_relaxed), after) + 1;
         if (generation == 0) {
             ++generation;
         }

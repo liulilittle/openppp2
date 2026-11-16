@@ -173,6 +173,10 @@ BOOST_AUTO_TEST_CASE(p2p_state_publishes_only_for_the_live_generation) {
     BOOST_TEST(publications == 3u);
     BOOST_TEST(static_cast<int>(lifecycle.GetSnapshot().p2p_state) ==
         static_cast<int>(ppp::p2p::P2PState::Eligible));
+    BOOST_REQUIRE(lifecycle.UpdateP2PState(
+        generation, ppp::p2p::P2PState::Eligible, 5, "eligible"));
+    BOOST_TEST(publications == 4u);
+    BOOST_TEST(lifecycle.GetSnapshot().p2p_gate_reason == "eligible");
 
     BOOST_REQUIRE(lifecycle.TryBeginStop(generation, 6));
     BOOST_TEST(static_cast<int>(lifecycle.GetSnapshot().p2p_state) ==

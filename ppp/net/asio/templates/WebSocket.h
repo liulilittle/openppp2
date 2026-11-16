@@ -9,6 +9,7 @@
 #include <ppp/IDisposable.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/coroutines/YieldContext.h>
+#include <sstream>
 
 namespace ppp {
     namespace net {
@@ -28,7 +29,7 @@ namespace ppp {
                      */
                     bool                                                        CheckRequestPath(ppp::string& root, const boost::beast::string_view& sw) noexcept;
                     /**
-                     * @brief Extracts client IP address text from proxy forwarding headers.
+                     * @brief Extracts untrusted claimed IP text from proxy headers, for diagnostics only.
                      * @param req HTTP upgrade request.
                      * @return Parsed client address string, or empty string if unavailable.
                      */
@@ -99,12 +100,17 @@ namespace ppp {
                                 }));
                     
                             // Handshake with the websocket server.
+                            const YieldContext::Anchor anchor = y.Arm();
+                            if (!anchor) {
+                                return false;
+                            }
+
                             websocket_.async_handshake(host_, path_,
-                                [reference, this, &ok, &y](const boost::system::error_code& ec) noexcept {
+                                [reference, this, &ok, anchor](const boost::system::error_code& ec) noexcept {
                                     ok = ec == boost::system::errc::success;
-                                    y.R();
+                                    anchor.R();
                                 });
-                            y.Suspend();
+                            y.Suspend(anchor);
                         }
                         else {
                             // This buffer is used for reading and must be persisted.
@@ -120,12 +126,17 @@ namespace ppp {
                             }
 
                             // Receive the HTTP response.
+                            const YieldContext::Anchor read_anchor = y.Arm();
+                            if (!read_anchor) {
+                                return false;
+                            }
+
                             boost::beast::http::async_read(websocket_.next_layer(), *buffer, *req,
-                                [reference, this, buffer, req, &ok, &y](boost::system::error_code ec, std::size_t sz) noexcept {
+                                [reference, this, buffer, req, &ok, read_anchor](boost::system::error_code ec, std::size_t sz) noexcept {
                                     ok = ec == boost::system::errc::success;
-                                    y.R();
+                                    read_anchor.R();
                                 });
-                            y.Suspend();
+                            y.Suspend(read_anchor);
 
                             // Receive the HTTP response is do OK.
                             if (ok) {
@@ -149,12 +160,28 @@ namespace ppp {
                                 // The websocket async-accept is completed.
                                 ok = ppp::net::asio::templates::websocket::CheckRequestPath(path_, req->target());
                                 if (ok) {
-                                    websocket_.async_accept(*req,
-                                        [reference, this, req, &ok, &y](const boost::system::error_code& ec) noexcept {
+                                    const YieldContext::Anchor accept_anchor = y.Arm();
+                                    if (!accept_anchor) {
+                                        return false;
+                                    }
+
+                                    // Replay the validated HTTP request together with over-read frames.
+                                    // Beast's buffered accept retains bytes beyond the HTTP upgrade.
+                                    std::ostringstream serialized;
+                                    serialized << *req;
+                                    auto prefill = std::make_shared<std::string>(serialized.str());
+                                    prefill->append(boost::beast::buffers_to_string(buffer->data()));
+                                    auto accepted = [reference, this, req, prefill, &ok, accept_anchor](const boost::system::error_code& ec) noexcept {
                                             ok = ec == boost::system::errc::success;
-                                            y.R();
-                                        });
-                                    y.Suspend();
+                                            accept_anchor.R();
+                                        };
+                                    if (buffer->size() == 0) {
+                                        websocket_.async_accept(*req, std::move(accepted));
+                                    }
+                                    else {
+                                        websocket_.async_accept(boost::asio::buffer(*prefill), std::move(accepted));
+                                    }
+                                    y.Suspend(accept_anchor);
                                 }
                                 else {
                                     // Path check failed, send HTTP 404 response.
@@ -177,11 +204,16 @@ namespace ppp {
                                     response.prepare_payload();
 
                                     // Reject the HTTP client's request with a 404 Not Found response.
+                                    const YieldContext::Anchor reject_anchor = y.Arm();
+                                    if (!reject_anchor) {
+                                        return false;
+                                    }
+
                                     boost::beast::http::async_write(websocket_.next_layer(), response,
-                                        [this, &y](const boost::system::error_code& ec, std::size_t) {
-                                            y.R();
+                                        [this, reject_anchor](const boost::system::error_code& ec, std::size_t) {
+                                            reject_anchor.R();
                                         });
-                                    y.Suspend();
+                                    y.Suspend(reject_anchor);
                                 }
 
                                 // Extract the Remote IP EndPoint from an HTTP request.

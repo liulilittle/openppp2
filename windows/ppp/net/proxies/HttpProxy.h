@@ -28,6 +28,13 @@ namespace ppp
                 // it only touches HKCU registry + WinINet via raw Win32 and is a no-op
                 // unless this process previously engaged the system proxy.
                 static void EmergencyRestoreSystemProxy() noexcept;
+
+                // Replays the durable Core-side snapshot after the original
+                // process has exited.  Unlike the emergency hook this is
+                // intentionally callable by the independent recovery worker.
+                // It compares the current values with the values OpenPPP2
+                // applied and preserves the snapshot on conflicts/failure.
+                static bool RecoverSystemProxy() noexcept;
             };
         }
     }

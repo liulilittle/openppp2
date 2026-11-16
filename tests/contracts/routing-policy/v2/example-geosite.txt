@@ -1,0 +1,3 @@
+domain:geo.example.test
+full:exact.example.test
+plain:keyword

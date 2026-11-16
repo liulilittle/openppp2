@@ -8,6 +8,11 @@
 #include <ppp/app/client/dns/HumanDnsQueryPolicy.h>
 #include <ppp/app/client/dns/DnsRouteDispatcher.h>
 #include <ppp/app/client/dns/DnsUdpRelay.h>
+#include <ppp/app/client/dns/PolicyResolverService.h>
+#include <ppp/app/client/dns/DurableFakeIpStore.h>
+#include <ppp/app/client/dns/PolicyFakeIpAsync.h>
+#include <ppp/app/client/policy/PolicyRuntime.h>
+#include <ppp/app/client/policy/PolicyEvaluator.h>
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
@@ -52,6 +57,8 @@ namespace ppp {
     namespace app {
         namespace client {
             namespace dns {
+
+                DnsInterceptor::DnsInterceptor() noexcept {}
 
                 static bool ParseStunCandidate(const ppp::string& s, ppp::dns::StunCandidate& out) noexcept {
                     ppp::string text = ATrim(s);
@@ -202,7 +209,7 @@ namespace ppp {
                     // DNS resolver that performs system DNS takeover is not started.
                     // configuration_, human_routing_rules_ and fake_ip_pool_ are
                     // stored so LoadRules and CollectReachabilityIps work correctly.
-                    if (proxy_only || NULLPTR == context || NULLPTR == configuration) {
+                    if ((proxy_only && !policy_runtime_) || NULLPTR == context || NULLPTR == configuration) {
                         std::lock_guard<std::mutex> scope(syncobj_);
                         configuration_ = configuration;
                         dns_resolver_.reset();
@@ -223,6 +230,27 @@ namespace ppp {
                         return true;
                     }
                     resolver->SetUdpFlowRegistry(udp_flow_registry_);
+
+                    std::shared_ptr<PolicyResolverService> policy_resolver;
+                    if (policy_runtime_) {
+                        std::shared_ptr<PolicyTelemetry> telemetry;
+                        {
+                            std::lock_guard<std::mutex> lock(syncobj_);
+                            telemetry = policy_telemetry_;
+                        }
+                        ppp::dns::DnsResolver::ProtectSocketCallback protect = direct_socket_protector_;
+#if defined(_ANDROID)
+                        if (!protect) protect = [](int handle) { return ppp::android::ProtectSocketFd(handle); };
+#elif defined(_LINUX)
+                        if (!protect && protect_network) protect = [protect_network](int handle) { return protect_network->ProtectSync(handle); };
+                        if (!protect && proxy_only) protect = [](auto) { return true; };
+#else
+                        if (!protect && proxy_only) protect = [](auto) { return true; };
+#endif
+                        policy_resolver = std::make_shared<PolicyResolverService>(
+                            *context, protect, PolicyResolverService::Exchange{},
+                            PolicyResolverService::NowFunction{}, std::move(telemetry));
+                    }
 
 #if defined(_ANDROID)
                     resolver->SetProtectSocketCallback(
@@ -276,6 +304,9 @@ namespace ppp {
                         std::lock_guard<std::mutex> scope(syncobj_);
                         configuration_ = configuration;
                         dns_resolver_ = std::move(resolver);
+                        policy_resolver_ = std::move(policy_resolver);
+                        fake_ip_request_state_->generation.fetch_add(1, std::memory_order_acq_rel);
+                        fake_ip_request_state_->active.store(true, std::memory_order_release);
                         std::atomic_store(&human_routing_rules_, human_rules);
                         std::atomic_store(&fake_ip_pool_, configured_fake_ip_pool);
                     }
@@ -284,22 +315,81 @@ namespace ppp {
 
                 void DnsInterceptor::Close() noexcept {
                     std::shared_ptr<FakeIpPool> fake_ip_pool;
+                    std::shared_ptr<PolicyResolverService> policy_resolver;
                     {
                         std::lock_guard<std::mutex> scope(syncobj_);
+                        fake_ip_request_state_->active.store(false, std::memory_order_release);
+                        fake_ip_request_state_->generation.fetch_add(1, std::memory_order_acq_rel);
                         std::atomic_store(
                             &human_routing_rules_,
                             std::shared_ptr<const routing::HumanRoutingRules>());
                         fake_ip_pool = std::atomic_exchange(
                             &fake_ip_pool_, std::shared_ptr<FakeIpPool>());
                         dns_resolver_.reset();
+                        policy_resolver = std::move(policy_resolver_);
                         for (auto& table : dns_ruless_) {
                             table.clear();
                         }
                         configuration_.reset();
                     }
+                    if (policy_resolver) policy_resolver->Close();
                     if (NULLPTR != fake_ip_pool) {
                         fake_ip_pool->Clear();
                     }
+                }
+
+                void DnsInterceptor::SetPolicyRuntime(const std::shared_ptr<policy::PolicyRuntime>& runtime) noexcept {
+                    std::lock_guard<std::mutex> lock(syncobj_);
+                    policy_runtime_ = runtime;
+                }
+
+                void DnsInterceptor::SetPolicyFakeIpStore(const std::shared_ptr<DurableFakeIpStore>& store) noexcept {
+                    std::lock_guard<std::mutex> lock(syncobj_);
+                    policy_fake_ip_store_ = store;
+                }
+
+                void DnsInterceptor::SetDirectSocketProtector(const ppp::function<bool(boost::asio::ip::tcp::socket::native_handle_type)>& protect) noexcept {
+                    std::lock_guard<std::mutex> lock(syncobj_);
+                    direct_socket_protector_ = protect;
+                }
+
+                bool DnsInterceptor::ResolvePolicyDestination(const std::string& domain,
+                    const std::shared_ptr<const policy::PolicySnapshot>& snapshot,
+                    const std::shared_ptr<const DnsSessionContext>& session,
+                    ppp::coroutines::YieldContext& yield, boost::asio::ip::address& address) noexcept {
+                    std::shared_ptr<PolicyResolverService> service;
+                    {
+                        std::lock_guard<std::mutex> lock(syncobj_);
+                        service = policy_resolver_;
+                    }
+                    address = boost::asio::ip::address();
+                    if (!service || !snapshot || !session || !session->IsActive() || &yield == nullof<ppp::coroutines::YieldContext>()) return false;
+                    struct Await { std::mutex mutex; bool waiting = true; boost::asio::ip::address result; };
+                    const auto pending = std::make_shared<Await>();
+                    const ppp::coroutines::YieldContext::Anchor anchor = yield.Arm();
+                    if (!anchor) return false;
+                    auto resolve = [service, snapshot, session, domain, pending, anchor]() noexcept {
+                        try {
+                            service->Resolve(snapshot, session, PolicyResolverService::BuildQuery(domain),
+                                [pending, anchor](ppp::vector<Byte> response) noexcept {
+                                    try {
+                                        std::lock_guard<std::mutex> lock(pending->mutex);
+                                        if (!pending->waiting) return;
+                                        pending->result = PolicyResolverService::FirstAddress(response);
+                                    } catch (...) {
+                                    }
+                                    anchor.R();
+                                });
+                        } catch (...) {
+                            anchor.R();
+                        }
+                    };
+                    if (!ppp::threading::Executors::Post(addressof(yield.GetContext()), yield.GetStrand(), resolve)) return false;
+                    yield.Suspend(anchor);
+                    std::lock_guard<std::mutex> lock(pending->mutex);
+                    pending->waiting = false;
+                    address = pending->result;
+                    return session->IsActive() && address.is_v4() && !address.is_unspecified();
                 }
 
                 void DnsInterceptor::OnSessionInfo(
@@ -514,20 +604,117 @@ namespace ppp {
 
                     boost::asio::ip::address destinationIP = Ipep::ToAddress(packet->Destination);
                     ::dns::QuestionSection& qs = *m.questions.data();
+                    const ppp::string hostname_lower = stl::transform<ppp::string>(qs.mName);
 
                     // Snapshot one complete runtime generation under the publication lock.
                     std::shared_ptr<ppp::dns::DnsResolver> resolver;
                     std::shared_ptr<ppp::configurations::AppConfiguration> configuration;
                     std::shared_ptr<const routing::HumanRoutingRules> human_rules;
                     std::shared_ptr<FakeIpPool> fake_ip_pool;
+                    std::shared_ptr<PolicyResolverService> policy_resolver;
+                    std::shared_ptr<FakeIpRequestState> fake_ip_request_state;
+                    std::shared_ptr<DurableFakeIpStore> policy_fake_ip_store;
+                    std::shared_ptr<policy::PolicyRuntime> policy_runtime;
+                    std::shared_ptr<PolicyTelemetry> policy_telemetry;
                     {
                         std::lock_guard<std::mutex> scope(syncobj_);
                         resolver = dns_resolver_;
                         configuration = configuration_;
                         human_rules = std::atomic_load(&human_routing_rules_);
                         fake_ip_pool = std::atomic_load(&fake_ip_pool_);
+                        policy_resolver = policy_resolver_;
+                        policy_runtime = policy_runtime_;
+                        fake_ip_request_state = fake_ip_request_state_;
+                        policy_fake_ip_store = policy_fake_ip_store_;
+                        policy_telemetry = policy_telemetry_;
                     }
-                    const ppp::string hostname_lower = stl::transform<ppp::string>(qs.mName);
+                    if (policy_runtime) {
+                        const auto snapshot = policy_runtime->GetSnapshot();
+                        const auto source = IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source);
+                        const boost::asio::ip::udp::endpoint destination(destinationIP, PPP_DNS_SYS_PORT);
+                        if (!snapshot || !policy_resolver || !session || !session->IsActive()) return false;
+                        ppp::vector<Byte> query(static_cast<const Byte*>(messages->Buffer.get()),
+                            static_cast<const Byte*>(messages->Buffer.get()) + messages->Length);
+                        const auto* raw_query = static_cast<const Byte*>(messages->Buffer.get());
+                        const bool fake_ip_candidate = snapshot->DnsMode() != "real" &&
+                            qs.mType == ::dns::RecordType::kA &&
+                            DnsFakeIpResponse::ShouldUseFakeIp(hostname_lower);
+                        if (fake_ip_candidate) {
+                            const auto query_status = DnsFakeIpResponse::InspectAQueryV2(
+                                raw_query, messages->Length);
+                            if (query_status == DnsFakeIpResponse::AQueryStatus::Invalid) return false;
+                            if (query_status == DnsFakeIpResponse::AQueryStatus::Unsupported) {
+                                auto failure = PolicyResolverService::ErrorResponse(query, 2);
+                                if (failure.empty()) return false;
+                                return context.datagram_output(source, destination, nullptr,
+                                    failure.data(), static_cast<int>(failure.size()), false);
+                            }
+                            const auto plan = policy::PolicyEvaluator::PlanDns(*snapshot, qs.mName);
+                            if (policy_telemetry) {
+                                if (plan.rejected) policy_telemetry->RecordPolicyReject();
+                                else if (plan.action == policy::PolicyAction::Direct) policy_telemetry->RecordPolicyDirect();
+                                else policy_telemetry->RecordPolicyProxy();
+                            }
+                            ppp::vector<Byte> response;
+                            if (plan.rejected) {
+                                response = PolicyResolverService::ErrorResponse(query, 5);
+                            } else {
+                                const auto store = policy_fake_ip_store;
+                                uint32_t fake_ip_host = 0;
+                                const std::string domain(hostname_lower.data(), hostname_lower.size());
+                                if (!store || !store->LookupAddress(domain, fake_ip_host)) {
+                                    if (!store || !context.io_context) {
+                                        response = PolicyResolverService::ErrorResponse(query, 2);
+                                    } else {
+                                        const uint64_t generation = fake_ip_request_state->generation.load(std::memory_order_acquire);
+                                        const auto active = [fake_ip_request_state, session, generation] {
+                                            return fake_ip_request_state->active.load(std::memory_order_acquire) &&
+                                                fake_ip_request_state->generation.load(std::memory_order_acquire) == generation &&
+                                                session->IsActive();
+                                        };
+                                        const bool queued = PolicyFakeIpAsync::Allocate(store, context.io_context,
+                                            domain, active,
+                                            [context, source, destination, session, active, query](bool ok, uint32_t address) {
+                                                if (!active()) return;
+                                                ppp::vector<Byte> answer = ok
+                                                    ? DnsFakeIpResponse::BuildARecordResponseV2(query.data(),
+                                                        static_cast<int>(query.size()), address)
+                                                    : PolicyResolverService::ErrorResponse(query, 2);
+                                                if (ok && answer.empty())
+                                                    answer = PolicyResolverService::ErrorResponse(query, 2);
+                                                if (!answer.empty() && active())
+                                                    context.datagram_output(source, destination, nullptr,
+                                                        answer.data(), static_cast<int>(answer.size()), false);
+                                            }, [policy_telemetry](std::ptrdiff_t delta) {
+                                                if (policy_telemetry) policy_telemetry->AddFakeIpPending(delta);
+                                            });
+                                        if (queued) return true;
+                                        response = PolicyResolverService::ErrorResponse(query, 2);
+                                    }
+                                }
+                                if (!response.empty()) {
+                                    if (!session->IsActive()) return true;
+                                    return context.datagram_output(source, destination, nullptr,
+                                        response.data(), static_cast<int>(response.size()), false);
+                                }
+                                if (!fake_ip_host) {
+                                    response = PolicyResolverService::ErrorResponse(query, 2);
+                                }
+                                else response = DnsFakeIpResponse::BuildARecordResponseV2(raw_query,
+                                    messages->Length, fake_ip_host);
+                            }
+                            if (response.empty()) return false;
+                            return context.datagram_output(source, destination, nullptr,
+                                response.data(), static_cast<int>(response.size()), false);
+                        }
+                        policy_resolver->Resolve(snapshot, session, query,
+                            [context, session, snapshot, source, destination](ppp::vector<Byte> response) {
+                                if (!session->IsActive() || response.empty()) return;
+                                // V2 responses bypass the legacy cache and its tunnel fallback.
+                                context.datagram_output(source, destination, nullptr, response.data(), static_cast<int>(response.size()), false);
+                            });
+                        return true;
+                    }
                     routing::RoutingMatch domain_match;
                     if (human_rules) {
                         domain_match = human_rules->MatchDomainRule(hostname_lower);
@@ -806,21 +993,36 @@ namespace ppp {
 
                     const uint32_t address_host = ntohl(endpoint.GetAddress());
                     std::shared_ptr<const FakeIpPool> pool;
+                    std::shared_ptr<DurableFakeIpStore> durable_pool;
                     std::shared_ptr<const routing::HumanRoutingRules> human_rules;
                     {
                         std::lock_guard<std::mutex> scope(syncobj_);
                         pool = std::atomic_load(&fake_ip_pool_);
+                        durable_pool = policy_fake_ip_store_;
                         human_rules = std::atomic_load(&human_routing_rules_);
+                    }
+                    if (durable_pool && durable_pool->Contains(address_host)) {
+                        destination.is_fake_ip = true;
+                        destination.is_resolved = false;
+                        durable_pool->LookupHostname(address_host, destination.hostname);
+                        return true;
                     }
                     if (pool && pool->IsEnabled() && pool->ContainsHostOrder(address_host)) {
                         destination.is_fake_ip = true;
                         FakeIpPool::EntrySnapshot entry;
-                        if (!pool->Lookup(address_host, entry) || !entry.is_resolved) {
+                        if (!pool->Lookup(address_host, entry)) {
                             destination.is_resolved = false;
                             return true;
                         }
                         destination.hostname = entry.hostname;
                         destination.action = entry.action;
+                        {
+                            std::lock_guard<std::mutex> lock(syncobj_);
+                            if (policy_runtime_ || !entry.is_resolved) {
+                                destination.is_resolved = false;
+                                return true;
+                            }
+                        }
                         destination.connect_endpoint = ppp::net::IPEndPoint(
                             htonl(entry.real_ip_host), endpoint.Port);
                         return true;
@@ -837,8 +1039,38 @@ namespace ppp {
 
                 bool DnsInterceptor::GetFakeIpRoute(
                     uint32_t& network, int& prefix) const noexcept {
+                    std::shared_ptr<DurableFakeIpStore> durable_pool;
+                    {
+                        std::lock_guard<std::mutex> lock(syncobj_);
+                        durable_pool = policy_fake_ip_store_;
+                    }
+                    if (durable_pool && durable_pool->IsEnabled() && durable_pool->GetRoute(network, prefix)) {
+                        return true;
+                    }
                     const std::shared_ptr<const FakeIpPool> pool = GetFakeIpPool();
                     return pool && pool->GetRoute(network, prefix);
+                }
+
+                PolicyTelemetrySnapshot DnsInterceptor::SnapshotPolicyTelemetry() const noexcept {
+                    std::shared_ptr<PolicyTelemetry> telemetry;
+                    std::shared_ptr<DurableFakeIpStore> store;
+                    {
+                        std::lock_guard<std::mutex> lock(syncobj_);
+                        telemetry = policy_telemetry_;
+                        store = policy_fake_ip_store_;
+                    }
+                    return telemetry
+                        ? telemetry->Snapshot(store ? store->SnapshotStats() : DurableFakeIpStore::Stats{})
+                        : PolicyTelemetrySnapshot{};
+                }
+
+                void DnsInterceptor::RecordPolicyDecision(policy::PolicyAction action) noexcept {
+                    std::shared_ptr<PolicyTelemetry> telemetry;
+                    {
+                        std::lock_guard<std::mutex> lock(syncobj_);
+                        telemetry = policy_telemetry_;
+                    }
+                    if (telemetry) telemetry->RecordPolicyDecision(action);
                 }
 
             }

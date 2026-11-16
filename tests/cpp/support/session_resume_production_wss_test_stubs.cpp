@@ -11,7 +11,9 @@
 
 #include <chrono>
 #include <cstring>
+#if !defined(_WIN32)
 #include <unistd.h>
+#endif
 
 namespace ppp {
 
@@ -91,6 +93,10 @@ AppConfiguration::AppConfiguration() noexcept {
     key.delta_encode = false;
     key.shuffle_data = false;
     key.simd_auto = true;
+    // Production Clear() defaults these; the handshake reads them (UBSan flagged the
+    // uninitialised bools when this stub left them unset).
+    server.transport_auth.enabled = false;
+    client.transport_auth.enabled = false;
     _lcgmods[LCGMOD_TYPE_TRANSMISSION] =
         ppp::cryptography::ssea::lcgmod(key.kf, 64 * 64 * 64, 94 * 94 * 94);
     _lcgmods[LCGMOD_TYPE_STATIC] =
@@ -99,8 +105,13 @@ AppConfiguration::AppConfiguration() noexcept {
 
 namespace extensions {
 
-bool IsHaveCiphertext(const AppConfiguration&) noexcept {
-    return false;
+// Mirrors production; the default test configuration has no keys, so tests that do
+// not set them still run without ciphers.
+bool IsHaveCiphertext(const AppConfiguration& configuration) noexcept {
+    return !configuration.key.protocol.empty() &&
+        !configuration.key.protocol_key.empty() &&
+        !configuration.key.transport.empty() &&
+        !configuration.key.transport_key.empty();
 }
 
 } // namespace extensions

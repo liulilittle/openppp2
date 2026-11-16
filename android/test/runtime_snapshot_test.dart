@@ -78,10 +78,13 @@ void main() {
         'monotonic_ms': 1,
         'phase': 'connected',
         'p2p_state': state.wireName,
+        'p2p_gate_reason': 'authenticated-exporter-unavailable',
         'effective_path': 'direct',
       });
       expect(snapshot.effectivePath, state == P2PState.direct ? 'direct' : 'relay');
       expect(snapshot.p2pDiagnosticLines, contains('P2P: ${state.displayName}'));
+      expect(snapshot.p2pDiagnosticLines,
+          contains('Gate: authenticated-exporter-unavailable'));
       expect(
         snapshot.p2pDiagnosticLines,
         contains('Effective path: ${snapshot.effectivePathDisplayName}'),

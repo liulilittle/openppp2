@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 )
@@ -78,6 +79,25 @@ func DefaultConfig() *GuardianConfig {
 			TokenExpiryHours: 24,
 		},
 	}
+}
+
+// checkListenSecurity refuses to expose the management API on a non-loopback
+// address while authentication is disabled.
+func checkListenSecurity(cfg *GuardianConfig) error {
+	if cfg.Auth.Enabled {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(cfg.Listen)
+	if err != nil {
+		host = cfg.Listen
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("refusing to listen on %q with auth.enabled=false; enable auth or bind to a loopback address", cfg.Listen)
 }
 
 func ensureAuthSecret(cfg *GuardianConfig) error {

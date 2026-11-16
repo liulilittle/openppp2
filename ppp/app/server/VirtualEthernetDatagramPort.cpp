@@ -8,6 +8,7 @@
 #include <ppp/coroutines/asio/asio.h>
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/net/asio/SharedBufferReceive.h>
 
 /**
  * @file VirtualEthernetDatagramPort.cpp
@@ -70,37 +71,24 @@ namespace ppp {
                     return false;
                 }
 
-                std::shared_ptr<boost::asio::io_context> context = transmission->GetContext();
-                ITransmission::StrandPtr strand = transmission->GetStrand();
-                if (NULLPTR == context || NULLPTR == strand) {
-                    return false;
-                }
-
-                auto payload = std::make_shared<std::vector<Byte>>();
-                if (packet_length > 0) {
-                    payload->assign(packet, packet + packet_length);
-                }
-
-                udp::ServerUdpRelayHostPorts ports = ports_;
-                VirtualEthernetExchangerPtr exchanger = exchanger_;
-                boost::asio::ip::udp::endpoint sourceEP = sourceEP_;
-                return YieldContext::Spawn(NULLPTR, *context, strand.get(),
-                    [ports = std::move(ports), exchanger = std::move(exchanger),
-                     transmission, sourceEP, destinationEP, payload, packet_length](
-                        YieldContext& y) noexcept {
-                        (void)exchanger;
-                        Byte* data = packet_length > 0 ? payload->data() : NULLPTR;
-                        if (!ports.do_send_to(transmission, sourceEP, destinationEP,
-                                data, packet_length, y)) {
-                            transmission->Dispose();
-                        }
-                    });
+                // Use the callback write path (no YieldContext), as the client's
+                // VEthernetDatagramPort does. The SENDTO frame is built and encrypted
+                // into its own buffer before do_send_to returns and the write queue is
+                // thread-safe, so the shared receive buffer can be passed straight
+                // through. Spawning a coroutine per datagram cost a 128 KiB stack
+                // allocation, a payload copy and two context switches per packet.
+                // A failed asynchronous write disposes the transmission in its callback.
+                return ports_.do_send_to(transmission, sourceEP_, destinationEP,
+                    const_cast<Byte*>(packet), packet_length, nullof<YieldContext>());
             }
 
             /**
              * @brief Closes socket, sends a close signal when needed, and unregisters this port.
              */
             void VirtualEthernetDatagramPort::Finalize() noexcept {
+                if (disposed_.exchange(true)) {
+                    return;
+                }
                 std::shared_ptr<ITransmission> transmission = std::move(transmission_); 
                 if (sendto_ && !finalize_) {
                     if (NULLPTR != transmission &&
@@ -114,7 +102,7 @@ namespace ppp {
                 finalize_ = true;
                 Socket::Closesocket(socket_);
 
-                ports_.release_port(sourceEP_);
+                ports_.release_port(sourceEP_, this);
             }
 
             /**
@@ -199,7 +187,7 @@ namespace ppp {
                 }
 
                 auto self = shared_from_this();
-                socket_.async_receive_from(boost::asio::buffer(buffer_.get(), PPP_BUFFER_SIZE), remoteEP_,
+                ppp::net::asio::AsyncReceiveFromSharedBuffer(socket_, buffer_.get(), PPP_BUFFER_SIZE, remoteEP_,
                     [self, this](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         bool disposing = ec != boost::system::errc::success;
                         while (!disposing) {

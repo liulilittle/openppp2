@@ -199,6 +199,13 @@ namespace ppp {
                 uint32_t                                            peer_virtual_ip = 0; ///< Peer virtual IPv4 in network byte order.
                 ppp::string                                         token;               ///< Short-lived coordinator token.
                 ppp::string                                         authenticated_offer_v1; ///< Hex-encoded authenticated relay offer for this recipient.
+                ppp::string                                         authenticated_offer_v2;
+                ppp::string                                         current_offer_hash;
+                ppp::string                                         cancel_offer_hash;
+                ppp::vector<std::uint8_t>                           supported_versions;
+                std::uint64_t                                      candidate_revision = 0;
+                std::uint64_t                                      peer_candidate_revision = 0;
+                ppp::vector<P2PEndpointCandidate>                   local_candidates;
                 ppp::string                                         reason;              ///< Rejection or status reason.
                 ppp::vector<P2PEndpointCandidate>                   candidates;          ///< Candidate endpoints for the peer.
 

@@ -1,16 +1,23 @@
+diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
 --- a/include/xtcp/core/stack.h
 +++ b/include/xtcp/core/stack.h
-@@ -517,3 +517,6 @@
+@@ -539,6 +539,9 @@
+          * @brief Aggregates read-only ACK-release telemetry across live connections.
+          */
          core::AckReleaseTelemetrySnapshot AckReleaseTelemetry() const noexcept;
 +        /** Reads cumulative ACK-release telemetry for one connection. */
 +        bool ConnAckReleaseTelemetry(
 +            UInt64 conn_id, core::AckReleaseTelemetrySnapshot& out) const noexcept;
          /**
           * @brief Aggregates read-only super-MSS TSO gate telemetry.
+          */
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1524,1 +1524,14 @@
--    core::TsoGateTelemetrySnapshot XtcpStack::TsoGateTelemetry() const noexcept {
+@@ -1554,6 +1554,19 @@
+         return total;
+     }
+ 
 +    bool XtcpStack::ConnAckReleaseTelemetry(
 +        UInt64 conn_id, core::AckReleaseTelemetrySnapshot& out) const noexcept {
 +        out = {};
@@ -24,10 +31,15 @@
 +        return true;
 +    }
 +
-+    core::TsoGateTelemetrySnapshot XtcpStack::TsoGateTelemetry() const noexcept {
+     core::TsoGateTelemetrySnapshot XtcpStack::TsoGateTelemetry() const noexcept {
+         core::TsoGateTelemetrySnapshot total;
+         const auto add = [&total](const core::TsoGateTelemetrySnapshot& value) noexcept {
+diff --git a/tests/test_pacing_flush.cpp b/tests/test_pacing_flush.cpp
 --- a/tests/test_pacing_flush.cpp
 +++ b/tests/test_pacing_flush.cpp
-@@ -161,2 +161,10 @@
+@@ -159,6 +159,14 @@
+     constexpr UInt32 kSegPayload = kMss - 12;  // TSopt (12 B) negotiated above
+     CHECK(received.size() == kSegPayload);
      const xtcp::core::AckReleaseTelemetrySnapshot telemetry = stack_a.AckReleaseTelemetry();
 +    xtcp::core::AckReleaseTelemetrySnapshot conn_telemetry;
 +    CHECK(stack_a.ConnAckReleaseTelemetry(conn, conn_telemetry));
@@ -38,3 +50,5 @@
 +    CHECK(!stack_a.ConnAckReleaseTelemetry(0, missing_telemetry));
 +    CHECK(0 == missing_telemetry.valid_acks);
      CHECK(telemetry.pending_flush_attempts >= 1);
+     CHECK(telemetry.tx_sink_packets >= 1);
+     CHECK(telemetry.tx_sink_bytes >= kSegPayload);

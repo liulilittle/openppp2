@@ -807,11 +807,12 @@ namespace ppp {
                 }
 
                 datagram_manager_->RebindTransmission(NULLPTR);
+                VirtualEthernetMappingPortTable detached;
                 {
                     SynchronizedObjectScope scope(syncobj_);
-                    Dictionary::ReleaseAllObjects(mappings_);
-                    mappings_.clear();
+                    detached.swap(mappings_);
                 }
+                Dictionary::ReleaseAllObjects(detached);
 
                 if (std::shared_ptr<vmux::vmux_net> mux = mux_coordinator_->Take(); NULLPTR != mux) {
                     mux->close_exec();
@@ -884,7 +885,9 @@ namespace ppp {
                         return self->DoSendTo(transmission, source, destination, packet, packet_length, y);
                     };
                 host.release_port =
-                    [self](const boost::asio::ip::udp::endpoint& source) noexcept { self->ReleaseDatagramPort(source); };
+                    [self](const boost::asio::ip::udp::endpoint& source, const VirtualEthernetDatagramPort* expected) noexcept {
+                        self->datagram_manager_->ReleaseDatagramPort(source, expected);
+                    };
                 host.get_interface_ip = [self]() noexcept { return self->switcher_->GetInterfaceIP(); };
                 host.namespace_query =
                     [self](const void* packet, int packet_length) noexcept { return NamespaceQueryCache(self->switcher_, packet, packet_length); };
@@ -977,8 +980,12 @@ namespace ppp {
                 for (;;) {
                     datagram_manager_->Release();
 
-                    Dictionary::ReleaseAllObjects(mappings_);
-                    mappings_.clear();
+                    VirtualEthernetMappingPortTable detached;
+                    {
+                        SynchronizedObjectScope scope(syncobj_);
+                        detached.swap(mappings_);
+                    }
+                    Dictionary::ReleaseAllObjects(detached);
 
                     Timer::ReleaseAllTimeouts(timeouts_);
                     timeouts_.clear();
@@ -1324,6 +1331,8 @@ namespace ppp {
             /** @brief Applies VMUX enable/disable request and acknowledges resulting state. */
             bool VirtualEthernetExchanger::OnMux(const ITransmissionPtr& transmission, uint16_t vlan, uint16_t max_connections, bool acceleration, Byte ordering_caps, YieldContext& y) noexcept {
                 bool err = true;
+                constexpr uint16_t max_server_mux_connections = 1024;
+                max_connections = std::min(max_connections, max_server_mux_connections);
 
                 // Negotiated receiver ordering mode (flow v2). agreed == FLOW_V2 only when the
                 // peer advertised the capability AND this end uses a non-compat scheduler.
@@ -1336,6 +1345,10 @@ namespace ppp {
                 // Capability is implementation-level (always true here), not "current mode".
                 bool local_supports_flow_v2 = true;
                 bool peer_supports_flow_v2 = (ordering_caps & vmux::vmux_net::ordering_caps_flow_v2) != 0;
+                // The client's own preset (flow+turbo / balance / stripe) needs per-flow
+                // ordering. Receiver ordering is shared by both ends, so honour it even
+                // when this server's preset alone would stay on compat ordering.
+                bool peer_requests_flow_v2 = (ordering_caps & vmux::vmux_net::ordering_caps_flow_v2_request) != 0;
                 // Reliability / FEC capabilities: usage is config-gated locally,
                 // and only takes effect when the peer advertises the bits too.
                 bool peer_supports_reliability = (ordering_caps & vmux::vmux_net::ordering_caps_reliability) != 0;
@@ -1345,7 +1358,7 @@ namespace ppp {
                 // Provisional agreed ordering; apply_negotiation is authoritative once mux exists.
                 bool turbo = NULLPTR != configuration && configuration->mux.turbo &&
                     effective_mux_mode == vmux::vmux_net::mux_mode_flow;
-                bool need_flow_v2 = vmux::vmux_net::mode_requires_flow_v2(effective_mux_mode, turbo);
+                bool need_flow_v2 = vmux::vmux_net::mode_requires_flow_v2(effective_mux_mode, turbo) || peer_requests_flow_v2;
                 vmux::vmux_net::receiver_ordering_mode agreed =
                     (need_flow_v2 && local_supports_flow_v2 && peer_supports_flow_v2)
                         ? vmux::vmux_net::ordering_flow_v2
@@ -1398,18 +1411,21 @@ namespace ppp {
                         // not on the wire, so the server cannot know it; raise the
                         // ceiling for any flow-mode session (the ceiling is only a
                         // safety cap — accepting the extra ConnectMux links is benign,
-                        // and a non-turbo client simply never sends them).
-                        if (mux_mode == vmux::vmux_net::mux_mode_flow) {
+                        // and a non-turbo client simply never sends them). A client that
+                        // requests flow_v2 may be a flow+turbo client facing a non-flow
+                        // server preset, so raise the ceiling for it as well.
+                        if (mux_mode == vmux::vmux_net::mux_mode_flow || peer_requests_flow_v2) {
                             uint32_t hard = (uint32_t)max_connections * (uint32_t)PPP_MUX_TURBO_FACTOR_MAX;
-                            if (hard > UINT16_MAX) {
-                                hard = UINT16_MAX;
+                            if (hard > max_server_mux_connections) {
+                                hard = max_server_mux_connections;
                             }
                             mux->set_pool_hard_max((uint16_t)hard);
                         }
 
                         // Apply the effective scheduler and receiver ordering before establishment.
                         mux->apply_negotiation(local_supports_flow_v2, peer_supports_flow_v2,
-                            local_reliability, peer_supports_reliability, local_fec, peer_supports_fec);
+                            local_reliability, peer_supports_reliability, local_fec, peer_supports_fec,
+                            peer_requests_flow_v2);
                         agreed = mux->get_ordering_mode();
 
                         if (mux->update()) {
@@ -2166,7 +2182,23 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
                                 transmission->Dispose();
                             }
                         }
-                        Dictionary::UpdateAllObjects2(mappings_, now);
+                        VirtualEthernetMappingPortTable snapshot;
+                        {
+                            SynchronizedObjectScope scope(syncobj_);
+                            snapshot = mappings_;
+                        }
+                        for (auto& entry : snapshot) {
+                            if (!entry.second->Update(now)) {
+                                {
+                                    SynchronizedObjectScope scope(syncobj_);
+                                    auto it = mappings_.find(entry.first);
+                                    if (it != mappings_.end() && it->second == entry.second) {
+                                        mappings_.erase(it);
+                                    }
+                                }
+                                entry.second->Dispose();
+                            }
+                        }
                     });
                 return true;
             }
@@ -2376,7 +2408,14 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
                 app::protocol::IcmpPathMtuError control_error;
                 const bool is_control_error = app::protocol::TryParseIcmpPathMtuError(
                     packet, packet_length, control_error);
-                if (ip->proto == ppp::net::native::ip_hdr::IP_PROTO_ICMP && !is_control_error) {
+                // Ordinary ICMP is valid between assigned virtual peers (for example,
+                // ping 10.73.0.2 from 10.73.0.3), but must not turn the server into an
+                // unrestricted ICMP transit. External ICMP remains rejected below by
+                // requiring an owned virtual destination.
+                const bool virtual_peer_destination =
+                    switcher_->FindNatInformation(ip->dest) != NULLPTR;
+                if (ip->proto == ppp::net::native::ip_hdr::IP_PROTO_ICMP &&
+                    !is_control_error && !virtual_peer_destination) {
                     return false;
                 }
 
@@ -2549,8 +2588,15 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
 
             /** @brief Creates, opens and registers FRP mapping port if absent. */
             bool VirtualEthernetExchanger::RegisterMappingPort(bool in, bool tcp, int remote_port) noexcept {
+                static constexpr std::size_t kMaxMappingPorts = 64;
                 if (disposed_) {
                     return false;
+                }
+                {
+                    SynchronizedObjectScope scope(syncobj_);
+                    if (mappings_.size() >= kMaxMappingPorts) {
+                        return false;
+                    }
                 }
 
                 ITransmissionPtr transmission = GetTransmission();
@@ -2571,7 +2617,9 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
                 VirtualEthernetLoggerPtr logger = switcher_->GetLogger();
                 bool ok = mapping_port->OpenFrpServer(logger);
                 if (ok) {
-                    ok = VirtualEthernetMappingPort::AddMappingPort(mappings_, in, tcp, remote_port, mapping_port);
+                    SynchronizedObjectScope scope(syncobj_);
+                    ok = !disposed_ && mappings_.size() < kMaxMappingPorts &&
+                        VirtualEthernetMappingPort::AddMappingPort(mappings_, in, tcp, remote_port, mapping_port);
                 }
 
                 if (ok) {
@@ -2608,6 +2656,11 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
                                 std::shared_ptr<boost::asio::io_context> context = exchanger->GetContext();
                                 auto remove_mapping = [exchanger, self]() noexcept {
                                     SynchronizedObjectScope scope(exchanger->syncobj_);
+                                    if (VirtualEthernetMappingPort::FindMappingPort(exchanger->mappings_,
+                                            self->ProtocolIsNetworkV4(), self->ProtocolIsTcpNetwork(),
+                                            self->GetRemotePort()) != self) {
+                                        return;
+                                    }
                                     VirtualEthernetMappingPort::DeleteMappingPort(
                                         exchanger->mappings_, self->ProtocolIsNetworkV4(), self->ProtocolIsTcpNetwork(), self->GetRemotePort());
                                     ppp::telemetry::Log(Level::kDebug, "exchanger", "mapping removed remote_port=%d", self->GetRemotePort());
@@ -2638,6 +2691,7 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
 
             /** @brief Finds FRP mapping port by direction/protocol/remote-port key. */
             VirtualEthernetExchanger::VirtualEthernetMappingPortPtr VirtualEthernetExchanger::GetMappingPort(bool in, bool tcp, int remote_port) noexcept {
+                SynchronizedObjectScope scope(syncobj_);
                 return VirtualEthernetMappingPort::FindMappingPort(mappings_, in, tcp, remote_port);
             }
 

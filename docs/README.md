@@ -2,7 +2,7 @@
 
 > Status: Current
 > Type: Navigation
-> Last verified: 2026-07-22
+> Last verified: 2026-10-07
 > Parent index: [Repository README](../README.md) · Chinese: [按任务查找文档](README_CN.md)
 
 [中文版](README_CN.md)
@@ -12,8 +12,9 @@ Use this page to choose the current documentation for the native `ppp` tree. Fol
 ## First-use path
 
 1. [Build and first run](getting-started/USER_MANUAL.md)
-2. [Configuration reference](reference/CONFIGURATION.md) and [CLI reference](reference/CLI_REFERENCE.md)
-3. [Operational checklist and troubleshooting](operations/OPERATIONS.md)
+2. [Write the configuration file](getting-started/CONFIGURE.md) — minimal server/client pair, fields that must match, what to add next
+3. [Configuration reference](reference/CONFIGURATION.md) and [CLI reference](reference/CLI_REFERENCE.md)
+4. [Operational checklist and troubleshooting](operations/OPERATIONS.md)
 
 ## Browse by task
 
@@ -22,9 +23,11 @@ Use this page to choose the current documentation for the native `ppp` tree. Fol
 | Installation, local build, and first verification | [Getting started](getting-started/README.md) |
 | Configuration fields, CLI behavior, errors, and protocol formats | [Reference](reference/README.md) |
 | Routing, DNS, proxy mode, management, IPv6, and platforms | [Guides](guides/README.md) |
+| Configure and use the client policy CLI | [Policy CLI guide](guides/POLICY_CLI.md) · [Chinese](guides/POLICY_CLI_CN.md) |
 | Deployment, security, monitoring, and incident response | [Operations](operations/README.md) |
 | Runtime, transport, protocol, concurrency, and source-level architecture | [Architecture](architecture/README.md) |
 | Source reading, builds, tests, and compatibility | [Development](development/README.md) |
+| Local policy implementation evidence and Linux live results | [Development notes](development/README.md) · [Linux live report](testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md) |
 | Interface status, implementation boundaries, and known gaps | [Project interface map](reference/PROJECT_INTERFACE_MAP.md) |
 
 Runtime consumers should also follow the [UI runtime contract](reference/UI_RUNTIME_CONTRACT.md) and its [Chinese peer](reference/UI_RUNTIME_CONTRACT_CN.md).

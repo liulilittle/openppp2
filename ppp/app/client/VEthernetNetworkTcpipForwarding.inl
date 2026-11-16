@@ -90,13 +90,27 @@ namespace ppp {
                 connection_rinetd->ProtectorNetwork = protector_network;
 #endif
 
+                // Loopback targets (inbound forwards of the proxy-only subnet) never leave the
+                // host, so they are neither protected nor bound to the physical NIC.
+                bool loopback = false;
+#if !defined(_ANDROID) && !defined(_IPHONE) && !defined(IPHONE)
+                loopback = switcher->ProxySubnetUserspace(NULLPTR) && remoteEP.address().is_loopback();
+#endif
                 if (force) {
-                    connection_rinetd->RemoteSocketProtectorRequired = true;
-                    connection_rinetd->ProtectRemoteSocket =
-                        BuildClientUnderlyingSocketProtector(
-                            remoteEP.address().is_v4(),
-                            underlying_network_interface,
-                            protector_network);
+                    bool protector_required = !loopback;
+#if !defined(_ANDROID) && !defined(_IPHONE) && !defined(IPHONE)
+                    // Desktop proxy-only mode installs no TUN routes: the default route already
+                    // egresses directly, and no underlying interface was resolved to bind to.
+                    protector_required = !switcher->ProxyOnly(NULLPTR) && protector_required;
+#endif
+                    connection_rinetd->RemoteSocketProtectorRequired = protector_required;
+                    if (!loopback) {
+                        connection_rinetd->ProtectRemoteSocket =
+                            BuildClientUnderlyingSocketProtector(
+                                remoteEP.address().is_v4(),
+                                underlying_network_interface,
+                                protector_network);
+                    }
                 }
 
                 bool run_ok = connection_rinetd->Open(remoteEP, y);

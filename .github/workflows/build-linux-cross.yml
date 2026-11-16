@@ -22,13 +22,16 @@ env:
 jobs:
   build:
     name: Linux ${{ matrix.third_dir }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"platform":"linux/aarch64","cc":"aarch64-linux-gnu-gcc","cxx":"aarch64-linux-gnu-g++","apt_pkg":"aarch64-linux-gnu","debian_arch":"arm64","third_dir":"aarch64"}]}' || '{"include":[{"platform":"linux/aarch64","cc":"aarch64-linux-gnu-gcc","cxx":"aarch64-linux-gnu-g++","apt_pkg":"aarch64-linux-gnu","debian_arch":"arm64","third_dir":"aarch64"},{"platform":"linux/armv7l","cc":"arm-linux-gnueabihf-gcc","cxx":"arm-linux-gnueabihf-g++","apt_pkg":"arm-linux-gnueabihf","debian_arch":"armhf","third_dir":"armv7l"},{"platform":"linux/riscv64","cc":"riscv64-linux-gnu-gcc","cxx":"riscv64-linux-gnu-g++","apt_pkg":"riscv64-linux-gnu","debian_arch":"riscv64","third_dir":"riscv64"},{"platform":"linux/ppc64el","cc":"powerpc64le-linux-gnu-gcc","cxx":"powerpc64le-linux-gnu-g++","apt_pkg":"powerpc64le-linux-gnu","debian_arch":"ppc64el","third_dir":"ppc64el"},{"platform":"linux/s390x","cc":"s390x-linux-gnu-gcc","cxx":"s390x-linux-gnu-g++","apt_pkg":"s390x-linux-gnu","debian_arch":"s390x","third_dir":"s390x"},{"platform":"linux/mipsel","cc":"mipsel-linux-gnu-gcc","cxx":"mipsel-linux-gnu-g++","apt_pkg":"mipsel-linux-gnu","debian_arch":"mipsel","third_dir":"mipsel"}]}') }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare XTCP dependency
+        run: bash tools/prepare_xtcp.sh
 
       - name: Clone third-party environment
         run: git clone --depth 1 https://github.com/liulilittle/openppp2-ubuntu-3rd-environment.git "${{ runner.temp }}/3rd"
@@ -108,7 +111,8 @@ jobs:
             -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
             -DCMAKE_EXE_LINKER_FLAGS="$LINK_FLAGS" \
             -DCMAKE_CXX_FLAGS="$CPP_FLAGS" \
-            -DTHIRD_PARTY_LIBRARY_DIR="$TP"
+            -DTHIRD_PARTY_LIBRARY_DIR="$TP" \
+            -DENABLE_XTCP=ON
           make -j$(nproc)
 
       - name: Package artifact

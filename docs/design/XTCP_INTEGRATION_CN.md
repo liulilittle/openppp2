@@ -1,16 +1,211 @@
 # XTCP Linux IPv4 laboratory runtime 设计
 
+> Status: Active
+> Type: Design
+> Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
+
+## SYN Cookie MAC 加宽（0054）
+
+0054 将无状态 SYN Cookie 的乘法混合哈希替换为带密钥 SipHash-2-4（128 位
+CSPRNG 密钥），输入为完整 128 位地址、端口、对端 ISN、MSS 索引和时间 epoch。
+32 位 Cookie ISN 现为：`[31..8]` 24 位被验证的哈希位，`[7..3]` 经独立哈希位
+掩码的 5 位时间槽，`[2..0]` MSS 索引（已纳入哈希，捕获的 Cookie 不能被改写成
+其他 MSS）。计数器每 16 s 递增，60 s 窗口最多接受 32 个槽中的 5 个：盲伪造概率
+由约 2^-23 降至约 2^-25，并且 Cookie 不能在 512 s 计数器回绕后被重放（epoch
+参与哈希，`Verify` 会尝试当前与上一个 epoch）。新鲜度窗口按 16 s 刻度量化：
+窗口内的 Cookie 一定被接受，超出约 15 s 以内的也可能被接受。`test_syncookies`
+与 `test_cookie_expiry` 覆盖每个被验证位、MSS 认证、IPv6 四个字、回绕重放和
+epoch 边界往返。
+
+## 核心审查第二批（0052）
+
+0052 禁止无状态 Cookie SYN+ACK 协商 WSOPT 和 SACK-permitted，因为 Cookie
+不保存这两项状态。发送池耗尽时待发队列使用 1 ms 重试期限；RST 仅在序号
+精确等于 RCV.NXT 时关闭连接，否则使用已有的限速挑战 ACK。IPv4/IPv6 输入
+按 IP 长度截断；GSO 仅首段保留 CWR，清除已过期的 URG 指针；重传 FIN
+重新启动 TIME_WAIT。回归覆盖带 WSOPT 的 Cookie 握手、带 padding 的 ACK
+数据，以及 established 和 closing 状态下精确与非精确序号的 RST。0053 同步更新了
+三个原先断言“窗口内非精确 RST 即关闭”的既有测试（`test_seqwrap_rst`、
+`test_rst_keepalive`、`test_window_edge_rst`）。
+
+PPP 同时检查协程投递结果、限制 HTTP 头为 16 KiB，使 UDP 清理幂等且按
+对象身份移除，并将每会话 UDP 端口和 mux carrier（含 turbo hard max）分别
+限制为 1024。Android fallback 按 Sendfd 返回零表示成功；其中可能阻塞
+约 6 秒的 connect/recv 路径未重新设计。验证须以本批隔离实验机记录为准，
+不能沿用上一批测试计数。
+
+## CUBIC epoch 回绕加固（0070）
+
+0070 加固 `plugins/cc_cubic.cpp`。连接迁移恢复会把 `delivered` 清零并重跑插件
+`init`（原本已重置 `epoch_base`），因此报告的死循环在该路径上不可达；但
+`init` 遗留了过期的 `recovery_base`、`cnt`、`wmax`。现在 init 重置全部状态，
+`delivered` 小于 `epoch_base/recovery_base` 时重新锚定而不是让无符号差回绕，
+增长累加器限幅到 1e6，并以一次整数增量取代递减循环。BBRv1 与 KCC 不存在
+经 init 后仍可回绕的 delivered 减基数模式。`test_cc_bbr` 新增 delivered
+重置用例。编号 0052-0061 仍为其他批次保留。
+
+## 核心审查第一批（0050-0051）
+
+0050 在保留拒收前沿时阻止重叠重传重复交付；重叠交付成功后恢复接收窗口，
+并为重叠 FIN、保留 FIN 的状态迁移补充通知。前沿测试新增保留前沿、
+重叠 FIN 和保留 FIN 场景，覆盖序号回绕。0051 在两个 shard 扫描路径中，
+重新发布未发送 FIFO 前恢复其栈顺序，避免下一轮反转残留包顺序。
+0012、0043 仅刷新适配 c9dd560 的上下文，不改变编号和语义；
+完整补丁栈须使用 `patch -p1 --fuzz=0` 应用。
+
+协程修复保留显式 Spawn 栈大小，并在投递拒绝时重新武装同一个 Anchor，
+不会覆盖更新的 Anchor。C3 暂不改变所有权：Spawn 接受引用和裸指针，
+也支持栈上 context，无法安全地局部转换为 shared_ptr。
+调用者必须保证 io_context/strand 活到异步唤醒源全部取消并排空之后。
+服务端每会话最多 64 个 FRP 映射（非配置项），表访问加锁，
+对象更新与释放在表锁之外进行，并按对象身份删除映射。
+
+## 实验性 runtime 执行域
+
+Linux 启动前设置 `OPENPPP2_XTCP_PRIVATE_IO=1`，可让单 shard 也使用独立的
+`io_context` 和一个 `xtcp-io` worker。未设置、空值及其他值仍让单 shard
+使用调用方提供的 context；多 shard 原本就使用专属 worker。该实验开关只改变
+执行位置，不改变 shard 数量、输出 lane、carrier 加密或 gather 策略。唯一的队列
+影响：单 shard、TAP GSO 生效且未设置 `OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES` 时，共享
+上传预算默认 2MiB 而非 32MiB。否则 worker 会对主线程尚未加密的上传数据提前 ACK，发送窗口脱离
+carrier 进度膨胀并溢出 TUN 队列（P64 上传 TUN 丢包 1-4 万、重传 10-22 万）。
+2MiB 下 P64 GSO-on 上传实测 +10~15%，TUN 丢包降两个数量级，P16 持平；1MiB 会
+压低 P16。TAP GSO 关闭时主线程逐个排空 1500 字节包更慢，2MiB 会把 P64 上传从约
+720 压到约 340Mbit/s，因此 GSO 关闭时仍为 32MiB。显式设置 `OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES` 始终优先。
+它增加一个 CPU 执行域，不代表单核性能资格。一个 runtime 实例存续期间须保持
+设置不变；此开关不表示默认值已改变或吞吐验收已通过。
+其他平台忽略此开关。该实验执行域及其队列预算默认值，连同 direct bridge 测试稳定性修复，自 v2.1.9.0 起随正式发布提供。
+
+## Windows / Android 构建支持
+
+Windows 和 Android 上的 XTCP 默认关闭，Linux 桌面版维持现有默认值。详细的跨平台构建步骤见英文版 [XTCP 平台构建说明](XTCP_INTEGRATION.md)。
+
+Windows 使用 Wintun L3 数据路径；传统 TapWindows L2 适配器当前不支持 XTCP，会在连接阶段记录原因并拒绝启用。Android 可通过 `PPP_ENABLE_XTCP=ON` 调用 `android/build.sh`，脚本会先准备固定版本的 XTCP 源码。Android 入站包走 `TapLinux` 路径；远端 TCP 连接由现有转发层创建，并在连接前调用 `VpnService.protect`。XTCP 桥接使用的 loopback socket 仅连接进程内 TCP 栈。
+
+### Windows 数据面与离线验证（2026-10-17）
+
+Windows XTCP 仅支持 x64、Wintun L3 和内部 loopback TCP 桥。当前固定依赖为 `third-party/xtcp` 的 revision `c9dd5601384201b396b1b6599c6c868097da5dcf`，归档 SHA256 为 `6a9988d5bf5a039bd9bd0d0c7162e33afc1c60013af10f73abc82d0dc82b2631`（见 §11.192）。在 VS x64 开发者环境中构建：
+
+```bat
+bash tools/prepare_xtcp.sh
+build_windows.bat Release x64 xtcp
+```
+
+MSBuild 路径需要先单独构建固定依赖，保持静态 CRT、内置 CC 和校验和验证选项一致：
+
+```bat
+cmake -B build-xtcp-win -S third-party/xtcp -G "Visual Studio 17 2022" -A x64 "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>" -DXTCP_BUILD_TESTS=OFF -DXTCP_BUILD_BENCH=OFF -DXTCP_BUILD_SAMPLES=OFF -DXTCP_BUILD_PLUGINS=OFF -DXTCP_BUILD_LWIP=OFF -DXTCP_BUILD_CC_PLUGINS=ON -DXTCP_CHECKSUM_VALIDATE=ON
+cmake --build build-xtcp-win --config Release --target xtcp_static
+MSBuild ppp.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PreferredToolArchitecture=x64 /p:VcpkgTriplet=x64-windows-static /p:PppEnableXtcp=true /p:PppXtcpLibrary=build-xtcp-win\Release\xtcp_static.lib /p:OutDir=build\msbuild-xtcp\ /p:IntDir=build\msbuild-xtcp-int\ /m:2
+```
+
+根 CMake 的 MSVC 编译显式使用 `/utf-8` 和 `NOMINMAX`，与 vcxproj 一致，分别避免本机代码页误读中文注释、Windows min/max 宏破坏 Boost.UUID 声明。CMake 和 vcxproj 都链接 `bcrypt`、`winmm`，设置相同的三个 PPP XTCP 宏。Windows 默认不启用 XTCP，x86/ARM64 的 XTCP 构建会被拒绝。输出必须隔离于正在使用的安装目录。
+
+- **L3 与 GSO**：Wintun 接收回调直接传递 IP 包，没有以太网头；当前 XTCP 仅处理未分片 IPv4 TCP，不代表已支持 IPv6/UDP/IPv4 分片。TapWindows 没有覆盖 `SupportsTxGso`，默认 false；环境变量无法越过能力门控开启 TSO 或部分校验和输出，因此发送普通 MSS 分段，经 `Output` 交给 Wintun，不走 Windows 不支持的 `OutputGso`。
+- **loopback 与路由保护**：connector 绑定 `127.0.0.1:0`，取得系统分配端口后注册 external-client 表，再连 `127.0.0.1:<listener-port>`；新增 Windows 检查拒绝非 IPv4 loopback listener。内部桥不需要绑定物理网卡或远端 socket protect，否则反而干扰本机通信。真正的远端 carrier/bypass 仍经过原有转发和保护逻辑。此结论来自源码，尚未实际更改路由验证。
+- **线程与 Dispose**：多 shard 使用私有 I/O 线程；Windows 调现有线程命名 helper，不设置 CPU 亲和性。每个 shard 在自身 strand 取消 timer、关闭 flow 和销毁 stack/backend，最后释放池 lease；私有 work guard 随后释放，让取消回调排空，再退出线程。重复 Stop 在锁内检查运行状态，防止析构时再次向已退出池排队。析构检测当前 worker，避免 self-join；worker 自持 io_context 生命周期。修复共享停止实现的引用循环，不改变 Linux 包处理或桥选择逻辑。
+- **POSIX 审查**：`fcntl`、`socketpair`、POSIX `close` 和 pthread 命名均置于平台守卫内；NDI/backend 和 pool lease 未发现额外 POSIX 依赖。保留的 `getenv` 使用跨平台 CRT API，按现有规则严格匹配取值；诊断变量应在启动前设置，不与运行时启动并发修改环境。
+
+Windows 最小回归测试链接生产库，执行 16 次两 shard 启动、停止、释放，交替覆盖立即析构与延迟后重复 Stop，检查捕获对象及时释放；不创建网卡，不发送网络流量。`tests/cpp` 独立 XTCP suite 仍只支持 Linux，此处只增加专用 target：
+
+```bat
+rem 设置 VCPKG_ROOT 为本机已有且已安装 x64-windows-static 依赖的 vcpkg。
+cmake -S . -B build\ninja-xtcp-validation -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static "-DPPP_OUTPUT_DIR=%CD%/build/ninja-xtcp-validation/bin" -DENABLE_XTCP=ON -DENABLE_XTCP_WINDOWS_TESTS=ON
+cmake --build build\ninja-xtcp-validation --parallel 2
+ctest --test-dir build\ninja-xtcp-validation -R xtcp_windows_lifecycle_test --output-on-failure
+```
+
+上述隔离 Ninja 配置等价于 wrapper 的 Release/x64/XTCP 配置，保留构建目录便于复查。生产调用方在 `Start` 成功后才发布 runtime，每次重连创建新实例；本次未扩展同一实例并发 Start/Stop 或停止后变更 shard 数再启动的既有边界。测试检查 Impl 释放；当前 worker 自持 context 完成尾部退出，不以 token 过期声称所有 OS 线程已同步退出。测试与编译不能证明真实 VPN session 成功。后续还需授权后的 Windows 真机验证：Wintun 收发与 MTU/校验和、桥接双向传输与半关闭/RST、默认路由下的 loopback、重连与多 shard 退出；本次禁止启动 PPP 或修改路由/DNS/网卡/驱动/代理。
+
+`pwsh.exe` 缺失提示来自 vcpkg 导入的 `AppLocalFromInstalled` target（`scripts/buildsystems/msbuild/vcpkg.targets`），其内部消息为 `VcpkgApplocalDeps`，并非项目 `CopyDriverRuntime`。已安装版本在退出码 9009 时自动回退系统 Windows PowerShell，不需修改项目或外部 vcpkg。本机重复导入 vcpkg 的 MSB4011 与 XTCP 编译器警告是不同问题。
+
+2026-10-17 验证状态：MSBuild Release/x64 的 XTCP 开启与默认关闭构建均通过（exit 0）；隔离 VS x64 CMake/Ninja 配置和完整 342 步构建通过（exit 0）；生产库链接的 Windows 生命周期测试 1/1 通过（内部 16 次循环，0.49 秒）。include 边界、vcxproj 源文件匹配（259/259）和 `git diff --check` 均通过。XTCP 新增 MSVC 警告清零，包括 C4018；既有 C4005/C4099、本机 MSB4011 以及 CMake compatibility/policy 提示仍存在。共享生命周期安全修复未在本轮另跑 Linux 回归；没有启动或验证真实 VPN session。
+
+### Windows loopback 隔离回归（2026-10-17）
+
+按用户“允许隔离测试，不能影响现有连接”，并确认“没有虚拟机，先做 loopback 隔离测试”的范围，`ENABLE_XTCP_WINDOWS_TESTS` 现在还构建生产库链接的 `xtcp_runtime_bridge_test`。它向 XtcpRuntime 注入合成 IPv4/TCP 包，连接真实 `127.0.0.1` 临时端口 echo server；不启动 PPP 或 Wintun，不改路由/DNS/网卡。Windows 使用 TCP 桥，仅跳过 POSIX fd 所有权用例；环境变量 helper 和 work guard 使用 Windows 可用 API，保留 Linux relay/运行行为。
+
+```bat
+cmake --build build\ninja-xtcp-validation --target xtcp_runtime_bridge_test xtcp_windows_lifecycle_test --parallel 2
+ctest --test-dir build\ninja-xtcp-validation -R "^xtcp_(runtime_bridge|windows_lifecycle)_test$" --output-on-failure
+```
+
+MSVC 编译链接通过（exit 0）；CTest **2/2 通过**：生命周期测试 0.48 秒、bridge 12.84 秒、总计 13.32 秒。bridge 覆盖端点字节序、握手、双向字节完整性、半关闭、ready 前 RST、direct-read reservation、背压/恢复、过期回调、重启与全局 upload budget、FIN 幂等、队列记账及 **256 次连接创建/关闭**。这些是功能测试耗时，不是吞吐指标。
+
+宿主未发现可用 Windows Sandbox、Windows 虚拟机工具/清单，没有安装或启用虚拟化组件。Windows 真实 PPP/Wintun 的 native/XTCP 性能仍未测量；合成包 harness 与普通 Winsock loopback 的工作量不相同，不能用二者直接计算 VPN 加速比。
+
+### Windows loopback 吞吐实测（2026-10-17）
+
+构建 `xtcp_runtime_bridge_test` 后运行可复现脚本：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/run_windows_xtcp_loopback_benchmark.ps1 -Seconds 3 -Rounds 3
+```
+
+脚本只启动测试 exe，交错参考/XTCP 顺序，在子进程内清除 XTCP 环境覆盖，并保存逐轮数据、stderr、二进制 SHA-256 和中位数。每连接预热 1 秒、计时约 3 秒；排除握手和尾部完整性排空。两条路径使用相同确定性数据、32 KiB 应用在途上限和 1360 B 写入块；goodput 只计回显有效载荷一次，不把上行和下行相加。XTCP 使用 KCC、单 shard、无 GSO、合成 peer 显式 MSS=1460；Winsock 自行协商其回环 MSS。
+
+| 软件路径 | 三轮吞吐 Mbps | 中位 Mbps | 进程 CPU 中位 ns/B |
+| --- | --- | --- | --- |
+| 原生 Winsock TCP 回环参考 | 779.381 / 1023.176 / 967.785 | 967.785 | 14.208 |
+| XTCP Runtime + 合成 IPv4/TCP + 回环 echo | 22.634 / 20.480 / 19.486 | 20.480 | 417.082 |
+
+6/6 样本均通过 byte-exact 和最终全量排空校验，XTCP 入口 admission drop=0。三条 XTCP 连接分别观察到 536/532/559 个完整旧 payload 包（包含预热/排空），已识别为重复包且不计入有效载荷，原因尚未确认。初轮无 MSS option（peer 默认 MSS=536）诊断中位 XTCP=34.607 Mbps、Winsock=1018.449 Mbps；这是不同 profile，未与 MSS1460 结果混算。
+
+**XTCP 在这个测试器中的吞吐明显更低。** 参考路径是普通 Winsock TCP，不是 OpenPPP2 native 模式；XTCP 还承担合成包构造/校验和、入队、输出复制、解析及手工 ACK。进程 CPU 指标包含测试器轮询与 echo server，32 KiB 应用窗口也会约束闭环吞吐；不能将比值解释成 PPP/Wintun 性能差，也不能仅凭这些数字判定 pacing、计时调度、重传或测试器成本谁占主导。没有启动 PPP/Wintun 或更改路由、DNS、网卡设置。
+
+结果：`build/xtcp-validation/throughput-mss1460/results.json`，二进制 SHA-256=`7c021c03bacb4ff3d4e7b0b862336781cafe916818155ff30197267f4c1943bc`。后续功能回归 2/2 通过、总计 13.49 秒；同时修复 Windows 测试器的退出顺序，等待 runtime teardown 后再停止外部 context，避免测试器自身留下 Stop handler 引用循环。
+
+### Windows 吞吐跟进：根因与追平（2026-10-17）
+
+上面 20 Mbps 的结果由四个叠加原因造成。定位手段是给基准测试新增的进程内栈采样器（`XTCP_BENCH_PROFILE=io|main`）和按线程 CPU 统计（`XTCP_BENCH_THREADS=1`）：
+
+1. **热路径上的 `getenv`。** `ConnectorWriteCap()`、`ConnectorBatchBytes()`、`GlobalQueueBudget()`、`SendRetryDelay()` 和 GRO 尺寸 helper 每次写入或每个包都调用一次 `getenv`。Windows CRT 会加锁并扫描整个环境块，占 runtime I/O 线程约 36% CPU。现在改为 runtime 构造时读取一次（新建 runtime 仍会读到变更后的值），各平台都受益。
+2. **带数据的段被算成重复 ACK**（现为上游 `0255dae`，原本地补丁 `0030-dupack-excludes-data-segments.patch` 已移除）。双向传输时对端每个数据段都重复同一个累计 ACK，xtcp 把它们计为 dupack，触发虚假快速重传（即之前的"重复包"）并压垮 cwnd。现在带数据、SYN 或 FIN 的段不再计数（RFC 5681 第 2 节，Linux `FLAG_DATA`）。仅窗口变化的情况有意不排除，因为 xtcp 自己的接收端每缓冲一个乱序段就会缩小通告窗口。
+3. **KCC 遇上 Windows 粗粒度定时器。** KCC 的发送路径依赖定时器，而 Windows 的等待会向上取整到约 15.6 ms。Windows 现在默认用 `cubic`，可用 `OPENPPP2_XTCP_CC=kcc` 切回。补丁 `0029-pacing-late-wake-catch-up.patch` 为迟到的 pacing 唤醒补发额度（上限 20 ms），在本测试器中单独加它没有可测到的变化。
+4. **测试器干扰。** echo server 原本与 runtime 共用 I/O 线程，而 Winsock 参考路径中 echo server 有独立线程。基准测试现在让 echo server 跑在单独线程上。
+
+基准脚本，交错 3 轮，默认拥塞控制（cubic）：
+
+| 软件路径 | 中位 Mbps | 范围 Mbps | 进程 CPU 中位 ns/B | 重复包 |
+| --- | --- | --- | --- | --- |
+| 原生 Winsock TCP 回环参考 | 1061.767 | 1005.985-1076.121 | 13.343 | 0 |
+| XTCP Runtime + 合成 IPv4/TCP + 回环 echo | 1096.883 | 1074.658-1110.883 | 18.791 | 0 |
+
+同一构建下设 `XTCP_BENCH_CC=kcc` 测得 309-400 Mbps。在这个闭环测试器中 XTCP 吞吐已与参考持平，但每字节进程 CPU 仍多约 40%。这仍是组件基准，不是 PPP/Wintun VPN 实测。
+
+### Linux 回环吞吐与直连桥（2026-10-17）
+
+`xtcp_runtime_bridge_test --throughput xtcp|native <秒数>` 现在也能在 Linux 上构建（`ENABLE_XTCP_TESTS=ON`），其中 `native` 指内核 TCP 回环。设置 `OPENPPP2_XTCP_MEMORY_BRIDGE=1`（或 `XTCP_BENCH_DIRECT=1`）后，回环 TCP echo 会换成进程内的直连 second leg：它在自己的 pump 线程里通过 `SendToPeer` / `OnSecondLegPayload` 回显数据。`XTCP_BENCH_WINDOW` 可调整 32 KiB 的在途上限；`XTCP_BENCH_PROFILE` 在 Linux 上也可用（信号采样加 `addr2line`，需用 `-g` 构建）。
+
+本轮 runtime 改动：connector 写入和轮询定时器 kick 推迟到每个入站批次末尾（每批一次 gather-write、一次定时器重设）；`XtcpSecondLegHooks` 新增可选的 `BatchesPeerSend()` / `FlushPeerSend()`，second leg 可以每批只唤醒一次 writer，而不是每个段唤醒一次。生产代码中的 `VEthernetNetworkTcpipConnection` 还没有启用它。
+
+WSL2 Debian，32 KiB 窗口，单连接，每项 3 轮：
+
+| 路径 | Mbps |
+| --- | --- |
+| 内核 TCP 回环参考 | 7186-9561 |
+| XTCP，回环 TCP 桥（合并前） | 951-1199 |
+| XTCP，回环 TCP 桥（合并写入） | 1305-1389 |
+| XTCP，直连桥，逐段唤醒 | 1496-1543 |
+| XTCP，直连桥，`FlushPeerSend` 批量唤醒 | 1878-1987 |
+
+同一构建在 Windows 上：Winsock 约 1000 Mbps，TCP 桥约 1130 Mbps，直连桥 1240-1250 Mbps。Linux 上 XTCP 只达到内核回环的约 22%。runtime I/O 线程已经跑满，剩余成本是每个小批次的跨线程唤醒，以及单线程逐个处理 1360 字节段的用户态开销。要继续缩小差距，需要更大的处理单元（GSO/TSO 级别的段）或多线程流水线，靠局部修补收效有限。窗口设为 64 KB 时 TCP 桥约 1.84 Gbps；更大的窗口受合成对端未协商窗口缩放的限制。
+
+### Windows AF_UNIX 后续优化评估（本次不实现）
+
+Windows 10 1803+ 的 AF_UNIX stream socket 可作后续候选，但不能直接打开当前 POSIX `socketpair` 分支：Winsock 无 `socketpair`，Asio 的 Windows `local::connect_pair` 也不支持。需另写 bind/listen/connect/accept，处理文件名、权限与清理，避免把 Winsock `SOCKET` 截断为 `int`，并使用 local/generic stream socket，不应把 AF_UNIX 句柄交给 TCP socket。完成兼容性/IOCP/生命周期测试前保留 loopback TCP 和运行时回退；尚无吞吐改善证据。参见 [Microsoft AF_UNIX 说明](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/) 与 [Asio local socket 文档](https://www.boost.org/doc/libs/latest/doc/html/boost_asio/overview/posix/local.html)。
+
 > Status: Active / Laboratory
 > Type: Design
 > Last verified: 2026-09-27 (working tree; uncommitted)
 
-## 0. 现状总览（2026-09-04，`XTCP-SINGLECORE-BASELINE-20260902` 之后）
+## 0. 现状总览（默认策略更新于 2026-10-18）
 
 > 本文其余章节按时间线记录实验细节；本节是当前状态的唯一起点摘要。
 
-**当前工作树**包含端到端 TCPv4 GSO ingress、opt-in 单-owner 用户态 direct bridge、显式 receive resume、16KiB download chunk、DL 零窗口 persist/pacing 治理、Route3 strict isolation/qualification，以及 default-off NDI TSO laboratory capability。binary：`build/xtcp-runtime-root/bin/ppp`。这些改动尚未提交，不能把历史 commit 链当作当前 revision。
+**当前实现**包含端到端 TCPv4 GSO ingress、单-owner 用户态 direct bridge、显式 receive resume、16KiB download chunk、DL 零窗口 persist/pacing 治理、Route3 strict isolation/qualification，以及 default-off NDI TSO laboratory capability。下文 binary 路径与性能数据属于各节对应的历史实验，不能当作当前 revision 的验证证据。
 
-**direct bridge（未设置 `OPENPPP2_XTCP_MEMORY_BRIDGE` 时默认尝试；`=0` 可强制 legacy socket pump；runner `--xtcp-memory-bridge` 显式启用）**替换原 socket pump，而不是与其并行：XTCP receive → 32MiB/4096-item 有界 upload queue → 唯一 transmission writer；唯一 transmission reader → 16KiB alias chunk → XTCP `Send`。runtime 强持有 second leg；队列降到 low watermark 后显式 `ResumeReceive()`/window update。`ITransmission` 默认不保证半关；raw child `ITcpipTransmission` 则通过真实 TCP `shutdown(SHUT_WR)` 在 upload queue 排空后发送 FIN、保留接收方向。该 direct 路径按 carrier capability gate；WebSocket/TLS 等不支持的 carrier 安全回退 socket pump；`degraded_half_close` 仅为兼容遥测，正确路径保持 0。
+**direct bridge（Linux 桌面/服务器 `__linux__` 且非 Android：`OPENPPP2_XTCP_MEMORY_BRIDGE` 未设置或为空时默认尝试；所有平台精确值 `1` 启用，`0` 或其他非空值关闭；Windows/Android/macOS 等未设置或为空时仍关闭）**替换原 socket pump，而不是与其并行：XTCP receive → 32MiB/4096-item 有界 upload queue → 唯一 transmission writer；唯一 transmission reader → 16KiB alias chunk → XTCP `Send`。runtime 强持有 second leg；队列降到 low watermark 后显式 `ResumeReceive()`/window update。`ITransmission` 默认不保证半关；raw child `ITcpipTransmission` 则通过真实 TCP `shutdown(SHUT_WR)` 在 upload queue 排空后发送 FIN、保留接收方向。该 direct 路径按 carrier capability gate；WebSocket/TLS 等不支持的 carrier 安全回退 socket pump；`degraded_half_close` 仅为兼容遥测，正确路径保持 0。策略在首次使用时缓存，环境变量应在进程启动前设置。此策略不改变 XTCP 栈本身的启用方式；Linux matrix runner 默认不注入该变量，显式开关设置 `1`/`0`，受控 acceptance contract 继续固定 `=1`。§11 的历史 opt-in 描述仅适用于当时版本，合成 throughput benchmark 的显式开关也保持不变。
 
 **当前严格单核 paired 证据**（GSO-on，direct bridge，CPU8）已有三轮 artifact `artifacts/direct-final-*` 的 36/36 qualification pass。旧六模式主矩阵 `artifacts/route3-six-mode-strict-r3-20260904` 仅生成 106/106 cell；修复 revision 的原子矩阵 `artifacts/route3-six-mode-strict-persist-fix-r3b-20260904` 已完成 **108/108 cell qualification 全 pass**。原故障维度 `XTCP/GSO-on/P4/DL` 三轮为 614.4–619.1 Mbps，未再出现 watchdog。
 
@@ -32,7 +227,7 @@ P1 direct GRO 扫描中 12KiB 三轮稳定（975/1010/1039 Mbps）；13–15KiB 
 1. 固定owner候选的 P1/UL 与 P4/DL 单核 GSO-on 已分别达到稳定 1.2×；但单核 P16/DL/GSO-on 仍只有约1.05×，完整跨并行度/方向矩阵未全部达到目标。P16/DL 双核路径虽稳定超过1.2×，公平性仍有间歇性异常，且route实验尚未晋升默认；
 2. default-off NDI TSO 负收益尚未解决，不能默认启用；
 3. `ITransmission` 协议级 half-close；
-4. P64 DL 既有 server-side wedge。
+4. ~~P64 DL 既有 server-side wedge~~：2026-10-17 在补丁栈 0001–0034 上未能复现（单/双 shard、GSO 开/关共 16 个单元全部通过，见 §11.4.1a），保留为回归单元，不再列为阻塞。
 
 **结论**：三条路线均有可运行实现和正确性证据，Route3 qualification 装置在修复 revision 上完成原子 108/108 pass，且 P4 DL 零窗口 watchdog 已消除；但性能门禁及协议级 half-close 等事项仍未完成，不能宣称路线 1–3 完成或 production ready。
 
@@ -40,12 +235,12 @@ P1 direct GRO 扫描中 12KiB 三轮稳定（975/1010/1039 Mbps）；13–15KiB 
 
 本轮先处理有界所有权与回压后的正确性，不宣称完成 RX 零拷贝或稳定 1.20× 性能目标。
 
-- `XtcpUploadBudget` 为同一 runtime 的 direct/connector 上传提供共享预算，默认 32MiB、65536 个原始接收 chunk；字节上限沿用 `OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES`，在 runtime 首次启动时确定。原来的 direct 单流 32MiB/4096-item 上限仍保留。
+- `XtcpUploadBudget` 为同一 runtime 的 direct/connector 上传提供共享预算，默认 32MiB（单 shard、TAP GSO 生效且 `OPENPPP2_XTCP_PRIVATE_IO=1` 时为 2MiB）、65536 个原始接收 chunk；字节上限沿用 `OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES`，在 runtime 首次启动时确定。原来的 direct 单流 32MiB/4096-item 上限仍保留。
 - 在全局和单流 admission 成功后才复制回调借用的数据，拒绝路径不再先分配/复制 payload。接受路径仍有一次 payload copy，并非零拷贝。
 - move-only reservation 随队列及在途异步写存活，gather 只合并已有额度，写完成才归还；关闭清除未提交队列，重启仍统计旧代在途持有者。预算统计的是逻辑上传 payload，不包括 gather 临时副本、编码缓冲和内核 socket 内存。
 - 额度释放通过合并的 shard 通知唤醒全局预算阻塞流，不依赖另一个连接的 writable 回调；单流 backpressure 标志仍用于通知，不改成硬性高低水位 admission 锁存。
 - 新遥测：`upload_budget_bytes/items/max_bytes/max_items/rejected`。原有 queue 遥测不替代预算账本。
-- `0013-ooo-frontier-reclaim.patch` 回收被 RCV.NXT 覆盖的 OOO 数据、保留重叠段的新鲜后缀和恰好位于 frontier 的 FIN，避免已交付字节继续占用接收窗口。按序号环绕的两个有序区间访问旧节点，避免每次 drain 扫全表；这是 frontier 修复，不是完整 OOO 区间规范化或零拷贝重写。
+- `0013-ooo-frontier-reclaim.patch` 回收被 RCV.NXT 覆盖的 OOO 数据、保留重叠段的新鲜后缀和恰好位于 frontier 的 FIN，避免已交付字节继续占用接收窗口。按序号环绕的两个有序区间访问旧节点，避免每次 drain 扫全表；这是 frontier 修复，不是完整 OOO 区间规范化或零拷贝重写。（2026-10-18 迁移注：回收主体已进入固定上游；当前 0013 只保留 ACK OR 集成与拒收/resume 回归，见 §11.1。）
 
 验证记录：C++ 139/139、固定上游 fault suite 20/20、32 个新增 OOO 场景、共享预算并发/异常/重启唤醒测试通过；真实 direct netns E2E（churn 16、soak 3 秒、loss/reorder/MTU、byte-exact、half-close 和 rollback）通过，证据在 `artifacts/g6-upload-ooo-e2e-0908/`。补丁栈从固定归档全量重放，并与实际源码逐文件一致。
 
@@ -59,17 +254,17 @@ NDI TSO 仍 default-off；pacing quantum 退款候选未混入本轮；没有启
 
 XTCP 依赖来自已确认授权的内部仓库。许可证不再阻断内部 laboratory 集成。源码通过 `tools/prepare_xtcp.sh` 固定下载并校验，解包目录中的 `.openppp2-xtcp-revision` 必须等于上述 revision。
 
-当前完成的是 **Linux desktop、client、IPv4 TCP、显式 opt-in 的 laboratory runtime**，不是 production 功能。只有同时满足以下编译门禁时 `--tcp-stack=xtcp` 才可用：
+当前完成的是 **Linux、client、IPv4 TCP、显式 runtime opt-in 的 XTCP runtime**。Linux 原生和交叉 CMake 构建默认启用 XTCP 编译集成；运行时仍必须显式选择 `--tcp-stack=xtcp`，不能把编译集成误认为所有平台的 production runtime。
 
 - `PPP_ENABLE_XTCP=1`：固定依赖已编入 artifact；
 - `PPP_XTCP_RUNTIME_WIRED=1`：OpenPPP2 packet、listener、bridge、启动和 teardown 已接线。
 
-顶层仅在 `ENABLE_XTCP=ON` 的生产 target 上定义这两个宏。关闭该选项时不包含任何 XTCP header 或链接依赖，显式请求 XTCP 保持 fail-closed，绝不回退 native/lwIP。历史默认和 `--lwip` 兼容规则不变。
+顶层仅在 `ENABLE_XTCP=ON` 的生产 target 上定义这两个宏。关闭该选项时不包含任何 XTCP header 或链接依赖，显式请求 XTCP 保持 fail-closed，绝不回退 native/lwIP；`--lwip` 兼容规则不变。
 
 当前明确不支持：
 
-- production rollout 或性能承诺；
-- IPv6、UDP、IPv4 分片、Windows、Android、iOS；
+- 跨平台 production rollout 或通用性能承诺；Linux 默认编译集成仍需按部署矩阵验收；
+- IPv6、UDP、IPv4 分片、iOS；Windows/Android 目前仅 opt-in 构建接入，未完成生产运行验收（见本文开头）；
 - 运行中热切换；
 - MIMT；
 - 多 owner executor；
@@ -124,7 +319,7 @@ backend 不缓存 borrowed pointer，也不把拒绝伪装成成功。metadata �
 
 callback 禁止重入 `OnPacket`、`Send`、`Close`、`Abort`、`Listen`、`StopListen` 或 `PollAckTimers`。
 
-runtime 使用 `steady_timer` 驱动 `PollAckTimers()`。调度策略是 deadline-driven：上游补丁 `0001-next-timer-deadline.patch` 为 `XtcpStack` 增加 `NextTimerDeadlineUs()`，runtime 把下一次 poll 精确武装到该 deadline（无 armed deadline 时退化为 10ms idle watchdog）；任何 stack-mutating 路径通过 `KickPoll()` 以更早的 deadline 抢占挂起的等待。这替代了早期 laboratory 的固定 1ms 间隔；负载数据见第 11 节。
+runtime 使用 `steady_timer` 驱动 `PollAckTimers()`。调度策略是 deadline-driven：本地集成补丁 `0001-next-timer-deadline.patch` 为 `XtcpStack` 增加 `NextTimerDeadlineUs()`，runtime 把下一次 poll 精确武装到该 deadline（无 armed deadline 时退化为 10ms idle watchdog）；任何 stack-mutating 路径通过 `KickPoll()` 以更早的 deadline 抢占挂起的等待。这替代了早期 laboratory 的固定 1ms 间隔；负载数据见第 11 节。
 
 ## 6. Exact listener 与 deferred SYN
 
@@ -269,13 +464,100 @@ default-off perf JSON 的 `conn`/`queue`/`direct` 分组另保留 read/write 调
 - `0010-zero-window-pacing-deadline.patch`：peer send window 为零且 persist 已武装时，`NextTimerDeadline()` 不再返回无法推进发送的 pacing deadline；host 等待 persist/RTO 等真实恢复期限，避免严格同核场景下 timer 空转饿死接收端。`test_persist` 用固定高 pacing rate 锁定 deadline 合同。
 - `0011-detailed-receive-resume.patch`：将接收恢复结果和接收状态快照结构化，区分未阻塞、恢复成功、窗口仍满和连接已关闭，供 runtime 正确处理背压恢复。
 - `0012-tso-gate-observability.patch`：只读聚合 direct/buffered TSO candidate、首个 gate blocker（disabled/pending/outstanding/recovery/window/cwnd/pacing/pool）及 emitted 计数；同时固化此前解包树中尚未归档的 ACK rate-change telemetry。仅在既有 `OPENPPP2_XTCP_ACK_RELEASE_JSON=1` 诊断通道输出，不改变 TSO gate、发送、重传或 pacing 行为。
-- `0013-ooo-frontier-reclaim.patch`：当接收前沿推进时回收已被覆盖的 OOO 字节，并保留重叠段的新鲜后缀及位于新前沿的 FIN，避免陈旧乱序数据继续占用接收窗口。
+- `0013-ooo-frontier-reclaim.patch`：OOO frontier 回收主体现由上游提供；本地保留 `drained_gap |= TrimOooToFrontier()` 与 0005 的 ACK 集成，以及 receive callback 拒绝后显式 resume 的回归场景。
 - `0014-ooo-backpressure-retain.patch`：应用拒绝连续 OOO drain 中的数据时保留该 SACK 段和窗口占用，待显式恢复后重交，而不是丢弃并依赖对端重传。
 - `0015-frontier-pending.patch`：保留被应用拒绝的 in-order frontier，与 OOO 缓冲共同计入接收窗口；恢复时先重交 frontier，再在同一次恢复里排空连续 OOO 段。FIN/关闭回调仍按 TCP 状态机终止当前排空，避免已 SACK 数据必须等待重复重传。
+
+- `0023-pending-send-offset.patch`：以 offset 消费 pending send buffer，避免反复前端擦除。
+- `0025-per-connection-ack-release-telemetry.patch`：每连接只读 ACK release 诊断。
+- `0026-kcc-readonly-state-telemetry.patch`：KCC 只读状态快照与断言，不更改拥塞控制策略。
+- `0027-suppress-blocked-pacing-wake.patch`：抑制被 peer window、send buffer 或 cwnd 阻塞的 pacing 唤醒；此次仅修复补丁上下文，行为不变。
+- `0028-tcp-checksum-partial-tx.patch`：显式 partial TX checksum 能力和元数据，默认门控不变。
+- `0029-pacing-late-wake-catch-up.patch`：迟到唤醒的 pacing credit 补偿，上限 20ms。
+- `0031-fin-before-gap-ack.patch`：恢复本地 0005 之后的 FIN-first 顺序，保留两处上游 CLOSE-WAIT 通知，新增 16 场景 callback/close/wrap 回归；frontier 回归为 36 场景。
+- `0032-syn-options-running-offset.patch`：SYN option running offset 与布局测试。
+- `0033-payload-cap-and-nagle-use-option-aware-mss.patch`：按 option-aware MSS 限制 payload 并判断 Nagle gate。
+- `0034-tests-follow-patch-stack-semantics.patch`：保留九处本地语义测试适配（含 `test_ecn_cc` 的 KCC ECE 契约断言，见 §11.187），删除四处已由上游覆盖的 loss-helper 适配。
+- `0035-retry-ack-window-construction.patch`：ACK/窗口通告因 buffer 分配失败未能构造时，保留一个合并的待发义务并按 40ms 有界 deadline 重试，而不是清掉 delayed-ACK/resume 状态；保留 FIN/ECN/DSACK 语义，附 `test_ack_allocation`。见 §11.186。
+- 原 `0036-sack-blocks-fit-option-space.patch`（SACK 块数按剩余 option 空间计算）已由上游 liulilittle/xtcp#2 合入，本地文件已删除。见 §11.186、§11.187。
+- `0037-rcv-mss-immediate-ack.patch`：单个按序段的 payload 超过本端通告 MSS（1460）时立即 ACK（Linux `__tcp_ack_snd_check` 按字节判断 `rcv_nxt - rcv_wup > rcv_mss`），避免 GRO/LRO super-segment 被按段计数后走 40ms delayed ACK；附 `test_rcv_mss_ack`。编号跳过 0036 以免与历史引用冲突。见 §11.187。
+- `0038-kcc-cwnd-ack-aggregation-quantization.patch`：KCC v2 的 cwnd 目标只取 `cwnd_gain*max_bw*min_rtt`；在 tun 路径上，min_rtt 只有约 35-90us，而 ACK 是成批到达的。sndbuf=1MiB 时，P4/P16 DL 的 cwnd 塌到 2-12 包，DL 从约 1.9 跌到 0.85Gbps。本补丁按 Linux `bbr_set_cwnd` 加入 ack-aggregation（`extra_acked`）项和 quantization budget，并同步修改 `plugins/ref/kcc_core.c`。远端 A/B（1MiB、2 轮、20s）：P4 DL 0.89/0.84→2.11/2.19Gbps，P16 DL 0.79/0.89→1.88/1.83Gbps，P1 不变。1MiB P64 DL 卡死是另一个问题，本补丁不修复，由 0039 修复（见下）。
+- `0039-pool-tx-reserve-and-bounded-heap-overflow.patch`：修复 1MiB P64 DL 卡死。原因是固定 packet pool（约 36MiB）同时承载未确认发送数据的保留和入向包。flows×snd_buf 超过 pool 后，入向 ACK 无法拷贝，发送缓冲无法释放，隧道永久卡死。本补丁按内核 `tcp_memory_pressure`/`sk_wmem_schedule` 的思路拆分：新数据段在 `buf::TxAcquireScope` 中分配，不得把任一 tier 用到 1/8 余量以下，也不得使用 heap overflow；被拒的段留在 `pending_send_`（仍受 snd_buf 限制），由 dirty poll 在 ACK 释放块后重发。其余分配（入向、ACK、控制段、重传）照常使用整个 pool；所有 tier 都空时，从总量 8MiB 的有界 heap overflow 分配。`buf::GetPoolPressureStats()` 提供遥测。pool 未进入余量区时行为不变。详见 §11.188。
+- `0040-tests-pool-pressure-no-ack-wedge.patch`：新增 `test_pool_pressure`，覆盖 TX 余量、heap overflow 上限与归还，以及 1600 连接保留量超过 arena 时 ACK 仍可分配且全部完成。
+- `0041-tests-sack-gap-and-timestamp-paws.patch`：SACK 丢包测试按带时间戳的 1448 字节 payload cap 对齐，记录所有首次发送区间，避免重传改变丢包节奏；两处丢包直接检查实际重传区间与已观察到的 SACK block。时间戳 OOO 测试从真实握手 TSval 派生合成值，避免 PAWS 丢弃过旧的注入包。
+
+当前共 33 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0041-0047。0037-0040 和 0048 已全部上游，文件删除；0042、0043、0045、0046 仅保留本地集成残余。0036 等历史空号不复用。不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
+
+### 时间戳 drain 与 TSan 后续修复（0045-0048）
+
+上游 `f71548f` 的 OOO 时间戳测试固定注入 `0x10000001/2`。当机器单调时钟
+按 TCP 序号比较已超过该值时，PAWS 会正确丢弃这些比握手更旧的合成数据。
+实验机上，上游原测试失败 3 条断言，仅改用 0041 已有的真实握手时间戳派生逻辑后，
+同一未修改上游库即通过。
+新提取的 0045 前旧补丁链，其原 OOO 测试连续 30 次通过，因此没有在当前完整旧补丁链
+上复现所报的 vendored 必失败。未修改上游库配合 0045 前的夹具（0034 ACK 捕获、
+0041 时间戳派生）也连续通过 30 次。
+
+0045 修正 ACK 捕获夹具：在 pump 中记录探测字节的 ACK，不再额外消费同一个队列；
+显式记录 ACK 是否到达，允许序号为零；造包使用真实握手后的 ACK 号。切换合成
+对端后，不把针对合成数据的 ACK 送回并未发送这些字节的真实 sender；使用 checked
+接收回调验证应用背压。
+
+旧断言还掩盖了真实协议栈问题：drain 会把 TS.Recent 替换成缓存 OOO 段的 TSval。
+若填洞重传更新，这会把 PAWS 锚点倒退，随后错误接收旧数据。
+[RFC 7323 §4.3(C)](https://www.rfc-editor.org/rfc/rfc7323.html#section-4.3)
+要求回显填洞段的时间戳；Linux v6.6 的
+[`tcp_replace_ts_recent` 与 `tcp_ofo_queue`](https://github.com/torvalds/linux/blob/v6.6/net/ipv4/tcp_input.c)
+也在接收时确定锚点，不在缓存数据投递时更新。0046 在 Established、closing drain
+以及 ResumeReceive 中保持该锚点，并补齐 closing 状态和带时间戳纯 FIN 的到达更新。
+回归还在两种连接状态下检查陈旧纯 FIN 被拒绝、有效 FIN 正确回显时间戳；不重写无关的
+延迟 ACK 时间戳选择算法。回归覆盖 Established、FIN-WAIT-2，以及各自背压后
+Resume 的路径，同时检查回显和 PAWS 丢弃。旧库 4 种路径各失败 4 条断言
+（含纯 FIN，共 16 条），修复后通过。
+
+0047 前的 TSan 对照中，选定的 3 个夹具测试全部失败：一个 map 数据竞态，
+两个 fake NIC 测试的锁顺序反转告警。0047 修正
+`test_thread_data` 无锁读取 `crc_b.size()` 与 pump 插入 map 的真实测试代码竞态，
+并让单线程 TSO/背压 fake NIC 按 `test_tx_retry_mpsc` 的模式排队接受包，由 pump
+在栈锁外投递。原同步跨栈投递形成反向锁图。没有新增 TSan suppression，原 TSO、
+拒绝重试、metadata 和字节投递断言仍启用。
+
+夹具变化暴露了真实 TX shard 路由错误：`RetryBatchSharded` 为 qdisc/DMA 拒绝的
+发送包调用 `ShardOfPacket`，但后者按 RX 方向反转五元组。0048 改为源=local、
+目的=remote；回归检查 64 个 IPv4 与 64 个 IPv6 flow 的 packet shard 等于
+connection-ID shard（修复前 113/128 错误），并把背压夹具的归属断言保持到最终
+投递完成。该修复只改变 TX 重试归属，不改变 RX lookup、shard 数和拥塞控制策略。
+
+0045-0048 最终验证（2026-10-29）全部在共享实验机进行：Debian Linux 6.12.73、
+GCC 14.2、`vm.mmap_rnd_bits=28`。含纯 FIN 补充的最终源码普通 XTCP CTest
+完整跑 3 轮，每轮 245/245；另有补充前的一轮 245/245。库与测试均插桩的
+XTCP TSan 为 245/245，无告警；`test_shard`、
+`test_conn_churn_threads`、`test_thread_data`、`test_thread_send_abort`、
+`test_tx_retry_mpsc` 各连续通过 5 次 TSan（共 25 次调用）。全部 37 个补丁在 prepare
+的新提取目录中按顺序以 `patch -p1 --fuzz=0` 应用成功，源码与实际测试目录一致。
+ECN 的 0044 尚未提供，不在此次验证链内。
+
+修改后的独立 C++ TSan 脚本启用 XTCP 后通过 201/201 targets，再对测试指南中的
+6 个 M3 targets 各重复 5 次通过（共 30 次调用）。该构建使用 `-O1 -g1 -DNDEBUG`；
+XTCP 套件使用通常的 RelWithDebInfo flags。C++ 保留既有 libcrypto suppression，
+没有新增 suppression；XTCP 套件没有使用 suppression。全部 sanitizer 验收均在
+`setarch -R` 下运行。
+
+启动诊断对当前 SPSC 测试分别运行 PIE/non-PIE × ASLR 开/关，每种组合固定 5 次；
+本实验机 20 次调用全部通过 7 组测试，因此不能宣称在此重现了旧 WSL 启动失败。
+本地只读确认 WSL2 6.6.87.2、`vm.mmap_rnd_bits=32`、ASLR 开启；本次续跑没有
+在本地执行任何构建、测试或 sanitizer，也没有修改主机 sysctl。日志与命令保存在
+本地 `build/private/ts-ooo-tsan-20261029/`，本任务在实验机创建的构建目录已在完成后删除。
+
+两套插桩测试的命令及 WSL ASLR 启动原因见
+[TSan 测试说明](../development/TESTING_CN.md#threadsanitizer)。本次为隔离单元测试，
+没有启动 VPN、运行特权网络 E2E、测量实验机吞吐，或验证 Windows/移动端运行行为。
 
 修改上游行为的唯一入口是该目录下的补丁；直接改解包树会在下次 prepare 时丢失。
 
 ### 11.2 已完成的验证（laboratory gate）
+
+历史记录迁移说明（2026-10-18）：以下章节中的 0016/0017、KCC 0018-0022、0024 和旧 pin 均描述当时的源码与实验。当前固定上游已吸收这些改动，旧补丁文件不再存在；PSH tail、loss-test helper、KCC 行为及 `{8192,4096,128}` pool counts 保留。历史 hash、artifact 和测量数值不改写为新 pin 的验证结果；本次独立验证见 §11.185。
 
 - standalone 合同：XTCP TCP consumed/no-native-fallback policy；ingress item/byte cap、ready/stop gate；external loopback endpoint/source-port/generation gate；IPv4 字节序转换与分片拒绝；production NDI ownership；repeated start/stop 与 stale generation；上游 dependency、BufRef/NDI、exact listener accept/reject。
 - bridge 功能测试 `tests/cpp/xtcp_runtime_bridge_test.cpp`：echo、half-close（EOF 优雅关）、peer-close drain、inject-then-reject RST、churn，含对端 EOF 后 `shutdown(SHUT_WR)` 的生产语义模拟。
@@ -374,11 +656,9 @@ oversized_l3_rejected    = false（由 first_push_failure.packet_shape.excess_by
 
 这些是 qualification 装置与两条短路径的真实 smoke，不是 native/lwIP/XTCP 六模式、paired 多轮、P4/P16 或完整 production 路线通过声明。旧 artifact `artifacts/route3-strict-smoke-20260904/` 保留作为修正前失败证据。runner 现新增 `--xtcp-memory-bridge` / `--xtcp-ndi-tso-tx`，清除父环境同名变量并把显式值写入 metadata，后续 strict direct 证据必须使用该合同。
 
-
 > **实测陷阱（已修复）：** 首次带 `--process-perf-stat/--system-cpu-stat` 运行发现 runner 在 iperf 完成后无限阻塞。根因是 `perf stat ... -- sleep 1000000`：perf 在 `do_wait` 等其 sleep 子进程，`kill -INT` 被忽略，runner 的无界 `wait` 于是永久挂起。修复为：去掉 workload，改用 `--timeout=<iperf_timeout+60>s` 兜底（正常 run 不触发）+ `stop_cpu_perf()` 有界等待（INT 后 10s，僵尸提前退出；超时再 `SIGKILL`）。复现实验确认无 workload 的 `perf stat -p/-a -C` 响应 SIGINT 并写出 CSV；带 workload 则否。修复后 6/6 cell 均 `status=measured` 且 `affinity_verified=true`。
 
 > **口径修正（重要）：** P1 UL 六模式首次实测暴露两个口径问题。其一，`perf stat -a -C 8,9` 的 system-wide task-clock 实际是 selected CPU 的墙钟容量（每颗 CPU 忙闲都计时），六模式反算全部恒为 ≈2 cores，因此它**不能**用于 CPU 排名，只能作 `selected_cpu_clock_capacity` 诊断；真正的 busy CPU 以 `process task-clock` 与 selected `/proc/stat` non-idle delta 为准。其二，`client-vnet-isolated`（vnet→CPU8、其余→CPU9）**允许 lwIP 同时吃两颗核**：lwIP 实际消耗 1.60（off）/1.92（on）个 process core，而 native/XTCP 恒为 ≈1.00 core。因此**不得**把 lwIP 的 raw 577/979 Mbps 称为"单核"。按 process core 归一化：GSO-off 为 lwIP≈360、XTCP≈336、native≈261 Mbps/core（lwIP 仅比 XTCP 高约 7%，而非 raw Mbps 的 73%）；GSO-on 为 native≈833、lwIP≈510、XTCP≈419 Mbps/core（native+GSO 明显领先）。lwIP 的 GSO 收益应分开写：throughput 1.70×、process CPU efficiency 1.41×、process CPU consumption +20%。这佐证了引入 `client-single-core` 主 profile 的必要性。
-
 
 
 **历史两栈 GSO-off 参考（已由 §11.4.2 三栈 provisional 取代）。** 新 runner 曾完成 GSO-off、3 round、P1/P4/P16 × UL/DL × native/XTCP 的 **36/36** cell；该历史窗口全部 XTCP stats NDJSON 验证通过，最终窗口未见 zero-rate flow。它不与当前三栈 Stage A / provisional 的 `XTCP/GSO-off/P16/UL` 零速流观察相抵触，后者仍是当前公平性结论。该历史窗口的 per-round ratio 中位数如下（artifact：`build/c1-gso-production-candidate-20260901/matrix-gso-off-r3-v2/`）：
@@ -421,6 +701,102 @@ payload_cap = effective_l3_mtu - actual_ipv4_header_length - actual_tcp_header_l
 - `XTCP-GSO-MATRIX-RETX-001-r3`：native + XTCP、GSO-on、P1/P4/P16、UL/DL、3 rounds 共 **36/36 PASS**；18 个 XTCP cell 均有完整 stats，未见上述失败信号。
 
 当前仍保持 `GSO default-off`。未完成的 production gate 包括当前 direct revision 的完整三栈 strict 基准、idle/loaded latency 与短流/故障矩阵；因此这些回归不构成 default-on 或 production 结论。历史 `spinlock_test` 超时已定位为大量在线 CPU 上纯自旋压力的调度敏感性：固定 CPU0-7 后约 7.3s 通过，当前 lab 门禁为 135/135。
+
+#### 11.4.1a M1 复测：GSO stall 与 P64 DL wedge（2026-10-17）
+
+对应吞吐计划 #91 的 M1 1.3 / 1.4。binary 由分支 `fix/xtcp-gso-stall`（补丁栈 0001–0034，含 0033 的 option-aware payload cap 与 Nagle 修正）在 WSL2 Debian（6.6 内核，12 核）构建；`tools/run_datapath_linux_matrix.sh --stall-diagnostics`，三端独立 netns，CPU profile `none`，transport `aes-256-cfb`。
+
+| 场景 | 设置 | 结果 | 中位吞吐 |
+| --- | --- | --- | ---: |
+| `XTCP-GSO-STALL-001` | XTCP、P16、DL、GSO on，10s+2s，42s watchdog，20 轮 | 20/20 PASS | 1921 Mbps |
+| P64 DL wedge | XTCP、P64、DL、GSO off，30s+2s，5 轮 | 5/5 PASS | 1652 Mbps |
+| P64 DL wedge | XTCP、P64、DL、GSO on，30s+2s，5 轮 | 5/5 PASS | 2244 Mbps |
+| P64 DL wedge | 同上，`--xtcp-shards 2`，GSO off / on 各 3 轮 | 6/6 PASS | 3611 / 885 Mbps |
+| 对照 | native vs XTCP、P64、DL、GSO off，10s+2s，1 轮 | 2/2 PASS | 1005 / 1684 Mbps |
+
+结论与边界：
+
+- 0033 修改了 `DataPayloadCap()` 的算法，但 1500B MTU 下带时间戳的上限仍为 1448B；`XTCP-GSO-STALL-001` 20 轮无回退。
+- P64 DL wedge 在当前补丁栈上未能复现。当初复现所用的基线 binary（`e68b1e75`，未提交的工作区构建）已不可得，因此无法在同一环境中验证复现方法本身，只能表述为"当前 revision 未复现"，不能断言具体是哪个补丁修复了它；候选为之后合入的零窗口 pacing（0010）与乱序背压保留（0014/0015）。
+- 新观察：双 shard + GSO on 的 P64 DL（885 Mbps）明显低于单 shard（2244 Mbps）和双 shard + GSO off（3611 Mbps）。根因与修复见 §11.4.1b。
+- 本节为共享宿主（WSL2）上的功能/回归证据，不是 A/B 榜的严格性能结论。
+
+#### 11.4.1b 每 shard 独立 GSO 输出 lane 与默认段上限 32（2026-10-18）
+
+**根因**：`OPENPPP2_XTCP_SHARDS>1` 时，各 shard 的 strand 在多条 `xtcp-io` 线程上并行输出，但 `TapLinux` 只有一个 `TunGsoCoalescer`，由 `gso_mutex_` 保护并写同一个 queue fd。多个 shard 的输出在同一把锁上串行化，不同 shard 的流还会在同一个合并缓冲里交错，使合并提前 flush。
+
+**修复**：
+- `ppp/tap/TapOutputLane.h` 提供线程局部的 lane 提示。`XtcpRuntime` 在 shard 数大于 1 时，用 `TapOutputLaneScope(i)` 包住第 i 个 shard 的输出回调。
+- `TapLinux` 首次见到某个 lane 时，为它打开一个独立的 `IFF_MULTI_QUEUE` queue fd，并配一个独立的合并器、hold 定时器和读循环。lane 之间不共享锁。每个 queue fd 都有读循环，因为内核 tun automq 会把一条流的回程包导向最后写这条流的 queue。
+- lane 创建失败时，只有该 shard 回退到原共享路径。切到 SSMT 或出错时，先 flush 所有 lane 再停止合并；已有 lane 之后改为不合并直写，仍用自己的 fd，因此流不会换 queue。
+- `OPENPPP2_TAP_GSO_LANES_DISABLE=1` 可强制回到共享路径，用于对照。
+- XTCP 每连接 snd_buf 默认值：所有已支持 XTCP 的平台（Linux、Windows、Android）均为 1 MiB（配额，不预分配）。macOS/iOS 当前不受 XTCP 构建支持，因此没有对应运行时默认。显式 `OPENPPP2_XTCP_SNDBUF_BYTES` 覆盖默认值；未设置显式字节值时，`OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1` 选择 2 MiB。依据：64 KiB 时单流 DL 约 410 Mbps（native 0.22×），1 MiB 时约 0.95×；大量满载流由补丁 0039 的池余量保证 ACK 入向不被饿死（见吞吐计划 §2.4.1）。
+- M3 opt-in 开关（默认关闭；不设置时行为同上）：`OPENPPP2_XTCP_DIRECT_SPSC=1` 把 direct-upload 数据队列换成固定 4096 槽的 SPSC handoff（上限与 gather 不变；环分配失败时保留 relay 路径）。`OPENPPP2_XTCP_AFFINITY=queues` 配合 `OPENPPP2_XTCP_SHARDS>1` 与数量精确的 `OPENPPP2_XTCP_IO_CPUS`，为每个 shard 建独立 io_context 和绑核 worker，把 GSO lane i 绑到 shard i，并把 lane 读到的包经有界暂存（1024 条 / 8 MiB）交回 TAP context 执行原 `OnInput`；与 SSMT 同开时启动失败，单 shard 记为 unsupported。`OPENPPP2_XTCP_AFFINITY_STRICT=1` 时任一绑核失败即拒绝启动。
+- M3 B 段测量（2026-10-26，远端共享宿主，配对 native，30 s×2 轮 ABBA）：2 shard + SPSC ingress 使多流 DL 提升 1.18–1.40×、UL P16 提升 1.59×，但约 2.2 Gbps 封顶（4 shard 无额外收益），单流 DL 回退 16%–25%（单核 40%）。queues 模式降低每字节 CPU、把 P1 DL 回退减半，但 UL 回退 13%–22%；workers 亲和与 DIRECT_SPSC 无可测收益。默认值不变。单 shard baseline 的 P64 DL 每轮出现 7–8 条零速流。详见吞吐计划 §2.4.4。
+- `TunGsoCoalescer::kSegmentCap` 默认值从 4 改为 32。`OPENPPP2_TAP_GSO_SEGMENTS`（1–48）仍可覆盖；`OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1` 在未显式设置时仍用 48。`tun_gso_output_probe` 的 production builder 契约固定在 cap 4 运行。
+
+#### M3 队列模式的重连生命周期（2026-10-26）
+
+`ClientConnectionOpener::Open` 为已挂接的 TAP 创建并启动一个 `XtcpRuntime`，随后注册 lane 绑定 provider。`VEthernetExchanger` 的重连循环只替换 carrier/session 状态，不会停止或重建 XTCP runtime 或 TAP。Runtime Stop 由 switcher teardown 执行，并与 TAP 一同释放。因此当前版本的生产重连路径不会出现“保留 TAP、单独重启 runtime”。
+
+若未来调用方加入这种生命周期，仍有潜在问题：`TapLinux::CreateGsoOutputLane` 仅在 lane 首次创建时查询 provider；lane 会持有原 shard 的 `io_context`、descriptor、timer 和读循环。XTCP Stop/Start 会创建新 shard context，却不会重新绑定这些已有 TAP lane。下方 netns 重连检查会在同一 PPP 进程和 TAP 中验证生产 carrier 重连，检查双向多流流量、runtime identity 和绑定 lane 数保持不变；它不声称覆盖保留 TAP 时直接调用 runtime Stop/Start。
+
+实验室在 revision `add778946e268ad765a284b682dda02a5cba1b85` 构建，启用 `OPENPPP2_TAP_GSO_MERGE=1`，使用严格绑核映射、512 条 churn 流和 5–10 秒 soak。结果如下：
+
+| 模式 | 重连 / lane 结果 | 完整 E2E |
+| --- | --- | --- |
+| `queues`，2 shards，CPU `0,1` | reconnect 通过；runtime ID 保持 1；2/2 lane 已绑定；两个 shard 均有流量 | 通过，含 netem 与 rollback |
+| `queues`，4 shards，CPU `0,1,2,3` | reconnect 通过；runtime ID 保持 1；4/4 lane 已绑定；所有 shard 均有流量 | 通过，含 netem 与 rollback |
+| `workers`，4 shards，严格 CPU `0,1,2,3` | reconnect 与之后 128 条双向流通过；runtime ID 保持 1 | 失败：half-close 完整性检查（一次服务端只收到 106215/131072 bytes，另一次为 131071；第三次发现回显数据前缀损坏） |
+| `workers`，4 shards，严格 CPU `8,9,10,11` | reconnect 与之后 128 条双向流通过；runtime ID 保持 1 | 失败：half-close 完整性检查 |
+| `workers`，4 shards，严格 CPU `8,9,10,11`，不重启服务端 | 不适用 | 通过；跳过 netem |
+| `off`，4 shards，不设置 CPU map | reconnect 通过；runtime ID 保持 1 | 通过，含 netem 与 rollback |
+
+workers 模式的 half-close 失败在两组 CPU 映射下均出现，但仅在 server 重启/reconnect 阶段开启时复现；同一 worker 配置不重启服务端时通过。这是独立的重连回归信号，根因尚未确定。它不是 stale lane callback 的证据：workers 模式没有将 lane 绑定到 shard，而 queue 模式重连用例中的所有 lane reader 都保持工作。由于生产路径没有保留 TAP 时单独 Stop/Start runtime，本次未直接测试该非生产生命周期。包含失败轮次的原始产物保存在 `/home/ppp-m2/luna6-20261026/artifacts/`。
+
+#### 重连后 half-close 数据丢失：根因与修复（2026-10-26）
+
+**状态：已修复。** 失败的是客户端发起的 half-close 检查（`sendall(128 KiB)` 后 `shutdown(SHUT_WR)`）。观察到的两种特征分别来自两个独立的数据面缺陷；两者都不是测试工具伪影（检查端等待 EOF/RST，echo 服务自行记录字节数），也都不涉及上一会话的残留状态，重连阶段只是改变了时序。两种机制都与配置无关；默认配置（1 shard、无 M3 开关）在本轮从未失败（任何修复前 5 次，仅服务端修复时 17 次），但走的是同一段 relay 与切分代码。
+
+1. **上传被截断（服务端）。** 开启 `XTCP_E2E_PCAP=1` 后，客户端 TUN 捕获显示 XTCP 已 ACK 全部 131072 字节和 FIN，服务端日志也显示 131072 字节已写入目标 socket，但目标 veth 捕获显示服务端 PPP 在发出 122951 字节后发送了 **RST**（echo 应用只读到 108039）。收到载体 EOF（客户端 direct bridge 的 `ShutdownSend`）时，`ForwardTransmissionToSocket` 直接释放桥接并关闭目标 socket，而此时 echo 回包仍未读取；Linux 对带未读数据的 `close()` 回 RST 并丢弃尚未发出的发送队列。QoS 读路径（`ITransmissionQoS::DoReadBytes`）也在该 EOF 上释放服务端载体，回程同样无法继续。
+   修复：服务端逐流 relay 为原始 TCP 载体开启接收方向 half-close（`ITransmission::EnableReceiveHalfClose`；`ITcpipTransmission` 在干净 FIN 时设置 `IsReceiveClosed()` 而不再释放）。relay 在所有已转发写入完成后对目标 socket 执行 `shutdown(SHUT_WR)`，并保持 socket->载体方向继续转发，直到目标关闭；对端永不关闭时由连接端口老化兜底。WebSocket/TLS 载体与 mux 链路行为不变。
+2. **单字节缺失（客户端）。** 仅在实验机使用的 XTCP 接收回调追踪显示：流偏移 108765 处一个 12236 字节的块交付时 `RCV.NXT` 比块尾多 1，随后在 CLOSE-WAIT 中交付的尾块从 121002 而不是 121001 开始。客户端内核向 TUN 交付了一个 `[108765, 131072)+FIN` 超帧；`XtcpRuntime.cpp` 的 `GsoSplit` 把 TCP flags 复制到每个分片，第一个分片因此带 FIN。XTCP 在流中间消费了 FIN、进入 CLOSE-WAIT，并把真实尾段的首字节当作已接收数据裁掉。记录到的所有缺失偏移（112172、116657、121001、121427、122960）都是此类分片边界。
+   修复：`XtcpGsoSplitSegmentFlags` 只在最后一个分片保留 FIN/PSH/URG，只在第一个分片保留 CWR（RFC 793/1122，与 Linux `tcp_gso_segment` 一致）。
+
+回归测试：`xtcp_runtime_adapter_test` 跨序号回绕切分一个 FIN|PSH 超帧，检查只有最后一个分片带 FIN/PSH；`transport_auth_lifecycle_test` 在 QoS 读路径上检查接收 half-close 的显式开启。两者在去掉对应修复时失败，在普通、ASan/UBSan 和 TSan 构建中通过。
+
+重连 E2E（实验机 netns，开启重连阶段，512 churn，5 s soak）：
+
+| 模式 | 修复前 | 仅服务端修复（`v2`、`dg`） | 最终（`v3`） |
+| --- | --- | --- | --- |
+| 默认（1 shard） | 5/5（开启捕获） | 11/11 | 6/6 |
+| `off`，4 shards | 2/5（此前运行），7/8 | 11/11 | 6/6 |
+| `workers`，4 shards，严格 CPU `8-11` | 1/5（此前运行） | 11/11 | 6/6 |
+| `queues`，4 shards，`TAP_GSO_MERGE=1` | 5/5（此前运行） | 9/11（两次在 121001 单字节缺失） | 16/16 |
+
+最终构建每轮都在 EOF 前完整收到 131072 字节回显；服务端修复前回显会在随机前缀处中断。
+
+`OnState` 投递到 strand 前同时捕获 `Flow` 及 runtime/flow generation，执行前若身份已失效则丢弃回调（`IsCurrentXtcpFlowCallback`）。这是针对 `connection_id` 复用的生命周期加固，不是数据丢失的原因。
+
+产物：`/home/ppp-m2/claude-reconnect-20261026/art/`（`off4p-01`：RST 捕获；`dg-queues4-02`：交付追踪；`v3-*`：最终构建）。
+
+**验证**（WSL2 Debian，三端独立 netns，XTCP，每格 2 轮×15s+2s，单位 Mbps，中位数）：
+
+| P / 方向 | 1 shard GSO off | 1 shard cap 4 | 1 shard cap 32 | 1 shard cap 48 | 2 shard GSO off | 2 shard cap 4 | 2 shard cap 32 | 2 shard cap 48 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| P1 DL | 488 | 497 | 497 | 494 | 389 | 316 | 390 | 402 |
+| P1 UL | 724 | 1610 | 1630 | 1533 | 1433 | 1370 | 1350 | 1352 |
+| P16 DL | 1761 | 2112 | 3129 | 3074 | 3292 | 1755 | 4919 | 4725 |
+| P16 UL | 988 | 2124 | 2022 | 1718 | 1567 | 2094 | 2011 | 2010 |
+| P64 DL | 1713 | 2472 | 3005 | 2957 | 3766 | 1963 | 4571 | 4630 |
+| P64 UL | 697 | 1786 | 1852 | 1823 | 1467 | 1918 | 1905 | 1871 |
+
+- 同一 binary 下，双 shard、cap 4、关闭 lane（旧共享路径）的 P64 DL 为 915 Mbps；开启 lane 后为 1983 Mbps。
+- cap 32 与 48 在 DL 上相当，并使双 shard + GSO on 在 P16/P64 DL 上超过 GSO off。cap 48 在单 shard P16 UL 上偏低（1718 vs 2022），因此默认取 32。cap 4 → 32 主要带来 DL 收益；UL 基本持平。
+- UL 重传：GSO on 的各 cap 均远低于 GSO off（例如单 shard P64 UL，GSO off 平均 47790，cap 32 平均 4219）。DL 方向的 iperf 结果不含重传计数。
+- `XTCP-GSO-STALL-001`（P16 DL、GSO on、cap 48、10s+2s、42s watchdog）单 shard 与双 shard 各 20 轮全部通过，中位 2928 / 4775 Mbps，无 watchdog。cap 32 未单独跑该专场。
+- C++ 单测 174/174 通过。
+- 未验证：lane 与 `--stall-diagnostics` ledger 同开时的统计口径、lane 与 NDI TSO 组合、延迟分布。本节为共享宿主上的方向性证据，每格只有 2 轮。
 
 #### 11.4.2 三栈 provisional benchmark（2026-09）
 
@@ -762,7 +1138,7 @@ WARN: 离散度异常 / zero-rate flow / P16 fairness 恶化 / 接近门槛
 **perf profile 实锤（client，UL on，单核）**：aesni+cfb128 ≈17.4%（隧道解密，native 同付）、**内核 loopback 桥（tcp_sendmsg→tcp_write_xmit→loopback RX→skb 拷贝→唤醒）≈25-30%**（XTCP 专属税，native 无此桥）、TcpChecksum 2.2%、mutex/syscall/copy 各 2-4%。接收端每包 ~20µs 的主要成分不是 XTCP 栈本身，而是**桥**。
 
 **本轮落地**：
-1. `TunGsoCoalescer` 合并上限 env 化（`OPENPPP2_TAP_GSO_SEGMENTS`，默认 4=历史行为，≤48=64KB 超帧）；TAP vnet 基础设施（IFF_VNET_HDR/TUNSETOFFLOAD/BuildGso）本就完整，超帧实测可过内核 netns 链（native 11KB 读即 TSO 超帧）。
+1. `TunGsoCoalescer` 合并上限 env 化（`OPENPPP2_TAP_GSO_SEGMENTS`，默认 4=历史行为，≤48=64KB 超帧；2026-10-18 起默认改为 32，见 §11.4.1b）；TAP vnet 基础设施（IFF_VNET_HDR/TUNSETOFFLOAD/BuildGso）本就完整，超帧实测可过内核 netns 链（native 11KB 读即 TSO 超帧）。
 2. **GSO-RX 分段器**（Submit 层，>MTU 帧拆回 MSS 段，seq/长度/校验和逐段修正，env `OPENPPP2_XTCP_GSO_RX` 默认开）——并实测证明**可关**：整帧直通 Inject（>MSS 段对接收端合法）与分段等价，拆不拆不是瓶颈。
 3. runner `--tap-gso-segments/--xtcp-gso-rx` 旗标。
 
@@ -1336,6 +1712,8 @@ GSO-on 的 XTCP/native ratio 为 `0.9030×/0.9471×/0.9386×`，median `0.9386×
 因此停止继续扩大共用 GSO segment cap：该 knob 改善 shared TUN path，而非已证实的 XTCP 专属优势；更大 cap 没有证据能满足1.20×目标。NDI TSO TX 仍保持关闭，避免重启已观察到的回退候选。
 
 ### 11.69 memory bridge 对可支持 carrier 改为默认尝试（2026-09-25）
+
+**2026-10-18 实现补齐**：本节原先记录的默认策略未进入 main，现由纯函数 `xtcp::DirectBridgeEnabled` 与 `XtcpMemoryBridgeEnabled()` 首次调用缓存落实。默认尝试仅适用于 Linux 桌面/服务器（`__linux__` 且非 Android）；Windows、Android、macOS 及其他平台保持精确 `1` 才启用。Linux 未设置/空值启用，所有平台 `0`/其他非空值关闭；原有 carrier half-close gate 不变。下文 2026-09-25 binary、计数与 artifact 是历史证据，当前验证结果见本次 `build/bridge/REPORT.md`。
 
 在 §11.66 的短时 lifecycle/512连接 churn E2E 通过，且 formal P1/UL GSO-on 3/3达标明确依赖 direct bridge 后，将 `XtcpMemoryBridgeEnabled()` 的默认语义改为：环境变量未设置或为空时尝试 direct bridge；精确值 `1` 显式启用；`0` 或其他非空值关闭。`AckAccept()` 原有 transmission/capability 检查不变：不支持真实 half-close 的 carrier 仍走 legacy socket pump，显式 `OPENPPP2_XTCP_MEMORY_BRIDGE=0` 保留回退开关。没有改动 direct 状态机、queue/backpressure、FIN 顺序或 recovery gate。
 
@@ -2260,3 +2638,493 @@ runner另新增默认关闭的`--process-perf-record`，在矩阵runner自己的
 为方便显式接受该内存/吞吐权衡，新增`OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1` opt-in：在没有单独覆盖时使用2MiB snd_buf、32KiB direct-download chunk和48段TUN GSO cap；显式`OPENPPP2_XTCP_SNDBUF_BYTES`、`OPENPPP2_XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES`或`OPENPPP2_TAP_GSO_SEGMENTS`仍优先。它不启用原本关闭的TUN GSO merge，不改变默认配置。profile 应设置在需要调优下行的 XTCP 进程上；矩阵脚本只给 XTCP client 注入 snd_buf/chunk profile，同时对两端设置匹配的 TUN GSO cap。复测 P4/DL/GSO-on 20秒×3的 client-only profile，XTCP/native=`1.196/1.186/1.242×`（median=`1.196×`），相对默认 median=`0.852×`显著改善，但严格`>=1.20×`门禁仅1/3轮通过，因此仍未达稳定验收线。该 profile 仅适用于连接数有界、内存充足且已单独验收的部署；2MiB quota 按活动连接数线性增加。GitNexus impact因索引数据库版本43与当前工具版本40不兼容均为UNKNOWN；实现影响面通过rg调用点、手工代码审阅及针对性测试核对。Artifacts：`artifacts/diag-p4dl-gsoon-default-cpu8-20s-r3-20260928/`、`artifacts/diag-p4dl-gsoon-cap48-only-cpu8-20s-r3-20260928/`、`artifacts/diag-p4dl-gsoon-sndbuf2m-chunk32-cpu8-20s-r3-20260928/`、`artifacts/diag-p4dl-gsoon-cap48-sndbuf2m-chunk32-cpu8-20s-r3-20260928/`、`artifacts/diag-p16dl-gsoon-cap48-sndbuf2m-chunk32-cpu8-20s-r3-20260928/`、`artifacts/diag-p4dl-gsoon-profile-client-cpu8-20s-r3-20260929/`。
 
 随后以45秒×3和严格1.20×门禁复核同一2MiB profile，qualification=`6/6 pass`，但goodput ratio=`1.1325/1.2199/1.1900×`（median=`1.1900×`，2/3未过门）。XTCP吞吐本身约`1.95–1.96Gbps`且跨轮较稳定；native约`1.61–1.73Gbps`，配对差异主要由native和整机每字节CPU成本波动放大，当前证据不足以把它归因成单一XTCP退化。虽然admission遥测有少量`sndbuf_quota`事件，单变量4MiB snd_buf筛选并未改善：ratio=`1.1739/1.1229/1.2056×`（median=`1.1739×`），XTCP吞吐median约`1.869Gbps`，不晋升该设置。结论仍是2MiB profile有明显收益但**严格稳定性能门禁未通过**，不更改默认值。Artifacts：`artifacts/diag-p4dl-gsoon-profile-client-cpu8-45s-r3-20260930/`、`artifacts/diag-p4dl-gsoon-profile-sndbuf4m-client-cpu8-20s-r3-20260930/`。
+
+### 11.185 固定上游与稀疏补丁栈迁移（2026-10-18）
+
+固定上游为 `77d455853b2c63442ecb182e94354b89de81e3e8`，包含要求的 merge `5ffc907131428f9b4b3ed63bc1d9a06366035bad`；归档 SHA256 为 `dc78c701a1936f720a718e19e89814f6113590c01169b58f32b7f45f6adaf550`。25 个补丁保持 §11.1 的稀疏编号。原计划的 12 个补丁完成再生成；0027 另作上下文修复，解决原不对称上下文在相同旧输入上也无法以 GNU zero-fuzz 应用的问题，最终测试文件与旧结果逐字节相同。其余 12 个保留补丁校验和不变。
+
+旧 34 补丁树完整重放一致；新 25 补丁在干净新 base 上 zero-fuzz 重放，结果与审阅树完全一致。旧/新整树仅有预期 11 个上游路径差异，加上 FIN 回归文件和 CMake 注册，共 13 个路径；KCC 实现、reference、测试、pool、TCP header 及已吸收的 loss tests 单独逐字节核对。生产 TCP FSM 差异严格为两处上游 CLOSE-WAIT 通知，0013 的 ACK OR 集成和 0031 的 FIN-first 顺序保留。实际 prepare 在 fresh 与默认目录均执行两次，revision、patch stamp、源码及幂等性检查通过。
+
+本次迁移的旧 pin 独立基线：Linux 产品构建 331/331、XTCP 合同 188/188、通用 C++ 179/179、fault 20/20、完整上游 240/240 全部通过；通用套件保持 assertions enabled。新增 FIN 测试链接旧库时按预期失败（16 场景、36 个失败断言），证明能够检测缺少状态通知。旧二进制的 cap48/cap32 × one/two-shard、P16 DL/GSO-on 专场各 20/20，合计 80/80 有效，未见 watchdog、全流零速、output/NDI reject 或 first-push failure，host route/link/DNS/netns 指纹保持不变。该基线不替代新 pin 的独立验证；完整日志、原始测量、冻结二进制来源及比较表记录于本工作树 `build/plan15/`。
+
+新 pin 的独立离线验证全部通过：Linux Release 产品 331/331 build actions，standalone 525/525；合同构建 1183/1183、188/188 tests（26.68s），assertions enabled 的通用构建 1128/1128、179/179 tests（46.08s），fault 20/20（15.86s）、完整上游 241/241（39.39s）。FIN 16 场景和 OOO frontier 36 场景均零失败；include boundary 的 109-header baseline 与 vcxproj 264/264 source 检查通过。Windows 使用 x64 host、static /MT、/m:2、/MP2，产品零错误、24 个既有 C4099/MSB4011 警告；离线依赖构建 346/346，测试 2/2（13.72s），Driver runtime 10/10 逐字节一致；未启动 Windows PPP 或安装驱动。
+
+**运行时验收未通过。** cap48/cap32 × one/two-shard 的新旧 stall 专场共 160/160 cell 有效；交替顺序的三轮 P16/P64 × DL/UL × GSO off/on × one/two-shard 主矩阵仅 83/96 有效，全部 256 个必需 cell 均保留。13 个主矩阵 cell 未满足逐流完成：旧版 7 个、新版 6 个，零吞吐完成流分别为 107/104；涉及新旧两版、两种 shard 的 P64/GSO-off UL，以及旧版一个 P64/GSO-off DL cell。aggregate 为正和全流同时零速区间为零不能覆盖该失败。各组有效数、median/min/MAD、重传、send stall 与额外配对复核在本工作树 `build/plan15/EXEC_REPORT.md` 单独列出，不删除或替换原始失败样本。（零吞吐流的根因与修复见 §11.186。）
+
+只读现场采样观察到新旧两版 client TUN 的 kernel TX drop，受影响 kernel TCP 使用 BBR，出现 cwnd=1、ACK 静默和 RTO backoff；XTCP 仍为 KCC。该证据不能完整解释 stall/recovery，也不能确认或排除 rebase 的独立影响；没有调整 CC、queue、默认值或 sysctl。主矩阵前后 host 指纹一致，测量使用 runner 子 netns 和外层私有 mount/net namespace；旧 stall 问题与性能门禁不因此次离线通过而自动解除。
+
+### 11.186 P64 零吞吐流：SACK option 溢出导致 ACK 畸形（2026-10-18）
+
+**现象。** 远端共享 VM（Debian 13，三端隔离 netns，外层私有 network/mount namespace）上，P64/UL/GSO-off、KCC、direct bridge、cap32、30s+2s 的 XTCP 每轮有 13–20 条流（共 64）在正式区间吞吐为 0；同条件 native 与 XTCP GSO-on 全部通过。零流在 warmup 均有进度，之后 kernel 发送端 `bytes_acked` 冻结，RTO 退避到 13–27s，`cwnd=1`。
+
+**定位。** 只抓 client TUN 头部（`-s 96`，无 payload）显示：kernel 按 RTO 反复重传卡住的段，TUN 上再无 XTCP 发出的包。诊断版二进制（仅排查用，不提交）加每流入口/出口计数后确认：重传均到达 PPP 并注入协议栈，XTCP 每次都生成 ACK，且全部写入 TUN（XTCP output 533,883 = TUN direct write 533,883）。再记录每流最近 8 个输出包头部：这些 ACK 的 IP 总长 88、TCP data offset 为 1、"payload" 64 字节。原因是 `BuildSegmentPacket` 的 SACK 上限只考虑 MD5（否则恒为 4 块），未扣除 12 字节 TSopt：TSopt + 4 块 SACK = 48 字节 option，TCP header 68 字节，4 位 data offset 回绕（17 → 1），kernel 丢弃该 ACK。乱序区间多（P64、GSO off、丢包重）时每个 ACK 都带满 4 块，于是该流的所有 ACK（含对重传的 dup ACK）都无效，发送端永久停在 RTO 退避。该缺陷位于上游 xtcp（77d4558 第 384 行），不是本地补丁引入。
+
+**修复与验证。**
+- `0036-sack-blocks-fit-option-space.patch` 按剩余 40 字节 option 空间计算 SACK 块数：仅 SACK 4 块、带 TSopt 3 块（与 Linux 一致）、带 MD5 2 块。新增 `test_sack_option_budget`：在纯上游 main 上只加测试时失败（3 个畸形 ACK），加修复后通过；上游全量 236/236、本地补丁栈下 240/240 通过；0001-0036 从固定归档 zero-fuzz 重放。同一修复已提交 liulilittle/xtcp#2。
+- `0035-retry-ack-window-construction.patch`（X4）修复了另一个确定性缺陷：ACK/窗口构造因分配失败而未发出时，delayed-ACK 与 receive-resume 状态被清掉、之后不再补发。10 个确定性探针修复前失败、修复后通过，ASan/UBSan、TSan 无报告。它单独不能消除 P64 零流（B1 零流 99 条），说明不是本问题主因。
+- 工具：`tools/datapath_matrix_metadata.py` 使 CPU profile none 的 cell 在存在精确零速流时于顶层判为失败（原先误报 PASS），并支持 hash 校验的冻结源码清单；`tools/datapath_namespace_monitor.py` 把 teardown 期间"进程已退出/namespace 已卸载"判为正常，仅"进程存活于意外 namespace"才停止。
+
+**A/B（同设置，诊断关闭，B1 = 0035，B2 = 0035 + 0036，X01/X02 各 3 轮交替顺序，单位 Mbps，零流为 64 条中正式区间为 0 的条数）：**
+
+| cell | B1 中位 | B1 零流（3 轮合计） | B2 中位 | B2 零流（3 轮合计） |
+| --- | ---: | ---: | ---: | ---: |
+| X01（1 shard） | 288.2 | 60 | 250.4 | 0 |
+| X02（2 shard） | 769.2 | 36 | 707.2 | 1 |
+
+native 对照 N0 为 289.7 Mbps、0 零流。13 个 cell 的 host 指纹与清理全部通过。
+
+**遗留问题。**
+1. X02 第 2 轮仍有 1 条零流（该轮 584.7 Mbps），机制未定位。
+2. 修复后聚合吞吐下降 8–13%：此前卡死的流退出竞争，剩余流丢包更少；修复后 64 条流全部参与竞争，重传从约 9–11 万次增至约 15 万次（X01）。X01 B2 约为 native 的 0.86×。需要按逐流公平性和总吞吐联合评估，而不是只看聚合值。
+3. 以上为共享 VM 的方向性证据，每格 3 轮；P16/P64 DL、GSO-on 与 stall 专场尚未在 B2 上复跑。
+
+### 11.187 固定上游迁移到 f71548f（2026-10-25）
+
+固定上游更新为 `f71548f3664740bf87b40bf0b226d2ee315109a8`，归档 SHA256 为 `ff0a0a6021abeeadc84337992d765a02eee57dfb3e3ed7ef7e8f3bb22e08656e`。上游新增 KCC v2（kernel-faithful delivery/recovery）、CA 状态机、RACK/SACK/undo/RTO 修复、O(1) pipe 查询与 SIMD copy+checksum，并合入原本地 0036（liulilittle/xtcp#2），该补丁文件删除；其余 26 个补丁保持编号。
+
+改编：0004 保留上游 sendmsg 入口的 app-limited 标记；0012 的 rate-change 遥测改在 ACK flush 之后采样（上游已把 ACK flush 移到 CC hook 之后，audit D01），对应 `test_pacing_update` 期望由"0 个 flush 包"改为"至少 1 个"；0023 把上游新增的 app-limited 判断、ACK flush 与无 cookie fast-open 路径改为 offset 感知的 pending-send 访问；0026 中 KCC v2 不再按 round 聚合样本，`round_sample_*` 字段保留并恒为 0；0034 让上游新增的 Eifel/undo 测试按 TSopt 感知的 payload cap 发送，并把 `test_gro_rx`、`test_close_pending` 的迭代次数保护改为墙钟保护。
+
+离线测试（WSL GCC 12，Release，`XTCP_CHECKSUM_VALIDATE=ON`，ctest -j1）：上游 main 238/239，rebased 241/243。两者都失败 `test_ts_ooo_drain`（旧 pin+旧补丁栈同样失败，属上游/环境既有问题）。仅 rebased 失败 `test_ecn_cc` 的 KCC ECE 断言：0005 的突发 pacing 在固定虚拟时钟的 warmup 中改变了 KCC 带宽估计，ECE 后 cwnd 未下降（92→92，main 为 90→4）；后续结论如下（2026-10-25）：
+
+- **`test_ecn_cc` 是测试假设问题，不是产品缺陷。** 在 main 上把最后一个 ACK 的 ECE 去掉，cwnd 同样是 90→4。这说明上游通过与 ECN 无关。固定虚拟时钟下，逐段 pacing 在 warmup 后每轮只能发一段，KCC 的 max-bw 窗口过期，BDP target 塌到 cwnd 下限。0005 每轮发出约 1ms quantum，带宽模型保持新鲜，cwnd 停在 BDP target。
+- **ECE 对 KCC 的预期效果本来有限。** 内核 BBR/KCC 对 ECE 的窗口效果只有 `tcp_enter_cwr` 调用透传型 `ssthresh` hook；`tcp_cong_control` 对 `cong_control` 算法会提前返回，不走 PRR。移植版唯一的效果是把 cwnd clamp 到该阈值；本例 DRAIN 设定的阈值为 178，大于 90，因此不降。
+- **0034 的测试调整。** 该断言改为固定随机种子的双连接对照：阈值非哨兵、ECE 后 cwnd ≤ 阈值、ECE 窗口 ≤ 无 ECE 窗口。CE 在突发 pacing 下确实降窗，仍由同文件 wire 级 CUBIC 用例覆盖。
+- **GRO 风险已确认并修复（0037）。** 0005 自身只发不超过 MSS 的段；但一个携带多个 MSS 的 GRO/LRO super-segment 确实只计为一段，会进入 40ms delayed ACK。`test_rcv_mss_ack` 修复前失败、修复后通过。
+- **最终测试结果。** 补丁栈从固定归档 `patch -p1 --fuzz=0` 重放后，全量 ctest 为 243/244，仅 `test_ts_ooo_drain` 失败（main 同样失败）。OpenPPP2 `ppp/app/client/xtcp/*.cpp` 对 rebased 头文件做了 Linux `-fsyntax-only` 检查并通过；Windows 路径、运行时与性能未验证。
+
+以上是 0044 前的历史行为；新增 KCC ECN 响应及强化后的测试见 §11.190。
+
+### 11.188 固定 packet pool 耗尽导致 P64 DL 卡死：TX 余量 + 有界 heap overflow（2026-10-26）
+
+**根因。** xtcp 全局 packet pool 为固定 arena（2K×8192 + 4K×4096 + 32K×128，约 36MiB），没有 heap 回退。未确认发送段（retrans_queue）持有 pool 块直到被 ACK，入向包（`XtcpRuntime::Submit` 的 `BufRef::Acquire`）也从同一 pool 分配。活跃流数×snd_buf 超过 pool 后（64×1MiB；默认 64KiB 时约 500 条以上忙流），发送保留占满全部块，入向分配失败。纯 ACK 也被丢弃（`ingress_drop_reason.buffer`），发送缓冲永远无法释放：admission.blocked=64，cwnd→2，只剩 RTO 重传，隧道永久停滞。调大 `OPENPPP2_XTCP_INGRESS_ITEMS` 无效。
+
+**修复（0039，xtcp 内，OpenPPP2 代码不变）。** 按内核 `tcp_memory_pressure`/`sk_wmem_schedule` 的思路，把“新发送数据”和其余分配分开：
+- SendData 直发路径和 FlushPendingSend 在 `buf::TxAcquireScope`（线程局部，只包住构包调用）中分配新数据段。scope 内 tier 空闲块 ≤ 容量 1/8 时跳过该 tier，且不使用 heap overflow。被拒的段留在 `pending_send_`，仍受 snd_buf 限制；连接保持 dirty，poll 在 ACK 释放块后重发。
+- 入向、ACK、控制段、重传、MTU 拆分仍使用整个 pool。所有适配 tier 都空时，退到有界 heap overflow（总量 `kHeapOverflowCapBytes`=8MiB，块逐个 malloc，释放即 free）作为最后防线，内存不会无界增长。
+- 遥测：`buf::GetPoolPressureStats()`（tx_deferrals、heap_overflow_acquires/denials/bytes/peak）。
+- pool 未进入余量区时行为完全不变。本地 `test_sack_gap_edge` 中压力计数恒为 0，未触发新门控。
+
+选择理由：只做 heap 回退时，发送保留同样会耗尽 heap 上限，卡死只是推迟；只在 OpenPPP2 为纯 ACK 预留缓冲时，xtcp 内部其他入向/控制路径（GRO、重传构包）仍可能饿死。在 xtcp 分配层用“发送让出余量”从源头限制发送保留，再用有界 heap 兜底，两者结合最稳健。
+
+**测试。** 0040 新增 `test_pool_pressure`：TX scope 止于余量，之后普通分配仍成功；heap overflow 有上限、TX 不使用、释放后归零；1600 条连接的发送保留超过 arena 时，ACK 缓冲仍可分配，全部流传完。全量 ctest 本地与远端均为 244/245，仅 `test_ts_ooo_drain` 失败（既有）。`test_sack_gap_edge` 是既有的时序型 flaky（重传计数阈值），基线栈同样会失败（同机 80 次：基线 7、新版 13）。
+
+**远端 A/B**（共享 VM、KCC、GSO on、direct bridge、20s，单轮/单元；old = #106 binary `/home/ppp-m2/sndfix/bin/ppp`，new = 本分支）。单位 Mbps，两轮交替顺序：
+
+| snd_buf | 单元 | old 轮1/轮2 | new 轮1/轮2 |
+|---|---|---|---|
+| 1MiB | P64 DL | 卡死（watchdog 52s，与 #106 诊断一致） | 1345 / 1481 / 1181（3 轮，全部 pass，零速流 0，ingress_dropped 0） |
+| 2MiB | P64 DL | — | 1384（pass，ingress_dropped 0） |
+| 1MiB | P1 DL / UL | 1685/1694 · 1207/1235 | 1697/1684 · 1222/1205 |
+| 1MiB | P4 DL / UL | 2088/2109 · 1049/1084 | 2163/1920 · 1075/1068 |
+| 1MiB | P16 DL / UL | 1833/1802 · 979/1015 | 1783/1805 · 991/983 |
+| 64KiB | P1 DL / UL | 394/401 · 1177/1198 | 399/397 · 1212/1209 |
+| 64KiB | P4 DL / UL | 1160/1119 · 1075/1069 | 1123/1118 · 1072/1057 |
+| 64KiB | P16 DL / UL | 1446/1478 · 972/1007 | 1447/1477 · 969/990 |
+| 64KiB | P64 DL | — | 1244（pass） |
+| 64KiB | P64 UL | watchdog 2/2 | watchdog 3/3 |
+
+P1/P4/P16 在噪声范围内无回归（单轮差异最大为 1MiB P4 DL 轮2 的 -9%，轮1 为 +4%）。
+
+**残留风险。**
+- 64KiB P64 UL 在 old/new 上都会触发 iperf watchdog（各 2/2 与 3/3）：65 条流全部关闭、无零速流，最后几秒仍有吞吐，表现为收尾阶段超时，与本修复无关，另行跟踪。
+- 余量按全局空闲链计数，不含线程缓存（每线程 ≤16/8 块），只会偏保守。
+- heap overflow 被入向数据长期占用（如应用不读、OOO 大量保留）时，8MiB 上限仍会耗尽。此时退化为旧行为（入向丢包），但发送侧已不会再占用余量。
+- 1MiB/2MiB 下 P64 DL 聚合吞吐低于 P16（发送在余量处排队等待 ACK），属于预期的平滑降级，不再卡死。
+
+### 11.189 持续池压力下的逐流分配饥饿（2026-10-28）
+
+0039 保住了 ACK 入向，但没有保证 TX 分配公平性。繁忙连接可以在 ACK 回调中
+抢先消耗释放的块，导致没有在途数据的连接在随后 poll 时再次失败。本次默认缓冲
+P64 DL 诊断中，6 条零速流的接收窗口仍开放、cwnd 充足、inflight 为 0，flush
+尝试累计数万次，已确认字节却长期不变；聚合单秒 pending-flush 分配失败超过
+116,000 次。因此是分配饥饿，而非漏掉本连接 timer 或 cwnd 塌缩。
+
+实验使用 main `7766d87f`（含 #111 工具修复）、1 shard、GSO on、30 秒正式区间
+加 2 秒 omit，默认 snd_buf=1 MiB。所有单元使用共享测量/构建锁和空闲门槛，
+私有网络/挂载命名空间及 `--kernel-steering off`。诊断对照：
+
+| 二进制 / snd_buf | P64 DL Mbps | 零速流 |
+| --- | ---: | ---: |
+| main / 默认 1 MiB | 1630 | 6 |
+| main / 256 KiB | 1535 | 0 |
+| main / 64 KiB | 1439 | 0 |
+| #115 `0091600e` / 默认 1 MiB | 1681 | 8 |
+| main 去掉 0039/0040 / 默认 1 MiB | 62 秒看门狗超时 | 无完整结果 |
+
+#115 的半关闭和 GSO FIN 修复没有消除本问题。复核 poolfix 原始结果确认三轮零速流
+为 0/0/0，但第 2 轮最慢流只有 52,251 bit/s，max/min=746。
+
+**修复与测试。** `0041-tests-pool-release-without-own-ack.patch` 经真实 stack timer
+sweep 检查其他使用者释放池块后，无自身 data ACK 的等待连接能否重启；旧栈即通过。
+`0042-fair-tx-pool-waiters.patch` 为每条连接增加侵入式 waiter。连续分配拒绝 256 次后，
+后续 TX 尝试先为更早且尺寸可满足的 waiter 保留最多 32 个 arena 块，再分配给当前
+连接；成功分配即清零拒绝次数，短暂压力沿用既有准入行为。大尺寸 tier 不可用
+不会堵住 MSS 请求。flush 停止时归还未用批次，最多保留一个块跨越窗口/pacing
+停止；关闭、析构以及 pending 耗尽时撤销 waiter。批次元数据按需分配，包仍在 arena。
+完整批次摘队后以原子 release/acquire 移交给所属连接，后者取包时不再逐包获取全局
+队列 mutex；队列修改、批次发布与撤销仍受 mutex 保护。同一连接的 Acquire/Cancel
+仍要求调用者串行执行。
+
+公平准入本身仍不够。延迟入队的单包候选仍有 3 条 iperf 零速流：ACK 偶有推进，
+但 KCC pacing 最低降到约 11 kbit/s，低于 iperf 完整读取块的报告门槛。现在当
+分配失败且管道已空或 waiter 已老化时，通过既有 app-limited 机制标记后续发出段
+的本地受限采样；短暂压力且仍有数据在途时沿用原采样行为。边界包含
+当前在途包；已发段保留发送时的标记。带宽估计器
+原本就会忽略较低的受限样本、接受较高样本，无需修改其策略。
+此前立即 FIFO/批量候选因零流或吞吐下降被否决，证据保留。
+相邻 P64 门禁否决了 `fixed5`（64 次门槛、32 包、无采样修复：零流 1/0，平均吞吐
++10.9%）、`fixed7`（64 次门槛、单包、采样修复：2/0，-20.3%）及 `fixed8`
+（64 次门槛、32 包、采样修复：0/0，-12.5%）。`fixed9`（512 次门槛、32 包、采样
+修复）为零流 1/0、平均吞吐 -0.5%。256 次门槛用于减少对正常 ACK
+发送批次的干扰；它是分配尝试次数，不构成时间上限保证。
+`fixed10`（256 次门槛、仅管道空时标记采样）平均吞吐 +0.3%，但零流仍为 1/3；
+诊断捕获了窗口开放、无重传时的 pacing 塌缩。最终采样修复同时覆盖部分数据在途
+时的分配失败，并有启用 KCC 的修复前失败回归。
+
+此外，分配失败时，若新开启的 pacing tick 尚未发出任何包，恢复其原 deadline。
+旧 flush 在构包前预支 wire time，内存拒绝后虽未发送任何数据，重试却会被反复
+推迟；已经发出数据的 tick 仍保留 deadline。回归释放一个 arena 块并在相同时刻
+再次 poll，不提供 data ACK：修复前失败，修复后立即发出数据。
+`fixed12` 两轮相邻 P64 均无零流，但平均吞吐下降 2.6%，因此被否决，随后优化批次领取。
+`fixed13` 同样零流 0/0，但平均吞吐下降 1.9%。将采样标记限制到管道已空或已老化
+waiter 后保留健康流的 ACK 时钟，回归分别验证短暂与持续压力。
+
+中间候选 `fixed14` 相邻 P64 门禁通过：main 为 1865/1845 Mbps、零流 5/7；修复版
+1877/1839 Mbps、零流 0/0。平均吞吐 +0.17%（共享宿主噪声范围），修复版最慢流
+为 2.41/1.64 Mbps。这是进度保护，不是带宽均分或时间上限保证。
+其完整两轮矩阵中，修复版各单元均无零流，但 DL P16 平均吞吐下降 2.06%
+（DL P1 -0.61%、P4 +0.73%、UL P16 +1.62%）。最终候选将新 waiter 移到连接对象
+末尾以保留原热点字段偏移，并直接构造 arena 分配的返回值，避免中间缓冲对象。
+本地无压力分配微基准约由 23 降到 19 ns/次（基线约 16 ns/次）；性能结论仍以产品
+A/B 为准。
+
+**最终相邻 A/B。** `fixed15`，同为默认 1 MiB、1 shard、GSO on、30 秒正式区间加
+2 秒 omit；每组先 main/fixed，再 fixed/main。单位 Mbps：
+
+| 单元 | main 轮 1 / 2 | 修复版轮 1 / 2 | 平均变化 | 修复版零流 |
+| --- | ---: | ---: | ---: | ---: |
+| DL P1 | 1843.887 / 1776.111 | 1788.836 / 1791.773 | -1.09% | 0 / 0 |
+| DL P4 | 1604.565 / 1530.884 | 1561.787 / 1631.617 | +1.85% | 0 / 0 |
+| DL P16 | 1722.853 / 1757.070 | 1735.679 / 1725.893 | -0.53% | 0 / 0 |
+| DL P64 | 1832.526 / 1855.350 | 1878.478 / 1840.705 | +0.85% | 0 / 0 |
+| UL P16 | 878.541 / 909.122 | 979.844 / 909.890 | +5.71% | 0 / 0 |
+
+main P64 零流为 7/3；修复版 P64 最慢流为 0.769/0.699 Mbps。P1/P16 的点估计为
+小幅负差，对应 main 两轮自身差异分别约 3.7%/2.0%；共享宿主两轮不能构成统计上的
+性能等价保证。20 个单元均完成，清理与监控检查通过，无残留私有 netns，未触发
+磁盘保护；修复版 10 个单元均无运行时验收故障，二进制 SHA-256 始终为
+`e9f100193d18d01eaa7f25c99b7342d28d982c6157b0a60aadc8b90e762a01db`。
+入向、控制、重传、1/8 余量和 8 MiB overflow 上限
+沿用原规则；没有 waiter 且未受池压力时，TX 走既有 arena 路径，不获取 waiter mutex。
+
+插队回归测试在 0042 前稳定失败、修复后通过；另覆盖队列顺序、已排队/已保留块的
+waiter 撤销、混合尺寸、短暂压力准入、窗口关闭期间保留一个块，以及既有 1600
+连接全部完成场景。独立回归启用 KCC 并保留已 ACK 包的 wire 引用，覆盖部分在途及
+管道排空后仍无法分配两种情形；修复前 delivery marker 未推进，修复后推进到当前边界。
+另有 8 个发送者并发覆盖压力下的批次发布、领取与撤销。TSan 编译成功，但运行时在
+测试启动前因 `unexpected memory mapping` 退出，没有提供数据竞争检查结论。
+全补丁栈对全新固定版本归档
+按顺序 `patch -p1 --fuzz=0` 成功。初始基线完整 CTest 为 243/245；既有
+`test_ts_ooo_drain` 稳定失败，`test_sack_gap_edge` 存在时序波动。
+当前候选完整测试为 244/245，仅既有 `test_ts_ooo_drain` 失败。
+普通 PIE ASan/UBSan 二进制间歇性启动崩溃，或超时并反复输出
+`DEADLYSIGNAL`；未修改基线的并发销毁测试也出现过超时。关闭 ASan SIGSEGV 接管
+仍不稳定。独立 non-PIE Debug 构建（`XTCP_SANITIZE=ON`、
+`CMAKE_CXX_FLAGS=-fno-pie`、`CMAKE_EXE_LINKER_FLAGS=-no-pie`，使用默认 ASan
+信号处理）下，池压力、MPSC 重试及并发销毁三项在 45 秒限时内 3/3 通过。
+
+证据：`/home/ppp-m2/starve-20261028/`，诊断位于 `runs/diagnostic/`（包括已否决的
+`fixed` 候选），最终 A/B 位于 `runs/qualified-fixed15/`。指标汇总为
+`qualification-fixed15.json` 与 `summary.json`；`manifest-fixed15.json` 冻结共用的
+main runner，`source-manifest-fixed15.json` 及 XTCP patch stamp 标识候选源码。
+验证日志位于 `validation/`，本地日志也保留在 `/tmp/starve-xtcp/`。GitHub clone
+失败后使用已授权的冻结 Git 归档传输后备方案。未修改宿主网络设置；本轮未验证
+Windows 和移动端运行时。
+
+### 11.190 KCC 的 BBRv2 风格 ECN 响应（0044，2026-10-29）
+
+**根因。** 原 KCC 没有 ECE 标记计数、alpha 或 inflight 上限；FSM 的 CWR
+仅调用透传 ssthresh，并不保证收紧 KCC 的模型窗口。旧 `test_ecn_cc` 的
+非严格双连接比较只能证明不增窗，无法证明 ECN 真正产生响应。
+
+**设计。** `0044-kcc-bbr2-ecn-response.patch` 为 rate sample 增加协商 ECN
+标记及 ECE ACK 所确认的累计已交付包数。FSM 按新交付包数计数，包含 SACK、
+首个 sample 和同一时刻合并的 ACK；重复 ACK 不增加标记计数。KCC 在现有
+packet-timed round 边界计算比例，按 Google Linux BBRv2 的 Q8 公式
+`alpha = (240 * alpha >> 8) + (16 * fraction >> 8)` 更新；gain=1/16，
+初值 256。轮次标记率严格超过 50% 时，用
+`1 - ((alpha * 85) >> 8) / 256` 收紧 inflight_hi 与带宽探测上限；100%
+标记首次把 100 包限制到 66 包，非 Reno 对半减窗，窗口下限仍为 4 包。
+收紧后停止向上探测，STARTUP 经 DRAIN 退出；后续无高标记的 PROBE_UP
+轮次逐包恢复探测上限。普通及 idle-restart pacing 都遵守带宽上限。
+未协商 ECN 时跳过该模型；无标记时上限保持无限。丢包及恢复 hook 未修改。
+
+依据：[Google BBRv2 tcp_bbr2.c](https://github.com/google/bbr/blob/v2alpha/net/ipv4/tcp_bbr2.c)
+的 `bbr2_update_ecn_alpha` 与 `bbr2_adapt_lower_bounds`。这里移植估计器、
+比例收紧及有界再探测到现有 KCC 周期；BBRv2 的 alpha/factor 原作用于
+inflight_lo，本任务按要求作用于 inflight_hi/带宽上限，并未完整替换成 BBRv2
+状态机。接收端仍为 RFC3168 sticky ECE/CWR，因此统计的是 ECE ACK 所确认的
+包比例，不是路由器逐包 CE 的精确比例；DCTCP CE 状态切换回显、RTT eligibility
+策略和完整 BBRv2 状态机不在本补丁范围内。
+
+**测试范围。** 强化原 `test_ecn_cc`，检查 0%、10%、50%、100%、未协商 ECN、
+同轮不重复收紧、下一轮 EWMA 和连续无标记后衰减至零；精确 50% 不触发。
+FSM 同种子对照要求整轮 ECE 后窗口严格小于无 ECE；未协商连接的 ECE 与
+普通 ACK 结果相同。另检查首个 sample、同一时刻混合 ECE ACK 和重复 ACK
+计数；原 CUBIC wire 测试继续保留。未增加或占用 0045+ 编号。
+
+**离线验证。** 最终补丁栈共 34 个补丁，对固定归档全新解压后逐个
+`patch -p1 --fuzz=0` 成功，结果与候选源码逐文件一致。Release、
+`XTCP_BUILD_TESTS=ON`、`XTCP_CHECKSUM_VALIDATE=ON` 的完整 XTCP CTest：
+实验机 GCC 14 **245/245**，74.87 秒。现有 0041 已修复 PAWS 测试时间戳，
+故本轮 `test_ts_ooo_drain` 也通过。
+实验机默认配置的 `tests/cpp`（保留断言）**191/191**，48.08 秒；没有为本补丁
+启用额外的特权网络 E2E。续跑未在本机编译或运行测试，核验了中断前远端
+日志、最终 0044 的 SHA256 和实际受测源码；补丁 SHA256 为
+`12699428021e98e33d9a59754bf7c45d2f405e5a81d4b4b25b6b04bcda705605`。
+
+**默认配置 A/B。** 中断前实验机矩阵已经完成，续跑重新汇总全部结果。
+control 为任务起点冻结基线 `bfd5b88101943ba370bb9f04858af54787a5a461`，
+candidate 仅增加 0044；本地 `main` 引用较旧，故这里明确使用冻结提交识别
+对照，未宣称对比续跑时的其他远端分支。两份源码清单差异仅为 0044、
+它修改的六个 XTCP 文件及 patch stamp。
+通过 `/home/ppp-m2/measure.py` 的 `measurement_guard` 和 `run` 执行，
+第一轮 control→candidate，第二轮 candidate→control；每个 cell 30 秒、
+omit 2 秒，DL/UL × P1/P16/P64 × 两轮，共 24 个 cell。
+默认单 shard、KCC、GSO on、memory bridge on、upload gather 65536/1ms，
+sndbuf 不覆盖默认值；双方使用相同五 CPU cpuset。外层独立 net/mount namespace
+隔离测量网络，`--kernel-steering off` 禁止修改宿主 IRQ/RPS/XPS。
+
+单位 Mbps；变化为两轮算术均值之比：
+
+| 方向/并发 | control 第1/2轮 | 0044 第1/2轮 | 均值变化 |
+|---|---:|---:|---:|
+| DL P1 | 1741.441 / 1720.575 | 1762.726 / 1779.222 | +2.31% |
+| DL P16 | 1736.336 / 1740.467 | 1724.039 / 1704.846 | -1.38% |
+| DL P64 | 1877.081 / 1844.505 | 1867.932 / 1861.735 | +0.22% |
+| UL P1 | 1420.588 / 1457.079 | 1407.856 / 1456.794 | -0.45% |
+| UL P16 | 800.954 / 995.479 | 981.890 / 965.153 | +8.38% |
+| UL P64 | 562.433 / 533.418 | 545.904 / 527.055 | -2.09% |
+
+24/24 均 pass，零速流为 0，runtime_faults 为空，退出状态为 0，
+namespace cleanup 和监控完整性检查均通过。未发现明显的默认路径吞吐回退；
+共享主机且仅两轮，不能据此证明统计意义上的性能等价或将 UL P16 增益归因于补丁。
+默认集成没有调用 `SetDefaultEcn(true)`，XTCP 不协商 ECN；未注入 CE，
+也没有逐包 ECE 抓包证据。因此该 A/B 验证默认非 ECN 路径，已协商但零标记
+路径由单测覆盖；真实交换机标记下的 ECN 收敛、公平性和恢复速度尚未实机验证。
+Windows、移动端及 sanitizer 未验证。
+
+远端原始证据保留在 `/home/ppp-m2/ecn-20261029-0044/` 的 `ctest.log`、
+`ctest-cpp.log`、`campaign.log`、`report.json` 和 `runs/`。续跑在新目录
+`/home/ppp-m2/ecn-0044-resume-20261029-tZ2hqy/` 重新准备源码并用
+`patch -p1 --fuzz=0` 重放；核对其与受测源码一致。本任务构建目录已清理，
+日志和冻结源码保留；未提交或推送。
+
+### 11.192 固定上游迁移到 c9dd560（2026-10-31）
+
+当前固定 revision 为 `c9dd5601384201b396b1b6599c6c868097da5dcf`，归档
+SHA256 为 `6a9988d5bf5a039bd9bd0d0c7162e33afc1c60013af10f73abc82d0dc82b2631`。
+通过旧 archive + 原始完整补丁栈与新 archive + 重放栈逐文件 diff 核对
+上游 #3-#8 的等价性，而非仅依赖 PR 状态。
+
+| 原编号 | 处理 | 核对结果 |
+|---|---|---|
+| 0037 | 删除 | MSS 按字节立即 ACK 与测试已上游 |
+| 0038 | 删除 | KCC ack aggregation、quantization 与 ref 实现已上游 |
+| 0039/0040 | 删除 | TX reserve、bounded heap overflow 与压力测试已上游 |
+| 0042 | 缩小 | 保留本地 NextTimerDeadlineUs 断言 |
+| 0043 | 缩小 | 保留 pending-send offset 的 waiter 取消与未使用 pacing tick 恢复 |
+| 0045 | 缩小 | 保留本地 ResumeReceive 背压测试分支 |
+| 0046 | 缩小 | 保留本地 ResumeReceive drain 路径的 hole-filler 时间戳锚点 |
+| 0048 | 删除 | TX retry 方向与 shard 测试已上游 |
+
+剩余 33 个补丁。0034/0041 不再修改已被上游取代的时间戳夹具；其余
+补丁重生成到新基线，保留原编号和原意图。0003/0012 的遥测插入与上游
+waiter 逻辑并存；0023/0028 保留上游 pool scope 并接回本地 offset/checksum
+参数。不改变 KCC、pool、bridge 或 GSO 默认设置。
+
+历史章节与其他性能文档中的旧 pin、补丁编号和测量保持历史含义。
+本次证据保存于 `build/private/xtcp-c9dd560-validation/`。
+本机未编译或运行软件测试；测试机操作限于 `/home/ppp-m2/xbump`。
+
+最终重生成栈的 checksum-enabled ctest 连跑三遍均为 246/246；TSan ctest
+246/246；`scripts/run-cpp-tests.sh` 195/195；fault suite 20/20，全部通过。
+编译均使用指定 flock、CPU 0-15 和 nice 10。
+Release 产品构建 335/335 成功，未启动二进制。
+下述 2026-11-01 UL A/B 补测取代此前等待适配确认的状态；DL 仍未验证。
+修改留在工作区，未提交或推送。
+
+#### UL 吞吐 A/B 补测（2026-11-01）
+
+A 为 main `a9cc7765`（xtcp c1fc9d6 + 38 补丁），B 为 main
+`2b4d720e16f9534e76c444c9c6e04fef868c0156`（xtcp c9dd560 + 33 补丁）。
+测试机全新目录 `/home/ppp-m2/ab128-20261101/{A,B}` 分别构建真实提交，
+Release、CMake 默认功能配置（含 SIMD ON），复用已配置的
+`/home/ppp-m2/deps`。均 335/335 成功，使用指定构建锁、CPU 0-15、
+nice 10、最大 -j16；本机没有编译或软件测试，根盘始终至少剩余 42 GB。
+
+经批准仅导入原 `/home/ppp-m2/measure.py`，重绑定 ROOT/BIN/OUT 与对应
+源码清单和校验元数据，调用未改动的 `run()`。控制器前后 SHA256 均为
+`33776f7465797e67b39144263b6a8d2af819b3df58e7536f745626e442264d9b`。
+驱动固定 UL、64KiB xtcp sndbuf；P1/P16/P64、native 后 xtcp，
+client-single-core 使用既存 cpu-choice 的 CPU49，10 秒测量、omit 2 秒，
+AES-256-CFB、GSO on/32 segments、单 shard、KCC、memory bridge、
+GRO=12288、gather=61440，均保持驱动默认值。这不是任意运行时默认配置
+或 DL 的测试。通过仓库既有
+`B/tools/run_m3_isolated.sh --run-dir TASK -- python3 TASK/wrapper.py`
+启动，外层 taskset 0-15、nice 10；驱动自行设置 client affinity 并持有
+测量/构建锁。未修改主机路由、DNS 或其他进程。
+
+完成两轮 ABBA，每格每版本四个有效样本。表中各版本按出现时间排序：
+第一轮第一次/第二次，第二轮第一次/第二次；delta 使用未舍入的中位数。
+原计划第三轮因约一小时时间预算在空闲等待阶段结束，未启动流量。
+下方包装器保留原文 range(1, 4)，不代表完成三轮。
+
+| Stack / P | A runs (Mbps) | B runs (Mbps) | Median A | Median B | B/A - 1 | Range/median A; B |
+|---|---|---|---:|---:|---:|---:|
+| xtcp / 1 | 1101.63, 1072.12, 1062.91, 1074.33 | 1023.67, 1102.54, 1081.04, 1083.60 | 1073.22 | 1082.32 | +0.85% | 3.61%; 7.29% |
+| xtcp / 16 | 984.45, 980.93, 974.66, 980.25 | 974.30, 994.46, 961.40, 966.78 | 980.59 | 970.54 | -1.03% | 1.00%; 3.41% |
+| xtcp / 64 | 874.78, 783.45, 837.81, 854.17 | 835.88, 778.53, 865.10, 861.45 | 845.99 | 848.66 | +0.32% | 10.79%; 10.20% |
+| native / 1 | 1104.33, 1087.31, 1096.22, 1100.69 | 1076.16, 1111.93, 1112.89, 1103.61 | 1098.45 | 1107.77 | +0.85% | 1.55%; 3.32% |
+| native / 16 | 1066.16, 1079.62, 1083.66, 1076.25 | 1095.38, 1066.82, 1065.01, 1093.23 | 1077.94 | 1080.02 | +0.19% | 1.62%; 2.81% |
+| native / 64 | 936.28, 916.72, 878.67, 915.86 | 896.85, 877.22, 883.32, 903.01 | 916.29 | 890.09 | -2.86% | 6.29%; 2.90% |
+
+48 个有效格全部 qualification pass，零速流数量均为 0；八个有效调用
+exit=0，namespace 列表恢复，二进制哈希不变。剔除并保留三次失败调用：
+A 首次因缺少既有隔离入口失败，第二次因 archive 缺 Git provenance
+失败，均未产生吞吐样本；补入真实提交历史后通过。第一轮第二位置 B
+的首次尝试因 native PPP/iperf CPU migration 资格检查失败，零速流为 0，
+重跑 attempt-2 成功。失败调用整次不计入表格。结束时 SIGINT 未终止
+第三轮空闲等待，随后 TERM 仅结束本任务 wrapper；无活跃 runner，
+隔离入口正常清理。
+
+结论：本次 UL 未检出超出运行噪声的明确吞吐变化。xtcp P1/P16/P64
+中位变化为 +0.85%/-1.03%/+0.32%，对应版本内极差/中位数约 1%-11%，
+native 对照亦有波动；不能据此证明等价或保证退化不超过 3%。
+DL、其他 sndbuf、长时间稳定性和其他平台未覆盖。
+A binary SHA256：
+`c93c36ec4a1bf57c6efbc1cfa10a6f14e11666f800b0fbfea07d5ba0efb078cf`；
+B：`a3497b27472000ff6cb8c55ac883f7115b44aad2ce347bd2dcc45cd06146257c`。
+私有证据 `build/private/xtcp-c9dd560-ab/{evidence.tar.gz,summary.txt}`
+含包装器原文、日志、逐格结果、资格检查与 completion/provenance；不是公开夹具。
+取回证据后已清理本任务远端构建及源码目录。
+
+实际包装器全文（含重试与恢复逻辑）：
+```python
+import hashlib
+import json
+from pathlib import Path
+import sys
+sys.path.insert(0, '/home/ppp-m2')
+import measure as m
+
+TASK = Path(__file__).resolve().parent
+original_verify = m.verify
+
+def verify():
+    metadata = json.loads((m.ROOT / 'ab-manifest.json').read_text())
+    for name, digest in metadata['files'].items():
+        assert m.sha(m.ROOT / name) == digest, name
+    return dict(metadata, binary_sha256=m.sha(m.BIN),
+                controller_sha256=m.sha(Path(m.__file__)),
+                ordered_runner_sha256=m.sha(m.BASE / 'ordered-runner.py'))
+
+m.verify = verify
+m.OUT = TASK / 'runs'
+cpu = json.loads((m.BASE / 'cpu-choice.json').read_text())['cpu']
+for version in ('A', 'B'):
+    root = TASK / version
+    files = {str(p.relative_to(root)): m.sha(p) for p in root.rglob('*')
+             if p.is_file() and p.name != 'ab-manifest.json' and not any(x in p.relative_to(root).parts
+                                       for x in ('build', 'bin', '.cache', '.git'))}
+    (root / 'ab-manifest.json').write_text(json.dumps(dict(version=version,
+        commit={'A': 'a9cc7765', 'B': '2b4d720e'}[version], files=files)))
+for round_no in range(1, 4):
+    for position, version in enumerate('ABBA', 1):
+        m.ROOT = TASK / version
+        m.BIN = m.ROOT / 'bin/ppp'
+        for attempt in range(1, 4):
+            assert int(m.cmd(['df', '--output=avail', '-BG', '/']).splitlines()[-1].strip().rstrip('G')) >= 20
+            name = f'round-{round_no}/{position}-{version}-attempt-{attempt}'
+            if (m.OUT / name / 'completed.json').exists():
+                previous = json.loads((m.OUT / name / 'completed.json').read_text())
+                if previous['exit'] or previous['runtime_faults']:
+                    continue
+            try:
+                m.run(name, cpu, parallel='1,16,64')
+                break
+            except RuntimeError:
+                completed = m.OUT / name / 'completed.json'
+                if not completed.exists():
+                    raise
+                result = json.loads(completed.read_text())
+                if not result['cleanup_ok'] or not result['runtime_faults'] or attempt == 3:
+                    raise
+```
+
+### 11.191 固定上游迁移到 c1fc9d6（2026-10-29）
+
+固定 revision 为 `c1fc9d6b6ead239043d7a7608eaea7e0cb143fe6`，归档 SHA256 为
+`0c5a5512d6a42344f9626e6122af103a23c38ce2016d64d203d10669065e7bb6`。
+上游将 backend TX 串行化，并覆盖 closed-port RST，新增
+`test_ndi_tx_concurrency`。本次没有本地补丁被上游吸收，38 个补丁全部保留，
+稀疏编号不变。0037、0038 分别已提出为
+[xtcp#3](https://github.com/liulilittle/xtcp/pull/3)、
+[xtcp#4](https://github.com/liulilittle/xtcp/pull/4)，合入前继续保留。
+
+逐个按前序状态重新生成补丁；0031 的 CMake hunk 适配上游新增的 NDI 测试。
+校验归档后全新解压，按文件名顺序用 `patch -p1 --fuzz=0` 重放 38/38，
+没有 fuzz 或行偏移。完整栈中的 0039/0040/0042/0043 有前序 API 和测试夹具，
+可正常应用；纯上游候选分支则需要另外移植：pool 分支使用上游 send/flush
+接口，fair 分支基于 pool 分支，移除本地 burst pacing 和 timer deadline API
+依赖；timestamp 分支覆盖上游 established/closing 接收路径，本地专属
+`ResumeReceive` 用例仍由完整补丁栈验证。
+旧 pin+完整栈与新 pin+完整栈的源码比较仅有上游变更的四个路径：CMake、
+`stack.h`、`stack.cpp` 和新增 NDI 测试；没有引入额外产品行为变化。
+
+全部编译和运行验证在实验机的新任务目录中进行，使用共享构建锁、CPU 0-15、
+nice 10、最多 16 个构建任务。Release 开启 `XTCP_BUILD_TESTS=ON` 和
+`XTCP_CHECKSUM_VALIDATE=ON`，三轮分别为 246/246，合计 738/738。
+按测试指南对 XTCP 库和测试同时插桩的 TSan 为 246/246，无数据竞态或锁顺序告警。
+历史章节的 revision、参数和测量结果保持原义。
+
+独立 C++ Release 开启 `ENABLE_XTCP_TESTS=ON` 后为 200/201；
+`spinlock_test` 超过既有的 120 秒看门狗。该目标只链接 Threads/OpenSSL 与
+SpinLock/diagnostics 源码，不依赖 XTCP；相关源码和构建定义在本次升级中均未修改。
+单独复核 `spinlock_test` 也在 120 秒超时（0/1），保留两次失败记录，不报告为全绿。
+纯上游 Release/checksum 对照为 239/240，
+唯一失败为原始固定时间戳夹具 `test_ts_ooo_drain`。
+
+纯上游候选各在其基线上只有一个本地提交：pool reserve（0039+0040）、
+fair waiters（0042+0043，基于 pool 分支）、timestamp gap fill（0045+0046）、
+TX retry shard direction（0048）。Release/checksum ctest 分别为 240/241、
+240/241、240/240、239/240；三个非 timestamp 分支唯一失败均为与纯上游对照
+相同的原始 `test_ts_ooo_drain`，各候选自身回归测试全部通过。
+分支和英文 PR 草稿保留在 `build/private/xtcp-upstream-next/`，没有推送或提交 PR。
+
+默认运行配置 A/B：main `43fab3e455f49e14d868e56a77aa172a051b71cd`（旧 pin+
+完整栈）对比同一源码加本次 pin/rebase。DL/UL × P1/P16/P64 × 两轮，
+每个 cell 30 秒、omit 2 秒；首轮 main→candidate，第二轮 candidate→main。
+两侧均使用 CPU 0-15、client.concurrent=1、AES-256-CFB、GSO on。
+不传 shard、sndbuf、GRO、gather 和 CC 调优覆盖，保留运行时默认值：
+单 shard、1 MiB sndbuf、KCC、memory bridge on。通过共享 `measure.py` 的
+guard/run 执行，外层独立 net/mount namespace、host kernel steering off。
+原始记录同时保留实际启动参数和共享控制器的名义参数。
+
+单位 Mbps；变化为两轮算术均值之比：
+
+| 方向/并发 | main 第1/2轮 | c1fc9d6 第1/2轮 | 均值变化 |
+| --- | ---: | ---: | ---: |
+| DL P1 | 1790.274 / 1720.156 | 1794.289 / 1787.338 | +2.03% |
+| DL P16 | 1798.941 / 1746.454 | 1763.215 / 1765.175 | -0.48% |
+| DL P64 | 1879.607 / 1877.860 | 1904.598 / 1834.660 | -0.48% |
+| UL P1 | 1483.673 / 1453.640 | 1455.579 / 1447.325 | -1.17% |
+| UL P16 | 922.902 / 981.997 | 949.114 / 999.827 | +2.31% |
+| UL P64 | 537.286 / 554.939 | 563.268 / 565.549 | +3.35% |
+
+24/24 均通过，所有 cell 零速流为 0、runtime_faults 为空、二进制 hash 未变，
+namespace cleanup 和监控完整性检查通过。共享主机且只有两轮，不证明统计意义上
+性能等价，也不能将变化归因于某个独立上游候选。候选分支未分别做吞吐 A/B 或 TSan；
+Windows、移动平台与生产网络行为未验证。证据归档在
+`build/private/xtcp-c1fc9d6-validation/`，本任务远端构建目录已清理。
+主仓库没有提交、推送，也没有提交 PR。

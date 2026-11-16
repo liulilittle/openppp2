@@ -1,8 +1,34 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.0.0)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.5)
 
 # Define the solutions name.
 SET(NAME openppp2)
 PROJECT(${NAME} C CXX) # CMAKE_CURRENT_SOURCE_DIR
+
+# Production P2P v2 is enabled in Android artifacts by default. Keep this as
+# an explicit build switch so emergency rollback remains reproducible.
+OPTION(ENABLE_P2P_V2_PRODUCTION
+    "Enable authenticated P2P v2 production capability" ON)
+
+OPTION(ENABLE_XTCP "Build with the pinned XTCP userspace TCP/IP stack" OFF)
+SET(XTCP_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../third-party/xtcp" CACHE PATH
+    "Path to the pinned XTCP source tree")
+IF(ENABLE_XTCP)
+    IF(NOT EXISTS "${XTCP_SOURCE_DIR}/CMakeLists.txt")
+        MESSAGE(FATAL_ERROR "XTCP source tree not found at ${XTCP_SOURCE_DIR}; run tools/prepare_xtcp.sh first.")
+    ENDIF()
+
+    SET(XTCP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_BENCH OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_PLUGINS OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_LWIP OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_CC_PLUGINS ON CACHE BOOL "" FORCE)
+    SET(XTCP_CHECKSUM_VALIDATE ON CACHE BOOL "" FORCE)
+    ADD_SUBDIRECTORY("${XTCP_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/third-party/xtcp" EXCLUDE_FROM_ALL)
+    IF(NOT TARGET xtcp_static)
+        MESSAGE(FATAL_ERROR "XTCP source tree did not define the required xtcp_static target.")
+    ENDIF()
+ENDIF()
 
 # C/CXX compiler configurations.
 SET(CMAKE_C_FLAGS "-fPIC -fvisibility=hidden -Wno-format -Wno-implicit-function-declaration")
@@ -74,6 +100,7 @@ ENDIF()
 
 # CXX17
 SET(CMAKE_CXX_STANDARD 17)
+INCLUDE("${PROJECT_SOURCE_DIR}/../cmake/Corocc.cmake")
 
 # -rdynamic -Wl,-Bstatic -Wl,-Bdynamic -lstdc++ -lpthread -ldl -lz -lrt
 SET(CMAKE_EXE_LINKER_FLAGS "-static-libstdc++ -rdynamic -Wl,-Bstatic")
@@ -132,6 +159,21 @@ FILE(GLOB_RECURSE SOURCE_FILES
 
 # Add the compiled output binary files.
 ADD_LIBRARY(${NAME} SHARED ${SOURCE_FILES} ${PLATFORM_SOURCE_FILES} ${AES_NI_SOURCE_FILES})
+IF(ENABLE_COROCC)
+    TARGET_LINK_LIBRARIES(${NAME} ppp_context_backend)
+ENDIF()
+IF(ENABLE_P2P_V2_PRODUCTION)
+    TARGET_COMPILE_DEFINITIONS(${NAME} PRIVATE OPENPPP2_P2P_V2_PRODUCTION=1)
+ELSE()
+    TARGET_COMPILE_DEFINITIONS(${NAME} PRIVATE OPENPPP2_P2P_V2_PRODUCTION=0)
+ENDIF()
+IF(ENABLE_XTCP)
+    TARGET_LINK_LIBRARIES(${NAME} xtcp_static)
+    TARGET_COMPILE_DEFINITIONS(${NAME} PRIVATE
+        PPP_ENABLE_XTCP=1
+        PPP_XTCP_RUNTIME_WIRED=1
+        PPP_XTCP_HAS_TIMER_DEADLINE=1)
+ENDIF()
 
 # Set the compilation output files path.
 SET(LIBRARY_OUTPUT_PATH ${PROJECT_ROOT_DIR}/bin/android/${ANDROID_ABI})

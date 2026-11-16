@@ -99,6 +99,117 @@ class WindowsIPv6ContractTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
 
+    def test_restore_keeps_ipv6_route_and_dns_pending_until_success(self) -> None:
+        source = (ROOT / "windows/ppp/ipv6/WIN32_IPv6Auxiliary.cpp").read_text(
+            encoding="utf-8"
+        )
+        restore = function_body(source, "void RestoreClientConfiguration")
+        self.assertIn("if (ppp::win32::network::DeleteIPv6Route(", restore)
+        self.assertIn("state.SubnetRouteApplied = false", restore)
+        self.assertIn("ppp::win32::network::SetDnsAddressesV6(", restore)
+        self.assertIn("state.DnsApplied = false", restore)
+        state = (ROOT / "ppp/ipv6/IPv6Auxiliary.h").read_text(encoding="utf-8")
+        pending = function_body(state, "inline bool                                                   HasPendingOwnedMutations")
+        self.assertIn("SubnetRouteApplied", pending)
+        self.assertIn("DnsApplied", pending)
+
+    def test_ipv6_intent_is_durable_and_startup_worker_replays_it(self) -> None:
+        manager = (ROOT / "ppp/app/client/AssignedAddressManager.cpp").read_text(
+            encoding="utf-8"
+        )
+        journal = (ROOT / "ppp/app/client/NetworkRecoveryJournal.cpp").read_text(
+            encoding="utf-8"
+        )
+        switcher = (ROOT / "ppp/app/client/VEthernetNetworkSwitcher.cpp").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('RecordIntent(\n                        "assigned-ipv6"', manager)
+        self.assertIn('Confirm(\n                            "assigned-ipv6"', manager)
+        self.assertIn('Remove(\n                            "assigned-ipv6"', manager)
+        self.assertIn('RecoverPendingFor(\n        "assigned-ipv6"', journal)
+        self.assertIn("NetworkRecoveryJournal::RunRecoveryCommand", switcher)
+        self.assertNotIn('assigned_ipv6_unsupported', switcher)
+
+    def test_partial_ipv6_dns_apply_restores_automatic_mode(self) -> None:
+        source = (ROOT / "windows/ppp/ipv6/WIN32_IPv6Auxiliary.cpp").read_text(
+            encoding="utf-8"
+        )
+        apply = function_body(source, "bool ApplyClientDns")
+        restore = apply.index("const ppp::vector<ppp::string> restore_dns")
+        write = apply.index("SetDnsAddressesV6(context.InterfaceIndex, restore_dns)", restore)
+        self.assertIn("state.OriginalDnsAutomatic", apply[restore:write])
+        self.assertIn("ppp::vector<ppp::string>()", apply[restore:write])
+        self.assertNotIn(
+            "SetDnsAddressesV6(context.InterfaceIndex, state.OriginalDnsServers)",
+            apply,
+        )
+
+    def test_ipv6_dns_snapshot_preserves_mode_and_filters_non_ipv6_values(self) -> None:
+        source = (ROOT / "windows/ppp/ipv6/WIN32_IPv6Auxiliary.cpp").read_text(
+            encoding="utf-8"
+        )
+        header = (ROOT / "ppp/ipv6/IPv6Auxiliary.h").read_text(encoding="utf-8")
+        capture = function_body(source, "void CaptureClientOriginalState")
+        restore = function_body(source, "void RestoreClientConfiguration")
+        self.assertIn("CaptureDnsSnapshot", capture)
+        self.assertIn("OriginalDnsAutomatic", capture)
+        self.assertIn("address.is_v6()", capture)
+        self.assertIn("FilterIPv6Dns", source)
+        self.assertIn("OriginalDnsAutomatic", header)
+        self.assertIn("current_dns == state.OriginalDnsServers", restore)
+        self.assertIn("current_dns == FilterIPv6Dns(state.DnsServers)", restore)
+        self.assertIn("restore_dns = state.OriginalDnsAutomatic", restore)
+
+    def test_partial_ipv6_apply_records_cleanup_targets_before_os_call(self) -> None:
+        source = (ROOT / "windows/ppp/ipv6/WIN32_IPv6Auxiliary.cpp").read_text(
+            encoding="utf-8"
+        )
+        subnet = function_body(source, "bool ApplyClientSubnetRoute")
+        dns = function_body(source, "bool ApplyClientDns")
+        self.assertLess(
+            subnet.index("state.SubnetRouteApplied = true"),
+            subnet.index("ppp::win32::network::AddIPv6Route"),
+        )
+        self.assertLess(
+            dns.index("state.DnsApplied = true"),
+            dns.index("SetDnsAddressesV6(context.InterfaceIndex, dns_servers)"),
+        )
+
+    def test_assigned_ipv4_restore_retains_snapshot_until_platform_success(self) -> None:
+        manager = (ROOT / "ppp/app/client/AssignedAddressManager.cpp").read_text(
+            encoding="utf-8"
+        )
+        header = (ROOT / "ppp/app/client/AssignedAddressManager.h").read_text(
+            encoding="utf-8"
+        )
+        restore = function_body(manager, "void AssignedAddressManager::RestoreAssignedIPv4")
+        self.assertIn("bool restored = false", restore)
+        self.assertIn("if (!restored)", restore)
+        failure = restore.index("if (!restored)")
+        cleared = restore.rindex("ipv4_applied_ = false")
+        self.assertLess(failure, cleared)
+        self.assertIn("HasPendingIPv4Cleanup() const noexcept", header)
+        self.assertIn("!owner_->HasPendingAssignedIPv4Cleanup()", (ROOT / "ppp/app/client/ClientConnectionTeardown.cpp").read_text(encoding="utf-8"))
+
+    def test_assigned_ipv4_writes_durable_intent_before_windows_mutation(self) -> None:
+        manager = (ROOT / "ppp/app/client/AssignedAddressManager.cpp").read_text(
+            encoding="utf-8"
+        )
+        apply = function_body(manager, "bool AssignedAddressManager::ApplyAssignedIPv4")
+        self.assertIn('"assigned-ipv4"', apply)
+        self.assertIn("RecordIntent", apply)
+        self.assertIn("Confirm", apply)
+        self.assertLess(
+            apply.index("RecordIntent"),
+            apply.index("TapWindows::SetAddresses"),
+        )
+        self.assertIn("ipv4_journal_pending_", apply)
+        switcher = (ROOT / "ppp/app/client/VEthernetNetworkSwitcher.cpp").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("NetworkRecoveryJournal::RunRecoveryCommand", switcher)
+        self.assertIn("network_recovery_journal_->HasPending()", switcher)
+
     def test_route_owner_uses_constrained_pin_and_split_takeover(self) -> None:
         source = (ROOT / "windows/ppp/ipv6/WindowsIPv6RouteOwner.cpp").read_text(
             encoding="utf-8"

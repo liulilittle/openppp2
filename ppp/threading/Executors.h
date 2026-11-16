@@ -63,6 +63,10 @@ namespace ppp
             };
             /** @brief Callback signature for application shutdown notifications. */
             typedef ppp::function<void(int)>                                                        ApplicationExitEventHandler;
+            /** @brief Housekeeping callback; see @ref SetSecondTickHandler. */
+            typedef ppp::function<void()>                                                           SecondTickHandler;
+            /** @brief Shutdown callback; see @ref SetWorkersStoppedHandler. */
+            typedef ppp::function<void()>                                                           WorkersStoppedHandler;
 
         public:
             /** @brief Global handler invoked when the application main run loop exits. */
@@ -91,10 +95,20 @@ namespace ppp
             static bool                                                                             SetMaxSchedulers(int completionPortThreads) noexcept;
 
         public:
-            /** @brief Adjusts worker-thread executor count and per-thread context allocation. */
+            /** @brief Grows worker executors; lower limits are ignored until global shutdown. */
             static void                                                                             SetMaxThreads(const std::shared_ptr<BufferswapAllocator>& allocator, int completionPortThreads) noexcept;
             /** @brief Requests shutdown of all known contexts and worker threads. */
             static bool                                                                             Exit() noexcept;
+            /**
+             * @brief Installs work the tick thread runs about once per second, outside every io_context.
+             * @note Lets higher layers (DNS cache, ICMP) hook periodic upkeep without this layer depending on them.
+             */
+            static void                                                                             SetSecondTickHandler(const SecondTickHandler& handler) noexcept;
+            /**
+             * @brief Installs work Exit() runs after worker threads join and before the scheduler and default contexts stop.
+             * @note Used by the composition root to close the virtual netstack during shutdown.
+             */
+            static void                                                                             SetWorkersStoppedHandler(const WorkersStoppedHandler& handler) noexcept;
             /** @brief Requests shutdown of a specific execution context. */
             static bool                                                                             Exit(const std::shared_ptr<boost::asio::io_context>& context) noexcept;
             /** @brief Runs the default context and invokes the provided start callback. */

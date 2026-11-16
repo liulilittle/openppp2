@@ -65,6 +65,44 @@ BOOST_AUTO_TEST_CASE(server_agreed_ordering_is_authoritative_across_mode_mismatc
     BOOST_TEST(client.receiver_ordering == server.receiver_ordering);
 }
 
+BOOST_AUTO_TEST_CASE(compat_server_honours_client_flow_v2_request) {
+    // Field case: a flow+turbo client (caps = FLOW_V2 | REQUEST) against a compat
+    // server must not be left on one global sequence space across its links.
+    const auto server = mux::NegotiateMuxRuntimeState(
+        "compat", true, true, 9, /*turbo=*/false,
+        /*local_reliability=*/true, /*peer_reliability=*/true,
+        /*local_fec=*/false, /*peer_fec=*/false,
+        /*peer_requests_flow_v2=*/true);
+    const auto client = mux::ApplyAgreedMuxRuntimeState(
+        "flow", server.receiver_ordering == "flow_v2", 9, /*turbo=*/true,
+        server.reliability, server.fec);
+
+    BOOST_TEST(server.effective_mode == "compat"); // server scheduler preset unchanged
+    BOOST_TEST(server.receiver_ordering == "flow_v2");
+    BOOST_TEST(server.reliability);
+    BOOST_TEST(client.effective_mode == "flow");
+    BOOST_TEST(client.receiver_ordering == "flow_v2");
+    BOOST_TEST(client.turbo);
+}
+
+BOOST_AUTO_TEST_CASE(flow_v2_request_alone_without_support_stays_compat) {
+    // A request bit without the FLOW_V2 capability bit (malformed / partial
+    // peer) must not upgrade ordering.
+    const auto server = mux::NegotiateMuxRuntimeState(
+        "compat", true, /*peer_supports_flow_v2=*/false, 2, false,
+        false, false, false, false, /*peer_requests_flow_v2=*/true);
+
+    BOOST_TEST(server.receiver_ordering == "compat");
+    BOOST_TEST(server.effective_mode == "compat");
+}
+
+BOOST_AUTO_TEST_CASE(capability_without_request_keeps_compat_ordering) {
+    // Old clients advertise FLOW_V2 as a capability only; behaviour is unchanged.
+    const auto server = mux::NegotiateMuxRuntimeState("compat", true, true, 2);
+
+    BOOST_TEST(server.receiver_ordering == "compat");
+}
+
 BOOST_AUTO_TEST_CASE(server_compat_result_downgrades_client_balance) {
     const auto server = mux::NegotiateMuxRuntimeState("compat", true, true, 2);
     const auto client = mux::ApplyAgreedMuxRuntimeState(

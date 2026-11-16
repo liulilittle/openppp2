@@ -41,6 +41,7 @@ class RuntimeSnapshotDeliveryTest {
         waitUntil { PppVpnService.instance == null }
         assertNotNull(context.startService(serviceIntent))
         waitUntil { PppVpnService.instance != null }
+        InstrumentationRegistry.getInstrumentation().runOnMainSync { }
         PppStateStore.clearRuntimeSnapshot(context)
         PppStateStore.setLinkState(context, 0)
     }

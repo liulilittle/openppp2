@@ -1,8 +1,35 @@
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -1474,6 +1474,7 @@
+         UInt64 conn_id, core::ReceiveStateSnapshot* state) noexcept {
+         Shard* shard = ShardOf(conn_id);
+         std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
++        MarkSweep(*shard);
+         auto it = shard->conns_.find(conn_id);
+         if (it == shard->conns_.end() || NULLPTR == it->second->conn) {
+             if (NULLPTR != state) {
+@@ -1482,6 +1483,14 @@
+             return core::ReceiveResumeResult::kConnectionMissing;
+         }
+         const core::ReceiveResumeResult result = it->second->conn->ResumeReceiveDetailed();
++        it = shard->conns_.find(conn_id);
++        if (it == shard->conns_.end() || NULLPTR == it->second->conn ||
++            core::TcpState::kClosed == it->second->conn->State()) {
++            if (NULLPTR != state) {
++                *state = {};
++            }
++            return core::ReceiveResumeResult::kConnectionMissing;
++        }
+         if (NULLPTR != state) {
+             *state = it->second->conn->ReceiveState();
+         }
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -1804,13 +1804,13 @@
-                             ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
-                     }
+@@ -2325,13 +2325,13 @@
+                     rcv_nxt_ += static_cast<UInt32>(seg.data.size());  // advance before callback
+                     // RFC 7323 4.3(C): retain the hole-filler's timestamp.
                      if (recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
 -                        // Backpressure: drop this buffered segment (refund its
 -                        // bytes) and stop draining; the peer retransmits.
@@ -18,7 +45,7 @@
                          break;
                      }
                      if (TcpState::kClosed == state_) {
-@@ -1871,14 +1871,12 @@
+@@ -2392,14 +2392,12 @@
                              const UInt32 prev_drain = rcv_nxt_;
                              rcv_nxt_ += static_cast<UInt32>(seg.data.size());  // advance before callback
                              if (recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
@@ -36,7 +63,7 @@
                                  break;
                              }
                              if (TcpState::kClosed == state_) {
-@@ -3973,6 +3971,9 @@
+@@ -5908,6 +5906,9 @@
  
          ReceiveResumeResult TcpConn::ResumeReceiveDetailed() noexcept {
              std::lock_guard<std::recursive_mutex> scope(syncobj_);
@@ -46,7 +73,7 @@
              if (!rcv_blocked_) {
                  return ReceiveResumeResult::kNotBlocked;
              }
-@@ -3980,10 +3981,72 @@
+@@ -5915,10 +5916,72 @@
              ack_pending_ = false;
              ack_count_ = 0;
              ack_deadline_ = 0;
@@ -121,9 +148,9 @@
          }
  
          void TcpConn::SendSyn() noexcept {
-@@ -4746,15 +4809,12 @@
-                                 ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
-                             }
+@@ -6755,15 +6818,12 @@
+                             rcv_nxt_ += static_cast<UInt32>(seg.data.size());  // advance before callback (piggyback ACK)
+                             // RFC 7323 4.3(C): retain the hole-filler's timestamp.
                              if (!seg.data.empty() && recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
 -                                // Backpressure: drop this buffered segment
 -                                // (refund its bytes) and stop draining; the
@@ -140,7 +167,7 @@
                                  break;
                              }
                              if (TcpState::kEstablished != state_) {
-@@ -4869,12 +4929,11 @@
+@@ -6889,12 +6949,11 @@
                                      const UInt32 prev_os = rcv_nxt_;
                                      rcv_nxt_ += static_cast<UInt32>(os.data.size());  // advance before callback
                                      if (!os.data.empty() && recv_cb_ && !recv_cb_(os.data.data(), static_cast<UInt32>(os.data.size()))) {
@@ -155,43 +182,7 @@
                                          break;
                                      }
                                      if (TcpState::kEstablished != state_) {
-@@ -5343,5 +5402,3 @@
-         }
-     }
- }
--
--
---- a/src/core/stack.cpp
-+++ b/src/core/stack.cpp
-@@ -1428,6 +1428,7 @@
-         UInt64 conn_id, core::ReceiveStateSnapshot* state) noexcept {
-         Shard* shard = ShardOf(conn_id);
-         std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
-+        MarkSweep(*shard);
-         auto it = shard->conns_.find(conn_id);
-         if (it == shard->conns_.end() || NULLPTR == it->second->conn) {
-             if (NULLPTR != state) {
-@@ -1436,6 +1437,14 @@
-             return core::ReceiveResumeResult::kConnectionMissing;
-         }
-         const core::ReceiveResumeResult result = it->second->conn->ResumeReceiveDetailed();
-+        it = shard->conns_.find(conn_id);
-+        if (it == shard->conns_.end() || NULLPTR == it->second->conn ||
-+            core::TcpState::kClosed == it->second->conn->State()) {
-+            if (NULLPTR != state) {
-+                *state = {};
-+            }
-+            return core::ReceiveResumeResult::kConnectionMissing;
-+        }
-         if (NULLPTR != state) {
-             *state = it->second->conn->ReceiveState();
-         }
-@@ -2547,5 +2556,3 @@
-         return iss;
-     }
- }
--
--
+diff --git a/tests/test_ooo_frontier.cpp b/tests/test_ooo_frontier.cpp
 --- a/tests/test_ooo_frontier.cpp
 +++ b/tests/test_ooo_frontier.cpp
 @@ -71,9 +71,9 @@

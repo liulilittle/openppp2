@@ -9,16 +9,67 @@ class P2PCapabilityWiringTests(unittest.TestCase):
     def source(self, relative: str) -> str:
         return (ROOT / relative).read_text(encoding="utf-8")
 
+    def test_v2_wiring_preserves_relay_maintenance_and_frozen_candidates(self) -> None:
+        exchanger = self.source("ppp/app/client/VEthernetExchanger.cpp")
+        bridge = self.source("ppp/app/client/VEthernetP2PV2.cpp")
+        server = self.source("ppp/app/server/VirtualEthernetP2PV2.cpp")
+        for marker in ("if (recovering)", "if (v2_selected)"):
+            branch = exchanger[exchanger.index(marker):]
+            branch = branch[:branch.index("return;")]
+            self.assertIn("frp_registry_->Tick(now)", branch)
+        self.assertIn("if (!normal_data)", exchanger)
+        self.assertNotIn("if (!stun_datagram && !normal_data)", exchanger)
+        for required in ("registered != recipient.local_candidates", "p2p_candidate_history_.find",
+                         "message.supported_versions", "message.peer_virtual_ip == message.virtual_ip",
+                         "peer->channel.OpenData", "peer->channel.HandleNewEndpointData",
+                         "AllowsInboundPacket", "peer->probes.NominateResponderPair"):
+            self.assertIn(required, bridge)
+        self.assertIn("v2_peer->channel.SealData", exchanger)
+        for required in ("value.address.begin() + 12", "pair.Activate", "pair.MatchesPredecessor", "p2p_v2_pairs_.erase",
+                         "GetTransmission() == itx", "CanSend(generation, expected_hash"):
+            self.assertIn(required, server)
+        recovery = bridge[bridge.index("void VEthernetExchanger::RecoverP2PTransport"):]
+        self.assertLess(recovery.index("p2p_transport_registration_id_ = 0"), recovery.index("failed->Close()"))
+        self.assertIn("ResetP2PV2Peers(generation)", recovery)
+        self.assertIn("SendRequestedIPv6Configuration(tx, y, true)", recovery)
+
     def test_manual_validation_tracks_gate_and_device_evidence(self) -> None:
         manual = self.source("docs/archive/status/P2P_MANUAL_VALIDATION.md")
         plan = self.source("docs/archive/plans/P2P_NETWORKING_PLAN.md")
 
-        self.assertIn("ProductionAuthenticatedControlV1Ready = false", manual)
+        self.assertIn("ProductionAuthenticatedControlV1Ready = true", manual)
         self.assertIn("29526592987", manual)
         self.assertIn("physical device", manual)
         self.assertNotIn("Since there is no automated test harness", manual)
-        self.assertIn("ProductionAuthenticatedControlV1Ready = false", plan)
+        self.assertIn("ProductionAuthenticatedControlV1Ready = true", plan)
         self.assertIn("29526592987", plan)
+
+    def test_production_v2_gate_has_an_explicit_default_on_build_switch(self) -> None:
+        cmake = self.source("CMakeLists.txt")
+        capability = self.source("ppp/p2p/P2PCapabilityGate.h")
+        self.assertIn('OPTION(ENABLE_P2P_V2_PRODUCTION "Enable authenticated P2P v2 production capability" ON)', cmake)
+        self.assertIn("OPENPPP2_P2P_V2_PRODUCTION=1", cmake)
+        self.assertIn("OPENPPP2_P2P_V2_PRODUCTION=0", cmake)
+        self.assertIn("ProductionAuthenticatedControlV1Ready = true", capability)
+
+    def test_runtime_defaults_select_production_v2(self) -> None:
+        configuration = self.source("ppp/configurations/AppConfiguration.cpp")
+        defaults = configuration[configuration.index("config.p2p.enabled") :]
+        self.assertIn("config.p2p.enabled = true", defaults)
+        self.assertIn('config.p2p.mode = "direct-preferred"', defaults)
+
+    def test_desktop_defaults_stay_on_relay_until_accepted(self) -> None:
+        configuration = self.source("ppp/configurations/AppConfiguration.cpp")
+        defaults = configuration[configuration.index("config.p2p.enabled = true") :]
+        defaults = defaults[: defaults.index("#endif")]
+        self.assertIn("#if defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE) && !defined(IPHONE))", defaults)
+        self.assertIn('config.p2p.mode = "relay";\n#else', defaults)
+
+    def test_mobile_production_targets_define_v2_gate(self) -> None:
+        android = self.source("android/CMakeLists.txt")
+        ios = self.source("ios/CMakeLists.txt")
+        self.assertIn("OPENPPP2_P2P_V2_PRODUCTION=1", android)
+        self.assertIn("OPENPPP2_P2P_V2_PRODUCTION=1", ios)
 
     def test_client_register_is_guarded_by_authenticated_capabilities(self) -> None:
         source = self.source("ppp/app/client/VEthernetExchanger.cpp")
@@ -61,6 +112,7 @@ class P2PCapabilityWiringTests(unittest.TestCase):
     def test_client_authenticated_offer_stays_relay_until_control_ack(self) -> None:
         header = self.source("ppp/app/client/VEthernetExchanger.h")
         exchanger = self.source("ppp/app/client/VEthernetExchanger.cpp")
+        bridge = self.source("ppp/app/client/VEthernetP2PV2.cpp")
 
         self.assertIn("<ppp/p2p/P2PClientOfferSession.h>", header)
         self.assertIn("P2PClientOfferSession", header)
@@ -75,7 +127,7 @@ class P2PCapabilityWiringTests(unittest.TestCase):
 
         register = exchanger[
             exchanger.index("const auto p2p_capability") :
-            exchanger.index("if (!configuration->client.peer_route_announce.empty())")
+            exchanger.index("if (!p2p_only && !configuration->client.peer_route_announce.empty())")
         ]
         for required in (
             "CreateNativeSocketP2PDatagramTransportFactory",
@@ -90,8 +142,11 @@ class P2PCapabilityWiringTests(unittest.TestCase):
         ):
             self.assertIn(required, register)
         self.assertNotIn("P2PStunClient::Query", register)
-        self.assertIn("P2PStunClient::Query", exchanger)
-        self.assertIn("std::thread(", exchanger)
+        self.assertNotIn("P2PStunClient::Query", exchanger)
+        self.assertNotIn("std::thread(", exchanger)
+        self.assertIn("P2PStunGatherer::Create(*transmission->GetStrand())", exchanger)
+        self.assertIn("gatherer->Start(transport, servers, generation, transport_registration", exchanger)
+        self.assertIn("gatherer->HandleDatagram", exchanger)
         self.assertIn("ApplyP2PStunMappedCandidate", exchanger)
         self.assertIn("p2p_registered_candidates_ = request.P2P.candidates", register)
         self.assertIn("p2p_direct_data_path_.Reset(candidate_generation)", register)
@@ -142,12 +197,20 @@ class P2PCapabilityWiringTests(unittest.TestCase):
             datagram_handler.index("P2PDatagramReceiveStatus::Error") :
             datagram_handler.index("P2PDatagramReceiveStatus::Packet")
         ]
-        self.assertIn("p2p_transport_registration_id_", transport_error)
-        self.assertIn("p2p_offer_session_.ResetGeneration", transport_error)
-        self.assertIn("p2p_direct_data_path_.Fallback", transport_error)
-        self.assertIn("P2PFallbackReason::SocketError", transport_error)
-        self.assertIn("p2p_state_.store(ppp::p2p::P2PState::Relay", transport_error)
-        self.assertIn("transport->Close()", transport_error)
+        self.assertIn("transport_registration", transport_error)
+        self.assertIn("RecoverP2PTransport(transmission, generation, transport_registration)", transport_error)
+        teardown = exchanger[exchanger.index("void VEthernetExchanger::ResetP2PCandidateTransport") :
+                             exchanger.index("void VEthernetExchanger::StartP2PStunGatherAsync")]
+        for required in ("expected_generation", "expected_registration", "p2p_stun_gatherer_->Cancel()",
+                         "ResetP2PV2Peers(generation, true)", "p2p_offer_session_.ResetGeneration", "transport->Close()"):
+            self.assertIn(required, teardown)
+        reset_peers = bridge[
+            bridge.index("void VEthernetExchanger::ResetP2PV2Peers") :
+            bridge.index("std::shared_ptr<VEthernetExchanger::P2PV2PeerContext>",
+                         bridge.index("void VEthernetExchanger::ResetP2PV2Peers"))
+        ]
+        self.assertIn("peer.channel.Reset(generation)", reset_peers)
+        self.assertIn("peer.deferred_packets.clear()", reset_peers)
 
         probe_failure = handler[handler.index("const bool sent =") :]
         self.assertIn("p2p_direct_data_path_.Begin(generation)", probe_failure)
@@ -179,7 +242,7 @@ class P2PCapabilityWiringTests(unittest.TestCase):
         self.assertGreaterEqual(reconnect.count("p2p_offer_session_.AdvanceGeneration"), 3)
         self.assertGreaterEqual(reconnect.count("++p2p_offer_generation_"), 3)
 
-    def test_offer_v1_data_codec_is_session_owned_and_not_production_enabled(self) -> None:
+    def test_offer_v1_data_codec_is_session_owned_and_production_gated(self) -> None:
         session_header = self.source("ppp/p2p/P2PClientOfferSession.h")
         session_source = self.source("ppp/p2p/P2PClientOfferSession.cpp")
         codec = self.source("ppp/p2p/P2PDataDatagram.cpp")
@@ -200,7 +263,7 @@ class P2PCapabilityWiringTests(unittest.TestCase):
         self.assertIn("p2p_direct_data_path_.Send", exchanger)
         self.assertIn("p2p_direct_data_path_.Open", exchanger)
         self.assertNotIn("Activate(true", exchanger)
-        self.assertIn("ProductionAuthenticatedControlV1Ready = false", capability)
+        self.assertIn("ProductionAuthenticatedControlV1Ready = true", capability)
 
         nat = exchanger[
             exchanger.index("bool VEthernetExchanger::Nat(") :
@@ -249,7 +312,7 @@ class P2PCapabilityWiringTests(unittest.TestCase):
         self.assertIn("p2p_offer_generation_", header)
         self.assertIn("LastOfferGeneration == offer_generation", offers)
         self.assertNotIn("LastOfferAt == now", offers)
-        self.assertIn("ProductionAuthenticatedControlV1Ready = false", capability)
+        self.assertIn("ProductionAuthenticatedControlV1Ready = true", capability)
 
     def test_server_uses_authenticated_static_echo_udp_observations(self) -> None:
         header = self.source("ppp/app/server/VirtualEthernetSwitcher.h")
@@ -279,8 +342,10 @@ class P2PCapabilityWiringTests(unittest.TestCase):
             transport.index("bool Start(const P2PDatagramReceiveCallback") :
             transport.index("boost::asio::ip::udp::endpoint LocalEndpoint")
         ]
-        protection = start.index("ProtectP2PSocket")
-        self.assertLess(protection, start.index("StartReceive()"))
+        # Both the IPv4 and the optional IPv6 socket are protected before
+        # either starts receiving.
+        self.assertEqual(start.count("ProtectP2PSocket"), 2)
+        self.assertLess(start.rindex("ProtectP2PSocket"), start.index("StartReceive("))
         probing = channel[
             channel.index("void P2PChannel::StartProbing") :
             channel.index("bool P2PChannel::SendProbe")
@@ -538,7 +603,8 @@ class P2PCapabilityWiringTests(unittest.TestCase):
             exchanger.index("#elif defined(_ANDROID)", exchanger.index("candidate_generation")) :
             exchanger.index("#else", exchanger.index("#elif defined(_ANDROID)", exchanger.index("candidate_generation")))
         ]
-        self.assertIn("Socket::GetBestInterfaceIP", android_candidate)
+        self.assertIn("GetProtectedP2PRouteAddress", android_candidate)
+        self.assertNotIn("Socket::GetBestInterfaceIP", android_candidate)
         self.assertNotIn("GetUnderlyingNetworkInterface", android_candidate)
         iphone_factory = native_transport[native_transport.index("#if defined(_IPHONE)") :]
         self.assertIn("return nullptr", iphone_factory)

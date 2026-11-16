@@ -4,6 +4,7 @@
 #include <ppp/app/client/udp/ClientDatagramPortManager.h>
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/client/VEthernetDatagramPort.h>
+#include <ppp/app/client/udp/UdpFlowPolicy.h>
 
 #include "support/datagram_manager_stubs.h"
 
@@ -11,6 +12,12 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+
+// This fixture exercises queue/flow lifetime only; configuration parsing is
+// tested separately using the production constructor and loader.
+namespace ppp::configurations {
+AppConfiguration::AppConfiguration() noexcept { udp.dns.timeout = 5; udp.inactive.timeout = 60; }
+}
 
 namespace udp_client = ppp::app::client::udp;
 namespace spy_ns = ppp::app::client::udp::test;
@@ -51,6 +58,30 @@ udp_client::UdpRelayHostPorts MakeFilledPorts() noexcept {
                            const boost::asio::ip::udp::endpoint& source) noexcept { return MakeStubPort(transmission, source); };
     ports.is_disposed = []() noexcept { return false; };
     return ports;
+}
+
+class MockDirectProvider final : public ppp::p2p::IP2PDatagramTransport {
+public:
+    bool IsReady() const noexcept override { return !closed; }
+    bool Start(const ppp::p2p::P2PDatagramReceiveCallback& callback) noexcept override { reply = callback; return true; }
+    boost::asio::ip::udp::endpoint LocalEndpoint() const noexcept override { return {}; }
+    bool SendTo(const uint8_t*, int, const boost::asio::ip::udp::endpoint&) noexcept override { ++sent; return !closed; }
+    void Close() noexcept override { closed = true; }
+    ppp::p2p::P2PDatagramReceiveCallback reply;
+    int sent = 0;
+    bool closed = false;
+};
+void Poll(const std::shared_ptr<boost::asio::io_context>& context) {
+    context->restart(); while (context->poll()) {}
+}
+std::shared_ptr<const ppp::app::client::policy::PolicySnapshot> Snapshot(std::uint64_t version) {
+    using namespace ppp::app::client::policy;
+    PolicySource source;
+    source.rules_text = "dns direct local\ndns proxy remote\n";
+    source.resolvers["local"] = {PolicyAction::Direct, {"udp://192.0.2.53:53"}};
+    source.resolvers["remote"] = {PolicyAction::Proxy, {"udp://198.51.100.53:53"}};
+    auto result = PolicyCompiler::Compile(source, version);
+    BOOST_REQUIRE(result.Ok()); return result.snapshot;
 }
 
 }  // namespace
@@ -224,16 +255,15 @@ BOOST_AUTO_TEST_CASE(send_to_forwards_each_datagram_routing_action) {
     unsigned char packet = 1;
     auto& spy = spy_ns::DatagramPortSpyInstance();
 
-    BOOST_REQUIRE(m.SendTo(source, destination, &packet, 1,
+    BOOST_REQUIRE(!m.SendTo(source, destination, &packet, 1,
         ppp::app::client::routing::RoutingAction::Direct));
-    const auto port = m.GetDatagramPort(source);
-    BOOST_REQUIRE((port != nullptr));
-    BOOST_TEST(spy.last_action.load() ==
-        static_cast<int>(ppp::app::client::routing::RoutingAction::Direct));
+    BOOST_TEST((m.GetDatagramPort(source) == nullptr));
+    BOOST_TEST(spy.sendto.load() == 0);
 
     BOOST_REQUIRE(m.SendTo(source, destination, &packet, 1,
         ppp::app::client::routing::RoutingAction::Proxy));
-    BOOST_TEST((m.GetDatagramPort(source) == port));
+    const auto port = m.GetDatagramPort(source);
+    BOOST_REQUIRE((port != nullptr));
     BOOST_TEST(spy.last_action.load() ==
         static_cast<int>(ppp::app::client::routing::RoutingAction::Proxy));
 
@@ -241,7 +271,80 @@ BOOST_AUTO_TEST_CASE(send_to_forwards_each_datagram_routing_action) {
     BOOST_TEST((m.GetDatagramPort(source) == port));
     BOOST_TEST(spy.last_action.load() ==
         static_cast<int>(ppp::app::client::routing::RoutingAction::Auto));
-    BOOST_TEST(spy.sendto.load() == 3);
+    BOOST_TEST(spy.sendto.load() == 2);
+}
+
+BOOST_AUTO_TEST_CASE(v2_direct_does_not_need_carrier_and_pins_action_across_updates) {
+    spy_ns::DatagramPortSpyInstance().Reset();
+    auto ports = MakeFilledPorts();
+    auto context = std::make_shared<boost::asio::io_context>();
+    auto owner = std::make_shared<int>(1);
+    auto config = std::make_shared<ppp::configurations::AppConfiguration>();
+    auto provider = std::make_shared<MockDirectProvider>();
+    ports.get_context = [context]() { return context; };
+    ports.get_owner = [owner]() { return std::static_pointer_cast<void>(owner); };
+    ports.get_configuration = [config]() { return config; };
+    ports.get_transmission = []() { return udp_client::ITransmissionPtr(); };
+    ports.create_direct_transport = [provider]() { return provider; };
+    udp_client::ClientDatagramPortManager manager(ports);
+    const auto source = Ep("10.0.0.1", 2000), target = Ep("192.0.2.1", 4000);
+    unsigned char packet = 1;
+    BOOST_REQUIRE(manager.SendTo(source, target, &packet, 1,
+        ppp::app::client::routing::RoutingAction::Direct, "alpha.test", Snapshot(1)));
+    Poll(context);
+    BOOST_TEST(provider->sent == 1);
+    BOOST_REQUIRE(manager.SendTo(source, target, &packet, 1,
+        ppp::app::client::routing::RoutingAction::Proxy, "ALPHA.TEST.", Snapshot(2)));
+    Poll(context);
+    BOOST_TEST(provider->sent == 2);
+    BOOST_TEST(spy_ns::DatagramPortSpyInstance().sendto == 0);
+    manager.Release(); Poll(context);
+    BOOST_TEST(provider->closed);
+}
+
+BOOST_AUTO_TEST_CASE(v2_tunnel_domains_sharing_ip_get_distinct_replies_and_no_retired_alias_reuse) {
+    auto ports = MakeFilledPorts();
+    auto context = std::make_shared<boost::asio::io_context>();
+    auto owner = std::make_shared<int>(1);
+    auto config = std::make_shared<ppp::configurations::AppConfiguration>();
+    ports.get_context = [context]() { return context; };
+    ports.get_owner = [owner]() { return std::static_pointer_cast<void>(owner); };
+    ports.get_configuration = [config]() { return config; };
+    const auto source = Ep("10.0.0.1", 3000), real = Ep("192.0.2.1", 4000);
+    const auto fake_a = Ep("198.18.0.1", 4000), fake_b = Ep("198.18.0.2", 4000);
+    ports.rewrite_fakeip = [real](const auto&) { return real.address(); };
+    std::vector<boost::asio::ip::udp::endpoint> aliases, outputs;
+    ports.create_port = [&](const auto& transmission, const auto& relay) {
+        aliases.push_back(relay); return MakeStubPort(transmission, relay);
+    };
+    ports.datagram_output = [&](const auto& actual_source, const auto& logical, const auto&, void*, int, bool) {
+        BOOST_CHECK(actual_source == source); outputs.push_back(logical); return true;
+    };
+    udp_client::ClientDatagramPortManager manager(ports);
+    auto snapshot = Snapshot(1);
+    unsigned char packet = 1;
+    BOOST_REQUIRE(manager.SendTo(source, fake_a, &packet, 1,
+        ppp::app::client::routing::RoutingAction::Proxy, "a.test", snapshot));
+    BOOST_REQUIRE(manager.SendTo(source, fake_b, &packet, 1,
+        ppp::app::client::routing::RoutingAction::Proxy, "b.test", snapshot));
+    Poll(context);
+    BOOST_REQUIRE_EQUAL(aliases.size(), 2);
+    BOOST_CHECK(aliases[0] != aliases[1]);
+    manager.ReceiveFromDestination(aliases[0], real, &packet, 1);
+    manager.ReceiveFromDestination(aliases[1], real, &packet, 1);
+    Poll(context);
+    BOOST_REQUIRE_EQUAL(outputs.size(), 2);
+    BOOST_CHECK(outputs[0] == fake_a && outputs[1] == fake_b);
+    manager.ReleaseDatagramHandler(source); Poll(context);
+    BOOST_REQUIRE(manager.SendTo(source, fake_b, &packet, 1,
+        ppp::app::client::routing::RoutingAction::Proxy, "c.test", Snapshot(2)));
+    Poll(context);
+    BOOST_REQUIRE_EQUAL(aliases.size(), 3);
+    BOOST_CHECK(aliases[2] != aliases[0] && aliases[2] != aliases[1]);
+    manager.ReceiveFromDestination(aliases[0], real, &packet, 1);
+    Poll(context);
+    BOOST_TEST(outputs.size() == 2);
+    manager.Release(); Poll(context);
 }
 
 BOOST_AUTO_TEST_CASE(receive_empty_packet_finalizes_port) {

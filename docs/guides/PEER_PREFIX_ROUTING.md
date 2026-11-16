@@ -1,413 +1,132 @@
-# Peer Prefix Routing (Site-to-Site Gateway) — Design Specification
+# Peer Prefix Routing (Site-to-Site)
+
 > Status: Active
 > Type: Guide
-> Last verified: 63fc030
+> Last verified: 2026-10-11 (against `ppp/app/server/PeerRouteAnnouncePolicy.h`, `VirtualEthernetSwitcher.cpp`, `ppp/app/client/PeerPrefixRouteManager.cpp`, `VEthernetExchanger.cpp`)
+>
+> **Purpose:** Let other clients reach the whole LAN behind a "gateway client".
+> **Audience:** Operators interconnecting site networks.
+> **Parent index:** [Guides](README.md) · **Chinese:** [对端前缀路由（站点互联）](PEER_PREFIX_ROUTING_CN.md)
 
-> **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
-> **Audience:** OPENPPP2 users, operators, and developers.
-> **Status:** Current.
-> **Last verified against:** Current repository structure, implementation paths, and documentation links, 2026-07-31.
-> **Parent index:** [Back to index](README.md) · **Chinese:** [Peer 前缀路由（Site-to-Site 网关）设计说明](PEER_PREFIX_ROUTING_CN.md)
+## 1. Scenario
 
-
-[中文版本](PEER_PREFIX_ROUTING_CN.md)
-
-> **Status**: Implemented. Server prefix forwarding, client static/dynamic route installation, and gateway prefix announcement are all in place.
-> **Code anchors**: `ppp/app/protocol/PeerPrefixRoute.h`, `VirtualEthernetSwitcher`, `VEthernetNetworkSwitcher`, `VEthernetExchanger`.
-
----
-
-## 1. Background and Problem
-
-### 1.1 Baseline Model
-
-With `server.subnet = true`, OpenPPP2 forwards inter-peer traffic by **exact destination IP ownership**:
-
-- Each client announces its **virtual TAP IP** via `PacketAction_LAN` after connect;
-- The server records `virtual_ip → session` in `nats_`;
-- Forwarding uses `FindNatInformation(destination)` to deliver to the owning peer.
-
-This works for a **flat virtual subnet** (e.g. `10.1.0.2` pinging `10.1.0.3`) but does **not** support:
-
-```
-10.0.0.0/24 via 10.1.0.2   # reach a remote LAN through peer A as gateway
+```text
+Client B (10.1.0.3) ──► server ──► gateway client A (10.1.0.2) ──► A's LAN 10.0.0.0/24
 ```
 
-### 1.2 Target Scenarios
+By default (`server.subnet: true`) clients reach each other only by virtual IP. Peer prefix routing adds "prefix → gateway client" forwarding: when B sends to `10.0.0.5`, the server hands the packet to A by longest-prefix match, and A forwards it into its LAN.
 
-| Scenario | Description |
-|----------|-------------|
-| Site-to-Site | Expose site A's entire LAN `10.0.0.0/24` to the VPN via a gateway peer |
-| Static policy | Operators pre-configure "prefix X egress via peer virtual IP Y" before connect |
-| Dynamic discovery | When a gateway peer comes online, other clients learn routes automatically |
+- IPv4 only.
+- Route installation is fully supported on desktop (Windows / Linux / macOS); Android / iOS support is limited.
+- Independent of P2P: prefix routing decides *which* client receives the traffic; P2P only optimizes *how* to reach that client.
 
-### 1.3 Design Goals
+## 2. What each role configures
 
-- Support **prefix → gateway peer virtual IP** routing semantics;
-- Allow **static configuration** and **server-side dynamic distribution** together;
-- Preserve legacy behavior when `peer-routing.enabled = false`;
-- Stay orthogonal to P2P direct-path optimization; relay remains authoritative.
+| Role | Required |
+|---|---|
+| Server | `server.subnet: true`; `server.peer-routing.enabled: true`; an `allowed-routes` **allowlist** of the prefixes each gateway may announce |
+| Gateway client A | Announce prefixes in `client.peer-route-announce`; `client.peer-gateway-forward: true`; IP forwarding on the host; a return route from the LAN |
+| Access client B | Nothing (the server distributes the route table); or static routes in `client.routing.ip.peer-routes` |
 
-### 1.4 Non-Goals (Current Version)
-
-- No IPv6 prefix gateway routing (IPv4 only);
-- No complex policy routing DSL beyond prefix lists;
-- Gateway peer does not perform SNAT on behalf of the host (`ip_forward` + host routing required);
-- Full OS route installation on desktop Linux/Windows/macOS; Android/iOS support is limited.
-
----
-
-## 2. Architecture Overview
-
-### 2.1 Logical Topology
-
-```mermaid
-flowchart LR
-    subgraph VPN["VPN virtual subnet 10.1.0.0/24"]
-        B["Client B<br/>10.1.0.3"]
-        A["Gateway Peer A<br/>10.1.0.2"]
-        S["Server"]
-    end
-    LAN["Peer A LAN<br/>10.0.0.0/24"]
-
-    B -->|"dst=10.0.0.5<br/>via 10.1.0.2"| S
-    S -->|"prefix match<br/>forward to A"| A
-    A -->|"inject TAP<br/>host forward"| LAN
-```
-
-### 2.2 Three-Layer Split
-
-| Layer | Responsibility |
-|-------|----------------|
-| **Client routing** | Install `10.0.0.0/24 via 10.1.0.2` on TAP so OS sends traffic into the tunnel |
-| **Server relay** | Longest-prefix match; forward `dst=10.0.0.x` to gateway peer (not exact `nats_` lookup) |
-| **Gateway host** | Receive NAT packet, inject into TAP, kernel forwards to physical LAN |
-
-### 2.3 Relationship to Existing Modules
-
-```
-Phase 0 virtual subnet (LAN/NAT relay)
-        │
-        ▼
-Peer prefix routing (this feature)
-        │
-        ├── static client.routing.ip.peer-routes
-        │   └── legacy alias: client.peer-routes
-        ├── dynamic server.peer-routing.distribute
-        └── gateway client.peer-route-announce
-        │
-        ▼ (orthogonal, optional)
-P2P direct path (transport optimization only)
-```
-
-`client.peer-route-announce` is a gateway control-plane field. It remains outside the canonical `client.routing` object because it advertises prefixes to the server rather than installing routes on the announcing client. `client.routing.ip.peer-routes` is the access-client/static route layer and must not be confused with `routing.ip.routes` or the bypass list.
-
----
-
-## 3. Data Plane Design
-
-### 3.1 Egress (Client B → 10.0.0.5)
-
-1. Application sends to `10.0.0.5`;
-2. OS route: `10.0.0.0/24 via 10.1.0.2 dev tun0`;
-3. IP packet `src=10.1.0.3, dst=10.0.0.5` enters TAP;
-4. Client wraps as `PacketAction_NAT` to server;
-5. Server `ForwardNatPacketToDestination()`:
-   - `nats_[10.0.0.5]` miss;
-   - `peer_prefix_rib_` LPM → `10.0.0.0/24 via 10.1.0.2`;
-   - forward to exchanger owning `10.1.0.2`;
-6. Gateway peer A `OnNat()` → `Output()` into TAP;
-7. Host kernel forwards to LAN per `10.0.0.0/24 dev eth0`.
-
-### 3.2 Server Forwarding Priority
-
-```
-1. Exact match nats_[dst]              → owner peer (legacy)
-2. LPM on peer_prefix_rib_             → gateway peer virtual IP
-3. No match                            → drop / no subnet forward
-```
-
-Prefix forwarding **skips** the gateway peer's own subnet mask check (because `dst` is outside the gateway TAP subnet).
-
-### 3.3 Server Data Structures
-
-| Structure | Key | Value |
-|-----------|-----|-------|
-| `peer_prefix_gateways_` | `session_id` | announced prefixes + gateway virtual IP |
-| `peer_prefix_rib_` | prefix | `via` = gateway peer virtual IP (host order) |
-
-On session disconnect, `DeletePeerPrefixGateway()` rebuilds the RIB and optionally broadcasts updates.
-
----
-
-## 4. Control Plane Design
-
-### 4.1 INFO Extension JSON
-
-#### `peer-route-announce` (client → server)
+## 3. Server
 
 ```json
-{
-  "peer-route-announce": {
+"server": {
+  "subnet": true,
+  "ipv4-pool": { "network": "10.1.0.0", "mask": "255.255.255.0" },
+  "peer-routing": {
     "enabled": true,
-    "action": "register",
-    "prefixes": [
-      { "network": "10.0.0.0", "prefix": 24 }
+    "distribute": true,
+    "allowed-routes": [
+      { "network": "10.0.0.0", "prefix": 24, "guid": "{11111111-1111-1111-1111-111111111111}" }
     ]
   }
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `enabled` | bool | Must be `true` |
-| `action` | string | `"register"` |
-| `prefixes[].network` | string | Network address |
-| `prefixes[].prefix` | int | Prefix length 1–32 |
+| Field | Default | Meaning |
+|---|---|---|
+| `peer-routing.enabled` | `false` | Enable prefix forwarding. |
+| `peer-routing.distribute` | `true` | Push the current route table to all clients when gateways join / leave. |
+| `peer-routing.allowed-routes[]` | empty | Announcement allowlist. Each entry is `{network, prefix, guid}`: an announcement is accepted only when the client's `client.guid` equals `guid` (case-insensitive, braces ignored) and the prefix is **identical**. **With an empty list every announcement is rejected.** |
 
-Server validates `server.peer-routing.enabled`, `server.subnet`, and that the session owns a virtual IP in `nats_`.
+Regardless of the allowlist, these are always rejected: the default route, `0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16`, `224.0.0.0/4`, `240.0.0.0/4`.
 
-#### `peer-route-table` (server → client)
+## 4. Gateway client A
 
 ```json
-{
-  "peer-route-table": {
-    "enabled": true,
-    "action": "snapshot",
-    "routes": [
-      { "network": "10.0.0.0", "prefix": 24, "via": "10.1.0.2" }
-    ]
-  }
+"client": {
+  "guid": "{11111111-1111-1111-1111-111111111111}",
+  "server": "ppp://vpn.example.com:20000/",
+  "peer-route-announce": [
+    { "network": "10.0.0.0", "prefix": 24 }
+  ],
+  "peer-gateway-forward": true
 }
 ```
 
-Pushed on handshake response and when the table changes (`distribute = true`).
+| Field | Meaning |
+|---|---|
+| `peer-route-announce[]` | Prefixes reachable behind this host, `{network, prefix}`, no `via`. Sent with the handshake; the server echoes only the accepted prefixes. |
+| `peer-gateway-forward` | Must be `true`; otherwise A drops every packet not addressed to its own virtual IP. |
 
----
-
-## 5. Configuration Reference
-
-### 5.1 Server
-
-```json
-{
-  "server": {
-    "subnet": true,
-    "ipv4-pool": {
-      "network": "10.1.0.0",
-      "mask": "255.255.255.0"
-    },
-    "peer-routing": {
-      "enabled": true,
-      "distribute": true
-    }
-  }
-}
-```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `server.subnet` | bool | `true` | **Required true** for subnet and prefix routing |
-| `server.peer-routing.enabled` | bool | `false` | Enable server prefix table and forwarding |
-| `server.peer-routing.distribute` | bool | `true` | Push `peer-route-table` snapshots to all clients |
-
-### 5.2 Gateway Peer
-
-```json
-{
-  "client": {
-    "peer-route-announce": [
-      { "network": "10.0.0.0", "prefix": 24 }
-    ],
-    "peer-gateway-forward": true
-  }
-}
-```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `client.peer-route-announce` | array | `[]` | Prefixes reachable via this gateway; **no `via` field** |
-| `client.peer-gateway-forward` | bool | `false` | Marks gateway role (requires host `ip_forward`) |
-
-Use a **fixed virtual IP** (manual assignment recommended):
-
-```bash
---tun-ip=10.1.0.2 --tun-gw=10.1.0.1 --tun-mask=255.255.255.0
-```
-
-### 5.3 Access Client (Static Routes)
-
-Use the canonical peer-prefix layer under `client.routing.ip.peer-routes`:
-
-```json
-{
-  "client": {
-    "routing": {
-      "ip": {
-        "peer-routes": [
-          { "network": "10.0.0.0", "prefix": 24, "via": "10.1.0.2" }
-        ]
-      }
-    }
-  }
-}
-```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `client.routing.ip.peer-routes` | array | `[]` | Canonical static prefix routes; **`via` required** (gateway peer virtual IP) |
-| `client.peer-routes` | array | `[]` | Compatibility alias; used only when `client.routing` is absent |
-
-### 5.4 Static vs Dynamic
-
-| | `client.routing.ip.peer-routes` (canonical static) | `peer-route-table` |
-|--|----------------------|-------------------|
-| Config location | Each access client | Server aggregate |
-| Needs known peer IP | Yes | No |
-| Use case | Fixed topology | Dynamic gateway join/leave |
-| Can combine | Yes | Yes |
-
----
-
-## 6. Full Configuration Example
-
-### Three-node: one gateway + two access clients
-
-**Plan:**
-
-| Node | Role | VPN IP | Behind |
-|------|------|--------|--------|
-| Server | server | — | — |
-| Site-A | gateway | `10.1.0.2` | `10.0.0.0/24` |
-| Office-B | access | `10.1.0.3` | — |
-| Office-C | access | `10.1.0.4` | — |
-
-#### Server `server.json`
-
-```json
-{
-  "mode": "server",
-  "server": {
-    "subnet": true,
-    "ipv4-pool": { "network": "10.1.0.0", "mask": "255.255.255.0" },
-    "peer-routing": { "enabled": true, "distribute": true }
-  },
-  "tcp": { "listen": { "port": 20000 } }
-}
-```
-
-#### Gateway Site-A `site-a.json`
-
-```json
-{
-  "mode": "client",
-  "client": {
-    "guid": "{11111111-1111-1111-1111-111111111111}",
-    "server": "ppp://vpn.example.com:20000/",
-    "peer-route-announce": [{ "network": "10.0.0.0", "prefix": 24 }],
-    "peer-gateway-forward": true
-  }
-}
-```
-
-Host setup (Linux):
+Host setup (Linux example):
 
 ```bash
 sysctl -w net.ipv4.ip_forward=1
+# If LAN devices do not know 10.1.0.0/24, SNAT or add a return route on the LAN router:
+iptables -t nat -A POSTROUTING -s 10.1.0.0/24 -o eth0 -j MASQUERADE
 ```
 
-#### Office-B (dynamic only)
+Give A a fixed virtual IP so static routes on access clients stay valid: start it with `--tun-ip=10.1.0.2 --tun-gw=10.1.0.1 --tun-mask=24`.
+
+## 5. Access client B
+
+**Dynamic (recommended):** with the server's `distribute: true`, B receives and installs `10.0.0.0/24 via 10.1.0.2` on connect, no configuration needed.
+
+**Static:** for a fixed topology, or when the server disables `distribute`:
 
 ```json
-{
-  "mode": "client",
-  "client": {
-    "guid": "{22222222-2222-2222-2222-222222222222}",
-    "server": "ppp://vpn.example.com:20000/"
-  }
-}
-```
-
-#### Office-C (static + dynamic)
-
-```json
-{
-  "mode": "client",
-  "client": {
-    "guid": "{33333333-3333-3333-3333-333333333333}",
-    "server": "ppp://vpn.example.com:20000/",
-    "routing": {
-      "ip": {
-        "peer-routes": [
-          { "network": "10.0.0.0", "prefix": 24, "via": "10.1.0.2" }
-        ]
-      }
+"client": {
+  "routing": {
+    "ip": {
+      "peer-routes": [
+        { "network": "10.0.0.0", "prefix": 24, "via": "10.1.0.2" }
+      ]
     }
   }
 }
 ```
 
----
+`network`, `prefix`, and `via` (the gateway's virtual IP) are required; entries whose `via` equals the local virtual IP are ignored. Without `client.routing`, the legacy location `client.peer-routes` works too. Static and dynamic routes can coexist.
 
-## 7. Deployment Checklist
+In proxy mode these routes apply only inside the program and are not written into the OS route table.
 
-### Server
-- [ ] `server.subnet = true`
-- [ ] `server.peer-routing.enabled = true`
-- [ ] `server.ipv4-pool` configured
+## 6. Server forwarding order
 
-### Gateway peer
-- [ ] `peer-route-announce` correct
-- [ ] `peer-gateway-forward = true`
-- [ ] Fixed virtual IP
-- [ ] Host `ip_forward = 1`
-- [ ] LAN return path via gateway
+1. The destination is exactly a client's virtual IP → that client;
+2. otherwise longest-prefix match among accepted announcements → the matching gateway client;
+3. no match → not forwarded.
 
-### Access client
-- [ ] Routes visible: `ip route | grep 10.0.0.0`
-- [ ] `ping 10.0.0.x` works
+When a gateway disconnects, its prefixes leave the table and (with `distribute: true`) the update is pushed to other clients.
 
----
+## 7. Go-live checks
+
+1. Server: `subnet` and `peer-routing.enabled` are `true`; `allowed-routes` contains the gateway GUID with the identical prefix.
+2. Gateway: `peer-gateway-forward: true`, IP forwarding on, LAN return route or SNAT in place.
+3. Access client: `ip route | grep 10.0.0.0` (Windows: `route print`) shows a route via the gateway's virtual IP.
+4. `ping 10.0.0.x` from the access client.
 
 ## 8. Troubleshooting
 
-| Symptom | Likely cause | Fix |
-|---------|--------------|-----|
-| No route on client | `distribute=false` and no `client.routing.ip.peer-routes` (or legacy alias) | Enable distribute or add canonical static routes |
-| Route exists, ping fails | Gateway offline or wrong `via` | Verify gateway VIP |
-| Packet reaches gateway, not LAN | `ip_forward` off | Enable forwarding |
-| No return path | LAN has no route to VPN | SNAT or static routes on gateway |
-| Server does not forward | `peer-routing` or `subnet` disabled | Check server config |
+| Symptom | Cause |
+|---|---|
+| No route on the access client | Announcement rejected (`allowed-routes` empty, GUID or prefix mismatch, forbidden range); or `distribute: false` without static routes |
+| Route present, no connectivity | Gateway offline, or wrong `via` in a static route |
+| Packets reach the gateway but not the LAN | `peer-gateway-forward` off, or host IP forwarding off |
+| LAN devices do not reply | No LAN return route to `10.1.0.0/24`; add SNAT or a static route |
+| Server does not forward | `server.subnet` or `peer-routing.enabled` is `false` |
 
----
+## Related documents
 
-## 9. Compatibility
-
-| Item | Notes |
-|------|-------|
-| `peer-routing.enabled=false` | Identical to pre-feature behavior |
-| P2P | Prefix routing picks **which peer**; P2P optimizes **how** to reach it |
-| `client.routing.ip.routes` | Ordinary split-routing (physical NIC vs VPN); `client.routes` is a compatibility alias and differs from `client.routing.ip.peer-routes` |
-
----
-
-## 10. Implementation Index
-
-| Component | File |
-|-----------|------|
-| Protocol structs | `ppp/app/protocol/PeerPrefixRoute.h` |
-| JSON serde | `ppp/app/protocol/VirtualEthernetInformation.cpp` |
-| Config parsing | `ppp/configurations/AppConfiguration.cpp` |
-| Server prefix table | `ppp/app/server/VirtualEthernetSwitcher.cpp` |
-| Server forward | `ppp/app/server/VirtualEthernetExchanger.cpp` |
-| Client announce | `ppp/app/client/VEthernetExchanger.cpp` |
-| Client route install | `ppp/app/client/VEthernetNetworkSwitcher.cpp` |
-
----
-
-## 11. Related Docs
-
-- [`ROUTING_AND_DNS.md`](ROUTING_AND_DNS.md)
-- [`SERVER_IPV4_ASSIGNMENT_CN.md`](../archive/status/SERVER_IPV4_ASSIGNMENT_CN.md)
-- [`P2P_NETWORKING_PLAN.md`](../archive/plans/P2P_NETWORKING_PLAN.md)
-- [`CONFIGURATION.md`](../reference/CONFIGURATION.md)
+- [Configuration reference · server / client](../reference/CONFIGURATION.md) · [Routing and DNS](ROUTING_AND_DNS.md)

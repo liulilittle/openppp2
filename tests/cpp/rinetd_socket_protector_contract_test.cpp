@@ -45,7 +45,7 @@ int main(int argc, char* argv[]) {
 
     const std::size_t force = forwarding_source.find("if (force)");
     const std::size_t mark_required = forwarding_source.find(
-        "RemoteSocketProtectorRequired = true", force);
+        "RemoteSocketProtectorRequired = protector_required", force);
     const std::size_t build = forwarding_source.find(
         "BuildClientUnderlyingSocketProtector", force);
     const std::size_t invoke_open = forwarding_source.find(
@@ -60,6 +60,16 @@ int main(int argc, char* argv[]) {
         "Rinetd Open invocation is missing");
     Require(force < mark_required && mark_required < build && build < invoke_open,
         "ForceDirect protector must be configured before Rinetd Open");
+
+    // Desktop proxy-only installs no TUN routes, so its default route is already direct.
+    const std::size_t relax = forwarding_source.find(
+        "protector_required = !switcher->ProxyOnly(NULLPTR)", force);
+    const std::size_t mobile_guard = forwarding_source.rfind(
+        "#if !defined(_ANDROID) && !defined(_IPHONE) && !defined(IPHONE)", relax);
+    Require(relax != std::string::npos && relax < mark_required,
+        "only desktop proxy-only may relax the ForceDirect protector requirement");
+    Require(mobile_guard != std::string::npos && force < mobile_guard && mobile_guard < relax,
+        "mobile ForceDirect must keep requiring a protector");
 
     Require(forwarding_source.find(
         "if (!force && !switcher->IsBypassIpAddress") != std::string::npos,

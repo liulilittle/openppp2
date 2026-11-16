@@ -305,19 +305,44 @@ namespace ppp {
                 return NULLPTR;
             }
 
-            memcpy(plaintext.get(), data, datalen);
+            return EncryptTo(plaintext.get(), datalen, data, datalen, outlen) ? plaintext : NULLPTR;
+        }
+
+        /**
+         * @brief Encrypts input data into caller-owned memory.
+         */
+        bool RC4::EncryptTo(Byte* output, int output_capacity, Byte* data, int datalen, int& outlen) noexcept {
+            outlen = -1;
+            if (NULLPTR == output || NULLPTR == data || datalen < 1 || output_capacity < datalen) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::Rc4EncryptInvalidArguments);
+                return false;
+            }
+
+            if (_password.empty()) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::Rc4EncryptPasswordEmpty);
+                return false;
+            }
+
+            if (NULLPTR == _sbox) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                return false;
+            }
+
+            if (output != data) {
+                memcpy(output, data, datalen);
+            }
 
             // Uses the variant with (low + keylen) % sboxlen – another intentional modification.
             if (!rc4_crypt_sbox_c((unsigned char*)_password.data(), _password.size(),
-                (unsigned char*)_sbox.get(), RC4_MAXBIT, (unsigned char*)plaintext.get(), datalen, _subtract, _E)) {
+                (unsigned char*)_sbox.get(), RC4_MAXBIT, (unsigned char*)output, datalen, _subtract, _E)) {
                 if (ppp::diagnostics::ErrorCode::Success == ppp::diagnostics::GetLastErrorCode()) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::Rc4CryptSboxCFailedWithoutSpecificError);
                 }
-                return NULLPTR;
+                return false;
             }
 
             outlen = datalen;
-            return plaintext;
+            return true;
         }
 
         /**
@@ -326,6 +351,11 @@ namespace ppp {
          */
         std::shared_ptr<Byte> RC4::Decrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, Byte* data, int datalen, int& outlen) noexcept {
             return Encrypt(allocator, data, datalen, outlen);
+        }
+
+        bool RC4::DecryptInPlace(Byte* data, int datalen) noexcept {
+            int outlen = 0;
+            return EncryptTo(data, datalen, data, datalen, outlen);
         }
 
         /**

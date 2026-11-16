@@ -1,0 +1,11 @@
+default proxy
+[direct]
+example.test
+very.example.test
+=login.example.test
+192.0.2.0/24
+192.0.2.42
+[proxy]
+*.example.test
+regexp:^api[0-9]+\.very\.example\.test$
+192.0.2.0/25

@@ -12,8 +12,8 @@ pub fn close_action(close_to_tray: bool, exit_requested: bool) -> CloseAction {
     }
 }
 
-pub fn should_disconnect_on_exit(disconnect_on_exit: bool) -> bool {
-    disconnect_on_exit
+pub fn should_disconnect_on_exit(_disconnect_on_exit: bool) -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

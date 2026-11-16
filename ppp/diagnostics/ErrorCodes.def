@@ -700,3 +700,7 @@ X(ConfigPlaintextEnabled, "Plaintext mode is enabled (key.plaintext=true); packe
 X(ConfigLegacyCipherAlgorithm, "Protocol or transport cipher uses a legacy algorithm (RC4, DES, Blowfish, CAST5, SEED, IDEA) that is considered broken or deprecated; upgrade to AES or ChaCha20", ErrorSeverity::kWarning)
 X(ConfigLegacyCipherShortKey, "Protocol or transport cipher key length is below 128 bits; short cipher keys are vulnerable to brute-force attacks", ErrorSeverity::kWarning)
 X(ConfigLegacyKdfMd5, "Protocol or transport cipher key derivation uses MD5 internally (EVP_BytesToKey); this is a legacy KDF and should be upgraded when the project supports a configurable KDF", ErrorSeverity::kWarning)
+X(ConfigPolicyRuntimeUnavailable, "The v2 client policy runtime is unavailable or has not been prepared", ErrorSeverity::kFatal)
+X(ConfigPolicyTcpSniffUnsupported, "TUN TCP domain sniffing is not supported on this platform", ErrorSeverity::kError)
+X(ConfigPolicyUdpIdentityConflict, "The v2 client virtual address conflicts with the internal UDP identity range 198.19.0.0/16", ErrorSeverity::kError)
+X(ProxyInternetDisabled, "Proxy-only Internet access is disabled; only virtual-subnet destinations are allowed", ErrorSeverity::kError)

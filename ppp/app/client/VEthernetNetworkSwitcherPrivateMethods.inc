@@ -7,7 +7,7 @@
                 bool                                                                DeleteTimeout(void* k) noexcept;
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                bool                                                                TryApplyHostedNetworkRoutes() noexcept;
+                bool                                                                TryApplyHostedNetworkRoutes(bool allow_pre_established = false) noexcept;
 #else
                 bool                                                                TryApplyHostedNetworkRoutes() noexcept { return true; }
 #endif
@@ -19,6 +19,7 @@
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
 #if defined(_WIN32)
+                bool                                                                EnsureNetworkRecoveryJournal() noexcept;
                 bool                                                                UsePaperAirplaneController() noexcept;
                 bool                                                                BindWindowsIPv6RouteOwner() noexcept;
                 bool                                                                StageWindowsIPv6Egress(const boost::asio::ip::tcp::endpoint& endpoint, bool proven_external) noexcept;
@@ -42,6 +43,7 @@
                 void                                                                RestoreAssignedIPv6() noexcept;
                 bool                                                                ApplyAssignedIPv4(const VirtualEthernetInformationExtensions& extensions) noexcept;
                 void                                                                RestoreAssignedIPv4() noexcept;
+                bool                                                                HasPendingAssignedIPv4Cleanup() const noexcept;
 #endif
 
                 bool                                                                ERORTE(int ack_id) noexcept;

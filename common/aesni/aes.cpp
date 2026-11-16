@@ -227,25 +227,41 @@ namespace aesni {
             return NULLPTR;
         }
 
-        if (__bgctr_) {
-            if (enc) {
-                aes_encrypt_gcounter((__m128i*)__round_key_.get(), (uint8_t*)ciphertext.get(), (uint8_t*)data, datalen, (uint8_t*)iv_, __i128m_);
-            }
-            else {
-                aes_decrypt_gcounter((__m128i*)__round_key_.get(), (uint8_t*)ciphertext.get(), (uint8_t*)data, datalen, (uint8_t*)iv_, __i128m_);
-            }
-        }
-        else {
-            if (enc) {
-                aes_encrypt_feedback((__m128i*)__round_key_.get(), (uint8_t*)ciphertext.get(), (uint8_t*)data, datalen, (uint8_t*)iv_, __i128m_);
-            }
-            else {
-                aes_decrypt_feedback((__m128i*)__round_key_.get(), (uint8_t*)ciphertext.get(), (uint8_t*)data, datalen, (uint8_t*)iv_, __i128m_);
-            }
+        if (!ProcessTo(ciphertext.get(), data, datalen, enc)) {
+            return NULLPTR;
         }
 
         outlen = datalen;
         return ciphertext;
+#endif
+    }
+
+    bool AES::ProcessTo(ppp::Byte* output, const ppp::Byte* data, int datalen, bool enc) noexcept {
+#if !defined(__AES_NI_IMPL__)
+        return false;
+#else
+        if (NULLPTR == output || NULLPTR == data || datalen < 1) {
+            return false;
+        }
+
+        if (__bgctr_) {
+            if (enc) {
+                aes_encrypt_gcounter((__m128i*)__round_key_.get(), (uint8_t*)output, (uint8_t*)data, datalen, (uint8_t*)iv_, __i128m_);
+            }
+            else {
+                aes_decrypt_gcounter((__m128i*)__round_key_.get(), (uint8_t*)output, (uint8_t*)data, datalen, (uint8_t*)iv_, __i128m_);
+            }
+        }
+        else {
+            if (enc) {
+                aes_encrypt_feedback((__m128i*)__round_key_.get(), (uint8_t*)output, (uint8_t*)data, datalen, (uint8_t*)iv_, __i128m_);
+            }
+            else {
+                aes_decrypt_feedback((__m128i*)__round_key_.get(), (uint8_t*)output, (uint8_t*)data, datalen, (uint8_t*)iv_, __i128m_);
+            }
+        }
+
+        return true;
 #endif
     }
 }

@@ -116,7 +116,15 @@ func (hc *HealthChecker) httpCheck(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return false
+	}
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return false

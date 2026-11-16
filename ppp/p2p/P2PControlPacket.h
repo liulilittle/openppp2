@@ -66,7 +66,24 @@ inline bool IsCanonicalP2PCandidate(
     const bool address_nonzero = std::any_of(
         candidate.address.begin(), candidate.address.end(),
         [](std::uint8_t byte) { return byte != 0; });
-    return address_nonzero && !mapped;
+    if (!address_nonzero || mapped) {
+        return false;
+    }
+
+    // Direct candidates must be globally routable transport addresses. Keep
+    // virtual overlay addressing independent from this filter: ULA, link-local,
+    // multicast, loopback and other special IPv6 ranges are never advertised
+    // as public P2P endpoints.
+    const bool loopback = std::all_of(candidate.address.begin(),
+        candidate.address.end() - 1, [](std::uint8_t byte) { return byte == 0; }) &&
+        candidate.address.back() == 1;
+    const bool multicast = candidate.address[0] == 0xff;
+    const bool link_local = candidate.address[0] == 0xfe &&
+        (candidate.address[1] & 0xc0) == 0x80;
+    const bool site_local = candidate.address[0] == 0xfe &&
+        (candidate.address[1] & 0xc0) == 0xc0;
+    const bool unique_local = (candidate.address[0] & 0xfe) == 0xfc;
+    return !loopback && !multicast && !link_local && !site_local && !unique_local;
 }
 
 namespace detail {

@@ -1,84 +1,30 @@
 # 管理后端
 
-> **状态：**当前实现边界
-> **类型：**指南
-> **最后核对：**原生 Go 管理器、C++ 托管链路、管理 API 与订阅源码，2026-07-22
-> **上一层索引：**[任务指南](README_CN.md) · **English：**[Management Backend](MANAGEMENT_BACKEND.md)
+> Status: Active
+> Type: Guide
+> Last verified: 2026-10-11（对照 `go/ppp/Configuration.go`、`go/ppp/ManagedServer.go`、`go/ppp/Admin.go`、`ppp/app/server/VirtualEthernetSwitcher.cpp`）
+>
+> **用途：** 部署 Go 管理端，用来发布订阅、管理用户和节点，并让 C++ 服务端接入认证与流量统计。
+> **读者：** 运营多台节点或需要订阅分发的运维人员。
+> **上级索引：** [指南](README_CN.md) · **English:** [Management backend](MANAGEMENT_BACKEND.md)
 
-## 选择正确的 Go 表面
+## 1. 先分清两个 Go 程序
 
-本树包含两个独立的 Go 程序：
+| 程序 | 目录 | 作用 | 能否作为 C++ `server.backend`？ |
+|---|---|---|---|
+| **管理端** | `go/` | 订阅发布、管理后台、用户 / 节点管理、可选的 C++ 节点接入 | 能（仅托管模式） |
+| Guardian | `go/guardian/` | 本机 `ppp` 进程和配置档的守护管理工具 | 不能 |
 
-| 表面 | 角色 | 是否兼容 C++ `server.backend`？ |
+本页只讲管理端。两者的配置文件和参数互不通用。
+
+## 2. 两种运行模式
+
+| 模式 | 条件 | 能力 |
 |---|---|---|
-| `go/` 下的原生管理器 | 订阅下发、管理 API、可选的 C++ 托管控制链路 | 是，但仅限 managed 模式 |
-| `go/guardian/` 下的 Guardian | 独立进程/Profile 管理器 | 否；它不是原生 C++ 后端端点 |
+| **独立模式** | 配置里没有 `database` 和 `redis` | 数据保存在本地 JSON 文件（默认 `manager-data.json`），提供管理后台和订阅发布；**拒绝 C++ 节点接入**。 |
+| **托管模式** | 同时配置完整的 `database.master`（MySQL）和 `redis`（Sentinel：`addresses` + `master`） | 在独立模式能力之上，接受 C++ 服务端的控制连接，负责用户认证和流量统计。只配了其中一项时启动失败。 |
 
-不要混用它们的参数或配置结构。特别地，原生管理器通过第一个位置参数选择配置；Guardian 的 `--config` 仅属于 Guardian。
-
-## 原生管理器模式
-
-原生管理器有两个不同模式：
-
-- **独立订阅管理器：**没有完整外部数据库/Redis 配置时使用。它持久化本地数据（默认 `manager-data.json`），并提供管理/订阅表面，但会拒绝原生 C++ 节点控制 WebSocket 链路。
-- **Managed 模式：**使用已配置的 database/Redis 结构，并接受原生 C++ 托管链路。这是 `server.backend` 所需的模式。
-
-默认监听/路径是 `:10000` 和 `/ppp/webhook`。不需要公网访问时，应绑定明确的 loopback 或管理网地址。
-
-## C++ 托管链路前提
-
-只有同时满足以下条件，才应期待 C++ 服务端使用原生管理器：
-
-| 条件 | 原因 |
-|---|---|
-| `server.node >= 1` | 节点值小于一时，C++ 服务端不会打开托管链路。 |
-| 非空 `server.backend` | 提供原生管理器 WebSocket URL。 |
-| `server.backend-key` 与 Go 顶层 `key` 匹配 | CONNECT 会直接比较两者。 |
-| 管理器内有对应的 server/node 记录 | 控制链路标识具体节点。 |
-| 原生管理器运行在 managed 模式 | 独立模式会拒绝节点控制链路。 |
-
-C++ 配置片段可安全使用占位符：
-
-```json
-{
-  "server": {
-    "node": 1,
-    "backend": "ws://127.0.0.1:10000/ppp/webhook",
-    "backend-key": "<shared-manager-key>"
-  }
-}
-```
-
-Go 管理器必须使用相同 path/key，并在依赖托管认证前启动。不要把独立模式配置当作 C++ 链路已激活的证据。
-
-## 控制链路内容
-
-原生协议以如下方式帧化 JSON：
-
-```text
-[8 个十六进制长度字符][JSON]
-```
-
-包字段为 `Id`、`Node`、`Guid`、`Cmd`、`Data`。已实现命令为 ECHO (1000)、CONNECT (1001)、AUTHENTICATION (1002)、TRAFFIC (1003)。
-
-CONNECT 在用户认证前建立 C++ 节点到管理器的链路。TRAFFIC 是批量上报；该协议没有 `SessionEnd` 命令，也不承诺每 tick 直接写 SQL。
-
-## 管理与订阅表面
-
-管理器实现 bearer-token 保护的 `/api/v1/` 状态和 users/servers/subscriptions CRUD 路由，以及 token 轮换/预览。`GET /sub/{token}` 通过未认证的 capability URL 下发订阅文档。
-
-以下内容均应视为秘密或敏感控制材料：
-
-- 管理 bearer token；
-- 原生管理器 `key` / C++ `server.backend-key`；
-- 使用独立模式时的 `manager-data.json`；
-- 公开订阅 URL 与其下发文档，因为节点可能包含隧道密钥材料。
-
-直接 Go HTTP 服务不会自行提供 TLS。把管理或订阅表面公开前，应使用可信网络绑定或由运维部署 TLS 终止。
-
-## 运行边界
-
-原生管理器从 `go/` 使用其 Go module 构建，例如：
+## 3. 构建与启动
 
 ```bash
 cd go
@@ -86,11 +32,62 @@ go build -o ppp-go .
 ./ppp-go ./manager.json
 ```
 
-位置参数可省略；省略后管理器会查找 `appsettings.json`，再使用默认值。在连接 C++ 服务端前，应确认该配置实际选择的是独立模式还是 managed 模式。
+第一个参数是配置文件路径；省略或文件不存在时读取当前目录的 `appsettings.json`，再没有就使用内置默认值。仓库提供两个示例：`go/appsettings.json`（独立模式）和 `go/appsettings.managed.json`（托管模式，其中的密码和密钥都是占位值）。
 
-## 相关页面
+## 4. 配置字段
 
-- [远程订阅格式](REMOTE_SUBSCRIPTION_CN.md)
-- [部署模型](../operations/DEPLOYMENT_CN.md)
-- [安全模型](../operations/SECURITY_CN.md)
-- [配置参考](../reference/CONFIGURATION_CN.md)
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `prefixes` | `:10000` | HTTP 监听地址。不想对外开放时写成 `127.0.0.1:10000`。 |
+| `path` | `/ppp/webhook` | C++ 节点连接的 WebSocket 路径。 |
+| `key` | 空 | 与 C++ `server.backend-key` 比对的共享密钥（托管模式）。 |
+| `admin.token` | 空 | 管理 API 的 Bearer Token。为空时启动生成一个临时 Token 并打印到日志；也可用环境变量 `OPENPPP2_ADMIN_TOKEN` 设置。 |
+| `admin.path` | `/admin/` | 网页管理后台路径。 |
+| `admin.public-base-url` | 空 | 生成订阅链接时使用的外部访问地址，例如 `https://manager.example.com`。 |
+| `admin.data` | `manager-data.json` | 独立模式的数据文件。 |
+| `database` / `redis` | 无 | 托管模式所需，格式见 `go/appsettings.managed.json`。 |
+| `interfaces` / `concurrency-control` | 内置值 | 托管模式的内部接口路径与超时，一般不需要改。 |
+
+## 5. 让 C++ 服务端接入（托管模式）
+
+C++ 服务端配置：
+
+```json
+"server": {
+  "node": 1,
+  "backend": "ws://127.0.0.1:10000/ppp/webhook",
+  "backend-key": "<与管理端 key 相同>"
+}
+```
+
+以下条件**全部满足**才会建立连接：
+
+| 条件 | 原因 |
+|---|---|
+| `server.node >= 1` | 节点号小于 1 时 C++ 不会连接管理端。 |
+| `server.backend` 非空 | 管理端 WebSocket 地址（`ws://` 或 `wss://`）。 |
+| `server.backend-key` 与管理端 `key` 完全相同 | 连接时直接比对。 |
+| 管理端里存在对应节点记录 | 控制连接按节点号识别。 |
+| 管理端运行在托管模式 | 独立模式会拒绝节点连接。 |
+
+连接建立后，用户认证和流量上报由管理端处理。控制协议为 `[8 位十六进制长度][JSON]` 帧，命令包括 ECHO（1000）、CONNECT（1001）、AUTHENTICATION（1002）、TRAFFIC（1003，批量上报）。
+
+## 6. 管理后台与 API
+
+- 网页后台：`http://<管理端>/admin/`。
+- 管理 API：`/api/v1/` 下的 `status`、`users`、`servers`、`subscriptions` 增删改查，以及订阅的 `preview` 和 `rotate-token`；请求需带 `Authorization: Bearer <admin.token>`。
+- 订阅发布：`GET /sub/{token}`，格式见 [远程订阅](REMOTE_SUBSCRIPTION_CN.md)。
+
+## 7. 安全
+
+- 以下都是敏感信息：管理 Token、`key` / `server.backend-key`、`manager-data.json`、订阅链接及其内容（里面包含节点密钥）。
+- 共享 `key` 以常量时间比较，可用 `?key=`（兼容旧方式）或 `Authorization: Bearer <key>` 传递。建议使用请求头：查询字符串会被反向代理和访问日志记录，`?key=` 的值可能因此泄露。
+- 节点连接与握手时给出的节点编号绑定；认证或流量包中携带不同 `Node` 会被丢弃并记录日志。流量上报的计数值超过 1 TiB（2^40）或不是非负整数时会被忽略。
+- API 错误只返回通用信息；数据库/Redis 的详细错误仅写入服务端日志。
+- 管理端本身不提供 TLS。对公网开放前请放在 Nginx 等 TLS 终结代理后面，或只监听内网 / 回环地址。
+- 订阅 Token 没有过期机制；需要收回访问权时，轮换 Token（`rotate-token`）或停用该订阅。
+
+## 相关文档
+
+- [远程订阅](REMOTE_SUBSCRIPTION_CN.md) · [配置文件参考 · server](../reference/CONFIGURATION_CN.md)
+- [部署](../operations/DEPLOYMENT_CN.md) · [安全](../operations/SECURITY_CN.md)

@@ -1,32 +1,20 @@
-# Remote Subscription Format
+# Remote Subscription
 
-> **Status:** Current publisher contract; client handling is platform-specific
-> **Type:** Guide
-> **Last verified:** Native manager publisher and bundled Android/iOS/desktop consumer sources, 2026-07-22
-> **Parent index:** [Task Guides](README.md) · **Chinese:** [远程订阅格式](REMOTE_SUBSCRIPTION_CN.md)
+> Status: Active
+> Type: Guide
+> Last verified: 2026-10-11 (against `go/ppp/Subscription.go` and the Android / desktop subscription parsers)
+>
+> **Purpose:** Subscription link format, how clients use it, and security when publishing.
+> **Audience:** Operators publishing subscriptions and users consuming them.
+> **Parent index:** [Guides](README.md) · **Chinese:** [远程订阅](REMOTE_SUBSCRIPTION_CN.md)
 
-## Scope
+## 1. Overview
 
-The native Go manager can publish an `openppp2-subscription` v1 JSON document at `GET /sub/{token}`. The URL token is an unauthenticated capability: possession grants access to the document. Treat the URL and its response as credential-bearing material.
+The [manager](MANAGEMENT_BACKEND.md) publishes a subscription document at `GET /sub/{token}`. Clients (Android, iOS, desktop client) import the link and turn each node in the document into a connectable profile.
 
-This page describes the publisher's stable v1 shape. Client applications accept some additional compatibility fields, but those are not a portable subscription schema.
+The token in the link is the access credential: anyone with the link can read the document, and the document contains node keys. Treat subscription links like passwords.
 
-## Published v1 shape
-
-The publisher emits these top-level fields:
-
-| Field | Meaning |
-|---|---|
-| `type` | Always `openppp2-subscription` |
-| `version` | Currently `1` |
-| `name` | Subscription display name |
-| `profilePrefix` | Optional display-name prefix |
-| `updatedAt` | Publisher timestamp |
-| `nodes` | Node array |
-
-A generated compact node contains `id`, `name`, `subtitle`, `server`, `key`, `client.guid`, and `options`. `id` is generated from the manager's server record and should be treated as the stable identity used by consumers that upsert profiles.
-
-Use placeholders, never production keys, in examples:
+## 2. Document format (v1)
 
 ```json
 {
@@ -34,7 +22,7 @@ Use placeholders, never production keys, in examples:
   "version": 1,
   "name": "Example subscription",
   "profilePrefix": "Example",
-  "updatedAt": "2026-07-22T00:00:00Z",
+  "updatedAt": "2026-10-11T00:00:00Z",
   "nodes": [
     {
       "id": "server-1",
@@ -43,44 +31,43 @@ Use placeholders, never production keys, in examples:
       "server": "ppp://vpn.example.invalid:20000/",
       "key": {
         "protocol": "aes-128-cfb",
-        "protocol-key": "<provisioned-protocol-key>",
+        "protocol-key": "<protocol-key>",
         "transport": "aes-256-cfb",
-        "transport-key": "<provisioned-transport-key>"
+        "transport-key": "<transport-key>"
       },
-      "client": {
-        "guid": "<assigned-client-guid>"
-      },
+      "client": { "guid": "<GUID assigned to the user>" },
       "options": {}
     }
   ]
 }
 ```
 
-## Publisher and client boundaries
-
-| Topic | Current behavior |
+| Field | Meaning |
 |---|---|
-| `options` | The manager copies an arbitrary JSON map from a subscription record; clients consume only the options their own code supports. Do not assume one universal options schema. |
-| Extra node forms | Bundled consumers support compatibility paths such as compact nodes and full `config` objects/JSON strings. Do not rely on undocumented extras for cross-platform publication. |
-| Size | The inspected bundled consumers cap documents at 2 MiB. Keep documents much smaller. |
-| Refresh identity | Android/iOS upsert nodes by subscription URL plus node ID; the desktop client maintains its own subscription cache behavior. Do not infer deletion semantics from one client. |
-| ETag | The manager emits ETag/cache headers, but inspected consumers do not make conditional requests. Treat ETag as publisher support, not a refresh guarantee. |
+| `type` / `version` | Always `openppp2-subscription` / `1`. |
+| `name` / `profilePrefix` | Subscription name and node display-name prefix. |
+| `updatedAt` | Generation time. |
+| `nodes[].id` | Stable node identity; clients update existing profiles by it. |
+| `nodes[].server` / `key` / `client.guid` | Same as the client configuration fields; see the [Configuration reference](../reference/CONFIGURATION.md). |
+| `nodes[].options` | Arbitrary JSON copied from the subscription record; each client reads only the options it supports. |
 
-## URL and transport policy
+Clients also accept some extra forms (such as a full `config` inside a node), but those are not a cross-platform contract; publish only the structure above. Keep documents far below 2 MiB (the client limit).
 
-- Android and iOS allow HTTPS subscription URLs and narrowly allow loopback HTTP development URLs; they enforce redirect limits.
-- The experimental desktop client accepts both HTTP and HTTPS URLs in its current implementation.
-- Therefore, an operator should publish over HTTPS regardless of the least restrictive client. Do not describe HTTPS-only behavior as universal client enforcement.
+## 3. Client behavior
 
-## Security and lifecycle
+| Aspect | Behavior |
+|---|---|
+| Accepted links | Android / iOS accept HTTPS only (HTTP on loopback is for development) and limit redirects; the experimental desktop client accepts both HTTP and HTTPS. |
+| Updates | Android / iOS update profiles by subscription URL + node `id`; the desktop client has its own cache logic. Handling of removed nodes is not guaranteed to match across clients. |
+| Caching | The manager returns `ETag` and `Cache-Control: private, max-age=60` and honors `If-None-Match`; current clients do not send conditional requests and download the full document on each refresh. |
 
-- Published documents can include protocol and transport keys. Do not put them in logs, issue trackers, screenshots, or public repositories.
-- The public token has no expiry mechanism in the inspected publisher. Rotate it, disable/delete the subscription, or restrict network exposure when access must end.
-- The native manager's admin bearer token and the public subscription token are different credentials.
-- The direct Go server does not terminate TLS by itself; use an operator-managed TLS endpoint before publishing on an untrusted network.
+## 4. Publishing and security
 
-## Related pages
+- **Always publish over HTTPS**: the manager does not terminate TLS itself, so put a TLS proxy in front and set `admin.public-base-url` to the external HTTPS address.
+- Never paste subscription links or documents into logs, tickets, screenshots, or public repositories.
+- Tokens do not expire. When a user leaves or a link leaks, rotate the token (`rotate-token`) or disable the subscription in the admin UI.
+- The admin API bearer token and the subscription token are different credentials.
 
-- [Management backend](MANAGEMENT_BACKEND.md)
-- [Security model](../operations/SECURITY.md)
-- [Configuration reference](../reference/CONFIGURATION.md)
+## Related documents
+
+- [Management backend](MANAGEMENT_BACKEND.md) · [Security](../operations/SECURITY.md)

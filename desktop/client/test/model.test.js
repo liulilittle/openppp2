@@ -8,12 +8,13 @@ import {
   subscriptionNotice,
 } from '../src/lib/runtime/model.js'
 
-test('exposes exactly the four documented connection states', () => {
+test('exposes the connection lifecycle states', () => {
   assert.deepEqual(Object.keys(connectionStates), [
     'connected',
     'connecting',
     'disconnected',
     'error',
+    'starting', 'reconnecting', 'stopping', 'recovery_pending',
   ])
 })
 

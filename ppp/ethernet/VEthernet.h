@@ -32,6 +32,12 @@ namespace ppp
     namespace ethernet
     {
         /**
+         * @brief Closes the process-wide virtual netstack and waits for it to stop.
+         * @return true when shutdown processing was observed; otherwise false.
+         */
+        bool                                                                    NetstackTryExit() noexcept;
+
+        /**
          * @brief Owns a TAP-backed virtual Ethernet pipeline.
          *
          * The object wires TAP input/output with the virtual TCP/IP stack, packet

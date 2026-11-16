@@ -471,26 +471,7 @@ namespace ssea
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(p + i), _mm256_xor_si256(v, k));
         }
 
-        // Scalar tail: exact copy of the reference word/half/byte logic.
-        int rem = length - i;
-        int32_t* p32 = reinterpret_cast<int32_t*>(p + i);
-        while (rem >= 4)
-        {
-            *p32 = *p32 ^ kf;
-            p32++;
-            rem -= 4;
-        }
-        int16_t* p16 = reinterpret_cast<int16_t*>(p32);
-        if (rem >= 2)
-        {
-            *p16 = static_cast<int16_t>(*p16 ^ kf);
-            p16++;
-        }
-        int8_t* p8 = reinterpret_cast<int8_t*>(p16);
-        if (rem & 1)
-        {
-            *p8 = static_cast<int8_t>(*p8 ^ kf);
-        }
+        masked_xor_fixed_scalar_tail(p + i, length - i, kf);
 
         return true;
 #else
@@ -526,7 +507,7 @@ namespace ssea
 
         // Scalar semantics: the first word uses random_next(seed) - update once
         // before the loop; every word afterwards advances the chain once.
-        kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
+        kf = random_next_from_key_scalar(kf);
 
         int i = 0;
         for (; i + 32 <= length; i += 32)
@@ -535,37 +516,18 @@ namespace ssea
             ks[0] = kf;
             for (int w = 1; w < 8; w++)
             {
-                kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
+                kf = random_next_from_key_scalar(kf);
                 ks[w] = kf;
             }
-            kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));  // key for word i+32
+            kf = random_next_from_key_scalar(kf);  // key for word i+32
 
             __m256i kv = _mm256_set_epi32(ks[7], ks[6], ks[5], ks[4], ks[3], ks[2], ks[1], ks[0]);
             __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + i));
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(p + i), _mm256_xor_si256(v, kv));
         }
 
-        // Remaining full words (0..7): scalar, kf already holds the next key.
-        int32_t* p32 = reinterpret_cast<int32_t*>(p + i);
-        while (reinterpret_cast<const uint8_t*>(p32 + 1) <= static_cast<const uint8_t*>(max))
-        {
-            *p32 = *p32 ^ kf;
-            p32++;
-            kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
-        }
-
-        // Tail 2/1 bytes: use the current key WITHOUT advancing.
-        int16_t* p16 = reinterpret_cast<int16_t*>(p32);
-        if (reinterpret_cast<const uint8_t*>(p16 + 1) <= static_cast<const uint8_t*>(max))
-        {
-            *p16 = static_cast<int16_t>(*p16 ^ kf);
-            p16++;
-        }
-        int8_t* p8 = reinterpret_cast<int8_t*>(p16);
-        if (p8 < reinterpret_cast<int8_t*>(const_cast<uint8_t*>(static_cast<const uint8_t*>(max))))
-        {
-            *p8 = static_cast<int8_t>(*p8 ^ kf);
-        }
+        // Remaining full words (0..7) advance the key; the 2/1-byte tail does not.
+        masked_xor_random_next_scalar_tail(p + i, length - i, kf);
 
         return true;
 #else

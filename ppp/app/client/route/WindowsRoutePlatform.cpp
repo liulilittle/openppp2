@@ -1,5 +1,6 @@
 #include <ppp/stdafx.h>
 #include <ppp/app/client/route/WindowsRoutePlatform.h>
+#include <ppp/diagnostics/TelemetryFwd.h>
 
 #if defined(_WIN32)
 #include <ppp/net/IPEndPoint.h>
@@ -8,6 +9,19 @@
 #endif
 
 namespace ppp::app::client::route {
+
+int ResolveWindowsRouteInterfaceIndex(
+    uint32_t gateway, uint32_t tap_gateway, int tap_interface_index,
+    uint32_t underlying_gateway, int underlying_interface_index,
+    const std::function<int(uint32_t)>& lookup) noexcept {
+    if (gateway != 0 && gateway == tap_gateway) {
+        return tap_interface_index > 0 ? tap_interface_index : -1;
+    }
+    if (gateway != 0 && gateway == underlying_gateway) {
+        return underlying_interface_index > 0 ? underlying_interface_index : -1;
+    }
+    return lookup ? lookup(gateway) : -1;
+}
 
 bool SameWindowsRouteIdentity(
     const WindowsRouteIdentity& left,
@@ -25,20 +39,49 @@ namespace {
 class WindowsRouteSnapshot final : public IRouteSnapshot {
 public:
     explicit WindowsRouteSnapshot(const MIB_IPFORWARDROW& route) noexcept
-        : route(route) {
+        : route(route), data(CaptureWindowsRouteRowSnapshot(route)) {
+    }
+
+    explicit WindowsRouteSnapshot(
+        const WindowsRouteRowSnapshot& value) noexcept
+        : route{}, data(value) {
+        route.dwForwardDest = data.destination;
+        route.dwForwardMask = data.mask;
+        route.dwForwardPolicy = data.policy;
+        route.dwForwardNextHop = data.next_hop;
+        route.dwForwardIfIndex = data.interface_index;
+        route.dwForwardType = data.type;
+        route.dwForwardProto = data.proto;
+        route.dwForwardAge = data.age;
+        route.dwForwardNextHopAS = data.next_hop_as;
+        route.dwForwardMetric1 = data.metric1;
+        route.dwForwardMetric2 = data.metric2;
+        route.dwForwardMetric3 = data.metric3;
+        route.dwForwardMetric4 = data.metric4;
+        route.dwForwardMetric5 = data.metric5;
     }
 
     MIB_IPFORWARDROW route;
+    WindowsRouteRowSnapshot data;
 };
 
 class WindowsGatewaySnapshot final : public IRouteSnapshot {
 public:
     WindowsGatewaySnapshot(int interface_index, std::string gateway) noexcept
-        : interface_index(interface_index), gateway(std::move(gateway)) {
+        : interface_index(interface_index), gateway(std::move(gateway)),
+          data(CaptureWindowsGatewaySnapshotData(
+              static_cast<std::uint32_t>(interface_index), this->gateway)) {
+    }
+
+    explicit WindowsGatewaySnapshot(
+        const WindowsGatewaySnapshotData& value) noexcept
+        : interface_index(static_cast<int>(value.interface_index)),
+          gateway(value.gateway), data(value) {
     }
 
     int interface_index;
     std::string gateway;
+    WindowsGatewaySnapshotData data;
 };
 
 std::shared_ptr<const WindowsRouteSnapshot> AsWindowsRouteSnapshot(
@@ -72,53 +115,39 @@ bool SameWindowsRouteIdentity(
         left_identity, right_identity);
 }
 
-bool SameRestoredWindowsRoute(
-    const MIB_IPFORWARDROW& left,
-    const MIB_IPFORWARDROW& right) noexcept {
-    return SameWindowsRouteIdentity(left, right) &&
-        left.dwForwardPolicy == right.dwForwardPolicy &&
-        left.dwForwardType == right.dwForwardType &&
-        left.dwForwardProto == right.dwForwardProto &&
-        left.dwForwardNextHopAS == right.dwForwardNextHopAS &&
-        left.dwForwardMetric1 == right.dwForwardMetric1 &&
-        left.dwForwardMetric2 == right.dwForwardMetric2 &&
-        left.dwForwardMetric3 == right.dwForwardMetric3 &&
-        left.dwForwardMetric4 == right.dwForwardMetric4 &&
-        left.dwForwardMetric5 == right.dwForwardMetric5;
-}
+enum class WindowsRouteLookup : std::uint8_t {
+    Unavailable,
+    Missing,
+    Match,
+    Conflict,
+};
 
-bool TryFindRestoredWindowsRoute(
-    const MIB_IPFORWARDROW& route,
-    bool& exists) noexcept {
-    exists = false;
+WindowsRouteLookup FindWindowsRoute(
+    const MIB_IPFORWARDROW& expected,
+    const WindowsRouteRowSnapshot& expected_snapshot) noexcept {
     auto mib = ppp::win32::network::Router::GetIpForwardTable();
     if (!mib) {
-        return false;
+        return WindowsRouteLookup::Unavailable;
     }
-    for (DWORD i = 0; i < mib->dwNumEntries; ++i) {
-        if (SameRestoredWindowsRoute(mib->table[i], route)) {
-            exists = true;
-            break;
-        }
-    }
-    return true;
-}
 
-bool TryFindWindowsRouteIdentity(
-    const MIB_IPFORWARDROW& route,
-    bool& exists) noexcept {
-    exists = false;
-    auto mib = ppp::win32::network::Router::GetIpForwardTable();
-    if (!mib) {
-        return false;
-    }
+    bool identity_found = false;
     for (DWORD i = 0; i < mib->dwNumEntries; ++i) {
-        if (SameWindowsRouteIdentity(mib->table[i], route)) {
-            exists = true;
-            break;
+        const MIB_IPFORWARDROW& row = mib->table[i];
+        if (!SameWindowsRouteIdentity(row, expected)) {
+            continue;
+        }
+        identity_found = true;
+        // This compare includes all route attributes owned by the snapshot and
+        // the stable adapter LUID/GUID.  A changed metric or reused interface
+        // index is therefore a conflict, never a route that this process may
+        // delete or overwrite.
+        if (VerifyWindowsRouteSnapshot(row, expected_snapshot)) {
+            return WindowsRouteLookup::Match;
         }
     }
-    return true;
+    return identity_found
+        ? WindowsRouteLookup::Conflict
+        : WindowsRouteLookup::Missing;
 }
 
 bool SameWindowsRouteSpec(
@@ -132,14 +161,17 @@ bool SameWindowsRouteSpec(
 bool TryFindWindowsRouteSpec(
     const RouteSpec& route,
     MIB_IPFORWARDROW& found,
-    bool& exists) noexcept {
+    bool& exists,
+    int interface_index = -1) noexcept {
     exists = false;
     auto mib = ppp::win32::network::Router::GetIpForwardTable();
     if (!mib) {
         return false;
     }
     for (DWORD i = 0; i < mib->dwNumEntries; ++i) {
-        if (SameWindowsRouteSpec(mib->table[i], route)) {
+        if (SameWindowsRouteSpec(mib->table[i], route) &&
+            (interface_index < 0 ||
+                mib->table[i].dwForwardIfIndex == static_cast<DWORD>(interface_index))) {
             found = mib->table[i];
             exists = true;
             break;
@@ -148,17 +180,30 @@ bool TryFindWindowsRouteSpec(
     return true;
 }
 
+bool VerifyWindowsGatewayInterfaceIdentity(
+    const WindowsGatewaySnapshotData& expected) noexcept {
+    auto adapter = ppp::win32::network::GetNetworkInterfaceByInterfaceIndex(
+        static_cast<int>(expected.interface_index));
+    return adapter &&
+        static_cast<std::uint32_t>(adapter->InterfaceIndex) ==
+            expected.interface_index &&
+        _stricmp(adapter->InterfaceLuid.data(), expected.interface_luid.data()) == 0 &&
+        _stricmp(adapter->Guid.data(), expected.interface_guid.data()) == 0;
+}
+
 }
 #endif
 
 WindowsRoutePlatform::WindowsRoutePlatform(
     uint32_t tap_gateway,
     int underlying_interface_index,
-    std::string underlying_gateway) noexcept
+    std::string underlying_gateway,
+    int tap_interface_index) noexcept
     : WindowsRoutePlatform(CreateSystemOperations(
           tap_gateway,
           underlying_interface_index,
-          std::move(underlying_gateway))) {
+          std::move(underlying_gateway),
+          tap_interface_index)) {
 }
 
 WindowsRoutePlatform::WindowsRoutePlatform(WindowsRouteOperations operations) noexcept
@@ -183,6 +228,16 @@ RouteAddResult WindowsRoutePlatform::Add(const RouteSpec& route) noexcept {
 
 bool WindowsRoutePlatform::Delete(const RouteSpec& route) noexcept {
     return operations_.remove && operations_.remove(route);
+}
+
+bool WindowsRoutePlatform::VerifyRouteForRecovery(
+    const RouteSpec& route) noexcept {
+    // RouteSpec does not contain the MIB row attributes or adapter LUID/GUID
+    // required to prove ownership after a restart.  A spec-only lookup is
+    // therefore not a recovery verification and must fail closed until the
+    // caller supplies a serialized WindowsRouteRowSnapshot.
+    (void)route;
+    return false;
 }
 
 bool WindowsRoutePlatform::RestoreDefault(const RouteSnapshotPtr& route) noexcept {
@@ -248,10 +303,147 @@ bool WindowsRoutePlatform::SameDefault(
         : left == right;
 }
 
+bool WindowsRoutePlatform::SerializeRecoverySnapshot(
+    const RouteSnapshotPtr& snapshot, std::string& serialized) noexcept {
+#if defined(_WIN32)
+    return SerializeWindowsRoutePlatformSnapshot(snapshot, serialized);
+#else
+    (void)snapshot;
+    serialized.clear();
+    return false;
+#endif
+}
+
+bool WindowsRoutePlatform::DeserializeRecoverySnapshot(
+    std::string_view serialized, RouteSnapshotPtr& snapshot) noexcept {
+#if defined(_WIN32)
+    return DeserializeWindowsRoutePlatformSnapshot(serialized, snapshot);
+#else
+    (void)serialized;
+    snapshot.reset();
+    return false;
+#endif
+}
+
+bool WindowsRoutePlatform::PrepareRouteRecoverySnapshot(
+    const RouteSpec& route, std::string& serialized) noexcept {
+#if defined(_WIN32)
+    serialized.clear();
+    auto table = ppp::win32::network::Router::GetIpForwardTable();
+    if (!table) {
+        return false;
+    }
+
+    const uint32_t mask = ppp::net::IPEndPoint::PrefixToNetmask(route.prefix);
+    const MIB_IPFORWARDROW* match = nullptr;
+    for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+        const MIB_IPFORWARDROW& row = table->table[i];
+        if (row.dwForwardDest != route.network ||
+            row.dwForwardMask != mask || row.dwForwardNextHop != route.gateway) {
+            continue;
+        }
+        // RouteSpec may carry an interface name.  When it does, require the
+        // live row to resolve to that adapter; otherwise a duplicate route on
+        // another interface would be an ambiguous ownership record.
+        if (!route.interface_name.empty()) {
+            const ppp::string name =
+                ppp::win32::network::GetInterfaceName(
+                    static_cast<int>(row.dwForwardIfIndex));
+            if (std::string_view(name.data(), name.size()) !=
+                std::string_view(
+                    route.interface_name.data(), route.interface_name.size())) {
+                continue;
+            }
+        }
+        if (match != nullptr) {
+            // More than one row satisfies the route spec.  A spec-only
+            // journal entry cannot identify which row OpenPPP2 created.
+            serialized.clear();
+            return false;
+        }
+        match = &row;
+    }
+    if (!match) {
+        return false;
+    }
+    return SerializeWindowsRouteSnapshot(
+        CaptureWindowsRouteRowSnapshot(*match), serialized);
+#else
+    (void)route;
+    serialized.clear();
+    return false;
+#endif
+}
+
+bool WindowsRoutePlatform::DeleteRouteRecovery(
+    std::string_view serialized) noexcept {
+#if defined(_WIN32)
+    WindowsRouteRowSnapshot expected;
+    if (!DeserializeWindowsRouteSnapshot(serialized, expected)) {
+        return false;
+    }
+    MIB_IPFORWARDROW row{};
+    row.dwForwardDest = expected.destination;
+    row.dwForwardMask = expected.mask;
+    row.dwForwardPolicy = expected.policy;
+    row.dwForwardNextHop = expected.next_hop;
+    row.dwForwardIfIndex = expected.interface_index;
+    row.dwForwardType = expected.type;
+    row.dwForwardProto = expected.proto;
+    row.dwForwardAge = expected.age;
+    row.dwForwardNextHopAS = expected.next_hop_as;
+    row.dwForwardMetric1 = expected.metric1;
+    row.dwForwardMetric2 = expected.metric2;
+    row.dwForwardMetric3 = expected.metric3;
+    row.dwForwardMetric4 = expected.metric4;
+    row.dwForwardMetric5 = expected.metric5;
+
+    const WindowsRouteLookup before = FindWindowsRoute(row, expected);
+    if (before == WindowsRouteLookup::Missing) {
+        // The route was already removed.  This is an idempotent successful
+        // recovery and lets the journal discard the completed entry.
+        return true;
+    }
+    if (before != WindowsRouteLookup::Match) {
+        // Unavailable and conflict both retain the journal for a later retry.
+        return false;
+    }
+    if (!ppp::win32::network::Router::Delete(row)) {
+        return FindWindowsRoute(row, expected) == WindowsRouteLookup::Missing;
+    }
+    return FindWindowsRoute(row, expected) == WindowsRouteLookup::Missing;
+#else
+    (void)serialized;
+    return false;
+#endif
+}
+
+bool WindowsRoutePlatform::RecoverRouteJournalEntry(
+    std::string_view target) noexcept {
+#if defined(_WIN32)
+    WindowsRoutePlatform platform(0, 0, {});
+    if (target.rfind("default:", 0) == 0) {
+        RouteSnapshotPtr snapshot;
+        if (!platform.DeserializeRecoverySnapshot(target.substr(8), snapshot) ||
+            !snapshot) {
+            return false;
+        }
+        return platform.RestoreDefault(snapshot);
+    }
+    if (target.rfind("created-v2:", 0) == 0) {
+        return platform.DeleteRouteRecovery(target.substr(11));
+    }
+#else
+    (void)target;
+#endif
+    return false;
+}
+
 WindowsRouteOperations WindowsRoutePlatform::CreateSystemOperations(
     uint32_t tap_gateway,
     int underlying_interface_index,
-    std::string underlying_gateway) noexcept {
+    std::string underlying_gateway,
+    int tap_interface_index) noexcept {
     WindowsRouteOperations operations;
 #if defined(_WIN32)
     operations.capture_defaults = [tap_gateway, underlying_interface_index,
@@ -287,38 +479,67 @@ WindowsRouteOperations WindowsRoutePlatform::CreateSystemOperations(
         if (!snapshot) {
             return false;
         }
-        bool exists = false;
-        if (!TryFindRestoredWindowsRoute(snapshot->route, exists)) {
+        const auto before = FindWindowsRoute(snapshot->route, snapshot->data);
+        if (before == WindowsRouteLookup::Unavailable ||
+            before == WindowsRouteLookup::Conflict) {
             return false;
         }
-        if (!exists) {
+        if (before == WindowsRouteLookup::Missing) {
             return true;
         }
         MIB_IPFORWARDROW route = snapshot->route;
         if (ppp::win32::network::Router::Delete(route)) {
-            return true;
+            return FindWindowsRoute(snapshot->route, snapshot->data) ==
+                WindowsRouteLookup::Missing;
         }
-        return TryFindRestoredWindowsRoute(snapshot->route, exists) && !exists;
+        return FindWindowsRoute(snapshot->route, snapshot->data) ==
+            WindowsRouteLookup::Missing;
     };
-    operations.add = [](const RouteSpec& route) noexcept {
+    const uint32_t underlying_gateway_address = underlying_gateway.empty()
+        ? 0 : inet_addr(underlying_gateway.c_str());
+    operations.add = [tap_gateway, tap_interface_index,
+        underlying_gateway_address, underlying_interface_index](const RouteSpec& route) noexcept {
+        const int interface_index = ResolveWindowsRouteInterfaceIndex(
+            route.gateway, tap_gateway, tap_interface_index,
+            underlying_gateway_address, underlying_interface_index,
+            [](uint32_t gateway) noexcept {
+                return ppp::win32::network::Router::GetBestInterface(gateway);
+            });
+        if (interface_index <= 0) {
+            ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                "windows_route", "add failed: stage=resolve_interface prefix=%d", route.prefix);
+            return RouteAddResult::FailedUnchanged;
+        }
         MIB_IPFORWARDROW exact;
         bool exact_exists = false;
         if (!TryFindWindowsRouteSpec(route, exact, exact_exists)) {
-            return RouteAddResult::Failed;
+            ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                "windows_route", "add failed: stage=query_before_add prefix=%d", route.prefix);
+            return RouteAddResult::FailedUnchanged;
         }
         if (exact_exists) {
             return RouteAddResult::Unchanged;
         }
-        if (ppp::win32::network::Router::Add(
+        const bool add_succeeded = ppp::win32::network::Router::Add(
             route.network,
             ppp::net::IPEndPoint::PrefixToNetmask(route.prefix),
             route.gateway,
-            1)) {
-            return RouteAddResult::Created;
+            1,
+            interface_index);
+        if (!TryFindWindowsRouteSpec(route, exact, exact_exists, interface_index)) {
+            ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                "windows_route", "add failed: stage=query_after_add api_success=%d prefix=%d",
+                add_succeeded ? 1 : 0, route.prefix);
+            return RouteAddResult::Failed;
         }
-        return TryFindWindowsRouteSpec(route, exact, exact_exists) && exact_exists
-            ? RouteAddResult::Unchanged
-            : RouteAddResult::Failed;
+        if (!exact_exists) {
+            ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                "windows_route", "add failed: stage=route_missing_after_add api_success=%d prefix=%d",
+                add_succeeded ? 1 : 0, route.prefix);
+            return add_succeeded ? RouteAddResult::Failed : RouteAddResult::FailedUnchanged;
+        }
+        return add_succeeded ? RouteAddResult::Created :
+            RouteAddResult::Unchanged;
     };
     operations.remove = [](const RouteSpec& route) noexcept {
         MIB_IPFORWARDROW found;
@@ -341,7 +562,12 @@ WindowsRouteOperations WindowsRoutePlatform::CreateSystemOperations(
             return true;
         }
         auto snapshot = AsWindowsRouteSnapshot(value);
-        return snapshot && TryFindRestoredWindowsRoute(snapshot->route, exists);
+        if (!snapshot) {
+            return false;
+        }
+        const auto result = FindWindowsRoute(snapshot->route, snapshot->data);
+        exists = result == WindowsRouteLookup::Match;
+        return result != WindowsRouteLookup::Unavailable;
     };
     operations.remove_conflicting_default = [](const RouteSnapshotPtr& value,
         RouteSnapshotPtr& removed) noexcept {
@@ -353,32 +579,22 @@ WindowsRouteOperations WindowsRoutePlatform::CreateSystemOperations(
         if (!snapshot) {
             return false;
         }
-        auto mib = ppp::win32::network::Router::GetIpForwardTable();
-        if (NULLPTR == mib) {
-            return false;
+        const auto result = FindWindowsRoute(snapshot->route, snapshot->data);
+        if (result == WindowsRouteLookup::Match ||
+            result == WindowsRouteLookup::Missing) {
+            return true;
         }
-        for (DWORD i = 0; i < mib->dwNumEntries; ++i) {
-            const MIB_IPFORWARDROW& row = mib->table[i];
-            if (SameRestoredWindowsRoute(row, snapshot->route)) {
-                return true;
-            }
-            if (SameWindowsRouteIdentity(row, snapshot->route)) {
-                RouteSnapshotPtr conflict_snapshot =
-                    std::make_shared<WindowsRouteSnapshot>(row);
-                MIB_IPFORWARDROW conflict = row;
-                if (!ppp::win32::network::Router::Delete(conflict)) {
-                    bool exists = false;
-                    return TryFindWindowsRouteIdentity(snapshot->route, exists) &&
-                        !exists;
-                }
-                removed = std::move(conflict_snapshot);
-                return true;
-            }
-        }
-        return true;
+        // A route with our address/interface identity but changed attributes,
+        // or with a reused interface index and different LUID/GUID, belongs to
+        // the current system state.  Keep it in place and leave recovery
+        // pending for an explicit, conflict-aware retry.
+        return false;
     };
     operations.restore_default = [](const RouteSnapshotPtr& value) noexcept {
         if (auto gateway = AsWindowsGatewaySnapshot(value)) {
+            if (!VerifyWindowsGatewayInterfaceIdentity(gateway->data)) {
+                return false;
+            }
             return ppp::win32::network::SetDefaultIPGateway(
                 gateway->interface_index,
                 ppp::vector<ppp::string>{
@@ -389,11 +605,9 @@ WindowsRouteOperations WindowsRoutePlatform::CreateSystemOperations(
             return false;
         }
         MIB_IPFORWARDROW route = snapshot->route;
-        if (ppp::win32::network::Router::Add(route)) {
-            return true;
-        }
-        bool exists = false;
-        return TryFindRestoredWindowsRoute(snapshot->route, exists) && exists;
+        (void)ppp::win32::network::Router::Add(route);
+        return FindWindowsRoute(snapshot->route, snapshot->data) ==
+            WindowsRouteLookup::Match;
     };
     operations.same_default = [](const RouteSnapshotPtr& left,
         const RouteSnapshotPtr& right) noexcept {
@@ -416,8 +630,41 @@ WindowsRouteOperations WindowsRoutePlatform::CreateSystemOperations(
     (void)tap_gateway;
     (void)underlying_interface_index;
     (void)underlying_gateway;
+    (void)tap_interface_index;
 #endif
     return operations;
 }
+
+#if defined(_WIN32)
+bool SerializeWindowsRoutePlatformSnapshot(
+    const RouteSnapshotPtr& snapshot,
+    std::string& serialized) noexcept {
+    if (auto route = AsWindowsRouteSnapshot(snapshot)) {
+        return SerializeWindowsRouteSnapshot(route->data, serialized);
+    }
+    if (auto gateway = AsWindowsGatewaySnapshot(snapshot)) {
+        return SerializeWindowsGatewaySnapshot(gateway->data, serialized);
+    }
+    serialized.clear();
+    return false;
+}
+
+bool DeserializeWindowsRoutePlatformSnapshot(
+    std::string_view serialized,
+    RouteSnapshotPtr& snapshot) noexcept {
+    WindowsRouteRowSnapshot route;
+    if (DeserializeWindowsRouteSnapshot(serialized, route)) {
+        snapshot = std::make_shared<WindowsRouteSnapshot>(route);
+        return static_cast<bool>(snapshot);
+    }
+    WindowsGatewaySnapshotData gateway;
+    if (DeserializeWindowsGatewaySnapshot(serialized, gateway)) {
+        snapshot = std::make_shared<WindowsGatewaySnapshot>(gateway);
+        return static_cast<bool>(snapshot);
+    }
+    snapshot.reset();
+    return false;
+}
+#endif
 
 }

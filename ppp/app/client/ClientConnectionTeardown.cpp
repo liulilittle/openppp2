@@ -2,6 +2,7 @@
 #include <ppp/app/client/AssignedAddressManager.h>
 #include <ppp/app/client/ClientNetworkInterfaceResolver.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/NetworkRecoveryJournal.h>
 #include <ppp/app/client/xtcp/XtcpRuntime.h>
 #include <ppp/app/client/route/RouteCoordinator.h>
 #include <ppp/app/client/VEthernetExchanger.h>
@@ -99,10 +100,12 @@ namespace ppp {
 
                 actions.rollback_route = [this]() noexcept {
                     bool route_cleanup_complete = true;
+                    bool dns_restore_complete = true;
 #if !defined(_ANDROID) && !defined(_IPHONE)
                     owner_->RestoreAssignedIPv6();
                     route_cleanup_complete =
-                        !owner_->address_manager_->HasPendingIPv6Cleanup();
+                        !owner_->address_manager_->HasPendingIPv6Cleanup() &&
+                        !owner_->HasPendingAssignedIPv4Cleanup();
 #if defined(_WIN32)
                     const bool windows_ipv6_stopped = owner_->StopWindowsIPv6Routes();
                     route_cleanup_complete = windows_ipv6_stopped &&
@@ -114,22 +117,57 @@ namespace ppp {
                     const bool routes_applied = route_snapshot.applied;
                     const bool rollback_pending =
                         routes_applied || !route_snapshot.default_routes.empty();
+
+                    // DNS restoration is an independent resource operation. It
+                    // must be attempted before route rollback and retain its
+                    // pending state when the platform reports a failure.
+                    bool dns_pending = routes_applied;
+#if defined(_WIN32)
+                    dns_pending = dns_pending || !owner_->ni_dns_snapshots_.empty();
+#endif
+                    const ClientTeardownRouteActions dns_actions =
+                        route_state_.CompleteAttempt(dns_pending, false);
+                    if (dns_actions.restore_dns) {
+#if defined(_WIN32)
+                        for (auto it = owner_->ni_dns_snapshots_.begin();
+                             it != owner_->ni_dns_snapshots_.end();) {
+                            if (ppp::win32::network::RestoreDnsSnapshot(it->second)) {
+                                const bool journal_removed =
+                                    !owner_->network_recovery_journal_ ||
+                                    owner_->network_recovery_journal_->Remove(
+                                        "windows-dns", stl::transform<std::string>(it->second.Guid), nullptr);
+                                if (journal_removed) {
+                                    it = owner_->ni_dns_snapshots_.erase(it);
+                                } else {
+                                    // The OS is clean, but durable ownership is
+                                    // still pending. Keep the snapshot so the
+                                    // next teardown/startup can retry removal.
+                                    dns_restore_complete = false;
+                                    ++it;
+                                }
+                            } else {
+                                ++it;
+                            }
+                        }
+                        dns_restore_complete = owner_->ni_dns_snapshots_.empty();
+                        if (dns_restore_complete) {
+                            ppp::tap::TapWindows::DnsFlushResolverCache();
+                        }
+#else
+                        dns_restore_complete =
+                            ClientNetworkInterfaceResolver::SetDnsResolveConfiguration(
+                                owner_->GetUnderlyingNetworkInterface());
+#endif
+                    }
+                    route_state_.MarkDnsRestoreResult(dns_restore_complete);
+
                     owner_->route_coordinator_->MarkApplyReady(false);
                     if (rollback_pending) {
                         route_cleanup_complete = owner_->DeleteRoute() && route_cleanup_complete;
                     }
 
                     const ClientTeardownRouteActions route_actions =
-                        route_state_.CompleteAttempt(routes_applied, route_cleanup_complete);
-                    if (route_actions.restore_dns) {
-#if defined(_WIN32)
-                        ppp::win32::network::SetAllNicsDnsAddresses(owner_->ni_dns_servers_);
-                        ppp::tap::TapWindows::DnsFlushResolverCache();
-#else
-                        ClientNetworkInterfaceResolver::SetDnsResolveConfiguration(
-                            owner_->GetUnderlyingNetworkInterface());
-#endif
-                    }
+                        route_state_.CompleteAttempt(false, route_cleanup_complete);
                     if (route_actions.release_network_state) {
                         owner_->ribs_.reset();
                         owner_->tun_ni_.reset();
@@ -154,7 +192,7 @@ namespace ppp {
                         ppp::diagnostics::SetLastErrorCode(
                             ppp::diagnostics::ErrorCode::RouteDeleteFailed);
                     }
-                    return route_cleanup_complete;
+                    return route_cleanup_complete && dns_restore_complete;
                 };
 
                 const ppp::app::runtime::RuntimeStopResult result =

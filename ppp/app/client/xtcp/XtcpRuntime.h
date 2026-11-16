@@ -2,6 +2,7 @@
 
 #include <ppp/app/client/xtcp/XtcpFirstLegHooks.h>
 #include <ppp/app/runtime/RuntimeXtcpStats.h>
+#include <ppp/tap/TapLaneBinding.h>
 #include <ppp/tap/TxGsoMetadata.h>
 #include <ppp/tap/RetainedPacketOwner.h>
 
@@ -113,12 +114,21 @@ public:
     bool Start() noexcept;
     void MarkReady() noexcept;
     void Stop() noexcept;
+    // Must be called before Start(): OPENPPP2_XTCP_AFFINITY=queues is rejected
+    // while the TAP runs SSMT workers.
+    void SetSsmtActive(bool active) noexcept;
+    // Queue mode only: the executor that owns shard `lane`, for binding the
+    // TAP's GSO output lane `lane` (lane index == shard index, not a kernel
+    // rx/tx queue number). Returns false outside a running queue mode.
+    bool GetLaneBinding(int lane, ppp::tap::TapLaneBinding& binding) const noexcept;
     bool SubmitIPv4Tcp(const void* packet, int packet_length) noexcept;
     bool IsReady() const noexcept;
     bool IsRunning() const noexcept;
     std::uint64_t Generation() const noexcept;
     ppp::app::runtime::RuntimeXtcpStats SnapshotStats() const noexcept;
 #if defined(PPP_XTCP_RUNTIME_TESTING)
+    // Makes the index-th worker thread creation fail once (partial startup).
+    static void FailWorkerStartForTesting(int index) noexcept;
     bool EmitOutputForTesting(const std::shared_ptr<std::uint8_t>& data, int length,
         std::optional<ppp::tap::TxGsoMetadata> gso = std::nullopt) noexcept;
 #endif

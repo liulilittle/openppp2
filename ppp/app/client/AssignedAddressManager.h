@@ -47,10 +47,19 @@ namespace ppp {
                 bool Ipv6Applied() const noexcept { return ipv6_applied_; }
 
                 /** @brief Returns whether exact-owned IPv6 mutations still require cleanup. */
-                bool HasPendingIPv6Cleanup() const noexcept { return ipv6_state_.HasPendingOwnedMutations(); }
+                bool HasPendingIPv6Cleanup() const noexcept {
+#if defined(_WIN32)
+                    return ipv6_state_.HasPendingOwnedMutations() || ipv6_journal_pending_;
+#else
+                    return ipv6_state_.HasPendingOwnedMutations();
+#endif
+                }
 
                 /** @brief Returns whether server-assigned IPv4 is currently applied. */
                 bool Ipv4Applied() const noexcept { return ipv4_applied_; }
+
+                /** @brief Returns whether IPv4 cleanup still needs a successful retry. */
+                bool HasPendingIPv4Cleanup() const noexcept { return ipv4_applied_ || ipv4_journal_pending_; }
 
                 /** @brief Returns the last IPv6 address successfully applied to the local NIC. */
                 boost::asio::ip::address LastAssignedIPv6() const noexcept { return last_assigned_ipv6_; }
@@ -63,7 +72,6 @@ namespace ppp {
                 bool                                                                ipv6_applied_ = false;
                 IPv6AppliedState                                                    ipv6_state_;
                 boost::asio::ip::address                                            last_assigned_ipv6_;
-
                 bool                                                                ipv4_applied_ = false;
                 boost::asio::ip::address                                            assigned_ipv4_address_;
                 boost::asio::ip::address                                            assigned_ipv4_gateway_;
@@ -73,6 +81,13 @@ namespace ppp {
                 boost::asio::ip::address                                            static_ipv4_address_;
                 boost::asio::ip::address                                            static_ipv4_gateway_;
                 boost::asio::ip::address                                            static_ipv4_mask_;
+                // Durable ownership remains pending until the journal remove
+                // succeeds after a verified platform restore.
+                bool                                                                ipv4_journal_pending_ = false;
+                bool                                                                ipv4_restore_verified_ = false;
+                ppp::string                                                         ipv4_journal_target_;
+                bool                                                                ipv6_journal_pending_ = false;
+                ppp::string                                                         ipv6_journal_target_;
 #endif
             };
         }

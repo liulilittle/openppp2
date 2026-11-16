@@ -48,6 +48,10 @@ namespace ppp {
                 ppp::string                                                   OriginalDefaultRouteInterface;
                 ppp::vector<ppp::string>                                      DnsServers;
                 ppp::vector<ppp::string>                                      OriginalDnsServers;
+                // Whether the original IPv6 resolver list came from the
+                // automatic/DHCP source.  This is distinct from the IP
+                // address DHCP flag and is needed to restore resolver mode.
+                bool                                                          OriginalDnsAutomatic = false;
                 ppp::vector<ppp::string>                                      OriginalDefaultRoutes;
                 ppp::string                                                   OriginalDnsConfiguration;
                 ppp::string                                                   OriginalDefaultRoute;
@@ -76,6 +80,7 @@ namespace ppp {
                     OriginalDefaultRouteInterface.clear();
                     DnsServers.clear();
                     OriginalDnsServers.clear();
+                    OriginalDnsAutomatic = false;
                     OriginalDefaultRoutes.clear();
                     OriginalDnsConfiguration.clear();
                     OriginalDefaultRoute.clear();
@@ -83,7 +88,11 @@ namespace ppp {
 
                 /** @brief Returns whether exact-owned Windows mutations still require cleanup. */
                 inline bool                                                   HasPendingOwnedMutations() const noexcept {
-                    return AddressOwned || GatewayNeighborOwned;
+                    // Address and neighbor ownership are exact-match resources. DNS and
+                    // subnet routes also need to remain live until their restore operation
+                    // has been confirmed, otherwise a failed teardown loses its retry path.
+                    return AddressOwned || GatewayNeighborOwned ||
+                        SubnetRouteApplied || DnsApplied;
                 }
             };
 

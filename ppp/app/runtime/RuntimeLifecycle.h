@@ -122,6 +122,30 @@ public:
     bool UpdateP2PState(
         std::uint64_t generation,
         ppp::p2p::P2PState state,
+        std::uint64_t now,
+        const std::string& gate_reason = "") noexcept {
+        RuntimeSnapshot snapshot;
+        {
+            std::lock_guard<std::mutex> scope(mutex_);
+            if (generation == 0 || generation != generation_ ||
+                stop_coordinator_.IsStopping(generation) ||
+                stop_coordinator_.IsCompleted(generation)) {
+                return false;
+            }
+            if (current_.p2p_state == state && current_.p2p_gate_reason == gate_reason) {
+                return true;
+            }
+            current_.p2p_state = state;
+            current_.p2p_gate_reason = gate_reason;
+            current_.monotonic_ms = NextTimestamp(now);
+            snapshot = current_;
+        }
+        return publisher_.Publish(std::move(snapshot));
+    }
+
+    bool UpdateP2PPeers(
+        std::uint64_t generation,
+        std::vector<RuntimePeerSnapshot> peers,
         std::uint64_t now) noexcept {
         RuntimeSnapshot snapshot;
         {
@@ -131,10 +155,8 @@ public:
                 stop_coordinator_.IsCompleted(generation)) {
                 return false;
             }
-            if (current_.p2p_state == state) {
-                return true;
-            }
-            current_.p2p_state = state;
+            if (current_.peers == peers) return true;
+            current_.peers = std::move(peers);
             current_.monotonic_ms = NextTimestamp(now);
             snapshot = current_;
         }

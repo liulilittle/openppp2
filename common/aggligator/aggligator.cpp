@@ -4,6 +4,7 @@
 #include <ppp/net/Socket.h>                                                 // Socket helper functions
 #include <ppp/coroutines/asio/asio.h>                                       // ASIO coroutine wrappers
 #include <ppp/threading/Executors.h>                                        // GetTickCount and threading utilities
+#include <ppp/net/asio/SharedBufferReceive.h>                             // Receive into the per-context shared buffer
 
 #if defined(_WIN32)                                                         // Windows-specific code for QoS
 #define IPTOS_TOS_MASK      0x1E                                            // TOS field mask
@@ -406,7 +407,9 @@ namespace aggligator
                                     }
 
                                     // Feed the received data into convergence for reassembly
-                                    bool ok = convergence->input(buffer_.get(), length, buffer_) && recv();
+                                    // buffer_ is reused by the next recv(), so out-of-order packets must be
+                                    // copied rather than queued as slices of it.
+                                    bool ok = convergence->input(buffer_.get(), length, NULLPTR) && recv();
                                     if (ok)
                                     {
                                         client->last_ = (uint32_t)(aggligator->now() / 1000);
@@ -1645,7 +1648,7 @@ namespace aggligator
         }
 
         auto self = shared_from_this();                                     // Keep client alive
-        socket_.async_receive_from(boost::asio::buffer(buffer.get(), aggligator->buffer_size_), source_endpoint_, // Receive UDP
+        ppp::net::asio::AsyncReceiveFromSharedBuffer(socket_, buffer.get(), aggligator->buffer_size_, source_endpoint_, // Receive UDP into the shared buffer
             [self, this](boost::system::error_code ec, std::size_t sz) noexcept
             {
                 ptr aggligator = app_;

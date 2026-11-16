@@ -1,8 +1,6 @@
 package ppp
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -138,9 +136,7 @@ func (my *ManagedServer) adminAuthorized(r *http.Request) bool {
 		return false
 	}
 	provided := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-	want := sha256.Sum256([]byte(configured))
-	got := sha256.Sum256([]byte(provided))
-	return subtle.ConstantTimeCompare(want[:], got[:]) == 1
+	return secureEqual(provided, configured)
 }
 
 func adminJSON(w http.ResponseWriter, status int, value any) {
@@ -149,6 +145,12 @@ func adminJSON(w http.ResponseWriter, status int, value any) {
 	if value != nil {
 		_ = json.NewEncoder(w).Encode(value)
 	}
+}
+
+// adminInternal logs the underlying error and returns only a generic message.
+func adminInternal(w http.ResponseWriter, status int, message string, err error) {
+	LOG_ERROR.Println(err)
+	adminError(w, status, message)
 }
 
 func adminError(w http.ResponseWriter, status int, message string) {
@@ -187,15 +189,15 @@ func (my *ManagedServer) adminStatus(w http.ResponseWriter, _ *http.Request) {
 	var servers int64
 	var subscriptions int64
 	if err := db.LoadDB().Model(&tb_user{}).Count(&users).Error; err != nil {
-		adminError(w, http.StatusInternalServerError, err.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	if err := db.LoadDB().Model(&tb_server{}).Count(&servers).Error; err != nil {
-		adminError(w, http.StatusInternalServerError, err.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	if err := db.LoadDB().Model(&tb_subscription{}).Count(&subscriptions).Error; err != nil {
-		adminError(w, http.StatusInternalServerError, err.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	my.Lock()
@@ -214,7 +216,7 @@ func (my *ManagedServer) adminListUsers(w http.ResponseWriter, _ *http.Request) 
 	}
 	var users []tb_user
 	if err := my.FetchDB(true).LoadDB().Order("guid ASC").Limit(1000).Find(&users).Error; err != nil {
-		adminError(w, http.StatusInternalServerError, err.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	adminJSON(w, http.StatusOK, users)
@@ -240,7 +242,7 @@ func (my *ManagedServer) adminCreateUser(w http.ResponseWriter, r *http.Request)
 	}
 	user := tb_user{Guid: input.Guid, IncomingTraffic: input.IncomingTraffic, OutgoingTraffic: input.OutgoingTraffic, ExpiredTime: input.ExpiredTime, BandwidthQoS: input.BandwidthQoS}
 	if err := my.FetchDB(false).LoadDB().Create(&user).Error; err != nil {
-		adminError(w, http.StatusConflict, err.Error())
+		adminInternal(w, http.StatusConflict, "request conflicts with existing data", err)
 		return
 	}
 	_ = my.redis.Del(_REDIS_USER_DATA_KEY + ":" + user.Guid)
@@ -274,7 +276,7 @@ func (my *ManagedServer) adminUpdateUser(w http.ResponseWriter, r *http.Request)
 		if err == nil {
 			err = fmt.Errorf("user update failed with code %d", code)
 		}
-		adminError(w, http.StatusServiceUnavailable, err.Error())
+		adminInternal(w, http.StatusServiceUnavailable, "service unavailable", err)
 		return
 	}
 	adminJSON(w, http.StatusOK, tb_user{
@@ -296,7 +298,7 @@ func (my *ManagedServer) adminDeleteUser(w http.ResponseWriter, r *http.Request)
 	db := my.FetchDB(false).LoadDB()
 	var count int64
 	if err := db.Model(&tb_subscription{}).Where("user_guid = ?", guid).Count(&count).Error; err != nil {
-		adminError(w, http.StatusInternalServerError, err.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	if count > 0 {
@@ -305,7 +307,7 @@ func (my *ManagedServer) adminDeleteUser(w http.ResponseWriter, r *http.Request)
 	}
 	result := db.Delete(&tb_user{}, "guid = ?", guid)
 	if result.Error != nil {
-		adminError(w, http.StatusInternalServerError, result.Error.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", result.Error)
 		return
 	}
 	if result.RowsAffected == 0 {
@@ -333,7 +335,7 @@ func (my *ManagedServer) adminListServers(w http.ResponseWriter, _ *http.Request
 	}
 	servers, err := my.server_find_all_servers()
 	if err != nil {
-		adminError(w, http.StatusInternalServerError, err.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	views := make([]adminServerView, 0, len(servers))
@@ -360,14 +362,14 @@ func (my *ManagedServer) adminCreateServer(w http.ResponseWriter, r *http.Reques
 	if my.local != nil {
 		created, err := my.local.CreateServer(*server)
 		if err != nil {
-			adminError(w, http.StatusInternalServerError, err.Error())
+			adminInternal(w, http.StatusInternalServerError, "internal error", err)
 			return
 		}
 		adminJSON(w, http.StatusCreated, serverView(&created, false))
 		return
 	}
 	if err := my.FetchDB(false).LoadDB().Create(server).Error; err != nil {
-		adminError(w, http.StatusConflict, err.Error())
+		adminInternal(w, http.StatusConflict, "request conflicts with existing data", err)
 		return
 	}
 	_, _ = my.server_load_all_servers()
@@ -397,7 +399,7 @@ func (my *ManagedServer) adminUpdateServer(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if err != nil {
-			adminError(w, http.StatusInternalServerError, err.Error())
+			adminInternal(w, http.StatusInternalServerError, "internal error", err)
 			return
 		}
 		adminJSON(w, http.StatusOK, serverView(&updated, false))
@@ -411,7 +413,7 @@ func (my *ManagedServer) adminUpdateServer(w http.ResponseWriter, r *http.Reques
 	}
 	next.Id = id
 	if err := db.Save(next).Error; err != nil {
-		adminError(w, http.StatusInternalServerError, err.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	_, _ = my.server_load_all_servers()
@@ -434,7 +436,7 @@ func (my *ManagedServer) adminDeleteServer(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if err != nil {
-			adminError(w, http.StatusConflict, err.Error())
+			adminInternal(w, http.StatusConflict, "request conflicts with existing data", err)
 			return
 		}
 		adminJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -446,7 +448,7 @@ func (my *ManagedServer) adminDeleteServer(w http.ResponseWriter, r *http.Reques
 	}
 	result := my.FetchDB(false).LoadDB().Delete(&tb_server{}, id)
 	if result.Error != nil {
-		adminError(w, http.StatusInternalServerError, result.Error.Error())
+		adminInternal(w, http.StatusInternalServerError, "internal error", result.Error)
 		return
 	}
 	if result.RowsAffected == 0 {

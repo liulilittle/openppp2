@@ -2,7 +2,11 @@ export const connectionStates = Object.freeze({
   connected: { label: '已连接', action: '断开', tone: 'success' },
   connecting: { label: '连接中', action: '取消', tone: 'warning' },
   disconnected: { label: '未连接', action: '连接', tone: 'muted' },
-  error: { label: '已断开', action: '重新连接', tone: 'danger' },
+  error: { label: '连接失败', action: '重新连接', tone: 'danger' },
+  starting: { label: '启动中', action: '取消', tone: 'warning' },
+  reconnecting: { label: '重连中', action: '取消', tone: 'warning' },
+  stopping: { label: '停止中', action: '等待', tone: 'muted' },
+  recovery_pending: { label: '网络恢复待处理', action: '恢复网络', tone: 'danger' },
 })
 
 export function latencyTone(latency) {
@@ -38,7 +42,9 @@ export function createClientState() {
       qualityGrade: '优',
       activeLinks: 4,
       requestedLinks: 4,
-      effectivePath: '直连',
+      effectivePath: 'direct',
+      p2pState: 'direct',
+      peers: [{ virtualIp: '10.8.0.7', state: 'direct', effectivePath: 'direct' }],
       tunIp: '10.8.0.2/24',
       gateway: '10.8.0.1',
       httpProxy: '127.0.0.1:1080',
@@ -86,23 +92,24 @@ export function createEmptyClientState() {
     route: 'connection',
     connection: {
       status: 'disconnected', currentNodeId: null, connectedAt: null,
-      exitCode: null, statsAvailable: false, pid: null, lastError: '',
+      exitCode: null, statsAvailable: false, pid: null, lastError: '', mode: 'client', sessionId: 0, phase: 'idle', statsStale: false, recoveryPending: false,
     },
     stats: {
       rxRateMbps: 0, txRateMbps: 0, rxBytes: 0, txBytes: 0,
       qualityPercent: 0, qualityGrade: '', activeLinks: 0,
-      effectivePath: '', tunIp: '', gateway: '', httpProxy: '', socksProxy: '',
+      effectivePath: '', p2pState: '', peers: [], tcpStack: '', tunIp: '', gateway: '', httpProxy: '', socksProxy: '',
     },
     events: [],
     subscription: {
       url: '', name: '', updatedAt: null, lastSyncedAt: null,
-      cached: false, cacheAgeMinutes: 0, nodes: [],
+      cached: false, cacheAgeMinutes: 0, nodes: [], sources: [],
     },
     config: '{}',
     launchOptions: {},
+    networkOverrides: {}, history: [], kernel: null, administrator: false, proxyRecoveryPending: false, policyDir: '', policyEnabled: false,
     settings: {
       autostart: false, closeToTray: true, disconnectOnExit: true,
-      language: '简体中文', appearance: '深色', pppPath: '',
+      language: '简体中文', appearance: 'system', connectionMode: 'client', pppPath: '', autoSystemProxy: true,
     },
   }
 }

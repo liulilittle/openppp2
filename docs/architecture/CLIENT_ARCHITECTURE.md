@@ -32,7 +32,7 @@ The CLI selects the role:
 
 Without `--mode=client` or `--mode=proxy`, the process selects server mode even if `client.proxy-only` is present.
 
-`PrepareClientLoopbackEnvironment()` derives `proxy_only_runtime` from proxy mode or the config flag. On non-Android/non-iOS targets it selects `TapStub` for that runtime; `TapStub` reports open but intentionally discards output. Android supplies a real VPN file descriptor to native code, and source does not support claiming desktop-style proxy-only behavior for iOS.
+`PrepareClientLoopbackEnvironment()` derives `proxy_only_runtime` from proxy mode or the config flag. On non-Android/non-iOS targets it never creates a host adapter. With `--proxy-subnet` (on by default) it selects `TapUserspace`, which loops virtual-subnet packets between the in-process lwIP stack and the tunnel and sets `proxy_subnet_userspace_`: local-proxy flows to peers use `UserspaceSubnetBridge` (TCP) or in-process datagrams (UDP), never host sockets, and peers may open only ports listed by `--proxy-forward`, which are bridged to loopback. `--proxy-internet=no` limits the local proxy to virtual-subnet targets. With `--proxy-subnet=no` it selects `TapStub`, which reports open but intentionally discards output. Android supplies a real VPN file descriptor to native code, and source does not support claiming desktop-style proxy-only behavior for iOS.
 
 ## Device and host boundary
 

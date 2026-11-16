@@ -104,7 +104,13 @@ namespace ppp {
                 }
                 else {
                     connection_ = connection;
-                    return mux_ || connection->Run(y);
+                    if (mux_) {
+                        return true;
+                    }
+                    // Per-flow relay: a client upload half-close (carrier FIN) becomes a
+                    // target-socket half-close instead of an abortive close.
+                    connection->EnableReceiveHalfCloseRelay();
+                    return connection->Run(y);
                 }
             }
 

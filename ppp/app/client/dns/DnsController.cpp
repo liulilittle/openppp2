@@ -15,6 +15,30 @@ DnsController::DnsController(
 
 DnsController::~DnsController() noexcept = default;
 
+void DnsController::SetPolicyRuntime(const std::shared_ptr<policy::PolicyRuntime>& runtime) noexcept {
+    if (policy_) policy_->SetPolicyRuntime(runtime);
+}
+
+void DnsController::SetPolicyFakeIpStore(const std::shared_ptr<DurableFakeIpStore>& store) noexcept {
+    if (policy_) policy_->SetPolicyFakeIpStore(store);
+}
+
+void DnsController::SetDirectSocketProtector(const ppp::function<bool(boost::asio::ip::tcp::socket::native_handle_type)>& protect) noexcept {
+    if (policy_) policy_->SetDirectSocketProtector(protect);
+}
+
+bool DnsController::ResolvePolicyDestination(const std::string& domain,
+    const std::shared_ptr<const policy::PolicySnapshot>& snapshot,
+    ppp::coroutines::YieldContext& yield, boost::asio::ip::address& address) noexcept {
+    std::shared_ptr<const DnsSessionContext> session;
+    {
+        std::lock_guard<std::mutex> lock(syncobj_);
+        session = active_session_;
+    }
+    return !closed_ && policy_ && session && session->IsActive() &&
+        policy_->ResolvePolicyDestination(domain, snapshot, session, yield, address);
+}
+
 bool DnsController::Open(
     const std::shared_ptr<ppp::configurations::AppConfiguration>& configuration,
     const std::shared_ptr<boost::asio::io_context>& context,
@@ -83,6 +107,14 @@ bool DnsController::ResolveDestination(
 
 bool DnsController::GetFakeIpRoute(uint32_t& network, int& prefix) const noexcept {
     return policy_ && policy_->GetFakeIpRoute(network, prefix);
+}
+
+PolicyTelemetrySnapshot DnsController::SnapshotPolicyTelemetry() const noexcept {
+    return policy_ ? policy_->SnapshotPolicyTelemetry() : PolicyTelemetrySnapshot{};
+}
+
+void DnsController::RecordPolicyDecision(policy::PolicyAction action) noexcept {
+    if (policy_) policy_->RecordPolicyDecision(action);
 }
 
 bool DnsController::ConsumeUdpFlow(

@@ -1,5 +1,7 @@
 <script>
   import { Code2, Eye, EyeOff, Save, X } from 'lucide-svelte'
+  import { onMount } from 'svelte'
+  import { t } from '../i18n.js'
 
   export let node = null
   export let onClose = () => {}
@@ -21,7 +23,22 @@
     },
   }
 
-  const initial = structuredClone(node?.config || defaultConfig)
+  let initial = structuredClone(node?.config || defaultConfig)
+  let dialog
+  onMount(() => {
+    const previous=document.activeElement
+    dialog.querySelector('input,button')?.focus()
+    const keydown=(event) => {
+      if(event.key === 'Escape') { event.preventDefault(); onClose() }
+      if(event.key !== 'Tab') return
+      const elements=[...dialog.querySelectorAll('button,input,select,textarea,summary')].filter((el) => !el.disabled && el.offsetParent !== null)
+      const first=elements[0], last=elements.at(-1)
+      if(event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+      else if(!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+    }
+    dialog.addEventListener('keydown',keydown)
+    return () => { dialog.removeEventListener('keydown',keydown); previous?.focus() }
+  })
   const endpoint = parseServer(initial.client?.server || '')
   let name = node?.name || ''
   let subtitle = node?.subtitle || ''
@@ -92,7 +109,7 @@
       ...(config.client || {}), server, guid: guid.trim(), bandwidth: Number(bandwidth) || 0,
       'http-proxy': { bind: httpBind.trim() || '127.0.0.1', port: proxyHttpPort },
       'socks-proxy': { bind: socksBind.trim() || '127.0.0.1', port: proxySocksPort },
-      mappings: [],
+      mappings: Array.isArray(config.client?.mappings) ? config.client.mappings : [],
     }
     return config
   }
@@ -100,6 +117,23 @@
   function toggleRaw() {
     if (!rawMode) {
       try { raw = JSON.stringify(buildConfig(), null, 2); error = '' } catch (cause) { error = cause.message; return }
+    }
+    else {
+      try {
+        const value=JSON.parse(raw)
+        if(!value || Array.isArray(value) || typeof value !== 'object') throw new Error('Expected JSON object')
+        initial=value
+        const server=parseServer(value.client?.server || '')
+        transportType=server.transport; host=server.host; port=server.port; path=server.path
+        guid=value.client?.guid || ''; bandwidth=value.client?.bandwidth ?? 0; concurrent=value.concurrent ?? 1
+        protocol=value.key?.protocol || 'aes-128-cfb'; protocolKey=value.key?.['protocol-key'] || ''
+        transport=value.key?.transport || 'aes-256-cfb'; transportKey=value.key?.['transport-key'] || ''
+        kf=value.key?.kf ?? 154543927; kx=value.key?.kx ?? 128; kl=value.key?.kl ?? 10; kh=value.key?.kh ?? 12
+        masked=!!value.key?.masked; plaintext=!!value.key?.plaintext; deltaEncode=!!value.key?.['delta-encode']; shuffleData=!!value.key?.['shuffle-data']
+        httpBind=value.client?.['http-proxy']?.bind || '127.0.0.1'; httpPort=value.client?.['http-proxy']?.port ?? 8080
+        socksBind=value.client?.['socks-proxy']?.bind || '127.0.0.1'; socksPort=value.client?.['socks-proxy']?.port ?? 1080
+        error=''
+      } catch(cause) { error=String(cause); return }
     }
     rawMode = !rawMode
   }
@@ -126,50 +160,50 @@
 </script>
 
 <div class="modal-backdrop" role="presentation" on:click|self={onClose}>
-  <section class="node-dialog" role="dialog" aria-modal="true" aria-labelledby="node-dialog-title">
+  <section class="node-dialog" role="dialog" aria-modal="true" aria-labelledby="node-dialog-title" bind:this={dialog} tabindex="-1">
     <header class="dialog-head">
-      <div><h2 id="node-dialog-title">{node ? '编辑手动节点' : '添加手动节点'}</h2><p>配置格式与移动端节点 Profile 对齐</p></div>
-      <button class="icon-button" title="关闭" aria-label="关闭" on:click={onClose}><X size={16} /></button>
+      <div><h2 id="node-dialog-title">{$t(node ? 'Edit node' : 'Add node',node ? '编辑节点' : '添加节点')}</h2></div>
+      <button class="icon-button" title={$t('Close','关闭')} aria-label={$t('Close','关闭')} on:click={onClose}><X size={16} /></button>
     </header>
 
     <div class="dialog-body">
       {#if !rawMode}
         <div class="form-section">
-          <h3>基本信息</h3>
-          <div class="form-grid two"><label class="field"><span>名称</span><input class="text-input" bind:value={name} placeholder="例如：东京自建节点" /></label><label class="field"><span>副标题</span><input class="text-input" bind:value={subtitle} placeholder="地区或用途，可选" /></label></div>
+          <h3>{$t('General','基本信息')}</h3>
+          <div class="form-grid two"><label class="field"><span>{$t('Name','名称')}</span><input class="text-input" bind:value={name} /></label><label class="field"><span>{$t('Subtitle','副标题')}</span><input class="text-input" bind:value={subtitle} /></label></div>
         </div>
         <div class="form-section">
-          <h3>服务器</h3>
+          <h3>{$t('Server','服务器')}</h3>
           <div class="form-grid server-grid">
-            <label class="field"><span>传输</span><select class="select-input" bind:value={transportType}><option value="tcp">TCP</option><option value="ws">WebSocket</option><option value="wss">WebSocket TLS</option></select></label>
+            <label class="field"><span>{$t('Transport','传输')}</span><select class="select-input" bind:value={transportType}><option value="tcp">TCP</option><option value="ws">WebSocket</option><option value="wss">WebSocket TLS</option></select></label>
             <label class="field host"><span>Host</span><input class="text-input mono" bind:value={host} placeholder="server.example.com" /></label>
             <label class="field"><span>Port</span><input class="text-input number" type="number" min="1" max="65535" bind:value={port} /></label>
           </div>
           {#if transportType !== 'tcp'}<label class="field inline-field"><span>Path</span><input class="text-input mono" bind:value={path} placeholder="/tunnel" /></label>{/if}
-          <div class="form-grid three"><label class="field"><span>GUID</span><input class="text-input mono" bind:value={guid} placeholder="可选" /></label><label class="field"><span>带宽 kbps</span><input class="text-input number" type="number" min="0" bind:value={bandwidth} /></label><label class="field"><span>并发连接</span><input class="text-input number" type="number" min="1" bind:value={concurrent} /></label></div>
+          <div class="form-grid three"><label class="field"><span>GUID</span><input class="text-input mono" bind:value={guid} /></label><label class="field"><span>{$t('Bandwidth kbps','带宽 kbps')}</span><input class="text-input number" type="number" min="0" bind:value={bandwidth} /></label><label class="field"><span>{$t('Concurrency','并发连接')}</span><input class="text-input number" type="number" min="1" bind:value={concurrent} /></label></div>
         </div>
         <div class="form-section">
-          <div class="section-title"><h3>加密</h3><button class="inline-link icon-text" on:click={() => (showSecrets = !showSecrets)}>{#if showSecrets}<EyeOff size={13} />隐藏密钥{:else}<Eye size={13} />显示密钥{/if}</button></div>
+          <div class="section-title"><h3>{$t('Encryption','加密')}</h3><button class="inline-link icon-text" on:click={() => (showSecrets = !showSecrets)}>{#if showSecrets}<EyeOff size={13} />{$t('Hide keys','隐藏密钥')}{:else}<Eye size={13} />{$t('Show keys','显示密钥')}{/if}</button></div>
           <div class="form-grid two"><label class="field"><span>Protocol</span><select class="select-input" bind:value={protocol}>{#each protocols as item}<option value={item}>{item}</option>{/each}</select></label><label class="field"><span>Transport</span><select class="select-input" bind:value={transport}>{#each protocols as item}<option value={item}>{item}</option>{/each}</select></label></div>
           <div class="form-grid two"><label class="field"><span>Protocol Key</span>{#if showSecrets}<input class="text-input mono" type="text" bind:value={protocolKey} />{:else}<input class="text-input mono" type="password" bind:value={protocolKey} />{/if}</label><label class="field"><span>Transport Key</span>{#if showSecrets}<input class="text-input mono" type="text" bind:value={transportKey} />{:else}<input class="text-input mono" type="password" bind:value={transportKey} />{/if}</label></div>
           <div class="form-grid four"><label class="field"><span>KF</span><input class="text-input number" type="number" bind:value={kf} /></label><label class="field"><span>KX</span><input class="text-input number" type="number" bind:value={kx} /></label><label class="field"><span>KL</span><input class="text-input number" type="number" bind:value={kl} /></label><label class="field"><span>KH</span><input class="text-input number" type="number" bind:value={kh} /></label></div>
           <div class="switch-grid"><label><input type="checkbox" bind:checked={masked} /><span>Masked</span></label><label><input type="checkbox" bind:checked={plaintext} /><span>Plaintext</span></label><label><input type="checkbox" bind:checked={deltaEncode} /><span>Delta Encode</span></label><label><input type="checkbox" bind:checked={shuffleData} /><span>Shuffle Data</span></label></div>
         </div>
         <div class="form-section">
-          <h3>本地代理</h3>
+          <h3>{$t('Local proxy','本地代理')}</h3>
           <div class="proxy-row"><strong>HTTP</strong><input class="text-input mono" bind:value={httpBind} aria-label="HTTP Bind" /><input class="text-input number port" type="number" min="1" max="65535" bind:value={httpPort} aria-label="HTTP Port" /></div>
           <div class="proxy-row"><strong>SOCKS</strong><input class="text-input mono" bind:value={socksBind} aria-label="SOCKS Bind" /><input class="text-input number port" type="number" min="1" max="65535" bind:value={socksPort} aria-label="SOCKS Port" /></div>
         </div>
       {:else}
-        <div class="raw-editor"><label class="field"><span>完整 appsettings JSON</span><textarea class="text-area" bind:value={raw} spellcheck="false"></textarea></label></div>
+        <div class="raw-editor"><label class="field"><span>appsettings JSON</span><textarea class="text-area" bind:value={raw} spellcheck="false"></textarea></label></div>
       {/if}
     </div>
 
     <footer class="dialog-actions">
-      <button class="secondary-button icon-text" on:click={toggleRaw}><Code2 size={14} />{rawMode ? '返回表单' : '高级 JSON'}</button>
+      <button class="secondary-button icon-text" on:click={toggleRaw}><Code2 size={14} />{$t(rawMode ? 'Form' : 'Advanced JSON',rawMode ? '返回表单' : '高级 JSON')}</button>
       <span class="dialog-error">{error}</span>
-      <button class="secondary-button" on:click={onClose}>取消</button>
-      <button class="primary-button icon-text" disabled={saving} on:click={save}><Save size={14} />{saving ? '保存中' : '保存节点'}</button>
+      <button class="secondary-button" on:click={onClose}>{$t('Cancel','取消')}</button>
+      <button class="primary-button icon-text" disabled={saving} on:click={save}><Save size={14} />{$t(saving ? 'Saving' : 'Save node',saving ? '保存中' : '保存节点')}</button>
     </footer>
   </section>
 </div>
@@ -178,7 +212,7 @@
   .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: rgba(0,0,0,.68); }
   .node-dialog { width: min(760px, 100%); max-height: min(760px, calc(100vh - 48px)); display: grid; grid-template-rows: auto minmax(0,1fr) auto; overflow: hidden; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 24px 80px rgba(0,0,0,.45); }
   .dialog-head { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px 10px 18px; border-bottom: 1px solid var(--border); }
-  h2, h3, p { margin: 0; } h2 { font-size: 14px; } .dialog-head p { margin-top: 4px; color: var(--text-3); font-size: 11px; }
+  h2, h3 { margin: 0; } h2 { font-size: 14px; }
   .dialog-body { min-height: 0; overflow-y: auto; }
   .form-section { padding: 15px 18px 16px; border-bottom: 1px solid var(--border); }
   .form-section h3 { margin-bottom: 12px; font-size: 12px; color: var(--text-2); }
@@ -192,7 +226,7 @@
   .proxy-row { display: grid; grid-template-columns: 54px minmax(0,1fr) 110px; gap: 8px; align-items: center; margin-top: 8px; } .proxy-row strong { color: var(--text-3); font-size: 11px; }
   .raw-editor { padding: 16px 18px; } .raw-editor .text-area { min-height: 480px; }
   .dialog-actions { min-height: 58px; display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }
-  .dialog-error { min-width: 0; flex: 1; color: var(--red); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dialog-error { min-width: 0; flex: 1; color: var(--red); font-size: 11px; overflow-wrap:anywhere; }
   .icon-text { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
   button:disabled { opacity: .55; cursor: default; }
   @media (max-width: 640px) {

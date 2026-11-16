@@ -1,0 +1,43 @@
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -1748,6 +1748,18 @@
+                         tx_ok = backend_->Tx(std::move(out));
+                     }
+                     if (!tx_ok) {
++                        // The next sweep reverses the MPSC stack. Restore
++                        // stack order before publishing the residual FIFO.
++                        Shard::TxRetry* residual_tail = fifo;
++                        Shard::TxRetry* reversed = NULLPTR;
++                        while (fifo) {
++                            auto next = fifo->next;
++                            fifo->next = reversed;
++                            reversed = fifo;
++                            fifo = next;
++                        }
++                        fifo = reversed;
++                        fifo_tail = residual_tail;
+                         fifo_tail->next = shard.tx_retry_head_.load(std::memory_order_relaxed);
+                         while (!shard.tx_retry_head_.compare_exchange_weak(
+                                    fifo_tail->next, fifo, std::memory_order_release,
+@@ -1877,10 +1889,17 @@
+                         tx_ok = backend_->Tx(std::move(out));
+                     }
+                     if (!tx_ok) {
+-                        // ring still full: re-link the remaining suffix
+-                        // [fifo .. fifo_tail] back onto the head (FIFO
+-                        // preserved: the suffix keeps its order, and the
+-                        // suffix's tail points at the old head).
++                        // Restore stack order for the next sweep's reversal.
++                        Shard::TxRetry* residual_tail = fifo;
++                        Shard::TxRetry* reversed = NULLPTR;
++                        while (fifo) {
++                            auto next = fifo->next;
++                            fifo->next = reversed;
++                            reversed = fifo;
++                            fifo = next;
++                        }
++                        fifo = reversed;
++                        fifo_tail = residual_tail;
+                         fifo_tail->next = shard.tx_retry_head_.load(std::memory_order_relaxed);
+                         while (!shard.tx_retry_head_.compare_exchange_weak(
+                                    fifo_tail->next, fifo, std::memory_order_release,

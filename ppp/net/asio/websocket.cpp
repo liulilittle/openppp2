@@ -165,7 +165,7 @@ namespace ppp {
                     }
 
                     /**
-                     * @brief Extracts real client address from common reverse-proxy headers.
+                     * @brief Extracts an untrusted claimed client address for diagnostic logging only.
                      * @param req HTTP upgrade request message.
                      * @return Canonical IP address string when found; otherwise empty string.
                      */
@@ -179,7 +179,7 @@ namespace ppp {
                             "X-Forwarded-For",
                         };
                         /**
-                         * @brief Header probe sequence from strongest to most generic forwarding header.
+                         * @brief Header probe sequence; none of these claims authenticates the client.
                          *
                          * Common Nginx equivalents:
                          * - Host

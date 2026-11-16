@@ -14,3 +14,4 @@ metadata block defined in [documentation governance](../governance/DOCUMENTATION
 
 - [ADR 0001: Runtime Snapshot Is the UI State Authority](0001-runtime-ui-contract.md)
 - [ADR 0002: Gate P2P Direct Channels on an Authenticated Session Exporter](0002-p2p-direct-channel-security.md)
+- [ADR 0003: Opt-in corocc L0 Backend](0003-corocc-coroutine-backend.md)

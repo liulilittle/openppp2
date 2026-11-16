@@ -42,9 +42,9 @@ type Manager struct {
 }
 
 func NewManager(profilesDir string, backupCfg BackupConfig) *Manager {
-	_ = os.MkdirAll(profilesDir, 0o755)
+	_ = os.MkdirAll(profilesDir, 0o700)
 	if backupCfg.Enabled && backupCfg.Dir != "" {
-		_ = os.MkdirAll(backupCfg.Dir, 0o755)
+		_ = os.MkdirAll(backupCfg.Dir, 0o700)
 	}
 	return &Manager{profilesDir: profilesDir, backupCfg: backupCfg}
 }
@@ -92,7 +92,7 @@ func (m *Manager) Save(name string, content []byte) error {
 	if m.backupCfg.Enabled {
 		_ = m.createBackupLocked(name)
 	}
-	return os.WriteFile(path, content, 0o644)
+	return os.WriteFile(path, content, 0o600)
 }
 
 func (m *Manager) Delete(name string) error {
@@ -137,7 +137,7 @@ func (m *Manager) Restore(name string, backupID string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(m.profilesDir, filepath.Base(name)), content, 0o644)
+	return os.WriteFile(filepath.Join(m.profilesDir, filepath.Base(name)), content, 0o600)
 }
 
 func (m *Manager) createBackupLocked(name string) error {
@@ -154,7 +154,7 @@ func (m *Manager) createBackupLocked(name string) error {
 	}
 	id := time.Now().UTC().Format("20060102T150405.000000000Z")
 	dst := filepath.Join(m.backupCfg.Dir, filepath.Base(name)+"-"+id)
-	if err := os.WriteFile(dst, content, 0o644); err != nil {
+	if err := os.WriteFile(dst, content, 0o600); err != nil {
 		return err
 	}
 	if m.backupCfg.MaxBackups > 0 {

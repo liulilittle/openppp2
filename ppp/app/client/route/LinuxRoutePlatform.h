@@ -2,9 +2,11 @@
 
 #include <functional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 #include <ppp/app/client/route/IRoutePlatform.h>
+#include <ppp/app/client/route/RouteSnapshotContract.h>
 #include <ppp/app/client/route/RouteState.h>
 
 namespace ppp {
@@ -52,6 +54,42 @@ namespace ppp {
                     bool SameDefault(
                         const RouteSnapshotPtr& left,
                         const RouteSnapshotPtr& right) noexcept override;
+
+                    // Exposes only complete records. Legacy test snapshots
+                    // intentionally remain opaque until a host identity is
+                    // available.
+                    static bool TryGetSnapshotRecord(
+                        const RouteSnapshotPtr& snapshot,
+                        RouteSnapshotRecord& record) noexcept;
+                    // Only complete, host-identity-bearing records may cross
+                    // a process boundary. Legacy opaque snapshots are
+                    // rejected rather than cast to an implementation type.
+                    static bool SerializeSnapshot(
+                        const RouteSnapshotPtr& snapshot,
+                        std::string& serialized) noexcept;
+                    static bool DeserializeSnapshot(
+                        std::string_view serialized,
+                        RouteSnapshotPtr& snapshot) noexcept;
+                    bool SerializeRecoverySnapshot(
+                        const RouteSnapshotPtr& snapshot,
+                        std::string& serialized) noexcept override {
+                        return SerializeSnapshot(snapshot, serialized);
+                    }
+                    bool DeserializeRecoverySnapshot(
+                        std::string_view serialized,
+                        RouteSnapshotPtr& snapshot) noexcept override {
+                        return DeserializeSnapshot(serialized, snapshot);
+                    }
+                    bool PrepareRouteRecoverySnapshot(
+                        const RouteSpec& route,
+                        std::string& serialized) noexcept override;
+                    bool DeleteRouteRecovery(
+                        std::string_view serialized) noexcept override;
+
+                    // Replays a durable route journal target without a live
+                    // connection or RouteCoordinator context.
+                    static bool RecoverRouteJournalEntry(
+                        std::string_view target) noexcept;
 
                 private:
                     static LinuxRouteOperations CreateSystemOperations() noexcept;

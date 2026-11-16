@@ -1,0 +1,419 @@
+diff --git a/include/xtcp/core/syncookies.h b/include/xtcp/core/syncookies.h
+--- a/include/xtcp/core/syncookies.h
++++ b/include/xtcp/core/syncookies.h
+@@ -13,14 +13,16 @@
+     namespace core {
+         /**
+          * @brief SYN cookie encoder/verifier (stateless).
+-         * @note Cookie layout [31..27] 5 hash bits, [26..3] 24 bits of
+-         *       (hash XOR rolling time), [2..0] MSS index. The time never
+-         *       displaces the verified hash bits; effective per-attempt
+-         *       forgery probability is 2^-5 (hash bits) x the 60 s
+-         *       freshness window 60/2^24 (~2^-18) = ~2^-23, NOT the 29-bit
+-         *       "hash width" (the other 24 hash bits are hidden under the
+-         *       time XOR, not verified). The secret is 128 bits from the OS
+-         *       CSPRNG, so extracting it from captured cookies is infeasible.
++         * @note Cookie layout [31..8] 24 verified bits of a keyed SipHash-2-4
++         *       over the full 128-bit addresses, ports, peer ISN, MSS index
++         *       and time epoch; [7..3] 5 bits of the 16 s time counter XORed
++         *       with 5 further independent hash bits; [2..0] MSS index (covered
++         *       by the hash). Per-attempt blind forgery is ~2 x 2^-24 x (5/32
++         *       accepted slots) = ~2^-25.4, versus ~2^-23 for the previous
++         *       5 verified bits + 24 hidden time bits. The 128-bit secret is
++         *       from the OS CSPRNG. The window is quantized to the 16 s tick:
++         *       a cookie issued within the window is always accepted, and one
++         *       up to ceil(window/16)*16 + 15 s old may still be.
+          */
+         class Syncookies {
+         public:
+@@ -74,11 +76,10 @@
+                         UInt32 window_sec, Byte& mss_index) noexcept;
+ 
+         private:
+-            /** @brief Folds a 128-bit address into one word via the h*31
+-             *         polynomial (mirror of scheduler_hash::HashFlowKey). */
+-            static UInt32 FoldAddr(const UInt32 addr[4]) noexcept;
+-            UInt32 Hash(UInt32 saddr, UInt32 daddr, UInt16 sport, UInt16 dport,
+-                        UInt32 seq) const noexcept;
++            /** @brief 64-bit keyed SipHash-2-4 of the flow tuple, MSS index and
++             *         time epoch (low 32 bits verify, high bits mask the time). */
++            UInt64 Hash(const UInt32 saddr[4], const UInt32 daddr[4], UInt16 sport,
++                        UInt16 dport, UInt32 seq, Byte mss_index, UInt32 epoch) const noexcept;
+ 
+             UInt64 secret_[2];  /**< 128-bit CSPRNG secret (see syncookies.cpp) */
+         };
+diff --git a/src/core/syncookies.cpp b/src/core/syncookies.cpp
+--- a/src/core/syncookies.cpp
++++ b/src/core/syncookies.cpp
+@@ -17,14 +17,32 @@
+ namespace xtcp {
+     namespace core {
+         namespace {
+-            constexpr UInt32 kTimeBits = 24;    /**< Rolling time counter bits */
+-            constexpr UInt32 kTimeMask = (1u << kTimeBits) - 1;
+-            constexpr UInt32 kMssBits = 3;      /**< MSS index bits */
++            // Cookie layout (32 bits):
++            //   [31..8] 24 verified hash bits   (low 32 bits of SipHash)
++            //   [7..3]  5 time bits             (counter low bits XOR 5 independent hash bits)
++            //   [2..0]  3 MSS-index bits        (plaintext, but covered by the hash)
++            constexpr UInt32 kMssBits = 3;
+             constexpr UInt32 kMssMask = (1u << kMssBits) - 1;
+-
+-            inline UInt32 Rotl(UInt32 x, UInt32 n) noexcept {
+-                return (x << n) | (x >> (32 - n));
++            constexpr UInt32 kTimeBits = 5;
++            constexpr UInt32 kTimeMask = (1u << kTimeBits) - 1;
++            constexpr UInt32 kTimeShift = kMssBits;
++            constexpr UInt32 kHashMask = ~((kTimeMask << kTimeShift) | kMssMask);  // 0xFFFFFF00
++            // The time counter ticks every 2^kUnitShift seconds so that the
++            // few accepted counter values (not seconds) bound the forgery
++            // probability; the 60 s window spans <= 5 of the 32 slots.
++            constexpr UInt32 kUnitShift = 4;  // 16 s per tick
++
++            inline UInt64 Rotl64(UInt64 x, UInt32 n) noexcept {
++                return (x << n) | (x >> (64 - n));
++            }
++
++            inline void SipRound(UInt64& v0, UInt64& v1, UInt64& v2, UInt64& v3) noexcept {
++                v0 += v1; v1 = Rotl64(v1, 13); v1 ^= v0; v0 = Rotl64(v0, 32);
++                v2 += v3; v3 = Rotl64(v3, 16); v3 ^= v2;
++                v0 += v3; v3 = Rotl64(v3, 21); v3 ^= v0;
++                v2 += v1; v1 = Rotl64(v1, 17); v1 ^= v2; v2 = Rotl64(v2, 32);
+             }
++
+             void FillCryptoBytes(Byte* out, UInt32 len) noexcept {
+                 // OS CSPRNG first (mirror of tfo.cpp); std::random_device as
+                 // the portable fallback. Never a clock-derived value: a
+@@ -46,10 +64,9 @@
+         }
+ 
+         Syncookies::Syncookies() noexcept {
+-            // 128-bit per-process secret from the OS CSPRNG: extracting it
+-            // from captured cookies is infeasible, so forgery stays bounded
+-            // by the per-attempt probability (~2^-23: 2^-5 verified hash
+-            // bits x the 60 s freshness window), not by secret recovery.
++            // 128-bit per-process secret from the OS CSPRNG: the hash below
++            // is a keyed PRF (SipHash-2-4), so captured cookies reveal
++            // neither the key nor other tuples' cookies.
+             Byte buf[16];
+             FillCryptoBytes(buf, sizeof(buf));
+             std::memcpy(&secret_[0], buf, 8);
+@@ -59,100 +76,106 @@
+             }
+         }
+ 
+-        UInt32 Syncookies::FoldAddr(const UInt32 addr[4]) noexcept {
+-            // Mirror of scheduler_hash::HashFlowKey (scheduler.h): fold all 4
+-            // 32-bit words of the 128-bit address through the h*31 polynomial
+-            // so two IPv6 peers sharing only a /32 prefix still hash apart.
+-            UInt64 h = 0;
+-            h = h * 31 + addr[0];
+-            h = h * 31 + addr[1];
+-            h = h * 31 + addr[2];
+-            h = h * 31 + addr[3];
+-            h ^= h >> 32;
+-            return static_cast<UInt32>(h);
++        UInt64 Syncookies::Hash(const UInt32 saddr[4], const UInt32 daddr[4],
++                                UInt16 sport, UInt16 dport, UInt32 seq,
++                                Byte mss_index, UInt32 epoch) const noexcept {
++            // SipHash-2-4 keyed with the 128-bit secret over the full 128-bit
++            // addresses, ports, peer ISN, MSS index and time epoch: 40 bytes
++            // of message (five 64-bit words) plus the length|tail word.
++            UInt64 v0 = secret_[0] ^ 0x736f6d6570736575ULL;
++            UInt64 v1 = secret_[1] ^ 0x646f72616e646f6dULL;
++            UInt64 v2 = secret_[0] ^ 0x6c7967656e657261ULL;
++            UInt64 v3 = secret_[1] ^ 0x7465646279746573ULL;
++            const UInt64 words[5] = {
++                (static_cast<UInt64>(saddr[1]) << 32) | saddr[0],
++                (static_cast<UInt64>(saddr[3]) << 32) | saddr[2],
++                (static_cast<UInt64>(daddr[1]) << 32) | daddr[0],
++                (static_cast<UInt64>(daddr[3]) << 32) | daddr[2],
++                (static_cast<UInt64>(seq) << 32) | (static_cast<UInt64>(dport) << 16) | sport,
++            };
++            for (UInt32 i = 0; i < 5; ++i) {
++                v3 ^= words[i];
++                SipRound(v0, v1, v2, v3);
++                SipRound(v0, v1, v2, v3);
++                v0 ^= words[i];
++            }
++            const UInt64 last = (static_cast<UInt64>(40) << 56) |
++                                (static_cast<UInt64>(epoch) << 8) |
++                                static_cast<UInt64>(mss_index & kMssMask);
++            v3 ^= last;
++            SipRound(v0, v1, v2, v3);
++            SipRound(v0, v1, v2, v3);
++            v0 ^= last;
++            v2 ^= 0xff;
++            SipRound(v0, v1, v2, v3);
++            SipRound(v0, v1, v2, v3);
++            SipRound(v0, v1, v2, v3);
++            SipRound(v0, v1, v2, v3);
++            return v0 ^ v1 ^ v2 ^ v3;
+         }
+ 
+         UInt32 Syncookies::Compute(const UInt32 saddr[4], const UInt32 daddr[4],
+                                    UInt16 sport, UInt16 dport,
+                                    UInt32 seq, UInt32 time_sec, Byte mss_index) noexcept {
+-            return Compute(FoldAddr(saddr), FoldAddr(daddr), sport, dport, seq, time_sec, mss_index);
++            const UInt32 counter = time_sec >> kUnitShift;
++            const UInt32 epoch = counter >> kTimeBits;
++            const UInt64 h = Hash(saddr, daddr, sport, dport, seq, mss_index, epoch);
++            const UInt32 hv = static_cast<UInt32>(h);
++            // The time slot is masked with hash bits independent of the
++            // verified ones, so it is unreadable and unforgeable.
++            const UInt32 mask = static_cast<UInt32>(h >> 32) & kTimeMask;
++            return (hv & kHashMask) |
++                   (((counter & kTimeMask) ^ mask) << kTimeShift) |
++                   (static_cast<UInt32>(mss_index) & kMssMask);
+         }
+ 
+         bool Syncookies::Verify(UInt32 cookie, UInt32 ack_seq, const UInt32 saddr[4],
+                                 const UInt32 daddr[4], UInt16 sport, UInt16 dport,
+                                 UInt32 seq, UInt32 time_sec, UInt32 window_sec,
+                                 Byte& mss_index) noexcept {
+-            return Verify(cookie, ack_seq, FoldAddr(saddr), FoldAddr(daddr), sport, dport,
+-                          seq, time_sec, window_sec, mss_index);
+-        }
+-
+-        UInt32 Syncookies::Hash(UInt32 saddr, UInt32 daddr, UInt16 sport, UInt16 dport,
+-                                UInt32 seq) const noexcept {
+-            // Keyed mix over the full 128-bit secret (both 64-bit halves
+-            // enter the state; the output is 32 bits, so the forgery bound
+-            // is the per-attempt probability, not the secret width - the
+-            // secret's job is to make extraction infeasible).
+-            UInt32 h = static_cast<UInt32>(secret_[0] ^ secret_[1]);
+-            h ^= saddr;
+-            h = Rotl(h, 13) * 0x5BD1E995u;
+-            h ^= daddr;
+-            h = Rotl(h, 13) * 0x5BD1E995u;
+-            h ^= static_cast<UInt32>(sport) | (static_cast<UInt32>(dport) << 16);
+-            h = Rotl(h, 13) * 0x5BD1E995u;
+-            h ^= seq;
+-            h = Rotl(h, 7) * 0x5BD1E995u;
+-            h ^= static_cast<UInt32>(secret_[0] >> 32);
+-            h = Rotl(h, 13) * 0x5BD1E995u;
+-            h ^= static_cast<UInt32>(secret_[1]);
+-            h = Rotl(h, 7) * 0x5BD1E995u;
+-            h ^= static_cast<UInt32>(secret_[1] >> 32);
+-            h = Rotl(h, 13) * 0x5BD1E995u;
+-            h ^= h >> 15;
+-            return h;
++            if (ack_seq != (cookie + 1)) {
++                return false;
++            }
++            const Byte mss = static_cast<Byte>(cookie & kMssMask);
++            const UInt32 now = time_sec >> kUnitShift;
++            const UInt32 max_age = (window_sec + (1u << kUnitShift) - 1) >> kUnitShift;
++            // The cookie only carries the low kTimeBits of the counter; the
++            // epoch (counter >> kTimeBits) is hashed instead, so a cookie
++            // cannot be replayed one wrap (512 s) later. The issuing epoch is
++            // the current one or the previous one (the low bits just wrapped).
++            const UInt32 now_epoch = now >> kTimeBits;
++            for (UInt32 back = 0; back < 2; ++back) {
++                const UInt32 epoch = now_epoch - back;
++                const UInt64 h = Hash(saddr, daddr, sport, dport, seq, mss, epoch);
++                if ((static_cast<UInt32>(h) & kHashMask) != (cookie & kHashMask)) {
++                    continue;  // 24 verified bits: 2^-24 chance per epoch tried
++                }
++                const UInt32 low = ((cookie >> kTimeShift) & kTimeMask) ^
++                                   (static_cast<UInt32>(h >> 32) & kTimeMask);
++                const UInt32 issued = (epoch << kTimeBits) | low;
++                const UInt32 age = now - issued;  // unsigned: a future stamp wraps huge
++                if (age > max_age) {
++                    return false;  // stale (or from the future)
++                }
++                mss_index = mss;
++                return true;
++            }
++            return false;
+         }
+ 
+         UInt32 Syncookies::Compute(UInt32 saddr, UInt32 daddr, UInt16 sport, UInt16 dport,
+                                    UInt32 seq, UInt32 time_sec, Byte mss_index) noexcept {
+-            // Layout (32 bits): [31..27] = 5 verified hash bits, [26..3] = 24
+-            // bits of (hash XOR rolling time), [2..0] = 3 MSS-index bits. The
+-            // time never displaces the verified bits; per-attempt forgery is
+-            // 2^-5 x (window / 2^24) ~ 2^-23 (the other hash bits sit under
+-            // the time XOR and are not verified).
+-            const UInt32 h = Hash(saddr, daddr, sport, dport, seq);
+-            const UInt32 t = time_sec & kTimeMask;
+-            return (h & ~(kTimeMask << kMssBits | kMssMask)) |
+-                   (((h & kTimeMask) ^ t) << kMssBits) |
+-                   (static_cast<UInt32>(mss_index) & kMssMask);
++            const UInt32 s[4] = { saddr, 0, 0, 0 };
++            const UInt32 d[4] = { daddr, 0, 0, 0 };
++            return Compute(s, d, sport, dport, seq, time_sec, mss_index);
+         }
+ 
+         bool Syncookies::Verify(UInt32 cookie, UInt32 ack_seq, UInt32 saddr, UInt32 daddr,
+                                 UInt16 sport, UInt16 dport, UInt32 seq, UInt32 time_sec,
+                                 UInt32 window_sec, Byte& mss_index) noexcept {
+-            if (ack_seq != (cookie + 1)) {
+-                return false;
+-            }
+-            const UInt32 h = Hash(saddr, daddr, sport, dport, seq);
+-            // The top 5 hash bits must match exactly (2^-5 per-attempt pass;
+-            // combined with the 60 s freshness filter ~2^-23 overall).
+-            if ((h & ~(kTimeMask << kMssBits | kMssMask)) !=
+-                (cookie & ~(kTimeMask << kMssBits | kMssMask))) {
+-                return false;
+-            }
+-            // Recover the encoded timestamp and check the freshness window.
+-            const UInt32 t_rec = (((cookie >> kMssBits) & kTimeMask) ^ (h & kTimeMask));
+-            const UInt32 t_now = time_sec & kTimeMask;
+-            // The age must wrap WITH THE FIELD WIDTH (2^24), not the UInt32
+-            // width: a cookie issued just before the time-field wrap would
+-            // otherwise read ~2^32 - (t_rec - t_now) seconds old - huge for
+-            // the entire next 2^24-second cycle, so every in-flight
+-            // handshake at the wrap boundary failed (audit gap 1 test
+-            // caught this: a UInt32-subtraction wrap is NOT a field wrap).
+-            const UInt32 age = (t_now - t_rec) & kTimeMask;
+-            if (age > window_sec) {
+-                return false;  // stale cookie
+-            }
+-            mss_index = static_cast<Byte>(cookie & kMssMask);
+-            return true;
++            const UInt32 s[4] = { saddr, 0, 0, 0 };
++            const UInt32 d[4] = { daddr, 0, 0, 0 };
++            return Verify(cookie, ack_seq, s, d, sport, dport, seq, time_sec, window_sec, mss_index);
+         }
+     }
+ }
+diff --git a/tests/test_cookie_expiry.cpp b/tests/test_cookie_expiry.cpp
+--- a/tests/test_cookie_expiry.cpp
++++ b/tests/test_cookie_expiry.cpp
+@@ -43,18 +43,19 @@
+         CHECK(sc.Verify(cookie, cookie + 1, saddr, daddr, sport, dport, seq,
+                         t1 + 59, window, mss));
+     }
+-    // Exactly at the boundary (age == window): NOT stale, because the
+-    // implementation rejects only when age > window_sec.
++    // Exactly at the window: accepted (a cookie within the window always is).
+     {
+         Byte mss = 0xFF;
+         CHECK(sc.Verify(cookie, cookie + 1, saddr, daddr, sport, dport, seq,
+                         t1 + 60, window, mss));
+     }
+-    // 61 s later: just past the window -> rejected.
++    // The cookie time counter ticks every 16 s, so the 60 s window is
++    // quantized to ceil(60/16) = 4 ticks: t1 is tick-aligned, so ages up to
++    // 79 s may still pass; 80 s (5 ticks) must be rejected.
+     {
+         Byte mss = 0xFF;
+         CHECK(!sc.Verify(cookie, cookie + 1, saddr, daddr, sport, dport, seq,
+-                         t1 + 61, window, mss));
++                         t1 + 80, window, mss));
+     }
+     // 120 s later: far past the window -> stale, must be rejected.
+     {
+diff --git a/tests/test_syncookies.cpp b/tests/test_syncookies.cpp
+--- a/tests/test_syncookies.cpp
++++ b/tests/test_syncookies.cpp
+@@ -72,10 +72,10 @@
+ }
+ 
+ static void TestTimeWrap() {
+-    // The 24-bit time field wraps every ~194 days of uptime. The cookie
+-    // computed just BEFORE the wrap must verify just AFTER it (the age is
+-    // modular UInt32 subtraction, so the freshness window survives the
+-    // wrap). t1 = 2^24 - 30, verified at t1 + 40 (wrapped to ~10).
++    // The cookie time counter (16 s ticks, 5 bits) wraps every 512 s and the
++    // epoch above it is hashed. A cookie computed just BEFORE a power-of-two
++    // second boundary (2^24) must verify just AFTER it, and one far past
++    // the window must not. t1 = 2^24 - 30, verified at t1 + 40.
+     xtcp::core::Syncookies sc;
+     const UInt32 t1 = (1u << 24) - 30;
+     const UInt32 cookie = sc.Compute(5, 6, 7, 8, 300, t1, 2);
+@@ -86,6 +86,80 @@
+     CHECK(!sc.Verify(cookie, cookie + 1, 5, 6, 7, 8, 300, t1 + 300, 240, mss));
+ }
+ 
++static void TestAllVerifiedBitsMatter() {
++    // 24 verified hash bits: flipping ANY of cookie bits [31..8] must be
++    // rejected (the previous layout verified only the top 5).
++    xtcp::core::Syncookies sc;
++    const UInt32 cookie = sc.Compute(0x0A000001, 0x0A000002, 50004, 8080, 0x50000000, 3449, 1);
++    Byte mss = 0;
++    CHECK(sc.Verify(cookie, cookie + 1, 0x0A000001, 0x0A000002, 50004, 8080, 0x50000000, 3449, 60, mss));
++    for (UInt32 bit = 8; bit < 32; ++bit) {
++        const UInt32 forged = cookie ^ (1u << bit);
++        CHECK(!sc.Verify(forged, forged + 1, 0x0A000001, 0x0A000002, 50004, 8080, 0x50000000, 3449, 60, mss));
++    }
++}
++
++static void TestMssIsAuthenticated() {
++    // The MSS index is covered by the hash: an attacker cannot re-encode
++    // a captured cookie with a different MSS.
++    xtcp::core::Syncookies sc;
++    const UInt32 cookie = sc.Compute(7, 8, 9, 10, 200, 777, 2);
++    Byte mss = 0;
++    for (UInt32 other = 0; other < 8; ++other) {
++        if (2 == other) {
++            continue;
++        }
++        const UInt32 forged = (cookie & ~7u) | other;
++        CHECK(!sc.Verify(forged, forged + 1, 7, 8, 9, 10, 200, 777, 60, mss));
++    }
++}
++
++static void TestFullIpv6AddressBound() {
++    // Every one of the 4 address words enters the hash (peers sharing a
++    // /32 or even a /96 prefix must not share cookies).
++    xtcp::core::Syncookies sc;
++    const UInt32 s[4] = { 0x20010db8, 1, 2, 3 };
++    const UInt32 d[4] = { 0x20010db8, 9, 9, 9 };
++    const UInt32 cookie = sc.Compute(s, d, 1000, 443, 42, 5000, 1);
++    Byte mss = 0;
++    CHECK(sc.Verify(cookie, cookie + 1, s, d, 1000, 443, 42, 5000, 60, mss));
++    for (UInt32 w = 0; w < 4; ++w) {
++        UInt32 s2[4] = { s[0], s[1], s[2], s[3] };
++        s2[w] ^= 0x100;
++        CHECK(!sc.Verify(cookie, cookie + 1, s2, d, 1000, 443, 42, 5000, 60, mss));
++        UInt32 d2[4] = { d[0], d[1], d[2], d[3] };
++        d2[w] ^= 0x100;
++        CHECK(!sc.Verify(cookie, cookie + 1, s, d2, 1000, 443, 42, 5000, 60, mss));
++    }
++}
++
++static void TestNoReplayAfterTimeWrap() {
++    // The cookie carries only 5 bits of a 16 s counter (512 s wrap); the
++    // epoch is hashed, so a captured cookie must NOT revalidate one wrap
++    // later even with a very large window.
++    xtcp::core::Syncookies sc;
++    const UInt32 t1 = 100000;
++    const UInt32 cookie = sc.Compute(5, 6, 7, 8, 300, t1, 3);
++    Byte mss = 0;
++    CHECK(sc.Verify(cookie, cookie + 1, 5, 6, 7, 8, 300, t1 + 16, 400, mss));
++    CHECK(!sc.Verify(cookie, cookie + 1, 5, 6, 7, 8, 300, t1 + 512, 400, mss));
++    CHECK(!sc.Verify(cookie, cookie + 1, 5, 6, 7, 8, 300, t1 + 512 + 16, 400, mss));
++    // A cookie from the future relative to the verifier is rejected.
++    const UInt32 future = sc.Compute(5, 6, 7, 8, 300, t1 + 200, 3);
++    CHECK(!sc.Verify(future, future + 1, 5, 6, 7, 8, 300, t1, 400, mss));
++}
++
++static void TestEpochBoundaryRoundTrip() {
++    // Issue just before the 512 s epoch boundary, verify just after it:
++    // the previous-epoch candidate must be tried.
++    xtcp::core::Syncookies sc;
++    const UInt32 t1 = 512 * 7 - 4;
++    const UInt32 cookie = sc.Compute(11, 12, 13, 14, 500, t1, 1);
++    Byte mss = 0;
++    CHECK(sc.Verify(cookie, cookie + 1, 11, 12, 13, 14, 500, t1 + 20, 60, mss));
++    CHECK(1 == mss);
++}
++
+ int main() {
+     TestRoundTrip();
+     TestWrongAckSeq();
+@@ -93,6 +167,11 @@
+     TestTampered();
+     TestMssVariants();
+     TestTimeWrap();
++    TestAllVerifiedBitsMatter();
++    TestMssIsAuthenticated();
++    TestFullIpv6AddressBound();
++    TestNoReplayAfterTimeWrap();
++    TestEpochBoundaryRoundTrip();
+     if (0 < g_failures) {
+         std::fprintf(stderr, "test_syncookies: %d failure(s)\n", g_failures);
+         return 1;

@@ -1,0 +1,76 @@
+import assert from 'node:assert/strict'
+import { mkdir } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+const modulePath=process.env.PLAYWRIGHT_MODULE
+const { chromium }=await import(modulePath ? pathToFileURL(resolve(modulePath)).href : 'playwright')
+const browser=await chromium.launch({channel:'msedge',headless:true})
+const page=await browser.newPage()
+const errors=[]
+page.on('pageerror',(error) => errors.push(error.message))
+const output=resolve('build/gui-checks')
+await mkdir(output,{recursive:true})
+try {
+  await page.goto(process.env.GUI_URL || 'http://127.0.0.1:1420')
+  await page.getByRole('heading',{name:'已连接',exact:true}).waitFor()
+  assert(await page.locator('.brand img').evaluate((image) => image.complete && image.naturalWidth > 0))
+  for(const [width,height] of [[1120,760],[720,540],[375,812]]) {
+    await page.setViewportSize({width,height})
+    for(const theme of ['浅色','深色']) {
+      await page.getByRole('button',{name:theme,exact:true}).click()
+      await page.screenshot({path:resolve(output,`connection-${width}-${theme === '浅色' ? 'light' : 'dark'}.png`),fullPage:true})
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth+1),`Page overflows ${width}px viewport`)
+    }
+  }
+  await page.setViewportSize({width:1120,height:760})
+  await page.getByRole('button',{name:'节点',exact:true}).click()
+  await page.getByRole('button',{name:'添加节点',exact:true}).click()
+  await page.getByRole('dialog').waitFor()
+  await page.getByRole('dialog').getByLabel('名称',{exact:true}).fill('QA local')
+  await page.getByRole('dialog').getByLabel('Protocol Key',{exact:true}).fill('qa-secret')
+  await page.getByRole('button',{name:'保存节点',exact:true}).click()
+  await page.getByRole('dialog').waitFor({state:'hidden'})
+  assert(await page.getByText('QA local',{exact:true}).count() === 1)
+  await page.getByRole('button',{name:'订阅',exact:true}).click()
+  await page.getByRole('button',{name:'添加来源'}).click()
+  await page.getByLabel('名称',{exact:true}).fill('QA source')
+  await page.getByLabel('URL',{exact:true}).fill('https://qa.test/sub')
+  await page.getByRole('button',{name:'保存',exact:true}).click()
+  await page.getByRole('heading',{name:'QA source'}).waitFor()
+  await page.getByRole('button',{name:'分流',exact:true}).click()
+  await page.screenshot({path:resolve(output,'routing-onboarding.png'),fullPage:true})
+  await page.getByRole('radio',{name:/^全部代理/}).click()
+  await page.getByRole('button',{name:'创建策略',exact:true}).click()
+  await page.getByRole('button',{name:'添加规则',exact:true}).click()
+  await page.getByPlaceholder('example.com — 该域名及其子域名').fill('qa.example.test')
+  await page.locator('form.add-form').getByRole('radio',{name:'代理',exact:true}).click()
+  await page.getByRole('button',{name:'添加',exact:true}).click()
+  await page.getByText('qa.example.test',{exact:true}).waitFor()
+  await page.screenshot({path:resolve(output,'routing-rules.png'),fullPage:true})
+  await page.getByRole('button',{name:'保存',exact:true}).click()
+  await page.getByText('已保存，下次连接生效',{exact:true}).waitFor()
+  await page.getByRole('button',{name:'DNS',exact:true}).click()
+  await page.getByLabel('remote: 添加服务器',{exact:true}).fill('google')
+  await page.locator('.resolver').filter({has:page.getByLabel('remote: 添加服务器',{exact:true})}).getByRole('button',{name:'添加',exact:true}).click()
+  await page.getByRole('button',{name:'保存',exact:true}).click()
+  await page.getByText('已保存，下次连接生效',{exact:true}).waitFor()
+  await page.screenshot({path:resolve(output,'dns.png'),fullPage:true})
+  await page.getByRole('button',{name:'设置',exact:true}).click()
+  for(const tab of ['常规','内核','网络','高级']) {
+    await page.getByRole('tab',{name:tab,exact:true}).click()
+    await page.screenshot({path:resolve(output,`settings-${tab}.png`),fullPage:true})
+  }
+  await page.getByRole('tab',{name:'常规',exact:true}).click()
+  await page.getByLabel('语言',{exact:true}).selectOption('English')
+  await page.getByRole('heading',{name:'Settings',exact:true}).waitFor()
+  await page.getByRole('button',{name:'Nodes',exact:true}).click()
+  await page.getByRole('button',{name:'Add node',exact:true}).click()
+  await page.getByRole('dialog').waitFor()
+  await page.screenshot({path:resolve(output,'node-dialog-english.png'),fullPage:true})
+  await page.keyboard.press('Escape')
+  await page.getByRole('dialog').waitFor({state:'hidden'})
+  await page.getByRole('button',{name:'Logs',exact:true}).click()
+  await page.screenshot({path:resolve(output,'logs.png'),fullPage:true})
+  assert.deepEqual(errors,[])
+  console.log('GUI smoke passed: themes, three viewports, nodes, subscriptions, routing, DNS save, settings tabs, language, modal keyboard and logs')
+} catch(error) { await page.screenshot({path:resolve(output,'failure.png'),fullPage:true}); console.error('Browser errors:',errors); throw error } finally { await browser.close() }

@@ -12,6 +12,7 @@
 #include <ppp/coroutines/asio/asio.h>
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/net/asio/SharedBufferReceive.h>
 
 /**
  * @file VirtualEthernetDatagramPortStatic.cpp
@@ -152,7 +153,7 @@ namespace ppp {
                 }
 
                 auto self = shared_from_this();
-                socket_.async_receive_from(boost::asio::buffer(buffer_.get(), PPP_BUFFER_SIZE), sourceEP_,
+                ppp::net::asio::AsyncReceiveFromSharedBuffer(socket_, buffer_.get(), PPP_BUFFER_SIZE, sourceEP_,
                     [self, this](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         /**
                          * @brief Handles one datagram, optional DNS cache insert, and re-arms receive.

@@ -16,6 +16,7 @@
 #include <ppp/app/PppApplicationInternal.h>
 #include <ppp/app/runtime/RuntimeStatsJson.h>
 #include <ppp/app/tui/TuiRuntimeAdapter.h>
+#include <ppp/p2p/P2PProbeCoordinator.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/LinkTelemetry.h>
 #include <ppp/diagnostics/Telemetry.h>
@@ -654,6 +655,49 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
         exchanger = client->GetExchanger();
     }
 
+    if (exchanger) {
+        std::weak_ptr<VEthernetExchanger> weak_exchanger = exchanger;
+        ConsoleUI::GetInstance().SetP2PPriorityHandler(
+            [weak_exchanger](const ppp::string& value) noexcept {
+                ppp::p2p::P2PPeerPriority priority;
+                if (!ppp::p2p::ParseP2PPeerPriority(value.c_str(), priority)) {
+                    return false;
+                }
+                auto current = weak_exchanger.lock();
+                if (!current) return false;
+                current->SetP2PPeerPriority(priority);
+                return true;
+            });
+        ConsoleUI::GetInstance().SetP2PPeerPriorityHandler(
+            [weak_exchanger](const ppp::string& uuid, const ppp::string& value) noexcept {
+                ppp::p2p::P2PPeerPriority priority;
+                if (!ppp::p2p::ParseP2PPeerPriority(value.c_str(), priority)) {
+                    return false;
+                }
+                auto current = weak_exchanger.lock();
+                if (!current) return false;
+                ppp::string hex;
+                hex.reserve(uuid.size());
+                for (char ch : uuid) {
+                    if (ch != '-') hex.push_back(static_cast<char>(ch >= 'A' && ch <= 'F' ? ch + ('a' - 'A') : ch));
+                }
+                if (hex.size() != 32u) return false;
+                ppp::p2p::P2PId peer_id{};
+                auto nibble = [](char ch) noexcept -> int {
+                    if (ch >= '0' && ch <= '9') return ch - '0';
+                    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+                    return -1;
+                };
+                for (std::size_t i = 0; i < peer_id.size(); ++i) {
+                    int hi = nibble(hex[i * 2u]), lo = nibble(hex[i * 2u + 1u]);
+                    if (hi < 0 || lo < 0) return false;
+                    peer_id[i] = static_cast<std::uint8_t>((hi << 4) | lo);
+                }
+                current->SetP2PPeerPriority(peer_id, priority);
+                return true;
+            });
+    }
+
     ppp::app::runtime::RuntimeSnapshot runtime = runtime_lifecycle_.GetSnapshot();
     if (runtime.generation != 0 && runtime.phase != ppp::app::runtime::RuntimePhase::Stopping) {
         VEthernetExchanger::RuntimeStateSnapshot exchanger_runtime;
@@ -666,7 +710,13 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
             runtime_lifecycle_.UpdateP2PState(
                 runtime.generation,
                 exchanger_runtime.p2p_state,
+                now, exchanger_runtime.p2p_gate_reason);
+            runtime_lifecycle_.UpdateP2PPeers(
+                runtime.generation,
+                exchanger_runtime.peers,
                 now);
+            runtime.p2p_priority = ppp::p2p::P2PPeerPriorityName(
+                exchanger->GetP2PPeerPriority());
         }
         if (NULLPTR == client) {
             if (NULLPTR != server_ && !server_->IsDisposed()) {
@@ -733,6 +783,11 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
     }
 
     runtime = runtime_lifecycle_.GetSnapshot();
+    if (exchanger) {
+        runtime.p2p_priority = ppp::p2p::P2PPeerPriorityName(
+            exchanger->GetP2PPeerPriority());
+    }
+    ConsoleUI::GetInstance().SetRuntimeSnapshot(runtime);
     if (has_transmission_statistics && !stats_json_path_.empty()) {
         const ppp::diagnostics::LinkTelemetrySnapshot link =
             ppp::diagnostics::LinkTelemetryGlobal::GetInstance().GetTotal().GetSnapshot();
@@ -779,7 +834,7 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
     const std::vector<std::string> runtime_lines =
         ppp::app::tui::BuildStatusLines(runtime);
     ppp::string status = "vpn=";
-    status += runtime_lines.empty() ? "Unknown" : runtime_lines.front().c_str();
+    status += ppp::app::tui::PhaseDisplayName(runtime.phase);
     status += " rx=" + ppp::StrFormatByteSize((Int64)incoming_traffic);
     status += " tx=" + ppp::StrFormatByteSize((Int64)outgoing_traffic);
 
@@ -797,8 +852,14 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
 
     ppp::vector<ppp::string> info;
     GetEnvironmentInformationLines(info, incoming_traffic, outgoing_traffic, statistics_snapshot);
-    for (auto line = runtime_lines.rbegin(); line != runtime_lines.rend(); ++line) {
-        info.insert(info.begin(), ppp::string(line->data(), line->size()));
+    auto runtime_position = std::find_if(info.begin(), info.end(), [](const ppp::string& line) {
+        return line.compare(0, 10, "Link State") == 0;
+    });
+    if (runtime_position != info.end()) ++runtime_position;
+    else runtime_position = info.end();
+    for (const auto& line : runtime_lines) {
+        runtime_position = info.insert(runtime_position, ppp::string(line.data(), line.size()));
+        ++runtime_position;
     }
     ConsoleUI::GetInstance().SetInfoLines(info);
 

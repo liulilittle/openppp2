@@ -253,6 +253,9 @@ namespace ppp {
             return ppp::string(file_content_memory, file_length);
         }
 
+        /** @brief Upper bound (64 MiB) for File::ReadAllBytes; larger files are rejected. */
+        static constexpr size_t MAX_READ_ALL_BYTES_LENGTH = 64u * 1024u * 1024u;
+
         /**
          * @brief Reads all bytes from a file into memory.
          * @param path File path.
@@ -274,6 +277,7 @@ namespace ppp {
 
             MemoryStream stream_;
             char buff_[1400];
+            size_t total_ = 0;
 
             /** Read in chunks to avoid allocating based on uncertain file size. */
             for (;;) {
@@ -285,6 +289,12 @@ namespace ppp {
                     }
 
                     break;
+                }
+
+                total_ += count_;
+                if (total_ > MAX_READ_ALL_BYTES_LENGTH) {
+                    fclose(file_);
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FileReadFailed, std::shared_ptr<Byte>());
                 }
 
                 stream_.Write(buff_, 0, count_);

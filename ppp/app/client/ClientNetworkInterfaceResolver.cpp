@@ -7,6 +7,7 @@
 #include <windows/ppp/win32/network/NetworkInterface.h>
 #else
 #include <common/unix/UnixAfx.h>
+#include <ifaddrs.h>
 #if defined(_MACOS)
 #include <darwin/ppp/tap/TapDarwin.h>
 #else
@@ -24,6 +25,29 @@ namespace ppp {
 #if !defined(_ANDROID) && !defined(_IPHONE)
 
             namespace {
+
+#if !defined(_WIN32)
+                void CollectGlobalIPv6(const ppp::string& interface_name,
+                    ppp::vector<boost::asio::ip::address>& output) noexcept {
+                    if (interface_name.empty()) return;
+                    struct ifaddrs* list = nullptr;
+                    if (getifaddrs(&list) != 0) return;
+                    for (auto* item = list; item; item = item->ifa_next) {
+                        if (!item->ifa_name || interface_name != item->ifa_name || !item->ifa_addr ||
+                            item->ifa_addr->sa_family != AF_INET6) continue;
+                        const auto* address = reinterpret_cast<const sockaddr_in6*>(item->ifa_addr);
+                        boost::asio::ip::address_v6::bytes_type bytes{};
+                        std::copy(std::begin(address->sin6_addr.s6_addr),
+                            std::end(address->sin6_addr.s6_addr), bytes.begin());
+                        const auto value = boost::asio::ip::address_v6(bytes);
+                        if (value.is_unspecified() || value.is_loopback() || value.is_multicast() ||
+                            value.is_link_local() || (bytes[0] & 0xfe) == 0xfc) continue;
+                        if (std::find(output.begin(), output.end(), value) == output.end())
+                            output.emplace_back(value);
+                    }
+                    freeifaddrs(list);
+                }
+#endif
 
 #if defined(_WIN32)
                 /** @brief Builds network-interface snapshot from Windows adapter details. */
@@ -193,6 +217,7 @@ namespace ppp {
                 }
 
                 ni->DefaultRoutes = std::move(network_interface->GatewayAddresses);
+                CollectGlobalIPv6(ni->Name, ni->IPv6Addresses);
 #else
                 ppp::string interface_name;
                 ppp::UInt32 ip, gw, mask;
@@ -206,6 +231,7 @@ namespace ppp {
                 ni->GatewayServer = IPEndPoint::ToEndPoint<boost::asio::ip::tcp>(IPEndPoint(gw, IPEndPoint::MinPort)).address();
                 ni->IPAddress = IPEndPoint::ToEndPoint<boost::asio::ip::tcp>(IPEndPoint(ip, IPEndPoint::MinPort)).address();
                 ni->SubmaskAddress = IPEndPoint::ToEndPoint<boost::asio::ip::tcp>(IPEndPoint(mask, IPEndPoint::MinPort)).address();
+                CollectGlobalIPv6(interface_name, ni->IPv6Addresses);
 #endif
 
                 ni->DnsResolveConfiguration = ppp::unix__::UnixAfx::GetDnsResolveConfiguration();

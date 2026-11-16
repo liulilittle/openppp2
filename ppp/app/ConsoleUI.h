@@ -34,6 +34,7 @@
 #pragma once
 
 #include <ppp/stdafx.h>
+#include <ppp/app/runtime/RuntimeSnapshot.h>
 
 #if !defined(_WIN32)
 #include <termios.h>
@@ -49,6 +50,15 @@ namespace ppp::app {
  */
 class ConsoleUI final {
 public:
+    using P2PPriorityHandler = std::function<bool(const ppp::string&)>;
+    using P2PPeerPriorityHandler = std::function<bool(const ppp::string&, const ppp::string&)>;
+
+    void                    SetP2PPriorityHandler(P2PPriorityHandler handler) noexcept;
+    void                    SetP2PPeerPriorityHandler(P2PPeerPriorityHandler handler) noexcept;
+    bool                    SetP2PPriority(const ppp::string& priority) noexcept;
+    bool                    SetP2PPeerPriority(const ppp::string& peer_uuid, const ppp::string& priority) noexcept;
+    ppp::string             GetP2PPriority() noexcept;
+
     /**
      * @brief Checks whether the TUI should be enabled for this process.
      *
@@ -114,6 +124,7 @@ public:
      * @param lines New set of lines for the info section.
      */
     void                    SetInfoLines(const ppp::vector<ppp::string>& lines) noexcept;
+    void                    SetRuntimeSnapshot(const runtime::RuntimeSnapshot& snapshot) noexcept;
 
     /**
      * @brief Replaces the telemetry info section content.
@@ -395,6 +406,10 @@ private:
 
     /** @brief VPN info snapshot displayed in the info section. */
     ppp::vector<ppp::string>    info_lines_;
+    runtime::RuntimeSnapshot    runtime_snapshot_;
+    ppp::string                 p2p_priority_ = "ipv6-first";
+    P2PPriorityHandler          p2p_priority_handler_;
+    P2PPeerPriorityHandler      p2p_peer_priority_handler_;
     /** @brief Telemetry lines displayed in the right column (two-column mode). */
     ppp::vector<ppp::string>    telemetry_lines_;
     /** @brief Telemetry event stream ring buffer (newest at back). */

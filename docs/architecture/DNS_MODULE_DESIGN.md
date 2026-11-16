@@ -1,7 +1,7 @@
 # DNS Module Design
 > Status: Active
 > Type: Architecture
-> Last verified: client DNS controller/interceptor and `ppp/dns/` sources, 2026-07-22
+> Last verified: legacy DNS sources and v2.1.7 policy/DNS sources, 2026-10-07
 >
 > **Purpose:** Describe the native client DNS interception and resolver boundaries.
 > **Audience:** Contributors and operators.
@@ -41,6 +41,16 @@ Rules are an input to plan selection; do not document gateway handling as a blan
 
 `DnsResolver` currently implements UDP, TCP, DoH, and DoT upstream senders. There is no DoQ or DoH3 protocol enum/implementation. Provider entry order supplies the fallback order; deployment behavior still depends on reachable configured endpoints.
 
+## v2 Policy DNS (v2.1.7 target)
+
+The v2 policy DNS capabilities described here are part of the v2.1.7 code release target; v2.1.6 does not include them. Check the [release page](https://github.com/Miaocchi/openppp2/releases) for v2.1.7 package availability. The established UDP/53 interception boundary above still applies.
+
+With a v2 policy snapshot, `PolicyResolverService` evaluates the DNS rule and uses the selected resolver definition and `via` action. Its in-memory response cache and in-flight coalescing key include the DNS question and selected resolver/transport/bootstrap semantics; in-flight operations are additionally scoped to a session. Cached answers honor TTL; in-flight requests have bounded waiters, operation count, bytes, and a deadline. Each waiter gets an independent cancellation handle. Closing a DNS session invalidates its transport and pending work; cancelling the final waiter closes that operation, while late completions are ignored by the inactive/session checks. This bounds response delivery and ownership; it does not guarantee that every underlying network operation finishes immediately.
+
+The policy fake-IP store is separate from the transient resolver response cache. It binds persisted mappings to a configured identity and IPv4 pool, holds an exclusive store lock, and journals a new hostname-to-address mapping durably before returning it. A compact snapshot can replace the journal. A fresh store creates an empty snapshot and journal. A corrupt or mismatched snapshot, a missing journal for a nonempty or previously advanced snapshot, a lock conflict, or a persistence error makes the store unavailable rather than silently reassigning an existing identity. Allocation is dispatched to a bounded disk worker and its callback returns to the owning event context only while the request remains active. Fake-IP is IPv4/A-only; it does not synthesize AAAA records.
+
+Resolver upstream transport support (UDP, TCP, DoH, DoT) describes how the resolver contacts its configured upstream. It does not mean client TCP/53 is intercepted, nor that encrypted DNS or arbitrary DNS-over-HTTPS traffic is blocked or redirected. The client dispatch entry remains UDP destination port 53.
+
 ## Fake IP and DNS reachability
 
 The fake-IP facility is IPv4/A-record only. It can synthesize an A response, resolve the real A answer in the background, and rewrite known fake destinations for both UDP and TCP paths. Desktop route planning can include the fake-IP pool route.
@@ -57,6 +67,7 @@ Server UDP/53 handling uses `VirtualEthernetNamespaceCache` when enabled. On a m
 - Fake IP does not provide IPv6/AAAA synthesis.
 - DNS controller/session cleanup is designed to prevent later sends through a closed session, not to guarantee completion of every outstanding upstream operation.
 - Configuration fields and safe operator examples belong in [Reference](../reference/README.md) and the routing/DNS guides, not this architecture overview.
+- The Linux evidence report records only its named real-host probes and their explicit failure/coverage limits; it does not broaden the DNS interception boundary above.
 
 ## Source anchors
 

@@ -8,6 +8,9 @@
 #include <vector>
 
 namespace {
+// These cases pin the historical 4-segment cap; the production default is larger.
+const bool kPinnedSegmentCap = ::setenv("OPENPPP2_TAP_GSO_SEGMENTS", "4", 1) == 0;
+
 using ppp::tap::TunGsoCoalescer;
 using ppp::tap::TunGsoLedger;
 

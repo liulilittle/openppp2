@@ -74,6 +74,42 @@ namespace ppp
             }
         }
 
+        /* Single-quotes a path for /bin/sh; rejects control characters. */
+        static bool QuoteShellPath(const ppp::string& path, ppp::string& quoted)
+        {
+            quoted.clear();
+            if (path.empty())
+            {
+                return false;
+            }
+
+            quoted = "'";
+            for (char ch : path)
+            {
+                if ((unsigned char)ch < 0x20 || ch == 0x7f)
+                {
+                    quoted.clear();
+                    return false;
+                }
+
+                if (ch == '\'')
+                {
+                    quoted += "'\\''";
+                }
+                else
+                {
+                    quoted += ch;
+                }
+            }
+
+            quoted += "'";
+            return true;
+        }
+
+        /*
+         * Not async-signal-safe (popen/malloc/std::string): it must only be called from
+         * normal thread context. No signal handler in this codebase calls it.
+         */
         std::string CaptureStackTrace(int skip) noexcept
         {
             size_t constexpr max_stackframe_size = 3000;
@@ -90,12 +126,22 @@ namespace ppp
             ppp::string stacktraces = "Stack Trace:";
             if (NULLPTR != stackframe_symbols)
             {
-                ppp::string executable_path = GetFullExecutionFilePath();
+                ppp::string executable_path;
+                if (!QuoteShellPath(GetFullExecutionFilePath(), executable_path))
+                {
+                    std::free(stackframe_symbols);
+                    return std::string(stacktraces.data(), stacktraces.size());
+                }
+
                 ppp::string default_line = "\r\n  at ";
                 for (int i = skip; i < stackframe_size; i++)
                 {
                     char buf[8192];
-                    sprintf(buf, "addr2line -e %s %p", executable_path.data(), stackframe_addrs[i]);
+                    int cmd_size = snprintf(buf, sizeof(buf), "addr2line -e %s %p", executable_path.data(), stackframe_addrs[i]);
+                    if (cmd_size < 1 || cmd_size >= (int)sizeof(buf))
+                    {
+                        continue;
+                    }
 
                     FILE* f = popen(buf, "r");
                     if (NULLPTR == f)

@@ -1,0 +1,217 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -191,6 +191,7 @@
+         test_ooo_capacity
+         test_ooo_frontier
+         test_options
++        test_syn_option_layout
+         test_options_stack
+         test_syncookies
+         test_syncookie_flood
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -596,34 +596,45 @@
+                 t[17] = 0x00;
+                 t[18] = 0x00;
+                 t[19] = 0x00;  // urgent pointer
++                // SYN options are packed at a running offset so that an
++                // omitted option leaves no gap. A fixed layout left zero
++                // bytes (kind 0 = End of Option List, RFC 9293 3.2) where
++                // MSS or SACK-permitted was absent; receivers stop parsing
++                // there and silently drop WSOPT/TFO/TSopt, while this side
++                // already scales its advertised window.
++                UInt32 syn_off = 20;
+                 if (include_mss) {
+-                    t[20] = 2;       // kind: MSS
+-                    t[21] = 4;       // length
+-                    t[22] = 0x05;    // MSS 1460
+-                    t[23] = 0xB4;
++                    t[syn_off]     = 2;     // kind: MSS
++                    t[syn_off + 1] = 4;     // length
++                    t[syn_off + 2] = 0x05;  // MSS 1460
++                    t[syn_off + 3] = 0xB4;
++                    syn_off += 4;
+                 }
+                 if (include_sack) {
+-                    t[24] = 4;       // kind: SACK-permitted
+-                    t[25] = 2;
+-                    t[26] = 1;       // NOP
+-                    t[27] = 1;       // NOP
++                    t[syn_off]     = 4;  // kind: SACK-permitted
++                    t[syn_off + 1] = 2;
++                    t[syn_off + 2] = 1;  // NOP
++                    t[syn_off + 3] = 1;  // NOP
++                    syn_off += 4;
+                 }
+                 if (include_wscale) {
+-                    t[28] = 3;       // kind: WSOPT
+-                    t[29] = 3;       // length
+-                    t[30] = wscale;  // value (0-14)
+-                    t[31] = 1;       // NOP padding
++                    t[syn_off]     = 3;       // kind: WSOPT
++                    t[syn_off + 1] = 3;       // length
++                    t[syn_off + 2] = wscale;  // value (0-14)
++                    t[syn_off + 3] = 1;       // NOP padding
++                    syn_off += 4;
+                 }
+                 // TFO cookie (RFC 7413): kind 34, length 10, 8-byte cookie
+                 // (kTfoCookieLen; 2 + 8 + 2 NOP = 12 bytes).
+                 if (include_tfo) {
+-                    t[32] = 34;
+-                    t[33] = 10;
++                    t[syn_off]     = 34;
++                    t[syn_off + 1] = 10;
+                     for (UInt32 i = 0; i < 8; ++i) {
+-                        t[34 + i] = tfo_cookie[i];
++                        t[syn_off + 2 + i] = tfo_cookie[i];
+                     }
+-                    t[42] = 1;  // NOP padding
+-                    t[43] = 1;
++                    t[syn_off + 10] = 1;  // NOP padding
++                    t[syn_off + 11] = 1;
++                    syn_off += 12;
+                 }
+                 // RFC 7323 timestamps (kind 8, len 10): tsval + tsecr. The
+                 // option sits after the SYN options (the layout is
+diff --git a/tests/test_syn_option_layout.cpp b/tests/test_syn_option_layout.cpp
+--- a/tests/test_syn_option_layout.cpp
++++ b/tests/test_syn_option_layout.cpp
+@@ -0,0 +1,136 @@
++/**
++ * @file test_syn_option_layout.cpp
++ * @brief SYN / SYN+ACK option bytes must parse strictly (RFC 9293 3.2):
++ *        no End-of-Option-List byte before the last option, every option
++ *        length in bounds, and WSOPT present whenever both sides offer it -
++ *        with and without SACK-permitted.
++ */
++#include <xtcp/core/stack.h>
++#include <xtcp/ndi/manual.h>
++
++#include <cstdio>
++#include <cstring>
++#include <vector>
++
++static int g_failures = 0;
++
++#define CHECK(cond)                                                      \
++    do {                                                                 \
++        if (!(cond)) {                                                   \
++            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
++            ++g_failures;                                                \
++        }                                                                \
++    } while (0)
++
++namespace {
++struct ParsedSyn {
++    bool syn = false;
++    bool ack = false;
++    bool strict_ok = true;  // no early EOL, all lengths in bounds
++    bool has_mss = false;
++    bool has_sack_perm = false;
++    bool has_wscale = false;
++    bool has_ts = false;
++};
++
++ParsedSyn ParseSyn(const Byte* p, UInt32 len) {
++    ParsedSyn out;
++    if (len < 40 || (p[0] >> 4) != 4) {
++        out.strict_ok = false;
++        return out;
++    }
++    const UInt32 ip = (p[0] & 0x0F) * 4u;
++    const Byte* t = p + ip;
++    const UInt32 hdr = (t[12] >> 4) * 4u;
++    out.syn = 0 != (t[13] & 0x02);
++    out.ack = 0 != (t[13] & 0x10);
++    for (UInt32 i = 20; i < hdr;) {
++        const Byte kind = t[i];
++        if (kind == 0) {
++            // EOL is only legal as trailing padding.
++            for (UInt32 k = i; k < hdr; ++k) {
++                if (t[k] != 0) out.strict_ok = false;
++            }
++            break;
++        }
++        if (kind == 1) {
++            ++i;
++            continue;
++        }
++        if (i + 1 >= hdr || t[i + 1] < 2 || i + t[i + 1] > hdr) {
++            out.strict_ok = false;
++            break;
++        }
++        if (kind == 2) out.has_mss = true;
++        if (kind == 4) out.has_sack_perm = true;
++        if (kind == 3) out.has_wscale = true;
++        if (kind == 8) out.has_ts = true;
++        i += t[i + 1];
++    }
++    return out;
++}
++
++void Deliver(xtcp::ndi::ManualBackend& from, xtcp::XtcpStack& to, ParsedSyn* syn,
++        ParsedSyn* syn_ack) {
++    Byte out[65536];
++    while (0 != from.TxPending()) {
++        const UInt32 n = from.PollTx(out);
++        if (0 == n) continue;
++        const ParsedSyn parsed = ParseSyn(out, n);
++        if (parsed.syn && !parsed.ack && NULLPTR != syn) *syn = parsed;
++        if (parsed.syn && parsed.ack && NULLPTR != syn_ack) *syn_ack = parsed;
++        xtcp::buf::BufRef buf = xtcp::buf::BufRef::Acquire(n);
++        std::memcpy(buf.Data(), out, n);
++        buf.SetLen(n);
++        to.OnPacket(std::move(buf));
++    }
++}
++
++void RunCase(bool no_sack, UInt16 port) {
++    xtcp::ndi::ManualBackend backend_a, backend_b;
++    xtcp::XtcpStack stack_a(&backend_a);
++    xtcp::XtcpStack stack_b(&backend_b);
++    stack_a.SetDefaultNoSack(no_sack);
++    xtcp::core::Endpoint local, remote;
++    local.family = 4;
++    local.addr[0] = 0x0A000001;
++    local.port = port;
++    remote.family = 4;
++    remote.addr[0] = 0x0A000002;
++    remote.port = 443;
++    CHECK(stack_b.Listen(remote));
++    const UInt64 conn = stack_a.Connect(local, remote);
++    CHECK(0 != conn);
++    ParsedSyn syn, syn_ack;
++    for (UInt32 i = 0; i < 50 && xtcp::core::TcpState::kEstablished != stack_a.ConnectionState(conn); ++i) {
++        Deliver(backend_a, stack_b, &syn, NULLPTR);
++        Deliver(backend_b, stack_a, NULLPTR, &syn_ack);
++        stack_a.PollAckTimers();
++        stack_b.PollAckTimers();
++    }
++    CHECK(xtcp::core::TcpState::kEstablished == stack_a.ConnectionState(conn));
++    CHECK(syn.syn && syn.strict_ok);
++    CHECK(syn_ack.syn && syn_ack.ack && syn_ack.strict_ok);
++    CHECK(syn.has_mss && syn.has_wscale);
++    CHECK(syn_ack.has_mss && syn_ack.has_wscale);
++    CHECK(syn.has_sack_perm == !no_sack);
++    CHECK(syn_ack.has_sack_perm == !no_sack);
++    CHECK(syn.has_ts == syn_ack.has_ts);
++    std::printf("[syn-options] no_sack=%d syn{strict=%d ws=%d ts=%d} synack{strict=%d ws=%d ts=%d}\n",
++        no_sack ? 1 : 0, syn.strict_ok ? 1 : 0, syn.has_wscale ? 1 : 0, syn.has_ts ? 1 : 0,
++        syn_ack.strict_ok ? 1 : 0, syn_ack.has_wscale ? 1 : 0, syn_ack.has_ts ? 1 : 0);
++}
++}  // namespace
++
++int main() {
++    xtcp::buf::InitPools();
++    RunCase(false, 40100);
++    RunCase(true, 40101);
++    xtcp::buf::ShutdownPools();
++    if (0 != g_failures) {
++        std::printf("SYN_OPTION_LAYOUT: FAILED (%d)\n", g_failures);
++        return 1;
++    }
++    std::printf("SYN_OPTION_LAYOUT: PASS\n");
++    return 0;
++}

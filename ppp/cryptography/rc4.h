@@ -107,6 +107,8 @@ namespace ppp {
              * @return Encrypted buffer, or null on failure.
              */
             std::shared_ptr<Byte>                                               Encrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, Byte* data, int datalen, int& outlen) noexcept;
+            /** @brief Encrypts into caller-owned @p output of at least @p datalen bytes. */
+            bool                                                                EncryptTo(Byte* output, int output_capacity, Byte* data, int datalen, int& outlen) noexcept;
             /**
              * @brief Decrypts input bytes.
              * @param allocator Output buffer allocator.
@@ -116,6 +118,8 @@ namespace ppp {
              * @return Decrypted buffer, or null on failure.
              */
             std::shared_ptr<Byte>                                               Decrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, Byte* data, int datalen, int& outlen) noexcept;
+            /** @brief Decrypts @p datalen bytes of @p data in place (the stream operation is symmetric). */
+            bool                                                                DecryptInPlace(Byte* data, int datalen) noexcept;
             /** @brief Returns a shared reference to this object. */
             std::shared_ptr<RC4>                                                GetReference() noexcept { return this->shared_from_this(); }
             /**

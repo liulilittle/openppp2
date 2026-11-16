@@ -1,6 +1,7 @@
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -443,6 +443,13 @@
+@@ -482,6 +482,13 @@
                      consider(last_rx_ + idle_us);
                  }
                  if (0 < pending_send_.size()) {
@@ -14,6 +15,7 @@
                      // Buffered sends: when a pacing clock is armed the flush
                      // cannot make progress before pacing_deadline_, so wake
                      // AT the deadline instead of reporting "due now" and
+diff --git a/tests/test_persist.cpp b/tests/test_persist.cpp
 --- a/tests/test_persist.cpp
 +++ b/tests/test_persist.cpp
 @@ -9,6 +9,7 @@

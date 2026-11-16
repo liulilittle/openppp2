@@ -59,15 +59,15 @@ RouteSpec ResolveRouteSpec(
 DnsRouteSpecPlan BuildDnsRouteSpecs(const RoutePlanInput& input) noexcept {
     DnsRouteSpecPlan plan;
 
-    auto collect = [&plan](const RouteInterfaceSnapshot& interface, int bucket) noexcept {
-        if (interface.name.empty()) {
+    auto collect = [&plan](const RouteInterfaceSnapshot& network_interface, int bucket) noexcept {
+        if (network_interface.name.empty()) {
             return;
         }
 
         uint32_t values[2] = { 0, 0 };
         const boost::asio::ip::address addresses[] = {
-            interface.ip,
-            interface.submask,
+            network_interface.ip,
+            network_interface.submask,
         };
         for (int i = 0; i < arraysizeof(addresses); ++i) {
             if (addresses[i].is_v4()) {
@@ -76,7 +76,7 @@ DnsRouteSpecPlan BuildDnsRouteSpecs(const RoutePlanInput& input) noexcept {
         }
 
         const uint32_t network = values[0] & values[1];
-        for (const boost::asio::ip::address& address : interface.dns) {
+        for (const boost::asio::ip::address& address : network_interface.dns) {
             if (!address.is_v4() || address.is_multicast() || address.is_loopback() ||
                 address.is_unspecified() ||
                 address.to_v4() == boost::asio::ip::address_v4::broadcast()) {

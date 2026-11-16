@@ -11,7 +11,7 @@
  * `YieldContext` is a manually-managed, stackful coroutine context that integrates with
  * Boost.Asio's `io_context` execution model without relying on `boost::asio::spawn` or
  * `boost::coroutines2`.  Instead it owns a raw `boost::context::fcontext_t` stack and
- * performs symmetric context switches via `boost::context::detail::jump_fcontext`.
+ * performs symmetric context switches via `backend::Jump`.
  *
  * ### Lifecycle
  * ```
@@ -58,14 +58,35 @@
  *        exclusively through the `Spawn` family of static factory methods and destroyed
  *        automatically when the coroutine handler returns.
  * @note  All `Spawn` overloads are thread-safe with respect to the target `io_context`.
- * @note  `Resume()` and `Suspend()` may only be called from threads that own the
- *        associated `io_context` run-loop — calling from an unrelated thread causes
- *        undefined behaviour.
+ * ### Anchored suspend / resume
+ *
+ * Every suspension is identified by an anchor: a per-coroutine, strictly increasing
+ * number taken with `Arm()` before the asynchronous operation is started.  The
+ * completion handler captures the returned `Anchor` and wakes the coroutine with
+ * `anchor.R()`, which compare-and-swaps the published anchor to zero.  Exactly one
+ * wakeup per suspension can win; a duplicate wakeup (I/O completion racing a
+ * timeout), a late wakeup from an earlier suspension, or a wakeup arriving after the
+ * coroutine finished fails the CAS and is discarded without touching the coroutine:
+ *
+ * ```cpp
+ * YieldContext::Anchor anchor = y.Arm();
+ * socket.async_read_some(buffer, [anchor, &n](const error_code& ec, size_t sz) noexcept {
+ *     n = ec ? -1 : (int)sz;
+ *     anchor.R();
+ * });
+ * y.Suspend(anchor);
+ * ```
+ *
+ * The anchor state lives in a shared cell owned jointly by the context and every
+ * outstanding `Anchor`, so `R()` stays safe after the coroutine has been reclaimed.
+ *
+ * @note  `Arm()` and `Suspend()` may only be called from inside the coroutine body.
+ *        `Anchor::R()` may be called from any thread.
  */
 
 #include <ppp/stdafx.h>
 #include <boost/coroutine/detail/coroutine_context.hpp>
-#include <boost/context/detail/fcontext.hpp>
+#include <ppp/coroutines/ContextBackend.h>
 #include <ppp/threading/Executors.h>
 #include <ppp/threading/BufferswapAllocator.h>
 
@@ -81,14 +102,16 @@ namespace ppp
          * pair of `fcontext_t` handles (`callee_` / `caller_`) that represent the
          * bidirectional jump targets between the coroutine body and the Asio event loop.
          *
-         * The state flag `s_` is guarded by `syncobj_` and serialises concurrent
-         * `Resume()` / `Suspend()` calls.  A wakeup (`Resume()` / `R()`) that arrives
-         * while the coroutine is still running, or while it is in the middle of its
-         * suspend handoff, is latched into `wakeup_pending_` instead of being dropped;
-         * the next `Suspend()` consumes the latch and returns without blocking.  This
-         * makes the completion-before-suspend interleaving impossible to lose when the
-         * owning `io_context` is executed by more than one `run()` thread.  The mutex
-         * is never held across a `jump_fcontext` call.
+         * The state flag `s_` is guarded by the anchor cell mutex and serialises
+         * concurrent resume / suspend transitions.  Wakeups are anchored (see the file
+         * overview): only the wakeup whose anchor wins the CAS is delivered.  A winning
+         * wakeup that arrives while the coroutine is still running, or while it is in
+         * the middle of its suspend handoff, is latched into `wakeup_pending_`; because
+         * the latch can only be set for the current anchor, the matching `Suspend()`
+         * consumes it and no later suspension can ever observe it.  This keeps the
+         * completion-before-suspend interleaving lossless when the owning `io_context`
+         * is executed by more than one `run()` thread.  The mutex is never held across
+         * a `jump_fcontext` call.
          *
          * @warning Never construct directly — use the `Spawn` static factory methods.
          */
@@ -98,31 +121,97 @@ namespace ppp
             /**
              * @brief Coroutine entry handler signature.
              * @details The handler receives a reference to the owning `YieldContext`.
-             *          It may call `y.Suspend()` / `y.R()` to yield control back to the
-             *          Asio event loop and be resumed later.  When the handler returns the
+             *          It may call `y.Arm()` / `y.Suspend(anchor)` to yield control back
+             *          to the Asio event loop and be resumed later by `anchor.R()`.  When the handler returns the
              *          coroutine terminates and the `YieldContext` is automatically destroyed.
              */
             typedef ppp::function<void(YieldContext&)>                          SpawnHander;
 
+        private:
+            /**
+             * @brief State shared by a context and all of its outstanding anchors.
+             * @details Outlives the `YieldContext`: `y` is cleared and `armed` zeroed under
+             *          `syncobj` before the context is reclaimed, so a late `Anchor::R()`
+             *          only ever touches this cell.
+             */
+            struct AnchorCell final
+            {
+                /** @brief Guards the coroutine state machine and `y`; never held across a jump. */
+                std::mutex                                                      syncobj;
+                /** @brief Anchor currently accepting a wakeup; 0 when none is armed. */
+                std::atomic<uint64_t>                                           armed{ 0 };
+                /** @brief Owning context; null once the coroutine has been reclaimed. */
+                YieldContext*                                                   y = NULLPTR;
+                /** @brief Resume target, copied so `R()` never dereferences `y`. */
+                boost::asio::io_context*                                        context = NULLPTR;
+                /** @brief Optional resume strand, copied for the same reason. */
+                boost::asio::strand<boost::asio::io_context::executor_type>*    strand = NULLPTR;
+            };
+
         public:
             /**
-             * @brief Attempts to resume a suspended coroutine context.
-             * @return true  when the context switch succeeded and the coroutine ran until
-             *               its next `Suspend()` call or completion.
-             * @return false when the coroutine is already running, has completed, or the
-             *               internal state machine transition was rejected.
-             * @note  Must be called from the thread that runs the associated `io_context`.
+             * @brief Single-use wakeup credential for one suspension.
+             * @details Obtained from `Arm()` and captured by the completion handler of the
+             *          operation the coroutine is about to wait for.  Copies share the same
+             *          credential: whichever copy calls `R()` first wins and every other
+             *          call returns false.
              */
-            bool                                                                Resume() noexcept;
+            class Anchor final
+            {
+            public:
+                /**
+                 * @brief Empty anchor. Spelled out (no default member initializers):
+                 *        clang rejects a defaulted constructor of a nested class that
+                 *        the enclosing class needs before its definition completes.
+                 */
+                Anchor() noexcept : value_(0) {}
+
+            public:
+                /**
+                 * @brief Wakes the coroutine if this anchor is still the armed one.
+                 * @return true  when this call consumed the anchor (CAS armed -> 0) and the
+                 *               resume was posted.
+                 * @return false when the anchor was already consumed, superseded by a later
+                 *               `Arm()`, the coroutine finished, or the post failed.
+                 * @note  Safe from any thread and after the coroutine was reclaimed.
+                 */
+                bool                                                            R() const noexcept;
+                /** @brief Monotonic anchor number; 0 for an empty anchor. */
+                uint64_t                                                        Value() const noexcept { return value_; }
+                /** @brief True when this anchor was produced by a successful `Arm()`. */
+                explicit operator                                               bool() const noexcept { return 0 != value_ && NULLPTR != cell_; }
+
+            private:
+                friend class                                                    YieldContext;
+                Anchor(const std::shared_ptr<AnchorCell>& cell, uint64_t value) noexcept : cell_(cell), value_(value) {}
+
+            private:
+                std::shared_ptr<AnchorCell>                                     cell_;
+                uint64_t                                                        value_;
+            };
+
+        public:
+            /**
+             * @brief Arms the next suspension and returns its wakeup credential.
+             * @details Atomically increments the per-coroutine anchor counter, publishes the
+             *          new value as the only anchor that may resume the coroutine, and
+             *          discards any wakeup latched for an earlier anchor.  Call it before
+             *          starting the asynchronous operation whose handler calls `R()`.
+             * @return The armed anchor, or an empty anchor when called outside the running
+             *         coroutine.
+             */
+            Anchor                                                              Arm() noexcept;
 
             /**
-             * @brief Suspends the currently executing coroutine and returns control to the caller.
-             * @return true  when the suspend-and-switch succeeded.
-             * @return false when called outside of a valid coroutine context or when the
-             *               state transition is inconsistent.
+             * @brief Suspends the coroutine until `anchor` is consumed by `anchor.R()`.
+             * @param anchor The anchor returned by the most recent `Arm()`.
+             * @return true  when the coroutine was resumed by that anchor (or its wakeup had
+             *               already been latched, in which case it returns immediately).
+             * @return false when `anchor` is not the current armed anchor or the state
+             *               transition is inconsistent; the coroutine is not suspended.
              * @note  Must only be invoked from within the `SpawnHander` body.
              */
-            bool                                                                Suspend() noexcept;
+            bool                                                                Suspend(const Anchor& anchor) noexcept;
 
             /**
              * @brief Returns a raw pointer to this instance.
@@ -151,20 +240,6 @@ namespace ppp
              * @return true when the coroutine is in an active/suspended state.
              */
             bool                                                                S() noexcept { return s_.load() != 0; }
-
-            /**
-             * @brief Convenience alias for `Suspend()`.
-             * @return Result of `Suspend()`.
-             */
-            bool                                                                Y() noexcept { return Suspend(); }
-
-            /**
-             * @brief Posts a `Resume()` call back to the bound executor asynchronously.
-             * @return true when the post was submitted successfully.
-             * @note  This is the preferred wakeup path from async completion callbacks
-             *        because it re-enters the coroutine on the correct execution context.
-             */
-            bool                                                                R() noexcept;
 
         public:
             /**
@@ -229,7 +304,7 @@ namespace ppp
             static bool                                                         Spawn(ppp::threading::BufferswapAllocator* allocator, boost::asio::io_context& context, SpawnHander&& spawn, int stack_size) noexcept
             {
                 boost::asio::strand<boost::asio::io_context::executor_type>* strand = NULLPTR;
-                return YieldContext::Spawn(allocator, context, strand, std::move(spawn), PPP_COROUTINE_STACK_SIZE);
+                return YieldContext::Spawn(allocator, context, strand, std::move(spawn), stack_size);
             }
 
             /**
@@ -264,13 +339,22 @@ namespace ppp
 
         private:
             /**
+             * @brief Delivers a wakeup whose anchor already won the CAS in `Anchor::R()`.
+             * @param cell  Anchor cell of the target coroutine.
+             * @param value Anchor that won; re-validated against the current anchor.
+             * @return true when the coroutine was re-entered or the wakeup was latched.
+             * @note  Runs on the coroutine's context/strand.
+             */
+            static bool                                                         Resume(const std::shared_ptr<AnchorCell>& cell, uint64_t value) noexcept;
+
+            /**
              * @brief Allocates the coroutine stack and performs the initial context switch.
              * @note  Called once from within the Asio thread after the first `Resume()` fires.
              */
             void                                                                Invoke() noexcept;
 
             /** @brief Coroutine entry-point trampoline; must be noexcept (cannot throw across fcontext). */
-            static void                                                         Handle(boost::context::detail::transfer_t t) noexcept;
+            static void                                                         Handle(backend::Transfer t) noexcept;
 
             /**
              * @brief Publishes the fully-suspended state after the coroutine jumped out.
@@ -278,7 +362,7 @@ namespace ppp
              *               must return to the event loop.
              * @return false when a latched wakeup was consumed instead; the caller must
              *               immediately re-enter the coroutine (the suspend must not block).
-             * @note  Must be called without holding `syncobj_`; the lock is taken internally.
+             * @note  Must be called without holding the cell mutex; the lock is taken internally.
              */
             bool                                                                Switch() noexcept;
 
@@ -293,7 +377,7 @@ namespace ppp
              * @param y Pointer to the owning `YieldContext`; used to update `caller_`.
              * @return true on success.
              */
-            static bool                                                         Switch(const boost::context::detail::transfer_t& t, YieldContext* y) noexcept;
+            static bool                                                         Switch(const backend::Transfer& t, YieldContext* y) noexcept;
 
         private:
             template <typename T, typename... A>
@@ -369,7 +453,7 @@ namespace ppp
              * @param state   User data pointer passed through the jump.
              * @return The transfer structure returned by `jump_fcontext`.
              */
-            static boost::context::detail::transfer_t                           Jump(boost::context::detail::fcontext_t context, void* state) noexcept;
+            static backend::Transfer                                            Jump(backend::Context context, void* state) noexcept;
 
         private:
             /** @brief Default construction is deleted — use `Spawn` factory methods. */
@@ -397,16 +481,23 @@ namespace ppp
             ~YieldContext() noexcept;
 
         private:
-            /** @brief Coroutine state flag (`STATUS_*`); written under `syncobj_`, read lock-free by `S()`. */
+            /** @brief Coroutine state flag (`STATUS_*`); written under the cell mutex, read lock-free by `S()`. */
             std::atomic<int>                                                    s_          = 0;
-            /** @brief Guards `s_` / `wakeup_pending_` transitions; never held across `jump_fcontext`. */
-            std::mutex                                                          syncobj_;
-            /** @brief Latched wakeup consumed by the next `Suspend()` (completion-before-suspend). */
+            /** @brief Anchor cell shared with outstanding anchors; its mutex guards the state machine. */
+            std::shared_ptr<AnchorCell>                                         cell_;
+            /** @brief Monotonic anchor counter; incremented atomically by `Arm()`. */
+            std::atomic<uint64_t>                                               anchor_sequence_ = 0;
+            /** @brief Anchor the coroutine is waiting on (or about to); 0 when none. Guarded by the cell mutex. */
+            uint64_t                                                            anchor_current_ = 0;
+            /** @brief Latched wakeup for `anchor_current_`, consumed by its `Suspend()`. */
             bool                                                                wakeup_pending_ = false;
             /** @brief Stored callee (coroutine) context handle; updated on each switch. */
-            std::atomic<boost::context::detail::fcontext_t>                     callee_     = NULLPTR;
+            std::atomic<backend::Context>                                        callee_     = NULLPTR;
             /** @brief Stored caller (event loop) context handle; updated on each switch. */
-            std::atomic<boost::context::detail::fcontext_t>                     caller_     = NULLPTR;
+            std::atomic<backend::Context>                                        caller_     = NULLPTR;
+#if defined(PPP_COROUTINE_BACKEND_COROCC)
+            backend::Context                                                   backend_context_ = NULLPTR;
+#endif
             /** @brief User-provided coroutine entry function. */
             SpawnHander                                                         h_;
             /** @brief Associated Asio I/O context; lifetime must exceed this object. */
@@ -419,7 +510,7 @@ namespace ppp
             std::shared_ptr<Byte>                                               stack_;
             /** @brief Allocator used to allocate this object; null means heap via `Malloc`. */
             ppp::threading::BufferswapAllocator*                                allocator_  = NULLPTR;
-#if defined(PPP_COROUTINES_TSAN_ENABLED)
+#if defined(PPP_COROUTINES_TSAN_ENABLED) && !defined(PPP_COROUTINE_BACKEND_COROCC)
             /** @brief ThreadSanitizer identity for the coroutine stack. */
             void*                                                               sanitizer_fiber_ = NULLPTR;
             /** @brief ThreadSanitizer identity of the Asio runner currently calling in. */

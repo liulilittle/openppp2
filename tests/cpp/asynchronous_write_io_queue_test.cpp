@@ -44,6 +44,13 @@ public:
         callback(ok);
     }
 
+    // Stored completions capture the queue (shared_from_this) like a real
+    // transport handler; drop them at test end to break the cycle.
+    void ReleaseCompletions() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        completions_.clear();
+    }
+
     std::vector<int> Starts() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return starts_;
@@ -127,6 +134,7 @@ void TestFinalizeClaimsInflightAndQueued() {
     Require(results.size() == 2, "late and repeated completions are ignored");
     Require(queue->GetPendingItems() == 0 && queue->GetPendingBytes() == 0,
         "late completion cannot underflow accounting");
+    queue->ReleaseCompletions();
 }
 
 void TestSynchronousCompletion() {
@@ -169,6 +177,7 @@ void TestFirstStartFailureContinuesQueuedWork() {
     Require(second_callbacks == 1, "queued work completes");
     Require(queue->GetPendingItems() == 0 && queue->GetPendingBytes() == 0,
         "first failure and queued completion account once");
+    queue->ReleaseCompletions();
 }
 
 void TestQueuedStartFailureDisposesRemainder() {
@@ -186,6 +195,7 @@ void TestQueuedStartFailureDisposesRemainder() {
         "queued start failure callbacks false then disposes remainder");
     Require(queue->GetPendingItems() == 0 && queue->GetPendingBytes() == 0,
         "queued failure disposal clears accounting");
+    queue->ReleaseCompletions();
 }
 
 void TestQueuedStartFailureClosesAdmissionBeforeCallback() {
@@ -206,6 +216,7 @@ void TestQueuedStartFailureClosesAdmissionBeforeCallback() {
     Require(!reentry_result, "queued start failure closes admission before callback");
     Require(callbacks == std::vector<int>({1, -2, -3}), "failure callback cannot bypass older queued work");
     Require(queue->Starts() == std::vector<int>({1, 2}), "reentrant write never starts");
+    queue->ReleaseCompletions();
 }
 
 void TestAsynchronousFailureDisposesQueue() {
@@ -220,6 +231,7 @@ void TestAsynchronousFailureDisposesQueue() {
     Require(!queue->Send(3, [&](bool) { callbacks.push_back(3); }), "physical failure closes admission");
     Require(queue->GetPendingItems() == 0 && queue->GetPendingBytes() == 0,
         "physical failure clears accounting");
+    queue->ReleaseCompletions();
 }
 
 void TestCallbackReentryPreservesQueueOrder() {
@@ -244,6 +256,7 @@ void TestCallbackReentryPreservesQueueOrder() {
     Require(queue->Starts() == std::vector<int>({1, 2, 3}), "reentrant item starts third");
     queue->Complete(2, true);
     Require(callbacks == std::vector<int>({1, 2, 3}), "callbacks preserve FIFO order");
+    queue->ReleaseCompletions();
 }
 
 void TestConcurrentDispose() {
@@ -266,6 +279,7 @@ void TestConcurrentDispose() {
     Require(callbacks.load(std::memory_order_relaxed) == 32, "concurrent Dispose claims each callback once");
     queue->Complete(0, true);
     Require(callbacks.load(std::memory_order_relaxed) == 32, "late completion after concurrent Dispose ignored");
+    queue->ReleaseCompletions();
 }
 
 void TestBackpressure() {
@@ -281,6 +295,115 @@ void TestBackpressure() {
     Require(callbacks == 0, "backpressure rejection does not callback");
     queue->Dispose();
     Require(callbacks == 2, "accepted requests still finalize");
+    queue->ReleaseCompletions();
+}
+
+// Byte-stream style queue that accepts gathered writes and records each start.
+class GatherQueue final : public ppp::net::asio::IAsynchronousWriteIoQueue {
+public:
+    GatherQueue() noexcept
+        : IAsynchronousWriteIoQueue(NULLPTR) {
+    }
+
+    bool Send(int length, const AsynchronousWriteBytesCallback& callback) {
+        auto packet = ppp::make_shared_alloc<ppp::Byte>(length);
+        return WriteBytes(packet, length, callback);
+    }
+
+    void Complete(std::size_t index, bool ok) {
+        AsynchronousWriteBytesCallback callback = completions_.at(index);
+        callback(ok);
+    }
+
+    void ReleaseCompletions() {
+        completions_.clear();
+    }
+
+    // Each start records the lengths it wrote; a single write has one entry.
+    std::vector<std::vector<int>> starts;
+    bool fail_gather = false;
+
+protected:
+    bool CanGatherWrites() noexcept override { return true; }
+
+    bool DoWriteBytes(std::shared_ptr<ppp::Byte>, int, int packet_length,
+        const AsynchronousWriteBytesCallback& callback) noexcept override {
+        starts.push_back({ packet_length });
+        completions_.push_back(callback);
+        return true;
+    }
+
+    bool DoWriteBytesGather(const WriteSegments& segments,
+        const AsynchronousWriteBytesCallback& callback) noexcept override {
+        std::vector<int> lengths;
+        for (const WriteSegment& segment : segments) {
+            Require(segment.first != nullptr, "gathered segment lost its buffer");
+            lengths.push_back(segment.second);
+        }
+        starts.push_back(lengths);
+        if (fail_gather) {
+            return false;
+        }
+        completions_.push_back(callback);
+        return true;
+    }
+
+private:
+    std::vector<AsynchronousWriteBytesCallback> completions_;
+};
+
+void TestGatherMergesBacklogInOrder() {
+    auto queue = std::make_shared<GatherQueue>();
+    std::vector<int> completed;
+    for (int length : { 10, 20, 30, 40 }) {
+        Require(queue->Send(length, [&completed, length](bool ok) {
+            Require(ok, "gathered write reported failure");
+            completed.push_back(length);
+        }), "send accepted");
+    }
+
+    // The first packet starts alone; the three that queued behind it form one batch.
+    Require(queue->starts == std::vector<std::vector<int>>({ { 10 } }), "first write starts alone");
+    Require(queue->GetPendingItems() == 4 && queue->GetPendingBytes() == 100, "initial accounting");
+
+    queue->Complete(0, true);
+    Require(queue->starts.size() == 2 && queue->starts[1] == std::vector<int>({ 20, 30, 40 }),
+        "backlog merged into one gathered write");
+    Require(queue->GetPendingItems() == 1 && queue->GetPendingBytes() == 90, "batch counts as one item");
+
+    queue->Complete(1, true);
+    Require(completed == std::vector<int>({ 10, 20, 30, 40 }), "callbacks complete in FIFO order");
+    Require(queue->GetPendingItems() == 0 && queue->GetPendingBytes() == 0, "accounting drained");
+    queue->ReleaseCompletions();
+}
+
+void TestGatherFailureFailsEveryMergedPacket() {
+    auto queue = std::make_shared<GatherQueue>();
+    std::vector<bool> results;
+    for (int length : { 5, 6, 7 }) {
+        Require(queue->Send(length, [&results](bool ok) { results.push_back(ok); }), "send accepted");
+    }
+
+    queue->fail_gather = true;
+    queue->Complete(0, true);
+    Require(results == std::vector<bool>({ true, false, false }), "failed batch fails each merged packet once");
+    Require(queue->GetPendingItems() == 0 && queue->GetPendingBytes() == 0, "failed batch clears accounting");
+    queue->ReleaseCompletions();
+}
+
+void TestDisposeFailsInflightBatch() {
+    auto queue = std::make_shared<GatherQueue>();
+    std::vector<bool> results;
+    for (int length : { 1, 2, 3, 4 }) {
+        Require(queue->Send(length, [&results](bool ok) { results.push_back(ok); }), "send accepted");
+    }
+
+    queue->Complete(0, true);
+    queue->Dispose();
+    Require(results == std::vector<bool>({ true, false, false, false }), "dispose fails each packet in the batch once");
+    queue->Complete(1, true);
+    Require(results.size() == 4, "late batch completion is ignored");
+    queue->ReleaseCompletions();
 }
 
 } // namespace
@@ -296,6 +419,9 @@ int main() {
         TestCallbackReentryPreservesQueueOrder();
         TestConcurrentDispose();
         TestBackpressure();
+        TestGatherMergesBacklogInOrder();
+        TestGatherFailureFailsEveryMergedPacket();
+        TestDisposeFailsInflightBatch();
         std::cout << "asynchronous_write_io_queue_test: ok" << std::endl;
         return 0;
     }

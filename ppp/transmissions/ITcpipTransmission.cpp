@@ -178,6 +178,11 @@ namespace ppp {
             return receive_closed_.load();
         }
 
+        bool ITcpipTransmission::EnableReceiveHalfClose() noexcept {
+            receive_half_close_.store(true);
+            return true;
+        }
+
         /**
          * @brief Reads bytes through the QoS-managed path.
          * @param y Coroutine yield context.
@@ -190,7 +195,30 @@ namespace ppp {
             }
 
             auto self = shared_from_this();
-            return ITransmissionQoS::DoReadBytes(y, length, self, *this, this->QoS);
+            if (!receive_half_close_.load()) {
+                return ITransmissionQoS::DoReadBytes(y, length, self, *this, this->QoS);
+            }
+
+            // Receive half-close opt-in: same QoS read as ITransmissionQoS::DoReadBytes,
+            // but a clean peer FIN leaves the carrier alive so its owner can still send.
+            if (length < 1) {
+                return NULLPTR;
+            }
+            std::shared_ptr<ITransmissionQoS> qos = this->QoS;
+            std::shared_ptr<Byte> packet;
+            if (NULLPTR != qos) {
+                packet = qos->ReadBytes(y, length,
+                    [self, this, qos](YieldContext& y, int* length) noexcept {
+                        return ReadBytes(y, *length);
+                    });
+            }
+            else {
+                packet = ReadBytes(y, length);
+            }
+            if (NULLPTR == packet && !receive_closed_.load()) {
+                Dispose();
+            }
+            return packet;
         }
 
         /**
@@ -216,8 +244,8 @@ namespace ppp {
             bool ok = ppp::threading::Executors::ShiftToScheduler(*socket, socket_new, scheduler, strand);
             if (ok) {
                 std::atomic_store(&socket_, socket_new);
-                GetStrand() = strand;
-                GetContext() = scheduler;
+                SetStrand(strand);
+                SetContext(scheduler);
             }
 
             if (!ok) {
@@ -227,6 +255,45 @@ namespace ppp {
             }
 
             return ok;
+        }
+
+        /**
+         * @brief Suspends @p y until at least @p minimum bytes are read into @p buffer.
+         */
+        void ITcpipTransmission::ReadAtLeast(YieldContext& y, const std::shared_ptr<boost::asio::ip::tcp::socket>& socket,
+            Byte* buffer, std::size_t capacity, std::size_t minimum, std::size_t& transferred, boost::system::error_code& read_ec) noexcept {
+            transferred = 0;
+            auto destination = boost::asio::buffer(buffer, capacity);
+            // Lab-only JSONL: carrier receive post-to-completion duration.
+            ppp::diagnostics::datapath_perf::Scope receive_scope;
+            const YieldContext::Anchor anchor = y.Arm();
+            if (!anchor) {
+                read_ec = boost::asio::error::operation_aborted;
+                return;
+            }
+
+            const bool posted = ppp::coroutines::asio::PostIfRunning(socket->get_executor(),
+                [socket, destination, minimum, anchor, &read_ec, &transferred, receive_scope]() noexcept {
+                    boost::asio::async_read(*socket, destination, boost::asio::transfer_at_least(minimum),
+                        [anchor, &read_ec, &transferred, minimum, receive_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                            read_ec = ec;
+                            transferred = sz;
+                            if (!ec && sz >= minimum) {
+                                ppp::diagnostics::datapath_perf::RecordCarrierReceive((int)sz, receive_scope.Elapsed());
+                            }
+                            anchor.R();
+                        });
+                });
+
+            if (!posted) {
+                read_ec = boost::asio::error::operation_aborted;
+                return;
+            }
+
+            y.Suspend(anchor);
+            if (!read_ec && transferred < minimum) {
+                read_ec = boost::asio::error::eof;
+            }
         }
 
         /**
@@ -255,29 +322,51 @@ namespace ppp {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed, NULLPTR);
             }
 
-            boost::system::error_code read_ec;
+            // Serve what an earlier read-ahead already buffered.
             std::size_t bytes_transferred = 0;
-            auto buffer = boost::asio::buffer(packet.get(), length);
-            // Lab-only JSONL: exact carrier receive post-to-completion duration.
-            ppp::diagnostics::datapath_perf::Scope receive_scope;
-            boost::asio::post(socket->get_executor(),
-                [socket, buffer, &y, &read_ec, &bytes_transferred, length, receive_scope]() noexcept {
-                    boost::asio::async_read(*socket, buffer,
-                        [&y, &read_ec, &bytes_transferred, length, receive_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
-                            read_ec = ec;
-                            bytes_transferred = sz;
-                            if (!ec && sz == (std::size_t)length) {
-                                ppp::diagnostics::datapath_perf::RecordCarrierReceive((int)sz, receive_scope.Elapsed());
-                            }
-                            y.R();
-                        });
-                });
+            std::size_t buffered = read_buffered_end_ - read_buffered_begin_;
+            if (buffered > 0) {
+                std::size_t n = std::min<std::size_t>(buffered, (std::size_t)length);
+                memcpy(packet.get(), read_buffer_.get() + read_buffered_begin_, n);
+                read_buffered_begin_ += n;
+                bytes_transferred = n;
+            }
 
-            y.Suspend();
+            if (read_buffered_begin_ == read_buffered_end_) {
+                read_buffered_begin_ = 0;
+                read_buffered_end_ = 0;
+            }
+
+            boost::system::error_code read_ec;
+            while (!read_ec && bytes_transferred < (std::size_t)length) {
+                std::size_t remaining = (std::size_t)length - bytes_transferred;
+                if (NULLPTR == read_buffer_ && remaining < kReadAheadDirectThreshold) {
+                    read_buffer_ = BufferswapAllocator::MakeByteArray(allocator, kReadAheadBufferSize);
+                }
+
+                if (NULLPTR == read_buffer_ || remaining >= kReadAheadDirectThreshold) {
+                    // Large remainder: read it straight into the caller's buffer.
+                    std::size_t sz = 0;
+                    ReadAtLeast(y, socket, packet.get() + bytes_transferred, remaining, remaining, sz, read_ec);
+                    bytes_transferred += sz;
+                }
+                else {
+                    // Small remainder (typically a frame header): one read pulls in whatever
+                    // the socket has, so the following payload is usually served from memory.
+                    std::size_t sz = 0;
+                    ReadAtLeast(y, socket, read_buffer_.get(), kReadAheadBufferSize, remaining, sz, read_ec);
+                    std::size_t n = std::min<std::size_t>(sz, remaining);
+                    memcpy(packet.get() + bytes_transferred, read_buffer_.get(), n);
+                    bytes_transferred += n;
+                    read_buffered_begin_ = n;
+                    read_buffered_end_ = sz;
+                }
+            }
+
             bool ok = !read_ec && bytes_transferred == (std::size_t)length;
             if (!ok) {
                 if (read_ec == boost::asio::error::eof &&
-                    role_ == TcpTransmissionRole::Child) {
+                    (role_ == TcpTransmissionRole::Child || receive_half_close_.load())) {
                     receive_closed_.store(true);
                     ppp::telemetry::Count("tcpip.receive_eof.child", 1);
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketReadFailed, NULLPTR);
@@ -311,9 +400,40 @@ namespace ppp {
          * @param offset Offset to the first byte to send.
          * @param packet_length Number of bytes to send.
          * @param cb Completion callback receiving success state.
-         * @return true if the write task is posted; otherwise false.
+         * @return true if the write was started or posted; otherwise false.
          */
         bool ITcpipTransmission::DoWriteBytes(std::shared_ptr<Byte> packet, int offset, int packet_length, const AsynchronousWriteBytesCallback& cb) noexcept {
+            Byte* data = packet.get() + offset;
+            return StartWrite(boost::asio::buffer(data, packet_length), packet, packet_length, cb);
+        }
+
+        /**
+         * @brief Writes queued frames back to back with one gathered socket write.
+         *
+         * The carrier is a byte stream, so the peer reads exactly the bytes that
+         * consecutive DoWriteBytes() calls would have produced.
+         */
+        bool ITcpipTransmission::DoWriteBytesGather(const WriteSegments& segments, const AsynchronousWriteBytesCallback& cb) noexcept {
+            std::shared_ptr<WriteSegments> owner = make_shared_object<WriteSegments>(segments);
+            if (NULLPTR == owner) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                return false;
+            }
+
+            ppp::vector<boost::asio::const_buffer> buffers;
+            buffers.reserve(owner->size());
+
+            int total = 0;
+            for (const WriteSegment& segment : *owner) {
+                buffers.emplace_back(segment.first.get(), static_cast<std::size_t>(segment.second));
+                total += segment.second;
+            }
+
+            return StartWrite(buffers, owner, total, cb);
+        }
+
+        template <typename TBuffers, typename TOwner>
+        bool ITcpipTransmission::StartWrite(const TBuffers& buffers, const TOwner& owner, int packet_length, const AsynchronousWriteBytesCallback& cb) noexcept {
             std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::atomic_load(&socket_);
             if (!socket || !socket->is_open()) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketOpenFailed);
@@ -331,9 +451,13 @@ namespace ppp {
             // Lab-only JSONL: physical carrier send post-to-completion duration.
             ppp::diagnostics::datapath_perf::Scope send_scope;
 
-            auto complete_do_write_bytes_async_callback = [self, this, socket, context, strand, packet, offset, packet_length, cb, send_scope]() noexcept {
-                boost::asio::async_write(*socket, boost::asio::buffer((Byte*)packet.get() + offset, packet_length),
-                    [self, this, context, strand, packet, packet_length, cb, send_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
+            auto complete_do_write_bytes_async_callback = [self, this, socket, context, strand, buffers, owner, packet_length, cb, send_scope]() noexcept {
+                // async_write is a composed operation that only references the socket and
+                // reads it again (executor, follow-up writes) until it completes. Dispose()
+                // drops socket_ while a write can still be in flight, so the completion must
+                // keep the socket alive (ASan: heap-use-after-free in write_op on carrier exit).
+                boost::asio::async_write(*socket, buffers,
+                    [self, this, socket, context, strand, owner, packet_length, cb, send_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         bool ok = ec == boost::system::errc::success;
                         if (ok) {
                             ppp::diagnostics::datapath_perf::RecordCarrierSend((int)sz, send_scope.Elapsed());
@@ -342,18 +466,18 @@ namespace ppp {
                                 statistics->AddOutgoingTraffic(packet_length);
                             }
                         }
-	                        else {
-	                            ppp::telemetry::Log(Level::kInfo,
-	                                "tcpip",
-	                                "DoWriteBytes failed role=%s ec=%d msg=%s requested=%d transferred=%zu",
-	                                TcpTransmissionRoleName(role_),
-	                                ec.value(),
-	                                ec.message().c_str(),
-	                                packet_length,
-	                                sz);
-	                            bool disconnected = boost::asio::error::eof == ec ||
-	                                boost::asio::error::operation_aborted == ec ||
-	                                boost::asio::error::connection_reset == ec ||
+                        else {
+                            ppp::telemetry::Log(Level::kInfo,
+                                "tcpip",
+                                "DoWriteBytes failed role=%s ec=%d msg=%s requested=%d transferred=%zu",
+                                TcpTransmissionRoleName(role_),
+                                ec.value(),
+                                ec.message().c_str(),
+                                packet_length,
+                                sz);
+                            bool disconnected = boost::asio::error::eof == ec ||
+                                boost::asio::error::operation_aborted == ec ||
+                                boost::asio::error::connection_reset == ec ||
                                 boost::asio::error::broken_pipe == ec ||
                                 boost::asio::error::not_connected == ec;
                             if (!disconnected) {
@@ -368,6 +492,16 @@ namespace ppp {
                         }
                     });
                 };
+
+            // The write queue starts at most one write at a time, so when the caller is
+            // already on the socket's executor the write can start inline instead of
+            // paying a handler allocation and an extra event-loop turn per frame.
+            bool inline_start = NULLPTR != strand ? strand->running_in_this_thread() :
+                (NULLPTR != context && context->get_executor().running_in_this_thread());
+            if (inline_start) {
+                complete_do_write_bytes_async_callback();
+                return true;
+            }
 
             bool posted = ppp::threading::Executors::Post(context, strand, complete_do_write_bytes_async_callback);
             if (!posted) {

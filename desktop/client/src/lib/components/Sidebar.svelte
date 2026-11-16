@@ -1,60 +1,23 @@
 <script>
-  import { ArrowRightLeft, FileJson, Logs, RadioTower, Settings, Waypoints } from 'lucide-svelte'
-
+  import { ArrowRightLeft, RadioTower, Settings, Waypoints, Globe, Logs, Route } from 'lucide-svelte'
+  import { t } from '../i18n.js'
   export let current = 'connection'
   export let navigate
-
-  const primary = [
-    { id: 'connection', label: '连接', icon: ArrowRightLeft },
-    { id: 'nodes', label: '节点', icon: Waypoints },
-    { id: 'subscription', label: '订阅', icon: RadioTower },
-    { id: 'logs', label: '日志', icon: Logs },
-  ]
-  const advanced = [
-    { id: 'config', label: '配置', icon: FileJson },
-    { id: 'settings', label: '设置', icon: Settings },
-  ]
+  export let version = ''
+  const items = [['connection','Connection','连接',ArrowRightLeft], ['nodes','Nodes','节点',Waypoints], ['subscription','Subscriptions','订阅',RadioTower], ['routing','Routing','分流',Route], ['dns','DNS','DNS',Globe], ['logs','Logs','日志',Logs], ['settings','Settings','设置',Settings]]
 </script>
-
 <aside class="sidebar">
-  <div class="brand"><i></i><strong>OpenPPP2</strong></div>
-  <nav aria-label="主要导航">
-    {#each primary as item}
-      <button class:active={current === item.id} on:click={() => navigate(item.id)} aria-current={current === item.id ? 'page' : undefined} title={item.label}>
-        <svelte:component this={item.icon} size={15} strokeWidth={1.7} /><span>{item.label}</span>
-      </button>
-    {/each}
-    <div class="section-label">高级</div>
-    {#each advanced as item}
-      <button class:active={current === item.id} on:click={() => navigate(item.id)} aria-current={current === item.id ? 'page' : undefined} title={item.label}>
-        <svelte:component this={item.icon} size={15} strokeWidth={1.7} /><span>{item.label}</span>
-      </button>
-    {/each}
+  <div class="brand"><img src="/icon.ico" alt="" width="24" height="24"/><strong>OpenPPP2</strong></div>
+  <nav aria-label={$t('Navigation','导航')}>
+    {#each items as [id,en,zh,icon]}<button class:active={current === id} on:click={() => navigate(id)} aria-current={current === id ? 'page' : undefined} title={$t(en,zh)}><svelte:component this={icon} size={18}/><span>{$t(en,zh)}</span></button>{/each}
   </nav>
-  <div class="version mono">ppp 2.1.0 · windows</div>
+  <div class="version">Windows · {version || $t('Kernel unknown','内核未知')}</div>
 </aside>
-
 <style>
-  .sidebar { position: sticky; top: 0; height: 100vh; border-right: 1px solid var(--border); padding: 18px 10px; display: flex; flex-direction: column; background: #0b0d10; }
-  .brand { display: flex; align-items: center; gap: 9px; height: 25px; padding: 0 10px; margin-bottom: 13px; }
-  .brand i { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
-  .brand strong { font-size: 14px; }
-  nav { display: grid; gap: 3px; }
-  nav button { width: 100%; height: 32px; display: flex; align-items: center; gap: 11px; border: 0; border-radius: 7px; padding: 0 11px; background: transparent; color: var(--text-2); cursor: pointer; text-align: left; }
-  nav button:hover { background: rgba(255,255,255,.045); color: var(--text); }
-  nav button.active { background: rgba(255,255,255,.075); color: #fff; }
-  .section-label { padding: 16px 10px 5px; color: var(--text-3); font-size: 11px; }
-  .version { margin-top: auto; padding: 0 10px; color: #526172; font-size: 10px; }
-  @media (max-width: 900px) {
-    .sidebar { width: 58px; padding-left: 8px; padding-right: 8px; }
-    .brand { justify-content: center; padding: 0; }
-    .brand strong, nav button span, .section-label, .version { display: none; }
-    nav button { justify-content: center; padding: 0; }
-  }
-  @media (max-width: 560px) {
-    .sidebar { position: fixed; inset: auto 0 0 0; z-index: 30; width: auto; height: 54px; border-right: 0; border-top: 1px solid var(--border); flex-direction: row; padding: 5px 8px; }
-    .brand, .section-label, .version { display: none; }
-    nav { width: 100%; display: flex; justify-content: space-around; }
-    nav button { width: 42px; height: 42px; }
-  }
+  .sidebar { position:sticky; top:0; height:100vh; padding:26px 12px; background:var(--surface); border-right:1px solid var(--border); display:flex; flex-direction:column; }
+  .brand { display:flex; gap:10px; align-items:center; padding:0 12px 28px; color:var(--text); } .brand strong { font-size:17px; }
+  nav { display:grid; gap:6px; } nav button { display:flex; gap:12px; align-items:center; width:100%; min-height:40px; border:0; background:transparent; color:var(--text-2); text-align:left; border-radius:6px; padding:0 12px; cursor:pointer; }
+  nav button:hover { background:var(--surface-hover); } nav button.active { color:var(--accent); background:var(--accent-soft); }
+  .version { margin-top:auto; font-size:11px; color:var(--text-3); overflow-wrap:anywhere; padding:12px; }
+  @media(max-width:900px) { .sidebar { padding:24px 6px; } .brand { padding:0 0 28px; justify-content:center; } .brand strong, nav span, .version { display:none; } nav button { justify-content:center; padding:0; } }
 </style>

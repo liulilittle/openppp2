@@ -35,22 +35,27 @@ namespace ppp {
                 bool ok = false;
                 boost::system::error_code ec;
                 auto& ssl_socket = ssl_websocket->next_layer();
+                const YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return false;
+                }
+
                 /**
                  * Start asynchronous SSL negotiation and resume the coroutine from
                  * the completion handler by signaling the yield context.
                  */
                 ssl_socket.async_handshake(handshaked_client ? boost::asio::ssl::stream_base::client : boost::asio::ssl::stream_base::server,
-                    [reference, this, handshaked_client, &ok, &ec, &y](const boost::system::error_code& ec_) noexcept {
+                    [reference, this, handshaked_client, &ok, &ec, anchor](const boost::system::error_code& ec_) noexcept {
                         ec = ec_;
                         ok = ec == boost::system::errc::success;
-                        y.R();
+                        anchor.R();
                     });
 
                 /**
                  * Suspend until the SSL callback runs; abort immediately on failure,
                  * otherwise continue with the HTTP/WebSocket upgrade handshake.
                  */
-                y.Suspend();
+                y.Suspend(anchor);
                 if (!ok) {
                     if (boost::asio::error::operation_aborted != ec &&
                         boost::asio::error::eof != ec &&

@@ -227,6 +227,81 @@ namespace ppp {
                 return true;
             }
 
+            /** @brief Upper bounds for one gathered write, keeping each batch's latency and memory pinned modest. */
+            static constexpr std::size_t kMaxGatherItems = 64;
+            static constexpr int         kMaxGatherBytes = 256 * 1024;
+
+            IAsynchronousWriteIoQueue::AsynchronousWriteIoContextPtr IAsynchronousWriteIoQueue::TakeNextLocked() noexcept {
+                AsynchronousWriteIoContextPtr next = std::move(queues_.front());
+                queues_.erase(queues_.begin());
+                in_flight_ = next;
+
+                if (queues_.empty() || NULLPTR == next || !CanGatherWrites()) {
+                    return next;
+                }
+
+                // Count how many waiting packets fit in one batch before claiming any.
+                std::size_t count = 1;
+                int bytes = next->packet_length;
+                for (const AsynchronousWriteIoContextPtr& waiting : queues_) {
+                    if (count >= kMaxGatherItems || NULLPTR == waiting || NULLPTR == waiting->packet ||
+                        bytes + waiting->packet_length > kMaxGatherBytes) {
+                        break;
+                    }
+                    bytes += waiting->packet_length;
+                    count++;
+                }
+
+                if (count < 2 || NULLPTR == next->packet) {
+                    return next;
+                }
+
+                AsynchronousWriteIoContextPtr batch = make_shared_object<AsynchronousWriteIoContext>();
+                if (NULLPTR == batch) {
+                    return next;
+                }
+
+                std::shared_ptr<ppp::vector<AsynchronousWriteBytesCallback>> callbacks =
+                    make_shared_object<ppp::vector<AsynchronousWriteBytesCallback>>();
+                if (NULLPTR == callbacks) {
+                    return next;
+                }
+
+                batch->segments.reserve(count);
+                callbacks->reserve(count);
+                for (std::size_t i = 0; i < count; i++) {
+                    AsynchronousWriteIoContextPtr item = next;
+                    if (i > 0) {
+                        item = std::move(queues_.front());
+                        queues_.erase(queues_.begin());
+                    }
+
+                    // Waiting contexts are only claimed by Finalize after detaching them
+                    // under this lock, so every item here is still unclaimed.
+                    std::shared_ptr<Byte> packet = item->packet;
+                    AsynchronousWriteBytesCallback callback;
+                    int length = 0;
+                    item->Claim(callback, length);
+                    batch->segments.emplace_back(std::move(packet), length);
+                    batch->packet_length += length;
+                    callbacks->emplace_back(std::move(callback));
+                }
+
+                // The batch is one queue item; the merged packets' byte totals stay counted.
+                pending_items_.fetch_sub(static_cast<int>(count) - 1, std::memory_order_relaxed);
+                batch->cb =
+                    [callbacks](bool ok) noexcept {
+                        for (AsynchronousWriteBytesCallback& callback : *callbacks) {
+                            if (NULLPTR != callback) {
+                                callback(ok);
+                            }
+                        }
+                    };
+
+                in_flight_ = batch;
+                return batch;
+            }
+
             /** @brief Starts one preselected context without holding the queue lock. */
             bool IAsynchronousWriteIoQueue::DoTryWriteBytesUnsafe(const AsynchronousWriteIoContextPtr& context, bool callback_on_start_failure) noexcept {
                 auto self = shared_from_this();
@@ -253,9 +328,7 @@ namespace ppp {
                                 pending_bytes_.store(0, std::memory_order_relaxed);
                             }
                             elif(!disposed_.load(std::memory_order_acquire) && !queues_.empty()) {
-                                next = std::move(queues_.front());
-                                queues_.erase(queues_.begin());
-                                in_flight_ = next;
+                                next = TakeNextLocked();
                             }
                             sending_ = NULLPTR != in_flight_;
                         }
@@ -278,6 +351,7 @@ namespace ppp {
 
                 std::shared_ptr<Byte> packet;
                 int packet_length = 0;
+                WriteSegments segments;
                 {
                     SynchronizedObjectScope scope(syncobj_);
                     if (disposed_.load(std::memory_order_acquire) || context != in_flight_) {
@@ -285,9 +359,13 @@ namespace ppp {
                     }
                     packet = context->packet;
                     packet_length = context->packet_length;
+                    segments = context->segments;
                 }
 
-                if (DoWriteBytes(packet, 0, packet_length, evtf)) {
+                bool started = segments.empty() ?
+                    DoWriteBytes(packet, 0, packet_length, evtf) :
+                    DoWriteBytesGather(segments, evtf);
+                if (started) {
                     return true;
                 }
 
@@ -315,9 +393,7 @@ namespace ppp {
                         pending_bytes_.store(0, std::memory_order_relaxed);
                     }
                     elif(!disposed_.load(std::memory_order_acquire) && !queues_.empty()) {
-                        next = std::move(queues_.front());
-                        queues_.erase(queues_.begin());
-                        in_flight_ = next;
+                        next = TakeNextLocked();
                     }
                     sending_ = NULLPTR != in_flight_;
                 }

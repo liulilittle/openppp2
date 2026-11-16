@@ -4,13 +4,19 @@
  * @file P2PSocketProtector.h
  * @brief Platform-adaptive socket protection for P2P UDP channels.
  *
- * Prevents routing loops on Android (VpnService.protect) and Linux
- * (SO_MARK / policy routing). Unsupported platforms fail closed.
+ * Prevents routing loops on Android (VpnService.protect), Linux
+ * (SO_BINDTODEVICE), Windows (IP_UNICAST_IF / IPV6_UNICAST_IF), and macOS
+ * (IP_BOUND_IF / IPV6_BOUND_IF).
+ * Unsupported platforms fail closed.
  *
  * Implementations:
  * - Android: JNI VpnService.protect(fd) — guarded by _ANDROID macro.
- * - Linux: setsockopt SO_MARK with P2P firmware mark — guarded by _LINUX.
- * - Windows/macOS: unavailable for direct P2P until a real adapter exists.
+ * - Linux: binds to the physical interface with SO_BINDTODEVICE. The legacy
+ *   mark is retained for compatibility but is not used as readiness proof.
+ * - Windows: binds sockets to the physical interface with IP_UNICAST_IF
+ *   (IPv4) or IPV6_UNICAST_IF (IPv6).
+ * - macOS: binds sockets to the physical interface with IP_BOUND_IF (IPv4)
+ *   or IPV6_BOUND_IF (IPv6).
  *
  * @license GPL-3.0
  */
@@ -19,6 +25,8 @@
 #include <ppp/stdafx.h>
 #include <boost/asio.hpp>
 #include <memory>
+#include <string>
+#include <utility>
 
 namespace ppp {
     namespace p2p {
@@ -54,19 +62,25 @@ namespace ppp {
 
 #if defined(_LINUX) && !defined(_ANDROID)
         /**
-         * @brief Linux SO_MARK socket protector.
+         * @brief Linux physical-interface socket protector.
          *
-         * Sets SO_MARK on the socket with a dedicated firmware mark (0x5032)
-         * so that policy routing can direct P2P traffic outside the VPN tunnel.
+         * Binds the socket to the physical interface so P2P traffic bypasses
+         * the TUN route without requiring a separately managed ip rule/table.
          */
         class LinuxSocketProtector final : public ISocketProtector {
         public:
-            explicit LinuxSocketProtector(uint32_t mark = SOCKET_MARK_P2P) noexcept : mark_(mark) {}
-            bool IsReady() const noexcept override { return true; }
+            explicit LinuxSocketProtector(
+                uint32_t mark = SOCKET_MARK_P2P,
+                std::string interface_name = {}) noexcept
+                : mark_(mark), interface_name_(std::move(interface_name)) {}
+            // SO_MARK alone is not sufficient: no ip-rule/table is installed by
+            // the client. Require an explicit physical interface binding.
+            bool IsReady() const noexcept override { return !interface_name_.empty(); }
             bool Protect(int fd) noexcept override;
 
         private:
             uint32_t mark_;
+            std::string interface_name_;
         };
 #endif
 
@@ -86,16 +100,51 @@ namespace ppp {
         };
 #endif
 
+#if defined(_WIN32)
+        /** Binds P2P sockets to a Windows interface index. */
+        class WindowsSocketProtector final : public ISocketProtector {
+        public:
+            explicit WindowsSocketProtector(int interface_index) noexcept
+                : interface_index_(interface_index) {}
+            bool IsReady() const noexcept override { return interface_index_ > 0; }
+            bool Protect(int fd) noexcept override;
+
+        private:
+            int interface_index_;
+        };
+#endif
+
+#if defined(_MACOS) && !defined(_IPHONE) && !defined(IPHONE)
+        /** Binds P2P sockets to a macOS interface index. */
+        class MacSocketProtector final : public ISocketProtector {
+        public:
+            explicit MacSocketProtector(int interface_index) noexcept
+                : interface_index_(interface_index) {}
+            bool IsReady() const noexcept override { return interface_index_ > 0; }
+            bool Protect(int fd) noexcept override;
+
+        private:
+            int interface_index_;
+        };
+#endif
+
         /**
          * @brief Factory: creates the platform-appropriate socket protector.
          *
          * @return Shared pointer to the protector instance.
          */
-        inline std::shared_ptr<ISocketProtector> CreateSocketProtector() noexcept {
+        inline std::shared_ptr<ISocketProtector> CreateSocketProtector(
+            int interface_index = -1,
+            const std::string& interface_name = {}) noexcept {
 #if defined(_ANDROID)
             return std::make_shared<AndroidSocketProtector>();
 #elif defined(_LINUX)
-            return std::make_shared<LinuxSocketProtector>();
+            (void)interface_index;
+            return std::make_shared<LinuxSocketProtector>(SOCKET_MARK_P2P, interface_name);
+#elif defined(_WIN32)
+            return std::make_shared<WindowsSocketProtector>(interface_index);
+#elif defined(_MACOS) && !defined(_IPHONE) && !defined(IPHONE)
+            return std::make_shared<MacSocketProtector>(interface_index);
 #else
             return std::make_shared<NoOpSocketProtector>();
 #endif

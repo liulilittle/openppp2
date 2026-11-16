@@ -1,7 +1,7 @@
 # 参考手册
 > Status: Active
 > Type: Reference index
-> Last verified: 8c8a888
+> Last verified: 2026-10-07
 > Parent index: [文档索引](../README_CN.md)
 > Peer link: [English](README.md)
 
@@ -10,6 +10,7 @@
 ## 启动或配置 `ppp`
 
 - [命令行参考](CLI_REFERENCE_CN.md) — 参数、启动顺序、别名和副作用。
+- [策略 CLI 指南](../guides/POLICY_CLI_CN.md) — 策略检查、解释、迁移、导出、更新和状态工作流。
 - [配置模型](CONFIGURATION_CN.md) — 可接受的 JSON 结构、归一化和安全配置实践。
 
 ## 诊断运行中的进程

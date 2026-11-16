@@ -6,6 +6,7 @@
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/transmissions/IAuthenticatedCarrierBinding.h>
 #include <ppp/transmissions/IWebsocketTransmission.h>
+#include <ppp/net/asio/templates/WebSocket.h>
 
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -209,6 +210,12 @@ public:
             }
         }
         threads_.clear();
+        // Dispose posts cleanup that retains the transports and their context.
+        // Drain it after all runners stop, including cancellation completions.
+        if (context_) {
+            context_->restart();
+            context_->run();
+        }
     }
 
     TransmissionPtr Client() const noexcept { return client_; }
@@ -369,4 +376,58 @@ BOOST_AUTO_TEST_CASE(repeated_production_handshake_io_and_teardown) {
         BOOST_TEST(!pair.Client()->HasAuthenticatedSessionExporter());
         BOOST_TEST(!pair.Server()->HasAuthenticatedSessionExporter());
     }
+}
+
+BOOST_AUTO_TEST_CASE(forwarding_headers_are_only_sanitized_claims) {
+    namespace headers = ppp::net::asio::templates::websocket;
+    headers::http_request request;
+    BOOST_TEST(headers::GetAddressString(request).empty());
+    request.set("CF-Connecting-IP", "192.0.2.23");
+    BOOST_TEST(headers::GetAddressString(request) == "192.0.2.23");
+    request.set("CF-Connecting-IP", "not-an-address");
+    BOOST_TEST(headers::GetAddressString(request).empty());
+    request.set("X-Forwarded-For", "192.0.2.23, 198.51.100.4");
+    BOOST_TEST(headers::GetAddressString(request).empty());
+}
+
+template <typename T>
+void CheckStalledUpgradeTimeout() {
+    auto context = std::make_shared<asio::io_context>();
+    tcp::acceptor acceptor(*context, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+    tcp::socket peer(*context);
+    auto socket = std::make_shared<tcp::socket>(*context);
+    peer.connect(acceptor.local_endpoint());
+    acceptor.accept(*socket);
+    auto strand = std::make_shared<typename T::StrandPtr::element_type>(asio::make_strand(*context));
+    auto config = MakeConfiguration(true);
+    config->tcp.connect.timeout = 1;
+    auto server = std::make_shared<T>(context, strand, socket, config);
+    bool done = false;
+    bool ok = true;
+    asio::steady_timer watchdog(*context);
+    watchdog.expires_after(4s);
+    watchdog.async_wait([&](boost::system::error_code ec) {
+        if (!ec) { boost::system::error_code ignored; peer.close(ignored); }
+    });
+    BOOST_REQUIRE(ppp::coroutines::YieldContext::Spawn(nullptr, *context, strand.get(),
+        [&](ppp::coroutines::YieldContext& y) noexcept {
+            bool mux = false;
+            ok = server->HandshakeClient(y, mux) != 0;
+            done = true;
+            boost::system::error_code ignored;
+            watchdog.cancel(ignored);
+        }));
+    const auto started = std::chrono::steady_clock::now();
+    context->run();
+    BOOST_TEST(done);
+    BOOST_TEST(!ok);
+    BOOST_CHECK(std::chrono::steady_clock::now() - started < 3s);
+}
+
+BOOST_AUTO_TEST_CASE(stalled_http_upgrade_times_out) {
+    CheckStalledUpgradeTimeout<transmissions::IWebsocketTransmission>();
+}
+
+BOOST_AUTO_TEST_CASE(stalled_tls_upgrade_times_out) {
+    CheckStalledUpgradeTimeout<transmissions::ISslWebsocketTransmission>();
 }

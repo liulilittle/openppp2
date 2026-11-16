@@ -52,7 +52,7 @@ The router exposes groups for:
 
 Auth is enabled by default. Ordinary protected `/api/` endpoints require a valid in-memory issued Bearer token. `/api/v1/status` is intentionally public. SSE routes perform their own token/JWT check when authentication is enabled, accepting a query `token` or Bearer header; the generic middleware exemption for SSE is therefore not an unauthenticated-stream guarantee.
 
-CORS currently allows `*`, and Guardian does not configure TLS. Keep the default loopback bind unless a reviewed network boundary provides TLS, authentication, authorization, and exposure controls.
+No CORS headers are emitted: only same-origin browser requests work (the Origin host must equal the request Host), state-changing requests with a foreign Origin get 403, and on a loopback listener the Host header must be loopback or the configured listen host (DNS-rebinding defence); behind a reverse proxy, preserve the Host header. Request bodies are capped at 1 MiB (4 MiB for profiles), login/password endpoints apply per-IP failure backoff (HTTP 429), and Guardian refuses to start on a non-loopback `listen` with `auth.enabled=false`. Instance `binary` is not restricted to registered IDs and health-check `httpEndpoint` may target any host (SSRF risk; redirects are not followed), so treat the API as administrator-equivalent. Guardian does not configure TLS. Keep the default loopback bind unless a reviewed network boundary provides TLS, authentication, authorization, and exposure controls.
 
 ## Web UI and TUI build boundary
 

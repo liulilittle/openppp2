@@ -841,6 +841,27 @@ namespace lwip {
         return pbuf;
     }
 
+    bool netstack::set_address(uint32_t ip, uint32_t mask) noexcept {
+        std::shared_ptr<boost::asio::io_context> executor = netstack::Executor;
+        if (NULLPTR == executor) {
+            return false;
+        }
+
+        netstack::IP = ip;
+        netstack::GW = ip;
+        netstack::MASK = mask;
+        boost::asio::post(*executor,
+            [ip, mask]() noexcept {
+                struct netif* netif = netif_;
+                if (NULLPTR != netif) {
+                    // Same layout as open(): the gateway is the interface address itself.
+                    ip4_addr_t ips[] = { ip, mask, ip };
+                    netif_set_addr(netif, ips + 0, ips + 1, ips + 2);
+                }
+            });
+        return true;
+    }
+
     bool netstack::input(const void* packet, int size) noexcept {
         struct pbuf* pbuf = netstack_pbuf_copy(packet, size);
         if (!pbuf) {
@@ -979,17 +1000,22 @@ namespace lwip {
 
     void netstack::close(const LIBTCPIP_CLOSED_EVENT& event) noexcept {
         boost::asio::io_context& context = *netstack::Executor;
+        bool already_posted = false;
         {
             SynchronizedObjectScope scope_(closepost_lock_);
-            if (close_posted_) {
-                /* Teardown is already in flight or done; complete this
-                 * caller's callback inline so it can never be stranded. */
-                if (event) {
-                    event();
-                }
-                return;
-            }
+            already_posted = close_posted_;
             close_posted_ = true;
+        }
+
+        if (already_posted) {
+            /* Teardown is already in flight or done; complete this caller's
+             * callback inline so it can never be stranded. It runs after
+             * closepost_lock_ is released: the callback is caller code and
+             * may re-enter close()/open(), which take that lock again. */
+            if (event) {
+                event();
+            }
+            return;
         }
 
         if (context.stopped()) {

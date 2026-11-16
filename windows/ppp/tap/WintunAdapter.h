@@ -45,6 +45,18 @@ public:
     bool SendPacket(const uint8_t* data, uint32_t len) noexcept;
     bool IsOpen() noexcept;
 
+    // True only when this instance created the adapter during Open(). An
+    // adapter opened by name may belong to a previous process or another VPN
+    // and is therefore never deleted by this instance.
+    bool OwnsAdapter() const noexcept;
+
+    // Replays the durable Wintun session marker left by an unclean process
+    // exit. Wintun keeps adapters installed by design; recovery therefore
+    // verifies the stable adapter identity and closes only a recoverable
+    // session handle. A conflicting or active owner remains pending.
+    static bool RecoverPending() noexcept;
+    static bool HasPendingRecovery() noexcept;
+
     // PacketInput is delivered outside both adapter locks. Callers must use these
     // methods rather than retaining a mutable callback field across threads.
     void SetPacketInput(const std::shared_ptr<PacketHandler>& handler) noexcept;
@@ -87,6 +99,8 @@ private:
     size_t sends_in_flight_ = 0;
     bool finalizing_ = false;
     bool finalized_ = false;
+    bool owns_adapter_ = false;
+    bool recovery_marker_ = false;
 
     // Packet callbacks may re-enter Stop(), so their ownership hand-off uses a
     // separate mutex and is always invoked after releasing it.

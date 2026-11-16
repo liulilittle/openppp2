@@ -2,9 +2,12 @@
 #include <ppp/app/client/xtcp/XtcpRuntime.h>
 
 #include <thread>
+#include <future>
 
 #if defined(__linux__)
 #include <pthread.h>
+#include <sched.h>
+#include <sys/syscall.h>
 #endif
 #if !defined(_WIN32)
 #include <fcntl.h>
@@ -18,11 +21,16 @@
 #include <ppp/app/client/xtcp/XtcpNdiBackend.h>
 #include <ppp/app/client/xtcp/XtcpPoolLease.h>
 #include <ppp/app/client/xtcp/XtcpRuntimePolicy.h>
+#include <ppp/app/client/xtcp/XtcpShardPolicy.h>
+#include <ppp/app/protocol/XtcpDirectUploadQueue.h>
+#include <ppp/threading/SpscHandoff.h>
+#include <ppp/tap/TapOutputLane.h>
 
 #include <xtcp/core/ip.h>
 #include <xtcp/core/stack.h>
 
 #include <boost/asio/bind_executor.hpp>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <algorithm>
 #include <array>
@@ -35,6 +43,7 @@
 #include <fstream>
 #include <limits>
 #include <mutex>
+#include <shared_mutex>
 #include <new>
 #include <string>
 #include <unordered_map>
@@ -249,6 +258,11 @@ XtcpRuntime::~XtcpRuntime() noexcept = default;
 bool XtcpRuntime::Start() noexcept { return false; }
 void XtcpRuntime::MarkReady() noexcept {}
 void XtcpRuntime::Stop() noexcept {}
+void XtcpRuntime::SetSsmtActive(bool) noexcept {}
+bool XtcpRuntime::GetLaneBinding(int, ppp::tap::TapLaneBinding&) const noexcept { return false; }
+#if defined(PPP_XTCP_RUNTIME_TESTING)
+void XtcpRuntime::FailWorkerStartForTesting(int) noexcept {}
+#endif
 bool XtcpRuntime::SubmitIPv4Tcp(const void*, int) noexcept { return false; }
 bool XtcpRuntime::IsReady() const noexcept { return false; }
 bool XtcpRuntime::IsRunning() const noexcept { return false; }
@@ -261,6 +275,9 @@ bool XtcpRuntime::EmitOutputForTesting(const std::shared_ptr<Byte>&, int,
 #else
 namespace {
 std::atomic<std::uint64_t> g_next_runtime_instance_id{0};
+#if defined(PPP_XTCP_RUNTIME_TESTING)
+std::atomic<int> g_fail_worker_start_for_testing{-1};
+#endif
 
 std::uint64_t AllocateRuntimeInstanceId() noexcept {
     std::uint64_t last_issued = g_next_runtime_instance_id.load(std::memory_order_relaxed);
@@ -272,6 +289,54 @@ std::uint64_t AllocateRuntimeInstanceId() noexcept {
             return id;
         }
     }
+}
+
+std::string StartupEnv(const char* name) {
+    const char* value = ::getenv(name);
+    return value ? value : "";
+}
+
+XtcpCpuInputs DiscoverXtcpCpus() {
+    XtcpCpuInputs result;
+#if defined(__linux__) && !defined(__ANDROID__)
+    const long online = ::sysconf(_SC_NPROCESSORS_ONLN);
+    result.online = online > 0 ? static_cast<unsigned>(online) : 1;
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    if (::sched_getaffinity(0, sizeof(mask), &mask) == 0) {
+        result.affinity_known = true;
+        // The kernel mask already intersects online CPUs and the effective cpuset.
+        for (unsigned cpu = 0; cpu < CPU_SETSIZE; ++cpu)
+            if (CPU_ISSET(cpu, &mask)) result.allowed.push_back(cpu);
+    }
+    std::ifstream membership("/proc/self/cgroup");
+    std::string line;
+    while (std::getline(membership, line)) {
+        if (line.compare(0, 3, "0::") != 0) continue;
+        std::string path = line.substr(3);
+        // Nonstandard mounts/v1 or inaccessible ancestors conservatively select one.
+        if (path.empty() || path[0] != '/' || path.find("..") != std::string::npos) break;
+        result.quota_cpus = result.online;
+        result.quota_known = true;
+        for (;;) {
+            std::ifstream quota("/sys/fs/cgroup" + (path == "/" ? "" : path) + "/cpu.max");
+            std::string amount, period;
+            std::uint64_t q = 0, p = 0;
+            if (!(quota >> amount >> period) || !ParseUnsigned(period, p) || p == 0
+                || (amount != "max" && (!ParseUnsigned(amount, q) || q == 0))) {
+                result.quota_known = false;
+                break;
+            }
+            if (amount != "max") result.quota_cpus = std::min(result.quota_cpus,
+                static_cast<unsigned>(std::min<std::uint64_t>(result.online, std::max<std::uint64_t>(1, q / p))));
+            if (path == "/") break;
+            const auto slash = path.find_last_of('/');
+            path = slash == 0 ? "/" : path.substr(0, slash);
+        }
+        break;
+    }
+#endif
+    return result;
 }
 
 constexpr std::size_t kIngressMaxItems = 1024;
@@ -344,7 +409,13 @@ std::size_t ConnectorBatchBytes() noexcept {
     return 32 * 1024;
 }
 
-std::size_t GlobalQueueBudget() noexcept {
+// private_worker: 单 shard + OPENPPP2_XTCP_PRIVATE_IO=1 + TAP GSO。worker 对已入队
+// 但主线程尚未加密发出的数据提前 ACK, 32MiB 预算永远不触发, 发送端 cwnd 脱离
+// carrier 进度膨胀直到 TUN 队列溢出 (P64 上传 TUN 丢包 1-4 万, 重传 10-22 万)。
+// 2MiB 让预算重新约束 ACK 时钟; P64 实测 +10~15% 且丢包降两个数量级, P16 持平,
+// 1MiB 会压低 P16。GSO 关时主线程逐个 1500B 包排空更慢, 2MiB 会把 P64 上传
+// 从约 720 压到约 340Mbps, 故仅 GSO 开时生效。显式环境变量始终优先。
+std::size_t GlobalQueueBudget(bool private_worker) noexcept {
     const char* env = ::getenv("OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES");
     if (env != nullptr) {
         const long long value = ::atoll(env);
@@ -352,7 +423,7 @@ std::size_t GlobalQueueBudget() noexcept {
             return static_cast<std::size_t>(value);
         }
     }
-    return 32ull * 1024 * 1024;
+    return private_worker ? 2ull * 1024 * 1024 : 32ull * 1024 * 1024;
 }
 // Send-admission retry cadence. Laboratory default: 1ms. LAB-ONLY knob
 // (OPENPPP2_XTCP_LAB_SEND_RETRY_US): the A1 experiment proved retry cadence
@@ -369,13 +440,21 @@ std::chrono::microseconds SendRetryDelay() noexcept {
     return std::chrono::milliseconds(1);
 }
 
-std::size_t GsoRxDirectMtu(std::size_t active_flows, bool direct_bridge) noexcept {
+std::size_t GroBytesOverride() noexcept {
     const char* env = ::getenv("OPENPPP2_XTCP_GRO_BYTES");
     if (env != nullptr && env[0] != '\0') {
         const unsigned long long value = ::atoll(env);
         if (value >= kGsoRxMtu && value <= ::xtcp::buf::kMaxPoolPayload) {
             return static_cast<std::size_t>(value);
         }
+    }
+    return 0;
+}
+
+std::size_t GsoRxDirectMtu(std::size_t active_flows, bool direct_bridge,
+    std::size_t override_bytes) noexcept {
+    if (override_bytes != 0) {
+        return override_bytes;
     }
     if (direct_bridge) {
         return kGsoRxBridgeMtu;
@@ -447,7 +526,7 @@ bool ParsePacket(const void* packet, int packet_length, ParsedPacket& parsed) no
     ::xtcp::core::Ip4Hdr ip;
     if (!::xtcp::core::ParseIp4(bytes, static_cast<UInt32>(packet_length), ip) ||
         ip.proto != 6 || IsFragmentedIPv4(ip.frag_off, ip.flags) ||
-        ip.payload_off + 20 > static_cast<UInt32>(packet_length)) {
+        ip.payload_off > static_cast<UInt32>(packet_length) - 20u) {
         return false;
     }
     const Byte* tcp = bytes + ip.payload_off;
@@ -548,6 +627,10 @@ std::size_t GsoSplit(const uint8_t* frame, std::size_t length,
         t[5] = static_cast<uint8_t>(seq >> 16);
         t[6] = static_cast<uint8_t>(seq >> 8);
         t[7] = static_cast<uint8_t>(seq);
+        t[13] = XtcpGsoSplitSegmentFlags(tcp[13], k, count);
+        if ((t[13] & 0x20) == 0) {
+            t[18] = 0; t[19] = 0;  // urgent pointer only with URG
+        }
         t[16] = 0; t[17] = 0;
         uint32_t partial = GsoChecksumRaw(w + 12, 8);
         // 伪首部 (协议=6, TCP 长度) 按 BE16 字对求和。
@@ -562,8 +645,33 @@ std::size_t GsoSplit(const uint8_t* frame, std::size_t length,
     return count;
 }
 
+#if defined(PPP_XTCP_RUNTIME_TESTING)
+} // namespace
+
+std::size_t GsoSplitForTesting(const uint8_t* frame, std::size_t length,
+    std::size_t target_mtu, ::xtcp::buf::BufRef* out, std::size_t out_cap) noexcept {
+    return GsoSplit(frame, length, target_mtu, out, out_cap);
+}
+
+namespace {
+#endif
+
 boost::asio::ip::address_v4 ToAddress(std::uint32_t network_address) noexcept {
     return boost::asio::ip::address_v4(IPv4AddressBytes(network_address));
+}
+
+template <class Timer>
+void CancelTimer(Timer& timer, boost::system::error_code& ec) noexcept {
+#if defined(_WIN32)
+    try {
+        timer.cancel();
+    }
+    catch (...) {
+    }
+    ec.clear();
+#else
+    timer.cancel(ec);
+#endif
 }
 } // namespace
 
@@ -593,6 +701,7 @@ public:
         std::uint16_t source_port = 0;
         std::shared_ptr<XtcpSecondLegHooks> direct_second_leg;
         bool direct_bridge = false;
+        bool data_bearing = false;
         boost::asio::ip::tcp::socket connector;
         boost::asio::steady_timer retry_timer;
         boost::asio::steady_timer resume_timer;
@@ -636,6 +745,8 @@ public:
         // failing the app's pending connect fast instead of timing out.
         bool abort_when_ready = false;
         bool write_active = false;
+        bool write_deferred = false;  // queued in Shard::deferred_writes
+        bool peer_flush_deferred = false;  // queued in Shard::deferred_peer_flushes
         bool read_active = false;
         bool closing = false;
         // Perf diagnostic (strand-only): when Send admission rejected this
@@ -693,18 +804,47 @@ public:
         if (own_context_) {
             own_context_->stop();
         }
+        for (Shard& s : shards_) {
+            if (s.io) s.io->stop();
+        }
         for (std::thread& t : own_threads_) {
             if (t.joinable()) {
-                t.join();
+                // Stop completion can release the last Impl reference from an
+                // own_context_ handler. In that case this destructor runs on
+                // one of its workers and must not join itself.
+                if (t.get_id() == std::this_thread::get_id()) {
+                    t.detach();
+                }
+                else {
+                    t.join();
+                }
             }
         }
     }
 
     bool Start() noexcept {
+        std::unique_lock<std::shared_mutex> ingress_lifetime(ingress_lifetime_sync_, std::defer_lock);
+        if (spsc_ingress_) ingress_lifetime.lock();
         std::lock_guard<std::mutex> lock(state_sync_);
         if (!context_ || running_.load(std::memory_order_acquire) ||
             stopping_.load(std::memory_order_acquire)) {
             return false;
+        }
+        if (own_context_) {
+            for (const auto& thread : own_threads_)
+                if (thread.joinable() && thread.get_id() == std::this_thread::get_id()) return false;
+            if (queue_mode_) {
+                // Queue mode: a previous Stop() already drained the runtime's own
+                // handlers; stop the per-shard executors so work owned by others
+                // (e.g. bound TAP lane reads) cannot block the join.
+                for (Shard& s : shards_) if (s.io) s.io->stop();
+            }
+            for (auto& thread : own_threads_) if (thread.joinable()) thread.join();
+            own_threads_.clear();
+            // Strands must release their context services before the old pool.
+            shards_.clear();
+            own_context_.reset();
+            context_ = external_context_;
         }
         lease_ = XtcpPoolLease::Acquire();
         if (!lease_) {
@@ -837,19 +977,58 @@ public:
         // XTCP-SHARED-PATH-001 S1: shard 数 (env OPENPPP2_XTCP_SHARDS, 默认 1)。
         // 每 shard = 独立 strand/stack/backend/ingress budget/handoff/poll timer/
         // flow 表; Submit 按 4-tuple hash 路由, 同一 flow (含 SYN) 永远同 shard。
-        int shard_count = 1;
-        {
-            const char* shards_env = ::getenv("OPENPPP2_XTCP_SHARDS");
-            if (shards_env != nullptr && shards_env[0] != '\0') {
-                const long value = ::atol(shards_env);
-                if (1 <= value && value <= 8) {
-                    shard_count = static_cast<int>(value);
-                }
-            }
+        cpu_inputs_ = DiscoverXtcpCpus();
+#if defined(__linux__) && !defined(__ANDROID__)
+        constexpr bool linux_desktop = true;
+#else
+        constexpr bool linux_desktop = false;
+#endif
+        shard_policy_ = SelectXtcpShards(StartupEnv("OPENPPP2_XTCP_SHARDS"),
+            StartupEnv("OPENPPP2_XTCP_AUTO_SHARDS"), cpu_inputs_, linux_desktop);
+        const int shard_count = static_cast<int>(shard_policy_.shards);
+#if defined(__linux__)
+        const char* private_io_env = ::getenv("OPENPPP2_XTCP_PRIVATE_IO");
+        const bool private_io = private_io_env != nullptr &&
+            private_io_env[0] == '1' && private_io_env[1] == '\0';
+#else
+        const bool private_io = false;
+#endif
+        // Workers exist whenever the runtime owns its context: one per shard,
+        // including the single PRIVATE_IO worker.
+        const std::string affinity_mode = StartupEnv("OPENPPP2_XTCP_AFFINITY");
+        affinity_ = SelectXtcpWorkerAffinity(affinity_mode,
+            StartupEnv("OPENPPP2_XTCP_IO_CPUS"), StartupEnv("OPENPPP2_XTCP_AFFINITY_STRICT"),
+            (shard_count > 1 || private_io) ? shard_count : 0, cpu_inputs_, linux_desktop);
+        if (shard_policy_.invalid || !affinity_.valid)
+            std::fprintf(stderr, "[xtcp] startup policy: %s; affinity: %s\n",
+                shard_policy_.reason.c_str(), affinity_.reason.c_str());
+        if (!affinity_.CanStart(true)) { lease_.reset(); return false; }
+        // Stage B opt-in: OPENPPP2_XTCP_AFFINITY=queues gives each shard its own
+        // io_context and one strictly pinned worker. Default/off/workers keep
+        // the shared pool unchanged.
+        queue_mode_ = affinity_.queues && affinity_.enabled;
+        if (affinity_.queues && ssmt_active_) {
+            affinity_.reason = "queues-rejected-ssmt";
+            std::fprintf(stderr, "[xtcp] OPENPPP2_XTCP_AFFINITY=queues cannot be combined with SSMT\n");
+            queue_mode_ = false;
+            lease_.reset();
+            return false;
         }
         const char* cc_env = ::getenv("OPENPPP2_XTCP_CC");
-        const char* cc = (cc_env != nullptr && cc_env[0] != '\0') ? cc_env : "kcc";
-        unsigned long long sndbuf_value = 0;
+#if defined(_WIN32)
+        // Windows 默认 cubic: kcc 依赖细粒度定时器驱动发送, Windows 定时器
+        // 精度约 15.6ms, 回环实测 kcc ~37 Mbps vs cubic ~530 Mbps。
+        // 仍可用 OPENPPP2_XTCP_CC 显式切回 kcc。
+        static constexpr const char* kDefaultCc = "cubic";
+#else
+        static constexpr const char* kDefaultCc = "kcc";
+#endif
+        const char* cc = (cc_env != nullptr && cc_env[0] != '\0') ? cc_env : kDefaultCc;
+        // All platforms: 1 MiB per-connection snd_buf quota. The upstream 64 KiB
+        // default capped single-flow DL near 410 Mbps (THROUGHPUT plan §2.4.1);
+        // the pool reserve (patch 0039) keeps many busy flows from starving ACK
+        // ingress. This is a quota, not preallocation.
+        unsigned long long sndbuf_value = 1024ull * 1024ull;
         {
             const char* profile = ::getenv("OPENPPP2_XTCP_DL_GSO_PERF_PROFILE");
             if (profile != nullptr && profile[0] == '1' && profile[1] == '\0') {
@@ -867,26 +1046,74 @@ public:
             }
         }
         unix_bridge_ = []() noexcept {
+#if defined(_WIN32)
+            // AF_UNIX socketpair 桥仅 POSIX 可用; Windows 固定走 loopback TCP 桥,
+            // 避免环境变量打开后每条 flow 都直接失败。
+            return false;
+#else
             const char* env = ::getenv("OPENPPP2_XTCP_UNIX_BRIDGE");
             return env != nullptr && env[0] == '1' && env[1] == '\0';
+#endif
         }();
         shard_count_ = shard_count;
-        if (shard_count > 1) {
+        if (shard_count > 1 || private_io) {
             // XTCP-SHARED-PATH-001 S1: 默认 context 只在主线程 run (Executors::Run),
             // strand 再多也没有并行执行域。shards>1 时给 runtime 建专属 io_context
             // + 每 shard 一个工作线程; 所有 shard strand/poll timer/flow connector
-            // 都跑在这个池上。shards=1 保持外部 context 不变 (行为零变化)。
+            // 都跑在这个池上。单 shard 默认仍用外部 context; PRIVATE_IO=1
+            // 只将执行域移到一个专属 worker, 不改变 shard/输出 lane 数量。
             own_context_ = std::make_shared<boost::asio::io_context>();
             context_ = own_context_;
         }
+        global_queue_budget_ = GlobalQueueBudget(shard_count == 1 && private_io && tx_gso_supported_);
         shards_.resize(static_cast<std::size_t>(shard_count));
         for (std::size_t i = 0; i < shards_.size(); ++i) {
             Shard& s = shards_[i];
             s.index = i;
-            s.strand = std::make_shared<Strand>(context_->get_executor());
+            if (queue_mode_) {
+                // Shard 0 reuses own_context_ (runtime-wide timers stay there).
+                try {
+                    s.io = i == 0 ? own_context_ : std::make_shared<boost::asio::io_context>(1);
+                }
+                catch (...) {
+                    for (std::size_t j = 0; j < i; ++j) shards_[j].backend->Stop();
+                    shards_.clear();
+                    lease_.reset();
+                    return false;
+                }
+            }
+            s.strand = std::make_shared<Strand>(ShardContext(s)->get_executor());
+            OutputHandler shard_output = counted_output_;
+            BorrowedOutputHandler shard_borrowed_output = counted_borrowed_output_;
+            RetainedOutputHandler shard_retained_output = counted_retained_output_;
+            if (shard_count > 1) {
+                // Tag every TUN write from this shard with its lane so the
+                // Linux TAP routes it to the shard's own queue fd and GSO
+                // coalescer instead of one lock shared by all workers.
+                const int lane = static_cast<int>(i);
+                shard_output = [inner = counted_output_, lane](std::shared_ptr<Byte>&& data, int length,
+                    std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
+                    ppp::tap::TapOutputLaneScope scope(lane);
+                    return inner && inner(std::move(data), length, gso);
+                };
+                if (counted_borrowed_output_) {
+                    shard_borrowed_output = [inner = counted_borrowed_output_, lane](const Byte* data, int length,
+                        std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
+                        ppp::tap::TapOutputLaneScope scope(lane);
+                        return inner(data, length, gso);
+                    };
+                }
+                if (counted_retained_output_) {
+                    shard_retained_output = [inner = counted_retained_output_, lane](const Byte* data, int length,
+                        ppp::tap::RetainedPacketOwner&& owner) noexcept {
+                        ppp::tap::TapOutputLaneScope scope(lane);
+                        return inner(data, length, std::move(owner));
+                    };
+                }
+            }
             s.backend = std::unique_ptr<XtcpNdiBackend>(
-                new (std::nothrow) XtcpNdiBackend(counted_output_, tx_gso_supported_,
-                    counted_borrowed_output_, counted_retained_output_));
+                new (std::nothrow) XtcpNdiBackend(std::move(shard_output), tx_gso_supported_,
+                    std::move(shard_borrowed_output), std::move(shard_retained_output)));
             if (!s.backend) {
                 for (std::size_t j = 0; j < i; ++j) {
                     shards_[j].backend->Stop();
@@ -909,7 +1136,7 @@ public:
             // 拥塞控制可选 (XTCP-CC-SELECT-001): 默认 KCC (上游默认, 开发者维护)。
             // env 可切 bbr/cubic/reno (0005 修复后 KCC 追平 CUBIC, 恢复默认)。
             s.stack->SetDefaultCongestionControl(cc);
-            // KCC snd_buf 实验 (XTCP-KCC-SNDBUF-001): env 可调, 默认不设 (=上游 64K)。
+            // snd_buf defaults to 1 MiB on supported platforms; env/profile can override it.
             if (sndbuf_value != 0) {
                 s.stack->SetSndBuf(static_cast<UInt32>(sndbuf_value));
             }
@@ -930,9 +1157,41 @@ public:
             });
         }
         {
+            // Shards are rebuilt when the runtime owns its context; seed the new
+            // budgets past the previous generation so it stays monotonic.
+            const std::uint64_t previous_generation = generation_.load(std::memory_order_acquire);
             std::uint64_t budget_generation = 0;
             for (Shard& s : shards_) {
-                budget_generation = s.budget.Start();
+                budget_generation = s.budget.Start(previous_generation);
+                s.enqueued.store(0, std::memory_order_relaxed);
+                s.dispatched.store(0, std::memory_order_relaxed);
+                s.injected.store(0, std::memory_order_relaxed);
+                s.dropped.store(0, std::memory_order_relaxed);
+                s.ingress_bytes.store(0, std::memory_order_relaxed);
+                s.wake_posts.store(0, std::memory_order_relaxed);
+                s.wake_coalesces.store(0, std::memory_order_relaxed);
+                s.quanta.store(0, std::memory_order_relaxed);
+                s.flushes.store(0, std::memory_order_relaxed);
+                s.queue_highwater.store(0, std::memory_order_relaxed);
+                s.queue_bytes_highwater.store(0, std::memory_order_relaxed);
+                s.spsc_failed.store(false, std::memory_order_relaxed);
+                s.upload_bytes.store(0, std::memory_order_relaxed);
+                s.download_bytes.store(0, std::memory_order_relaxed);
+                if (spsc_ingress_) {
+                    try {
+                        std::atomic_store(&s.spsc, std::make_shared<IngressHandoff>(
+                            IngressMaxItems(), AllocateRuntimeInstanceId()));
+                    } catch (...) {
+                        for (Shard& failed : shards_) {
+                            failed.budget.Stop();
+                            if (failed.backend) failed.backend->Stop();
+                            failed.stack.reset();
+                            failed.backend.reset();
+                        }
+                        lease_.reset();
+                        return false;
+                    }
+                }
             }
             generation_.store(budget_generation, std::memory_order_release);
         }
@@ -948,17 +1207,112 @@ public:
         }
         running_.store(true, std::memory_order_release);
         ready_.store(false, std::memory_order_release);
+        affinity_pinned_.store(0, std::memory_order_relaxed);
+        worker_runtime_ = {};
         if (own_context_) {
+            own_work_guard_.emplace(own_context_->get_executor());
+            for (Shard& s : shards_)
+                if (s.io && s.io != own_context_) s.io_guard.emplace(s.io->get_executor());
+            bool pins_ok = true;
+            bool start_failed = false;
             for (int i = 0; i < shard_count; ++i) {
-                own_threads_.emplace_back([own = own_context_]() noexcept {
-#if defined(__linux__)
+                auto startup = std::make_shared<std::promise<bool>>();
+                auto started = startup->get_future();
+                const std::shared_ptr<boost::asio::io_context> worker_context =
+                    queue_mode_ ? shards_[static_cast<std::size_t>(i)].io : own_context_;
+                try {
+#if defined(PPP_XTCP_RUNTIME_TESTING)
+                    if (g_fail_worker_start_for_testing.load(std::memory_order_relaxed) == i) {
+                        g_fail_worker_start_for_testing.store(-1, std::memory_order_relaxed);
+                        throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+                    }
+#endif
+                own_threads_.emplace_back([this, own = worker_context, i, startup]() noexcept {
+                    bool pinned = !affinity_.enabled;
+#if defined(__linux__) && !defined(__ANDROID__)
                     // 线程名用于 /proc thread dump 诊断 (测试目标不链 stdafx.cpp,
                     // 故不走 ppp::SetThreadName)。
+                    char name[16];
+                    std::snprintf(name, sizeof(name), "xtcp-io-%d", i);
+                    pthread_setname_np(pthread_self(), name);
+                    worker_runtime_[static_cast<std::size_t>(i)].tid = static_cast<std::uint64_t>(::syscall(SYS_gettid));
+                    if (affinity_.enabled) {
+                        const unsigned cpu = affinity_.cpus[static_cast<std::size_t>(i)];
+                        pinned = ApplyXtcpWorkerAffinity(cpu, [](unsigned id) noexcept {
+                            cpu_set_t mask; CPU_ZERO(&mask); CPU_SET(id, &mask);
+                            return pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask) == 0;
+                        }, [](unsigned id) noexcept {
+                            cpu_set_t mask; CPU_ZERO(&mask);
+                            return pthread_getaffinity_np(pthread_self(), sizeof(mask), &mask) == 0
+                                && CPU_COUNT(&mask) == 1 && CPU_ISSET(id, &mask);
+                        });
+                        if (pinned) affinity_pinned_.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    cpu_set_t effective; CPU_ZERO(&effective);
+                    auto& effective_cpus = worker_runtime_[static_cast<std::size_t>(i)].effective_cpus;
+                    effective_cpus.clear();
+                    if (pthread_getaffinity_np(pthread_self(), sizeof(effective), &effective) == 0)
+                        for (unsigned cpu = 0; cpu < CPU_SETSIZE; ++cpu)
+                            if (CPU_ISSET(cpu, &effective)) effective_cpus.push_back(cpu);
+#elif defined(__ANDROID__)
                     pthread_setname_np(pthread_self(), "xtcp-io");
+#elif defined(_WIN32)
+                    ppp::SetThreadName("xtcp-io");
+                    worker_runtime_[static_cast<std::size_t>(i)].tid = ::GetCurrentThreadId();
 #endif
-                    const auto guard = boost::asio::make_work_guard(*own);
+                    startup->set_value(pinned);
                     own->run();
                 });
+                }
+                catch (...) {
+                    start_failed = true;
+                    break;
+                }
+                pins_ok = started.get() && pins_ok;
+            }
+            if (start_failed) {
+                // Partial startup: unwind only what exists. Started workers exit
+                // once their guards are released; nothing was posted yet.
+                affinity_.reason = "worker-start-failed";
+                std::fprintf(stderr, "[xtcp] worker thread start failed\n");
+                running_.store(false, std::memory_order_release);
+                for (Shard& s : shards_) {
+                    s.budget.Stop();
+                    if (s.spsc) s.spsc->Abort();
+                    s.backend->Stop();
+                    s.io_guard.reset();
+                }
+                own_work_guard_.reset();
+                for (auto& thread : own_threads_) if (thread.joinable()) thread.join();
+                own_threads_.clear();
+                for (Shard& s : shards_) {
+                    s.stack.reset();
+                    s.backend.reset();
+                }
+                lease_.reset();
+                return false;
+            }
+            if (!pins_ok) {
+                affinity_.reason = "pin-failed-degraded";
+                std::fprintf(stderr, "[xtcp] worker affinity pin/readback failed\n");
+                if (!affinity_.CanStart(pins_ok)) {
+                    running_.store(false, std::memory_order_release);
+                    for (Shard& s : shards_) {
+                        s.budget.Stop();
+                        if (s.spsc) s.spsc->Abort();
+                        s.backend->Stop();
+                        s.io_guard.reset();
+                    }
+                    own_work_guard_.reset();
+                    for (auto& thread : own_threads_) if (thread.joinable()) thread.join();
+                    own_threads_.clear();
+                    for (Shard& s : shards_) {
+                        s.stack.reset();
+                        s.backend.reset();
+                    }
+                    lease_.reset();
+                    return false;
+                }
             }
         }
         StartPerfDump();
@@ -971,8 +1325,21 @@ public:
         for (Shard& s : shards_) {
             SchedulePoll(s, generation_.load(std::memory_order_acquire));
         }
+        if (queue_mode_) {
+            std::lock_guard<std::mutex> bindings(lane_binding_sync_);
+            lane_bindings_.clear();
+            for (const Shard& s : shards_) lane_bindings_.push_back(s.io);
+        }
         runtime_instance_id_.store(AllocateRuntimeInstanceId(), std::memory_order_release);
         return true;
+    }
+
+    bool GetLaneBinding(int lane, ppp::tap::TapLaneBinding& binding) const noexcept {
+        // Called by the TAP while it creates an output lane; never takes state_sync_.
+        std::lock_guard<std::mutex> bindings(lane_binding_sync_);
+        if (lane < 0 || static_cast<std::size_t>(lane) >= lane_bindings_.size()) return false;
+        binding.context = lane_bindings_[static_cast<std::size_t>(lane)];
+        return binding.context != nullptr;
     }
 
 #if defined(PPP_XTCP_RUNTIME_TESTING)
@@ -997,17 +1364,28 @@ public:
     }
 
     void Stop() noexcept {
+        std::unique_lock<std::shared_mutex> ingress_lifetime(ingress_lifetime_sync_, std::defer_lock);
+        if (spsc_ingress_) ingress_lifetime.lock();
         bool expected = false;
         if (!stopping_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
             return;
         }
-        running_.store(false, std::memory_order_release);
-        ready_.store(false, std::memory_order_release);
         {
             std::lock_guard<std::mutex> lock(state_sync_);
+            // Stop is also called by XtcpRuntime's destructor after an explicit
+            // Stop. Once drained, the private context must not receive new work.
+            // Serialize with Start so an in-progress startup cannot be missed.
+            if (!running_.exchange(false, std::memory_order_acq_rel)) {
+                stopping_.store(false, std::memory_order_release);
+                return;
+            }
+            ready_.store(false, std::memory_order_release);
             for (Shard& s : shards_) {
+                if (const auto queue = std::atomic_load(&s.spsc)) queue->Abort();
                 s.budget.Stop();
             }
+            std::lock_guard<std::mutex> bindings(lane_binding_sync_);
+            lane_bindings_.clear(); // lanes created later fall back to the TAP context
         }
         if (shards_.empty()) {
             DoStopFinalize();
@@ -1027,6 +1405,10 @@ public:
     }
 
     bool Submit(const void* packet, int packet_length) noexcept {
+        // Stop/restart cannot replace a shard while an ingress caller still
+        // holds its address. Consumers never acquire this admission/lifetime lock.
+        std::shared_lock<std::shared_mutex> ingress_lifetime(ingress_lifetime_sync_, std::defer_lock);
+        if (spsc_ingress_) ingress_lifetime.lock();
         if (packet == nullptr || packet_length < 1 || !ready_.load(std::memory_order_acquire)) {
             stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
             if (perf_json_enabled_.load(std::memory_order_relaxed)) {
@@ -1035,6 +1417,15 @@ public:
             return false;
         }
         const std::uint64_t generation = generation_.load(std::memory_order_acquire);
+        // 按 IP 总长度截掉尾部 padding; 解析失败的包保持原长, 由 ProcessIngress 丢弃。
+        const Byte* ip_bytes = static_cast<const Byte*>(packet);
+        ::xtcp::core::Ip4Hdr ip4;
+        ::xtcp::core::Ip6Hdr ip6;
+        if ((ip_bytes[0] >> 4) == 4 && ::xtcp::core::ParseIp4(ip_bytes, packet_length, ip4)) {
+            packet_length = ip4.total_len;
+        } else if ((ip_bytes[0] >> 4) == 6 && ::xtcp::core::ParseIp6(ip_bytes, packet_length, ip6)) {
+            packet_length = 40 + ip6.payload_len;
+        }
         // XTCP-SHARED-PATH-001 S1: 按 4-tuple hash 路由, 同一 flow (含 SYN)
         // 永远落同一 shard (ordering/ACK 状态/deferred SYN/generation/close
         // 生命周期因此天然保持)。解析失败的包走 shard 0, 在 ProcessIngress
@@ -1074,7 +1465,7 @@ public:
             opened >= closed ? opened - closed : 0);
         const std::size_t gso_rx_target = gso_rx
             ? kGsoRxMtu : GsoRxDirectMtu(active_flows,
-                direct_flows_.load(std::memory_order_relaxed) != 0);
+                direct_flows_.load(std::memory_order_relaxed) != 0, gro_bytes_override_);
         if (has_parsed && packet_length > static_cast<int>(gso_rx_target)) {
             split_count = GsoSplit(static_cast<const uint8_t*>(packet),
                 static_cast<std::size_t>(packet_length), gso_rx_target, splits, 64);
@@ -1084,6 +1475,17 @@ public:
                     stats_.ingress_drop_split_invalid.fetch_add(1, std::memory_order_relaxed);
                 }
                 return false;
+            }
+            if (spsc_ingress_) {
+                HandoffItem items[64];
+                for (std::size_t k = 0; k < split_count; ++k) {
+                    items[k].packet = std::move(splits[k]);
+                    items[k].parsed = parsed;
+                    items[k].has_parsed = true;
+                    items[k].generation = generation;
+                    items[k].enqueue_us = NowUs();
+                }
+                return PublishIngress(s, items, split_count);
             }
             std::size_t admitted = 0;
             for (; admitted < split_count; ++admitted) {
@@ -1116,16 +1518,34 @@ public:
             }
             const std::shared_ptr<Impl> self = shared_from_this();
             if (!s.handoff_posted.exchange(true, std::memory_order_acq_rel)) {
-                boost::asio::post(*s.strand, [self, index]() noexcept {
-                    self->DrainIngress(self->shards_[index]);
-                });
+                try {
+                    boost::asio::post(*s.strand, [self, index]() noexcept {
+                        self->DrainIngress(self->shards_[index]);
+                    });
+                }
+                catch (...) {
+                    std::vector<HandoffItem> abandoned;
+                    {
+                        std::lock_guard<std::mutex> lock(s.handoff_sync);
+                        abandoned.swap(s.handoff);
+                        s.handoff_posted.store(false, std::memory_order_release);
+                    }
+                    for (HandoffItem& item : abandoned) {
+                        s.budget.Release(item.packet.IsEmpty() ? 0 : item.packet.Len());
+                        stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+                        if (perf_json_enabled_.load(std::memory_order_relaxed)) {
+                            stats_.ingress_drop_post.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+                    return false;
+                }
             }
             stats_.ingress_enqueued.fetch_add(split_count, std::memory_order_relaxed);
             stats_.ingress_submitted.fetch_add(split_count, std::memory_order_relaxed);
             s.enqueued.fetch_add(split_count, std::memory_order_relaxed);
             return true;
         }
-        if (!s.budget.TryAdmit(generation, static_cast<std::size_t>(packet_length))) {
+        if (!spsc_ingress_ && !s.budget.TryAdmit(generation, static_cast<std::size_t>(packet_length))) {
             stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
             if (perf_json_enabled_.load(std::memory_order_relaxed)) {
                 stats_.ingress_drop_budget.fetch_add(1, std::memory_order_relaxed);
@@ -1139,7 +1559,7 @@ public:
         ::xtcp::buf::BufRef owned = ::xtcp::buf::BufRef::Acquire(
             static_cast<UInt32>(packet_length));
         if (owned.IsEmpty()) {
-            s.budget.Release(static_cast<std::size_t>(packet_length));
+            if (!spsc_ingress_) s.budget.Release(static_cast<std::size_t>(packet_length));
             stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
             if (perf_json_enabled_.load(std::memory_order_relaxed)) {
                 stats_.ingress_drop_buffer.fetch_add(1, std::memory_order_relaxed);
@@ -1148,6 +1568,15 @@ public:
         }
         std::memcpy(owned.Data(), packet, static_cast<std::size_t>(packet_length));
         owned.SetLen(static_cast<UInt32>(packet_length));
+        if (spsc_ingress_) {
+            HandoffItem item;
+            item.packet = std::move(owned);
+            item.parsed = parsed;
+            item.has_parsed = has_parsed;
+            item.generation = generation;
+            item.enqueue_us = NowUs();
+            return PublishIngress(s, &item, 1);
+        }
         // XTCP-STRAND-DISPATCH-001 批量投递: 每包一次 asio::post 在 64KB 突发
         // (~44 段) 下把 strand 变成 post 风暴, in-flight 打满 budget 上限后丢包
         // (owner.dropped 累计 68 万, UL GSO-on 崩到 0.3-0.55x)。改为 Submit 压入
@@ -1196,8 +1625,48 @@ public:
     std::uint64_t Generation() const noexcept { return generation_.load(std::memory_order_acquire); }
 
     ppp::app::runtime::RuntimeXtcpStats SnapshotStats() const noexcept {
+        // Startup replaces shard storage and the non-atomic policy/worker metadata.
+        std::lock_guard<std::mutex> lock(state_sync_);
         ppp::app::runtime::RuntimeXtcpStats snapshot;
         snapshot.runtime_generation = Generation();
+        snapshot.shard_policy_requested = shard_policy_.requested;
+        snapshot.shard_policy_reason = shard_policy_.reason;
+        snapshot.shard_count = static_cast<unsigned>(shard_count_);
+        snapshot.worker_count = own_context_ ? static_cast<unsigned>(own_threads_.size()) : 0;
+        snapshot.spsc_ingress = spsc_ingress_;
+        snapshot.effective_cpus = cpu_inputs_.Effective();
+        snapshot.online_cpus = cpu_inputs_.online;
+        snapshot.quota_cpus = cpu_inputs_.quota_cpus;
+        snapshot.cpu_affinity_known = cpu_inputs_.affinity_known;
+        snapshot.cpu_quota_known = cpu_inputs_.quota_known;
+        snapshot.allowed_cpus = cpu_inputs_.allowed;
+        snapshot.worker_cpus = affinity_.cpus;
+        snapshot.affinity_reason = affinity_.reason;
+        snapshot.affinity_mode = affinity_.queues ? "queues" : (affinity_.enabled ? "workers" : "off");
+        snapshot.queue_mode_active = queue_mode_ && running_.load(std::memory_order_acquire);
+        snapshot.affinity_strict = affinity_.strict;
+        snapshot.affinity_pinned_workers = affinity_pinned_.load(std::memory_order_relaxed);
+        snapshot.workers = worker_runtime_;
+        for (std::size_t i = 0; i < shards_.size(); ++i) {
+            const auto& s = shards_[i];
+            auto& out = snapshot.shards[i];
+            out.enqueued = s.enqueued.load(std::memory_order_relaxed);
+            out.dispatched = s.dispatched.load(std::memory_order_relaxed);
+            out.dropped = s.dropped.load(std::memory_order_relaxed);
+            out.bytes = s.ingress_bytes.load(std::memory_order_relaxed);
+            out.queue_items = s.budget.Items();
+            out.queue_bytes = s.budget.Bytes();
+            out.items_highwater = s.queue_highwater.load(std::memory_order_relaxed);
+            out.bytes_highwater = s.queue_bytes_highwater.load(std::memory_order_relaxed);
+            out.wake_posts = s.wake_posts.load(std::memory_order_relaxed);
+            out.wake_coalesces = s.wake_coalesces.load(std::memory_order_relaxed);
+            out.quanta = s.quanta.load(std::memory_order_relaxed);
+            out.flushes = s.flushes.load(std::memory_order_relaxed);
+            out.active_flows = s.active_flows.load(std::memory_order_relaxed);
+            out.data_flows = s.data_flows.load(std::memory_order_relaxed);
+            out.upload_bytes = s.upload_bytes.load(std::memory_order_relaxed);
+            out.download_bytes = s.download_bytes.load(std::memory_order_relaxed);
+        }
         snapshot.runtime_instance_id = runtime_instance_id_.load(std::memory_order_acquire);
         snapshot.direct_bridge_starts =
             stats_.direct_bridge_starts.load(std::memory_order_relaxed);
@@ -1278,6 +1747,14 @@ public:
             snapshot.direct_upload_backpressured = direct_queue.backpressured;
             snapshot.direct_upload_writer_active = direct_queue.writer_active;
             snapshot.direct_upload_writer_progress_age_ms = direct_queue.writer_progress_age_ms;
+        }
+        {
+            using DirectQueue = ppp::app::protocol::XtcpDirectUploadQueue;
+            DirectQueue::Counters& handoff = DirectQueue::Global();
+            snapshot.direct_spsc_enabled = DirectQueue::SpscEnabledFromEnvironment() ? 1 : 0;
+            snapshot.direct_handoff_full = handoff.handoff_full.load(std::memory_order_relaxed);
+            snapshot.direct_handoff_wakes = handoff.handoff_wakes.load(std::memory_order_relaxed);
+            snapshot.direct_handoff_alloc_fallback = handoff.alloc_fallback.load(std::memory_order_relaxed);
         }
         snapshot.second_leg_close_requested =
             stats_.second_leg_close_requested.load(std::memory_order_relaxed);
@@ -1589,7 +2066,7 @@ public:
             stats_.resume_pending.fetch_sub(1, std::memory_order_relaxed);
         }
         boost::system::error_code ec;
-        flow->resume_timer.cancel(ec);
+        CancelTimer(flow->resume_timer, ec);
         flow->resume_recheck_posted = false;
         flow->resume_retries = 0;
         if (terminal && !flow->resume_terminal) {
@@ -1954,8 +2431,14 @@ private:
         std::uint64_t generation = 0;
         std::uint64_t enqueue_us = 0;
     };
+    using IngressHandoff = ppp::threading::SerializedSpscHandoff<HandoffItem>;
     struct Shard final {
         std::size_t index = 0;
+        // Queue mode only: this shard's own executor (declared before the
+        // strand/timers/flows that use it so it is destroyed after them).
+        std::shared_ptr<boost::asio::io_context> io;
+        std::optional<boost::asio::executor_work_guard<
+            boost::asio::io_context::executor_type>> io_guard;
         std::shared_ptr<Strand> strand;
         std::unique_ptr<XtcpNdiBackend> backend;
         std::unique_ptr<::xtcp::XtcpStack> stack;
@@ -1963,6 +2446,16 @@ private:
         XtcpIngressBudget budget{IngressMaxItems(), IngressMaxBytes()};
         std::mutex handoff_sync;
         std::vector<HandoffItem> handoff;
+        std::shared_ptr<IngressHandoff> spsc;
+        std::atomic<bool> spsc_failed{false};
+        // Ingress batch coalescing: while DrainIngress processes a batch,
+        // connector writes and poll-timer kicks are deferred to the batch end
+        // so N segments cost one gather-write and one timer re-arm instead of
+        // N sendmsg + N timer updates.
+        bool draining = false;
+        bool kick_deferred = false;
+        std::vector<std::shared_ptr<Flow>> deferred_writes;
+        std::vector<std::shared_ptr<Flow>> deferred_peer_flushes;
         std::atomic<bool> handoff_posted{false};
         std::shared_ptr<boost::asio::steady_timer> poll_timer;
         std::unordered_map<FlowKey, std::shared_ptr<Flow>, FlowKeyHash> flows;
@@ -1972,8 +2465,131 @@ private:
         std::atomic<std::uint64_t> dispatched{0};
         std::atomic<std::uint64_t> injected{0};
         std::atomic<std::uint64_t> dropped{0};
+        std::atomic<std::uint64_t> ingress_bytes{0};
+        std::atomic<std::uint64_t> wake_posts{0};
+        std::atomic<std::uint64_t> wake_coalesces{0};
+        std::atomic<std::uint64_t> quanta{0};
+        std::atomic<std::uint64_t> flushes{0};
+        std::atomic<std::uint64_t> queue_highwater{0};
+        std::atomic<std::uint64_t> queue_bytes_highwater{0};
+        std::atomic<std::uint64_t> active_flows{0}, data_flows{0}, upload_bytes{0}, download_bytes{0};
         Stats::Hist queue_delay_us{};
     };
+
+    bool PostIngress(Shard& s, const std::shared_ptr<IngressHandoff>& queue) noexcept {
+        const auto self = shared_from_this();
+        const auto strand = s.strand;
+        const auto index = s.index;
+        const bool posted = queue->PostOrAbort([self, strand, index, queue](std::uint64_t epoch) {
+            boost::asio::post(*strand, [self, index, queue, epoch]() noexcept {
+                // Validate the captured endpoint before touching a restarted shard.
+                if (queue->Consumer().Claim(epoch)) self->DrainSpscIngress(self->shards_[index], queue);
+            });
+            self->shards_[index].wake_posts.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        });
+        if (!posted) {
+            s.budget.Stop();
+            // The already-armed shard poll owns terminal cleanup if scheduling
+            // is temporarily unavailable. Storage is retained until it runs.
+            s.spsc_failed.store(true, std::memory_order_release);
+            // Do not depend solely on the poll timer (it may not be armed):
+            // also try to schedule the cleanup directly. If this post fails
+            // too, the poll timer remains the fallback consumer of the flag.
+            try {
+                boost::asio::post(*strand, [self, index]() noexcept {
+                    Shard& shard = self->shards_[index];
+                    if (shard.spsc_failed.exchange(false, std::memory_order_acq_rel)) {
+                        self->DoStopShard(shard);
+                    }
+                });
+            }
+            catch (...) {}
+        }
+        return posted;
+    }
+
+    bool PublishIngress(Shard& s, HandoffItem* items, std::size_t count) noexcept {
+        const auto queue = std::atomic_load(&s.spsc);
+        bool posted = false;
+        std::size_t reserved = 0;
+        const auto update_peak = [](std::atomic<std::uint64_t>& peak, std::uint64_t value) noexcept {
+            auto old = peak.load(std::memory_order_relaxed);
+            while (old < value && !peak.compare_exchange_weak(old, value, std::memory_order_relaxed)) {}
+        };
+        const auto result = queue->PushBatchWithAdmission(items, count, [&]() noexcept {
+            for (; reserved < count; ++reserved) {
+                std::uint64_t admitted_state = 0;
+                if (!s.budget.TryAdmit(items[reserved].generation, items[reserved].packet.Len(), &admitted_state)) {
+                    for (std::size_t i = 0; i < reserved; ++i) s.budget.Release(items[i].packet.Len());
+                    reserved = 0;
+                    return false;
+                }
+                // Sample the successful admission CAS, not a later gauge read
+                // that could miss the peak after the consumer releases credit.
+                update_peak(s.queue_highwater, admitted_state >> XtcpIngressBudget::kItemsShift);
+                update_peak(s.queue_bytes_highwater, admitted_state & UINT64_C(0xffffffff));
+            }
+            return true;
+        }, [&](std::uint64_t) noexcept {
+            posted = true;
+            return PostIngress(s, queue);
+        });
+        if (result != ppp::threading::HandoffPush::Accepted) {
+            // A failed post has already moved the batch into terminal storage.
+            // Its captured queue/Impl owner retains it until strand teardown or
+            // quiescent destruction; never introduce a second consumer here.
+            for (std::size_t i = 0; i < reserved; ++i) {
+                if (!items[i].packet.IsEmpty()) s.budget.Release(items[i].packet.Len());
+            }
+            if (!items[0].packet.IsEmpty()) {
+                // Before publication, count the rejected original datagram,
+                // matching the vector path's all-or-none GRO admission failure.
+                s.dropped.fetch_add(1, std::memory_order_relaxed);
+                stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+                if (perf_json_enabled_.load(std::memory_order_relaxed)) {
+                    (count > 1 ? stats_.ingress_drop_split_budget : stats_.ingress_drop_budget)
+                        .fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            if (posted) stats_.ingress_drop_post.fetch_add(count, std::memory_order_relaxed);
+            return false;
+        }
+        if (!posted) s.wake_coalesces.fetch_add(1, std::memory_order_relaxed);
+        s.enqueued.fetch_add(count, std::memory_order_relaxed);
+        stats_.ingress_enqueued.fetch_add(count, std::memory_order_relaxed);
+        stats_.ingress_submitted.fetch_add(count, std::memory_order_relaxed);
+        return true;
+    }
+
+    void DrainSpscIngress(Shard& s, const std::shared_ptr<IngressHandoff>& queue) noexcept {
+        auto& ring = queue->Consumer();
+        for (;;) {
+            std::size_t packets = 0, bytes = 0;
+            const bool timed = perf_json_enabled_.load(std::memory_order_relaxed);
+            const auto started = timed ? NowUs() : 0;
+            s.draining = true;
+            HandoffItem item;
+            while (packets < 64 && bytes < 256 * 1024 &&
+                ring.TryPop(item) == ppp::threading::HandoffDrain::Item) {
+                bytes += item.packet.Len();
+                ++packets;
+                ProcessIngress(s, std::move(item.packet), item.generation,
+                    item.enqueue_us, item.parsed, item.has_parsed);
+                if (timed && NowUs() - started >= 100) break;
+            }
+            s.draining = false;
+            FlushDeferredIngressWork(s);
+            s.quanta.fetch_add(1, std::memory_order_relaxed);
+            if (ring.GetState() == decltype(ring.GetState())::Closed) return;
+            if (!ring.Empty()) {
+                if (ring.ScheduleContinuation()) PostIngress(s, queue);
+                return;
+            }
+            if (ring.Closing()) { ring.Abort(); return; }
+            if (ring.ArmWaitAndRecheck()) return;
+        }
+    }
 
     bool InitializeUploadBudget() noexcept {
         try {
@@ -1981,7 +2597,7 @@ private:
             if (!budget) {
                 // One shared cap for connector and direct uploads. Keep the
                 // same object on restart: old in-flight owners still count.
-                budget = std::make_shared<XtcpUploadBudget>(GlobalQueueBudget(), 64 * 1024);
+                budget = std::make_shared<XtcpUploadBudget>(global_queue_budget_, 64 * 1024);
             }
             const std::weak_ptr<Impl> weak = shared_from_this();
             const std::weak_ptr<boost::asio::io_context> context = context_;
@@ -2034,6 +2650,9 @@ private:
             // Output during resume may close a flow reentrantly; never keep
             // iterators into the live flow map across an external callback.
             if (!IsCurrent(generation) || !s.stack) return;
+            // Tokens are shared across shards; another shard's flow table must
+            // not be read from this strand, so filter on the shard tag first.
+            if (static_cast<std::size_t>(token >> 56) != s.index) continue;
             const std::shared_ptr<Flow> flow = FindFlowGeneration(token);
             if (!flow || flow->shard != s.index) continue;
             const auto needed = flow->upload_budget_blocked_bytes;
@@ -2085,11 +2704,44 @@ private:
                 }
                 local.swap(s.handoff);
             }
+            s.draining = true;
             for (HandoffItem& item : local) {
                 ProcessIngress(s, std::move(item.packet), item.generation,
                     item.enqueue_us, item.parsed, item.has_parsed);
             }
+            s.draining = false;
             local.clear();
+            FlushDeferredIngressWork(s);
+        }
+    }
+
+    void FlushDeferredIngressWork(Shard& s) noexcept {
+        if (spsc_ingress_) s.flushes.fetch_add(1, std::memory_order_relaxed);
+        if (!s.deferred_writes.empty()) {
+            std::vector<std::shared_ptr<Flow>> flows;
+            flows.swap(s.deferred_writes);
+            const std::uint64_t generation = Generation();
+            for (const std::shared_ptr<Flow>& flow : flows) {
+                flow->write_deferred = false;
+                StartWrite(flow, generation);
+            }
+            if (s.deferred_writes.empty() && flows.capacity() <= 64) {
+                flows.clear();
+                s.deferred_writes.swap(flows);
+            }
+        }
+        if (!s.deferred_peer_flushes.empty()) {
+            std::vector<std::shared_ptr<Flow>> flows;
+            flows.swap(s.deferred_peer_flushes);
+            for (const std::shared_ptr<Flow>& flow : flows) {
+                flow->peer_flush_deferred = false;
+                if (const auto direct = flow->direct_second_leg) {
+                    direct->FlushPeerSend();
+                }
+            }
+        }
+        if (std::exchange(s.kick_deferred, false)) {
+            KickPoll(s);
         }
     }
 
@@ -2097,6 +2749,7 @@ private:
         std::uint64_t enqueue_us, const ParsedPacket& item_parsed, bool item_has_parsed) noexcept {
         stats_.ingress_dispatched.fetch_add(1, std::memory_order_relaxed);
         s.dispatched.fetch_add(1, std::memory_order_relaxed);
+        s.ingress_bytes.fetch_add(packet.IsEmpty() ? 0 : packet.Len(), std::memory_order_relaxed);
         const std::uint64_t delay_us = NowUs() - enqueue_us;
         HistAdd(stats_.queue_delay_us, delay_us);
         HistAdd(s.queue_delay_us, delay_us);
@@ -2133,7 +2786,12 @@ private:
             if (flow->resume_pending && !flow->closing) {
                 AttemptResume(flow, generation);
             }
-            KickPoll(s);
+            if (s.draining) {
+                s.kick_deferred = true;
+            }
+            else {
+                KickPoll(s);
+            }
             return;
         }
         if ((parsed.flags & kTcpSyn) == 0 || (parsed.flags & kTcpAck) != 0 ||
@@ -2151,7 +2809,7 @@ private:
             (next_flow_generation_.fetch_add(1, std::memory_order_relaxed) + 1);
         std::shared_ptr<Flow> flow;
         try {
-            flow = std::make_shared<Flow>(context_, parsed.key, parsed.remote, parsed.local, flow_generation);
+            flow = std::make_shared<Flow>(ShardContext(s), parsed.key, parsed.remote, parsed.local, flow_generation);
         }
         catch (...) {
             return;
@@ -2175,6 +2833,7 @@ private:
             ++listener->second.second;
         }
         s.flows.emplace(parsed.key, flow);
+        s.active_flows.fetch_add(1, std::memory_order_relaxed);
         stats_.flows_opened.fetch_add(1, std::memory_order_relaxed);
 
         int bridge_fd = -1;
@@ -2223,9 +2882,11 @@ private:
             flow->source_port = flow->connector.local_endpoint(ec).port();
         }
         if (ec || flow->source_port == 0 || !external_accept_) {
+#if !defined(_WIN32)
             if (bridge_fd >= 0) {
                 ::close(bridge_fd);
             }
+#endif
             CloseFlow(flow, false);
             return;
         }
@@ -2256,6 +2917,15 @@ private:
             CloseFlow(flow, false);
             return;
         }
+#if defined(_WIN32)
+        // The Windows connector is only an internal bridge to the vnetstack
+        // listener. Refuse endpoints that could route outside loopback.
+        if (!listener_endpoint.address().is_v4() ||
+            !listener_endpoint.address().is_loopback()) {
+            CloseFlow(flow, false);
+            return;
+        }
+#endif
         const std::shared_ptr<Impl> self = shared_from_this();
         flow->connector.async_connect(listener_endpoint,
             boost::asio::bind_executor(*s.strand,
@@ -2325,7 +2995,7 @@ private:
             return true;
         }
         const auto direct = flow->direct_second_leg;
-        if (!direct && length > kConnectorReadBytes + ConnectorWriteCap() - flow->write_bytes) {
+        if (!direct && length > kConnectorReadBytes + connector_write_cap_ - flow->write_bytes) {
             if (!flow->connector_receive_backpressured) {
                 flow->connector_receive_backpressured = true;
                 connector_receive_blocked_.fetch_add(1, std::memory_order_relaxed);
@@ -2359,7 +3029,19 @@ private:
         }
         if (direct) {
             const XtcpDirectResult result = direct->SendToPeer(data, length, std::move(credit));
+            if (direct->BatchesPeerSend()) {
+                if (s.draining) {
+                    if (!flow->peer_flush_deferred) {
+                        flow->peer_flush_deferred = true;
+                        s.deferred_peer_flushes.push_back(flow);
+                    }
+                }
+                else {
+                    direct->FlushPeerSend();
+                }
+            }
             if (result == XtcpDirectResult::Accepted) {
+                MarkShardPayload(flow, length, false);
                 stats_.direct_upload_accepted_chunks.fetch_add(1, std::memory_order_relaxed);
                 stats_.direct_upload_accepted_bytes.fetch_add(length, std::memory_order_relaxed);
                 if (flow->perf_tracking) {
@@ -2400,6 +3082,7 @@ private:
             return false;
         }
         flow->write_bytes += length;
+        MarkShardPayload(flow, length, false);
         stats_.queued_bytes_total.fetch_add(length, std::memory_order_relaxed);
         {
             std::uint64_t highwater =
@@ -2420,8 +3103,17 @@ private:
             }
         }
         // The callback already runs on the shard strand. Posting again adds
-        // one scheduler round-trip per receive delivery.
-        StartWrite(flow, Generation());
+        // one scheduler round-trip per receive delivery. Inside an ingress
+        // batch the write is deferred to the batch end (one gather-write).
+        if (s.draining) {
+            if (!flow->write_deferred) {
+                flow->write_deferred = true;
+                s.deferred_writes.push_back(flow);
+            }
+        }
+        else {
+            StartWrite(flow, Generation());
+        }
         return true;
     }
 
@@ -2431,25 +3123,29 @@ private:
             state != ::xtcp::core::TcpState::kTimeWait) {
             return;
         }
+        const std::shared_ptr<Flow> flow = FindConnection(s, connection_id);
+        if (!flow) {
+            return;
+        }
         const std::shared_ptr<Impl> self = shared_from_this();
-        const std::uint64_t runtime_generation = Generation();
-        boost::asio::post(*s.strand, [self, &s, connection_id, state, runtime_generation]() noexcept {
-            if (!self->IsCurrent(runtime_generation)) {
+        const XtcpFlowCallbackIdentity identity{Generation(), flow->generation};
+        boost::asio::post(*s.strand, [self, &s, flow, connection_id, state, identity]() noexcept {
+            if (!IsCurrentXtcpFlowCallback(identity, self->Generation(), flow->generation) ||
+                flow->connection_id != connection_id ||
+                !self->IsFlowCurrent(flow, identity.runtime_generation)) {
                 return;
             }
-            if (const std::shared_ptr<Flow> flow = self->FindConnection(s, connection_id)) {
-                if (state == ::xtcp::core::TcpState::kCloseWait) {
-                    flow->first_leg_eof = true;
-                    if (flow->direct_bridge) {
-                        self->RequestSecondLegClose(flow);
-                    }
-                    else {
-                        self->MaybeShutdownConnectorSend(flow, runtime_generation);
-                    }
+            if (state == ::xtcp::core::TcpState::kCloseWait) {
+                flow->first_leg_eof = true;
+                if (flow->direct_bridge) {
+                    self->RequestSecondLegClose(flow);
                 }
                 else {
-                    self->CloseFlow(flow, false);
+                    self->MaybeShutdownConnectorSend(flow, identity.runtime_generation);
                 }
+            }
+            else {
+                self->CloseFlow(flow, false);
             }
             self->KickPoll(s);
         });
@@ -2518,6 +3214,7 @@ private:
             stats_.stack_send_duration_calls.fetch_add(1, std::memory_order_relaxed);
         }
         if (accepted) {
+            MarkShardPayload(flow, send_length, true);
             if (flow->perf_tracking) {
                 flow->perf_payload_bytes += send_length;
             }
@@ -2585,7 +3282,7 @@ private:
                 s.stack->ConnLastSendAdmission(flow->connection_id, flow->send_admission_snapshot);
         }
         stats_.send_retry_armed.fetch_add(1, std::memory_order_relaxed);
-        flow->retry_timer.expires_after(SendRetryDelay() * (1u << flow->send_retry_shift));
+        flow->retry_timer.expires_after(send_retry_delay_ * (1u << flow->send_retry_shift));
         flow->send_retry_shift = std::min<std::uint32_t>(flow->send_retry_shift + 1, 5);
         const std::shared_ptr<Impl> self = shared_from_this();
         flow->retry_timer.async_wait(boost::asio::bind_executor(*shards_[flow->shard].strand,
@@ -2611,7 +3308,7 @@ private:
         // 之后 per-segment syscall+completion 才成为可观测成本 (avg_wr~1.4KB)。
         // 批量 cap 默认 32KB (env 可回退为 1=逐段), 不等待攒批、只收割已排队块。
         flow->write_active = true;
-        const std::size_t batch_cap = ConnectorBatchBytes();
+        const std::size_t batch_cap = connector_batch_bytes_;
         std::size_t total = 0;
         flow->write_buffers_.clear();
         flow->write_in_flight_.clear();
@@ -2675,7 +3372,7 @@ private:
 
     void ScheduleConnectorReceiveResume(std::uint64_t runtime_generation) noexcept {
         if (connector_receive_blocked_.load(std::memory_order_relaxed) == 0 ||
-            stats_.queued_bytes_total.load(std::memory_order_relaxed) > GlobalQueueBudget() / 2) {
+            stats_.queued_bytes_total.load(std::memory_order_relaxed) > global_queue_budget_ / 2) {
             return;
         }
         const std::shared_ptr<Impl> self = shared_from_this();
@@ -2690,7 +3387,7 @@ private:
                     for (const auto& entry : shard.flows) {
                         const std::shared_ptr<Flow>& candidate = entry.second;
                         if (!candidate->connector_receive_backpressured || candidate->closing ||
-                            candidate->write_bytes > ConnectorWriteCap() / 2) {
+                            candidate->write_bytes > self->connector_write_cap_ / 2) {
                             continue;
                         }
                         candidate->connector_receive_backpressured = false;
@@ -2908,6 +3605,15 @@ private:
         return flow == s.flows.end() ? nullptr : flow->second;
     }
 
+    void MarkShardPayload(const std::shared_ptr<Flow>& flow, std::size_t length, bool download) noexcept {
+        auto& s = shards_[flow->shard];
+        if (!flow->data_bearing) {
+            flow->data_bearing = true;
+            s.data_flows.fetch_add(1, std::memory_order_relaxed);
+        }
+        (download ? s.download_bytes : s.upload_bytes).fetch_add(length, std::memory_order_relaxed);
+    }
+
     void CloseFlow(const std::shared_ptr<Flow>& flow, bool abort_stack) noexcept {
         if (!flow || flow->closing) {
             return;
@@ -2948,7 +3654,7 @@ private:
             external_cancel_(flow->source_port, Generation());
         }
         boost::system::error_code ec;
-        flow->retry_timer.cancel(ec);
+        CancelTimer(flow->retry_timer, ec);
         flow->connector.cancel(ec);
         flow->connector.close(ec);
         Shard& s = shards_[flow->shard];
@@ -2971,7 +3677,10 @@ private:
                 s.listener_refs.erase(listener);
             }
         }
+        const bool data_bearing = flow->data_bearing;
         s.flows.erase(flow->key);
+        s.active_flows.fetch_sub(1, std::memory_order_relaxed);
+        if (data_bearing) s.data_flows.fetch_sub(1, std::memory_order_relaxed);
         stats_.flows_closed.fetch_add(1, std::memory_order_relaxed);
         KickPoll(s);
     }
@@ -4104,7 +4813,7 @@ private:
                 stats_.timer_rearm_attempts.fetch_add(1, std::memory_order_relaxed);
             }
             boost::system::error_code ec;
-            s.poll_timer->cancel(ec);
+            CancelTimer(*s.poll_timer, ec);
             SchedulePoll(s, generation_.load(std::memory_order_acquire));
         }
         else if (observe && target < s.poll_timer->expiry()) {
@@ -4123,7 +4832,7 @@ private:
         // shard and reused; make_shared per poll was a per-packet heap
         // allocation on bursts.
         if (!s.poll_timer) {
-            s.poll_timer = std::make_shared<boost::asio::steady_timer>(*context_);
+            s.poll_timer = std::make_shared<boost::asio::steady_timer>(*ShardContext(s));
         }
 #if defined(PPP_XTCP_HAS_TIMER_DEADLINE)
         s.poll_timer->expires_after(PollDelay(s));
@@ -4139,6 +4848,10 @@ private:
                     return;
                 }
                 Shard& s = self->shards_[shard_index];
+                if (s.spsc_failed.exchange(false, std::memory_order_acq_rel)) {
+                    self->DoStopShard(s);
+                    return;
+                }
                 if (!s.stack) {
                     return;
                 }
@@ -4162,15 +4875,27 @@ private:
     // S1: 每 shard 的 teardown 在自己的 strand 上执行 (与其余在途 handler
     // 串行); 全部 shard 完成后由最后一个 shard 调 DoStopFinalize 收尾。
     void DoStopShard(Shard& s) noexcept {
+        if (const auto queue = std::atomic_load(&s.spsc)) {
+            queue->Abort();
+            HandoffItem item;
+            while (queue->Consumer().TryPop(item) == ppp::threading::HandoffDrain::Item) {
+                stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+                s.dropped.fetch_add(1, std::memory_order_relaxed);
+                item = HandoffItem{};
+            }
+        }
         if (s.perf_flow_out.is_open()) {
             s.perf_flow_out.flush();
             s.perf_flow_out.close();
         }
         if (s.poll_timer) {
             boost::system::error_code ec;
-            s.poll_timer->cancel(ec);
+            CancelTimer(*s.poll_timer, ec);
             s.poll_timer.reset();
         }
+        s.deferred_writes.clear();
+        s.deferred_peer_flushes.clear();
+        s.kick_deferred = false;
         while (!s.flows.empty()) {
             CloseFlow(s.flows.begin()->second, true);
         }
@@ -4186,7 +4911,7 @@ private:
     void DoStopFinalize() noexcept {
         if (perf_dump_timer_) {
             boost::system::error_code ec;
-            perf_dump_timer_->cancel(ec);
+            CancelTimer(*perf_dump_timer_, ec);
             perf_dump_timer_.reset();
         }
         if (perf_out_.is_open()) {
@@ -4200,14 +4925,27 @@ private:
             std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>{},
             std::memory_order_release);
         lease_.reset();
-        if (own_context_) {
-            own_context_->stop();
-        }
+        // Let cancellation completions and already-queued handlers run to
+        // completion so their captures release Impl before the private pool
+        // exits. Calling io_context::stop() here would strand those handlers.
+        own_work_guard_.reset();
+        for (Shard& s : shards_) s.io_guard.reset();
         stopping_.store(false, std::memory_order_release);
+    }
+
+    const std::shared_ptr<boost::asio::io_context>& ShardContext(const Shard& s) const noexcept {
+        return s.io ? s.io : context_;
+    }
+
+public:
+    void SetSsmtActive(bool active) noexcept {
+        std::lock_guard<std::mutex> lock(state_sync_);
+        ssmt_active_ = active;
     }
 
 private:
     std::shared_ptr<boost::asio::io_context> context_;
+    const std::shared_ptr<boost::asio::io_context> external_context_ = context_;
     OutputHandler output_;
     OutputHandler counted_output_;
     BorrowedOutputHandler borrowed_output_;
@@ -4283,11 +5021,33 @@ private:
     // deque 而非 vector: Shard 含 mutex/atomic 不可移动, deque 元素永不搬迁。
     std::deque<Shard> shards_;
     int shard_count_ = 1;
+    const bool spsc_ingress_ = StartupEnv("OPENPPP2_XTCP_SPSC_INGRESS") == "1";
+    std::shared_mutex ingress_lifetime_sync_;
+    XtcpCpuInputs cpu_inputs_;
+    XtcpShardPolicy shard_policy_;
+    XtcpWorkerAffinity affinity_;
+    bool queue_mode_ = false;
+    bool ssmt_active_ = false;
+    mutable std::mutex lane_binding_sync_;
+    std::vector<std::shared_ptr<boost::asio::io_context>> lane_bindings_;
+    std::atomic<unsigned> affinity_pinned_{0};
+    std::array<ppp::app::runtime::RuntimeXtcpStats::Worker, 8> worker_runtime_{};
     std::atomic<std::uint32_t> next_external_port_{0};
-    // shards>1 时的专属执行池 (XtcpRuntime 独享, 析构时 stop+join)。
+    // shards>1 时的专属执行池。Finalize 释放 work guard，让 queued
+    // cancellation handlers 排空后 run() 自然退出；析构时 join 工作线程。
     std::shared_ptr<boost::asio::io_context> own_context_;
+    std::optional<boost::asio::executor_work_guard<
+        boost::asio::io_context::executor_type>> own_work_guard_;
     std::vector<std::thread> own_threads_;
     bool unix_bridge_ = false;
+    // 环境变量只在 runtime 构造时读取一次: Windows CRT getenv 要加锁并扫描整个
+    // 环境块, 逐写/逐包调用时实测占 io 线程约 36% CPU。
+    const std::size_t connector_write_cap_ = ConnectorWriteCap();
+    const std::size_t connector_batch_bytes_ = ConnectorBatchBytes();
+    // 构造函数确定执行域后赋值, 之后只读。
+    std::size_t global_queue_budget_ = GlobalQueueBudget(false);
+    const std::chrono::microseconds send_retry_delay_ = SendRetryDelay();
+    const std::size_t gro_bytes_override_ = GroBytesOverride();
 };
 
 XtcpRuntime::XtcpRuntime(
@@ -4316,6 +5076,15 @@ XtcpRuntime::~XtcpRuntime() noexcept {
 bool XtcpRuntime::Start() noexcept { return impl_ && impl_->Start(); }
 void XtcpRuntime::MarkReady() noexcept { if (impl_) impl_->MarkReady(); }
 void XtcpRuntime::Stop() noexcept { if (impl_) impl_->Stop(); }
+void XtcpRuntime::SetSsmtActive(bool active) noexcept { if (impl_) impl_->SetSsmtActive(active); }
+bool XtcpRuntime::GetLaneBinding(int lane, ppp::tap::TapLaneBinding& binding) const noexcept {
+    return impl_ && impl_->GetLaneBinding(lane, binding);
+}
+#if defined(PPP_XTCP_RUNTIME_TESTING)
+void XtcpRuntime::FailWorkerStartForTesting(int index) noexcept {
+    g_fail_worker_start_for_testing.store(index, std::memory_order_relaxed);
+}
+#endif
 bool XtcpRuntime::SubmitIPv4Tcp(const void* packet, int packet_length) noexcept {
     return impl_ && impl_->Submit(packet, packet_length);
 }

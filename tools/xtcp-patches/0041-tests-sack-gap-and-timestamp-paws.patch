@@ -1,0 +1,322 @@
+diff --git a/tests/test_sack_gap_edge.cpp b/tests/test_sack_gap_edge.cpp
+--- a/tests/test_sack_gap_edge.cpp
++++ b/tests/test_sack_gap_edge.cpp
+@@ -5,15 +5,13 @@
+  *        boundary of the next SACK block. RetransmitEarliestMissing must NOT
+  *        re-retransmit the already-SACKed segment at that boundary
+  *        (tcp_fsm.cpp `|| sack_retx_next_ == left` fix) - otherwise every
+- *        duplicate ACK / partial ACK re-sends SACKed data (a retransmit
+- *        storm that inflates retransmit_count_ and stalls completion).
++ *        duplicate ACK / partial ACK re-sends SACKed data.
+  *
+- *        Loss profile: dual stacks, every 8th first-seen data segment is
++ *        Loss profile: dual stacks, every 16th first-seen data segment is
+  *        blackholed (retransmissions pass), producing >= 2 isolated
+  *        single-segment gaps - exactly the shape that lands sack_retx_next_
+  *        on a SACK-block left edge. Verification: byte-exact delivery with a
+- *        rolling CRC (no duplicate delivery) + bounded retransmit_count_
+- *        (ConnStats) proving the recovery did not degenerate into a storm.
++ *        rolling CRC and no retransmission of ranges the peer already SACKed.
+  */
+ 
+ #include <xtcp/core/stack.h>
+@@ -25,17 +23,87 @@
+ #include <cstring>
+ #include <string>
+ #include <thread>
++#include <utility>
+ #include <vector>
+ 
+ static int g_failures = 0;
+ 
+-static bool HasTcpPayload(const Byte* packet, UInt32 length) {
++static UInt32 Read32(const Byte* p) {
++    return (static_cast<UInt32>(p[0]) << 24) |
++           (static_cast<UInt32>(p[1]) << 16) |
++           (static_cast<UInt32>(p[2]) << 8) |
++           static_cast<UInt32>(p[3]);
++}
++
++static UInt32 TcpPayloadLength(const Byte* packet, UInt32 length) {
+     const UInt32 ip_hlen = length >= 20 ? static_cast<UInt32>(packet[0] & 0x0fU) * 4U : 0;
+     const UInt32 tcp_hlen = ip_hlen >= 20 && length >= ip_hlen + 20
+         ? static_cast<UInt32>(packet[ip_hlen + 12] >> 4U) * 4U : 0;
+     const UInt32 ip_total = length >= 4 ? (static_cast<UInt32>(packet[2]) << 8U) | packet[3] : 0;
+-    return ip_hlen >= 20 && tcp_hlen >= 20 && ip_total >= ip_hlen + tcp_hlen &&
+-           ip_total > ip_hlen + tcp_hlen;
++    if (ip_hlen < 20 || tcp_hlen < 20 || ip_total < ip_hlen + tcp_hlen) {
++        return 0;
++    }
++    return ip_total - ip_hlen - tcp_hlen;
++}
++
++struct DropState {
++    UInt32 dropped = 0;
++    UInt32 first_seen = 0;
++    UInt32 fast_retransmits_of_sacked_data = 0;
++    std::vector<std::pair<UInt32, UInt32>> sent_ranges;
++    std::vector<std::pair<UInt32, UInt32>> sacked_ranges;
++};
++
++static bool SeqLt(UInt32 a, UInt32 b) {
++    return static_cast<Int32>(a - b) < 0;
++}
++
++static bool Overlaps(UInt32 seq, UInt32 length, const std::pair<UInt32, UInt32>& range) {
++    return SeqLt(seq, range.second) && SeqLt(range.first, seq + length);
++}
++
++static bool WasSent(const DropState& state, UInt32 seq, UInt32 length) {
++    return std::any_of(state.sent_ranges.begin(), state.sent_ranges.end(),
++                       [seq, length](const auto& range) { return Overlaps(seq, length, range); });
++}
++
++static void RecordSackBlocks(const Byte* packet, UInt32 length, DropState& state) {
++    const UInt32 ip_hlen = length >= 20 ? static_cast<UInt32>(packet[0] & 0x0fU) * 4U : 0;
++    if (ip_hlen < 20 || length < ip_hlen + 20 || 0 == (packet[ip_hlen + 13] & 0x10U)) {
++        return;
++    }
++    const UInt32 tcp_hlen = static_cast<UInt32>(packet[ip_hlen + 12] >> 4U) * 4U;
++    if (tcp_hlen < 20 || length < ip_hlen + tcp_hlen) {
++        return;
++    }
++    const UInt32 option_end = ip_hlen + tcp_hlen;
++    for (UInt32 off = ip_hlen + 20; off < option_end;) {
++        const Byte kind = packet[off];
++        if (0 == kind) {
++            break;
++        }
++        if (1 == kind) {
++            ++off;
++            continue;
++        }
++        if (off + 2 > option_end) {
++            break;
++        }
++        const Byte option_length = packet[off + 1];
++        if (option_length < 2 || off + option_length > option_end) {
++            break;
++        }
++        if (5 == kind && 10 <= option_length && 0 == (option_length - 2) % 8) {
++            for (UInt32 block = off + 2; block + 8 <= off + option_length; block += 8) {
++                const UInt32 left = Read32(packet + block);
++                const UInt32 right = Read32(packet + block + 4);
++                if (SeqLt(left, right)) {
++                    state.sacked_ranges.emplace_back(left, right);
++                }
++            }
++        }
++        off += option_length;
++    }
+ }
+ 
+ #define CHECK(cond)                                                       \
+@@ -48,14 +116,13 @@
+ 
+ /**
+  * @brief Pumps `from`'s tx into `to`, dropping every `drop_every`-th
+- *        FIRST-SEEN data segment (identified by its sequence number);
+- *        retransmissions pass. Drops apply to data only, so ACKs and the
+- *        handshake are never blackholed and each gap stays exactly one
+- *        segment wide.
++ *        FIRST-SEEN data range; repeated or partially repeated ranges pass.
++ *        Drops apply to data only, so ACKs and the handshake are never
++ *        blackholed and each gap stays exactly one segment wide.
+  */
+ static void PumpDrop(xtcp::ndi::ManualBackend& from, xtcp::ndi::ManualBackend& to,
+-                     UInt32 drop_every, UInt32& dropped_out, UInt32& first_seen_out,
+-                     std::vector<UInt32>& dropped_seqs) {
++                     UInt32 drop_every, DropState& state, bool from_sender_a,
++                     UInt32 timer_retransmits = 0) {
+     Byte out[65536];
+     UInt32 guard = 0;
+     while (0 != from.TxPending()) {
+@@ -65,29 +132,35 @@
+         }
+         // IPv4 (20B) + TCP: flags at tcp offset 13, seq at 4.
+         const UInt32 tcp_off = 20;
+-        const bool data = HasTcpPayload(out, got);
++        const UInt32 payload_len = TcpPayloadLength(out, got);
+         bool drop = false;
+-        if (data) {
+-            const UInt32 seq = (static_cast<UInt32>(out[tcp_off + 4]) << 24) |
+-                               (static_cast<UInt32>(out[tcp_off + 5]) << 16) |
+-                               (static_cast<UInt32>(out[tcp_off + 6]) << 8) |
+-                               static_cast<UInt32>(out[tcp_off + 7]);
+-            const bool is_retransmit =
+-                std::find(dropped_seqs.begin(), dropped_seqs.end(), seq) != dropped_seqs.end();
+-            if (!is_retransmit) {
+-                ++first_seen_out;
+-                if (0 != drop_every && 0 == (first_seen_out % drop_every)) {
++        if (0 < payload_len && from_sender_a) {
++            const UInt32 seq = Read32(out + tcp_off + 4);
++            const bool first_transmission = !WasSent(state, seq, payload_len);
++            if (first_transmission) {
++                state.sent_ranges.emplace_back(seq, seq + payload_len);
++                ++state.first_seen;
++                if (0 != drop_every && 0 == (state.first_seen % drop_every)) {
+                     drop = true;
+                 }
+-            }
+-            if (drop) {
+-                dropped_seqs.push_back(seq);
++            } else {
++                const bool covers_sacked_data = std::any_of(
++                    state.sacked_ranges.begin(), state.sacked_ranges.end(),
++                    [seq, payload_len](const auto& range) { return Overlaps(seq, payload_len, range); });
++                if (covers_sacked_data && 0 < timer_retransmits) {
++                    --timer_retransmits;
++                } else if (covers_sacked_data) {
++                    ++state.fast_retransmits_of_sacked_data;
++                }
+             }
+         }
+         if (drop) {
+-            ++dropped_out;
++            ++state.dropped;
+             continue;  // blackhole
+         }
++        if (!from_sender_a) {
++            RecordSackBlocks(out, got, state);
++        }
+         to.Inject(out, got, 0x0800);
+         if (20000 < ++guard) {
+             break;
+@@ -111,6 +184,16 @@
+     });
+ }
+ 
++static UInt32 RetransmitCount(xtcp::XtcpStack& stack, UInt64 conn) {
++    UInt32 inflight = 0, cwnd = 0, ssthresh = 0, snd_wnd = 0, retx = 0, dup = 0, fast = 0;
++    UInt64 rto_deadline = 0;
++    UInt32 front_seq = 0, snd_una = 0;
++    UInt16 local_port = 0, remote_port = 0;
++    stack.ConnStats(conn, inflight, cwnd, ssthresh, snd_wnd, retx, rto_deadline, dup, fast,
++                    front_seq, snd_una, local_port, remote_port);
++    return retx;
++}
++
+ /** 64 KiB transfer, every 8th first-seen data segment blackholed. */
+ int main() {
+     xtcp::buf::InitPools();
+@@ -141,11 +224,10 @@
+ 
+         // Handshake: no drops.
+         {
+-            UInt32 drop = 0, seen = 0;
+-            std::vector<UInt32> seqs;
+-            PumpDrop(backend_a, backend_b, 0, drop, seen, seqs);
+-            PumpDrop(backend_b, backend_a, 0, drop, seen, seqs);
+-            PumpDrop(backend_a, backend_b, 0, drop, seen, seqs);
++            DropState handshake;
++            PumpDrop(backend_a, backend_b, 0, handshake, true);
++            PumpDrop(backend_b, backend_a, 0, handshake, false);
++            PumpDrop(backend_a, backend_b, 0, handshake, true);
+         }
+ 
+         constexpr UInt32 kTotal = 64 * 1024;
+@@ -153,40 +235,51 @@
+         for (UInt32 i = 0; i < kTotal; ++i) {
+             payload.push_back(static_cast<char>((i * 17 + 11) & 0xFF));
+         }
+-        constexpr UInt32 kDropEvery = 8;
+-        UInt32 dropped = 0, first_seen = 0;
+-        std::vector<UInt32> dropped_seqs;
++        constexpr UInt32 kDropEvery = 16;
++        DropState loss;
++        const auto poll_a_timers = [&]() {
++            const UInt32 before = RetransmitCount(stack_a, conn);
++            stack_a.PollAckTimers();
++            const UInt32 timer_retransmits = RetransmitCount(stack_a, conn) - before;
++            PumpDrop(backend_a, backend_b, kDropEvery, loss, true, timer_retransmits);
++        };
+         UInt32 sent = 0;
+         UInt32 guard = 0;
+         while (sent < kTotal && 40000 > ++guard) {
+-            const UInt32 chunk = (kTotal - sent < 1460) ? (kTotal - sent) : 1460;
++            const UInt32 chunk = (kTotal - sent < 1448) ? (kTotal - sent) : 1448;
+             if (stack_a.Send(conn, reinterpret_cast<const Byte*>(payload.data() + sent), chunk)) {
+                 sent += chunk;
+             }
+-            PumpDrop(backend_a, backend_b, kDropEvery, dropped, first_seen, dropped_seqs);
+-            PumpDrop(backend_b, backend_a, 0, dropped, first_seen, dropped_seqs);
++            PumpDrop(backend_a, backend_b, kDropEvery, loss, true);
++            PumpDrop(backend_b, backend_a, 0, loss, false);
+             stack_b.PollAckTimers();
+-            stack_a.PollAckTimers();
++            PumpDrop(backend_b, backend_a, 0, loss, false);
++            PumpDrop(backend_a, backend_b, kDropEvery, loss, true);
++            poll_a_timers();
+         }
+         // Drain: delayed-ACK (40 ms) paces the back-to-back transfer, so wait
+         // between rounds for the timers to fire; a retransmit storm would
+         // burn the entire budget without completing.
+         for (UInt32 i = 0; i < 3000 && received.size() < kTotal; ++i) {
+-            const UInt32 chunk = (kTotal - sent < 1460) ? (kTotal - sent) : 1460;
++            const UInt32 chunk = (kTotal - sent < 1448) ? (kTotal - sent) : 1448;
+             if (sent < kTotal && stack_a.Send(conn, reinterpret_cast<const Byte*>(payload.data() + sent), chunk)) {
+                 sent += chunk;
+             }
+-            PumpDrop(backend_a, backend_b, kDropEvery, dropped, first_seen, dropped_seqs);
+-            PumpDrop(backend_b, backend_a, 0, dropped, first_seen, dropped_seqs);
++            PumpDrop(backend_a, backend_b, kDropEvery, loss, true);
++            PumpDrop(backend_b, backend_a, 0, loss, false);
+             stack_b.PollAckTimers();
+-            stack_a.PollAckTimers();
++            PumpDrop(backend_b, backend_a, 0, loss, false);
++            PumpDrop(backend_a, backend_b, kDropEvery, loss, true);
++            poll_a_timers();
+             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+         }
+         // Flush any last buffered sends once more.
+-        PumpDrop(backend_a, backend_b, kDropEvery, dropped, first_seen, dropped_seqs);
+-        PumpDrop(backend_b, backend_a, 0, dropped, first_seen, dropped_seqs);
++        PumpDrop(backend_a, backend_b, kDropEvery, loss, true);
++        PumpDrop(backend_b, backend_a, 0, loss, false);
+         stack_b.PollAckTimers();
+-        stack_a.PollAckTimers();
++        PumpDrop(backend_b, backend_a, 0, loss, false);
++        PumpDrop(backend_a, backend_b, 0, loss, true);
++        poll_a_timers();
+ 
+         // 1) Data integrity: byte-exact size + exact rolling CRC. A duplicate
+         //    delivery (re-delivered SACKed bytes) corrupts the stream and
+@@ -202,14 +295,12 @@
+         CHECK(kTotal == received.size());
+         CHECK(crc_recv == crc_expect);
+ 
+-        // 2) The loss policy must actually have created gaps - at least two
+-        //    single-segment holes (kTotal / 1460 ~= 45 segments, every 8th).
+-        CHECK(2 <= dropped);
+-
+-        // 3) Retransmit count (ConnStats): bounded by the true number of
+-        //    losses. Each blackholed segment needs >= 1 retransmit
+-        //    (dropped <= retx); the boundary bug re-sends SACKed segments on
+-        //    every dupack/partial-ACK, blowing retx far past the loss count.
++        // 2) The loss policy must actually have created two isolated gaps
++        //    (kTotal / 1448 ~= 46 segments, every 16th).
++        CHECK(2 <= loss.dropped);
++
++        // 3) Check retransmitted sequence ranges directly. A timer-triggered
++        //    RTO may legally retry previously SACKed data if a receiver reneges.
+         UInt32 inflight = 0, cwnd = 0, ssthresh = 0, snd_wnd = 0, retx = 0, dup = 0, fast = 0;
+         UInt64 rto_deadline = 0;
+         UInt32 front_seq = 0, snd_una = 0;
+@@ -217,11 +308,12 @@
+         stack_a.ConnStats(conn, inflight, cwnd, ssthresh, snd_wnd, retx, rto_deadline, dup, fast,
+                           front_seq, snd_una, lp, rp);
+         std::fprintf(stderr,
+-                     "[sack-gap] sent=%u recv=%zu dropped=%u retx=%u inflight=%u cwnd=%u ssthresh=%u wnd=%u front=%u snd_una=%u\n",
+-                     sent, received.size(), dropped, retx, inflight, cwnd, ssthresh, snd_wnd,
+-                     front_seq, snd_una);
+-        CHECK(dropped <= retx);
+-        CHECK(retx <= 4 * dropped);
++                     "[sack-gap] sent=%u recv=%zu dropped=%u retx=%u sacked_fast_retx=%u inflight=%u cwnd=%u ssthresh=%u wnd=%u front=%u snd_una=%u\n",
++                     sent, received.size(), loss.dropped, retx,
++                     loss.fast_retransmits_of_sacked_data, inflight, cwnd, ssthresh,
++                     snd_wnd, front_seq, snd_una);
++        CHECK(loss.dropped <= retx);
++        CHECK(0 == loss.fast_retransmits_of_sacked_data);
+     }
+     xtcp::buf::ShutdownPools();
+     std::fprintf(stderr, g_failures ? "SACK_GAP_EDGE: FAILED (%d)\n" : "SACK_GAP_EDGE: ALL PASSED\n", g_failures);

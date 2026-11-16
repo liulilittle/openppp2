@@ -3,6 +3,10 @@
 #include <ppp/stdafx.h>
 #include <ppp/ipv6/IPv6Auxiliary.h>
 
+namespace ppp::app::client {
+struct WindowsIPv6Snapshot;
+}
+
 namespace ppp {
     namespace win32 {
         namespace ipv6 {
@@ -13,6 +17,11 @@ namespace ppp {
                 bool                ApplyClientSubnetRoute(const ::ppp::ipv6::auxiliary::ClientContext& context, const boost::asio::ip::address& prefix, int prefix_length, const boost::asio::ip::address& gateway, bool nat_mode, ::ppp::ipv6::auxiliary::ClientState& state) noexcept;
                 bool                ApplyClientDns(const ::ppp::ipv6::auxiliary::ClientContext& context, const ppp::vector<ppp::string>& dns_servers, ::ppp::ipv6::auxiliary::ClientState& state) noexcept;
                 void                RestoreClientConfiguration(const ::ppp::ipv6::auxiliary::ClientContext& context, const boost::asio::ip::address& address, int prefix_length, bool nat_mode, ::ppp::ipv6::auxiliary::ClientState& state) noexcept;
+
+                // Replays a durable snapshot after the Core process has
+                // exited. Every resource is compared against the exact value
+                // OpenPPP2 wrote before it is removed or restored.
+                bool                RecoverClientSnapshot(const ::ppp::app::client::WindowsIPv6Snapshot& snapshot) noexcept;
             }               
         }
     }

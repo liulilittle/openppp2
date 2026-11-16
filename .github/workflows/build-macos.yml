@@ -22,7 +22,7 @@ env:
 jobs:
   build:
     name: macOS ${{ matrix.arch }}
-    runs-on: macos-latest
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"arch":"arm64","third_repo":"Liz-Nozomi/openppp2-macos-arm64-environment"}]}' || '{"include":[{"arch":"arm64","third_repo":"Liz-Nozomi/openppp2-macos-arm64-environment"},{"arch":"x86_64","third_repo":"liulilittle/openppp2-macos-amd64-environment"}]}') }}
@@ -66,7 +66,7 @@ jobs:
   build-asan:
     name: macOS ${{ matrix.arch }} ASan
     if: github.event_name != 'pull_request'
-    runs-on: macos-latest
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:

@@ -8,6 +8,7 @@
 #include <ppp/app/client/dns/IDnsPolicy.h>
 #include <ppp/dns/DnsUdpFlowRegistry.h>
 #include <ppp/app/client/dns/IDnsTimerScheduler.h>
+#include <ppp/app/client/policy/PolicyModel.h>
 
 namespace ppp::configurations { class AppConfiguration; }
 namespace ppp::app::protocol { struct VirtualEthernetInformationExtensions; }
@@ -43,6 +44,12 @@ public:
         bool intercept_unmatched,
         const ppp::function<void(uint32_t)>& add_tunnel_ip,
         const ppp::function<void(uint32_t)>& add_nic_ip) noexcept;
+    void SetPolicyRuntime(const std::shared_ptr<policy::PolicyRuntime>& runtime) noexcept;
+    void SetPolicyFakeIpStore(const std::shared_ptr<DurableFakeIpStore>& store) noexcept;
+    void SetDirectSocketProtector(const ppp::function<bool(boost::asio::ip::tcp::socket::native_handle_type)>& protect) noexcept;
+    bool ResolvePolicyDestination(const std::string& domain,
+        const std::shared_ptr<const policy::PolicySnapshot>& snapshot,
+        ppp::coroutines::YieldContext& yield, boost::asio::ip::address& address) noexcept;
     boost::asio::ip::address RewriteFakeIpAddress(
         const boost::asio::ip::address& address) const noexcept;
     std::shared_ptr<const routing::HumanRoutingRules> GetHumanRoutingRules() const noexcept;
@@ -50,6 +57,8 @@ public:
         const ppp::net::IPEndPoint& endpoint,
         routing::ResolvedDestination& destination) const noexcept;
     bool GetFakeIpRoute(uint32_t& network, int& prefix) const noexcept;
+    PolicyTelemetrySnapshot SnapshotPolicyTelemetry() const noexcept;
+    void RecordPolicyDecision(policy::PolicyAction action) noexcept;
     bool ConsumeUdpFlow(
         uint16_t local_port,
         const boost::asio::ip::udp::endpoint& remote) noexcept;

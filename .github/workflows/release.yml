@@ -1,7 +1,7 @@
 # Copyright  : Copyright (C) 2017 ~ 2035 SupersocksR ORG. All rights reserved.
 # Description: PPP PRIVATE NETWORK(TM) 2 – Create GitHub Release with all build artifacts.
 # Author     : OpenCode.
-# Date-Time  : 2026/05/03
+# Date-Time  : 2026/10/07
 
 name: Release
 
@@ -28,8 +28,8 @@ permissions:
 
 jobs:
   release:
-    name: Create Release
-    runs-on: ubuntu-latest
+    name: Verify CI and publish release
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
@@ -37,10 +37,11 @@ jobs:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
 
-      - name: Resolve release revision
+      - name: Resolve and verify release revision
         id: release
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
@@ -51,18 +52,45 @@ jobs:
           fi
 
           tag_sha=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")
+          resolve_remote_tag_commit() {
+            local object_type object_sha tag_json depth
+            tag_json=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")
+            object_type=$(jq -r '.object.type' <<<"$tag_json")
+            object_sha=$(jq -r '.object.sha' <<<"$tag_json")
+            for ((depth = 0; depth < 8; depth++)); do
+              if [[ "$object_type" == "commit" ]]; then
+                printf '%s\n' "$object_sha"
+                return 0
+              fi
+              if [[ "$object_type" != "tag" ]]; then
+                echo "::error::Remote tag does not resolve to a commit"
+                return 1
+              fi
+              tag_json=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}")
+              object_type=$(jq -r '.object.type' <<<"$tag_json")
+              object_sha=$(jq -r '.object.sha' <<<"$tag_json")
+            done
+            echo "::error::Remote tag nesting exceeds the supported limit"
+            return 1
+          }
+
+          remote_sha=$(resolve_remote_tag_commit)
+          if [[ "$remote_sha" != "$tag_sha" ]]; then
+            echo "::error::Remote tag points to ${remote_sha}, checkout resolved to ${tag_sha}"
+            exit 1
+          fi
           echo "tag_sha=${tag_sha}" >> "$GITHUB_OUTPUT"
           echo "Releasing ${RELEASE_TAG} at ${tag_sha}"
 
-      - name: Download artifacts built from release revision
+      - name: Require successful CI for the release revision
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_SHA: ${{ steps.release.outputs.tag_sha }}
+        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts
 
-          workflows=(
+          required_workflows=(
             "build-android.yml"
             "build-linux-amd64.yml"
             "build-linux-cross.yml"
@@ -70,58 +98,241 @@ jobs:
             "build-windows-x64.yml"
             "build-windows-arm64.yml"
             "build-go-guardian.yml"
+            "test.yml"
+            "docs.yml"
+            "test-linux-coverage.yml"
           )
+          mkdir -p artifacts
+          : > build-provenance.txt
+          printf 'tag_sha=%s\n' "$RELEASE_SHA" >> build-provenance.txt
 
-          for workflow in "${workflows[@]}"; do
-            echo "Locating successful $workflow run for ${RELEASE_SHA}..."
+          for workflow in "${required_workflows[@]}"; do
+            echo "Checking latest $workflow run for ${RELEASE_SHA}..."
             run_id=$(gh run list \
               --workflow="$workflow" \
               --commit="$RELEASE_SHA" \
-              --status=success \
               --limit=1 \
               --json databaseId \
               --jq '.[0].databaseId // empty')
-
-            if [ -z "$run_id" ]; then
-              echo "::error::No successful $workflow run found for ${RELEASE_SHA}"
+            if [[ -z "$run_id" ]]; then
+              echo "::error::No run found for $workflow at ${RELEASE_SHA}"
               exit 1
             fi
 
-            run_sha=$(gh run view "$run_id" --json headSha --jq '.headSha')
-            if [ "$run_sha" != "$RELEASE_SHA" ]; then
-              echo "::error::$workflow run $run_id belongs to $run_sha, expected ${RELEASE_SHA}"
+            run_summary=$(gh run view "$run_id" --json headSha,conclusion \
+              --jq '[.headSha, (.conclusion // "pending")] | @tsv')
+            IFS=$'\t' read -r run_sha conclusion <<<"$run_summary"
+            if [[ "$run_sha" != "$RELEASE_SHA" || "$conclusion" != "success" ]]; then
+              echo "::error::$workflow run $run_id is ${conclusion} at ${run_sha}; expected success at ${RELEASE_SHA}"
               exit 1
             fi
+            printf '%s_run_id=%s\n' "${workflow%.yml}" "$run_id" >> build-provenance.txt
+
+            case "$workflow" in
+              test.yml)
+                lifecycle_dir="artifacts/${workflow%.yml}/lifecycle-acceptance"
+                mkdir -p "$lifecycle_dir"
+                gh run download "$run_id" \
+                  --name lifecycle-acceptance-summary \
+                  --dir "$lifecycle_dir"
+                lifecycle_summary="$lifecycle_dir/summary.json"
+                if [[ ! -s "$lifecycle_summary" ]]; then
+                  echo "::error::Lifecycle acceptance summary is missing or empty"
+                  exit 1
+                fi
+                python3 tools/verify_network_lifecycle_summary.py "$lifecycle_summary"
+                printf 'lifecycle_summary=%s\n' "$lifecycle_summary" >> build-provenance.txt
+                continue
+                ;;
+              docs.yml|test-linux-coverage.yml) continue ;;
+            esac
 
             artifact_dir="artifacts/${workflow%.yml}"
             mkdir -p "$artifact_dir"
             gh run download "$run_id" --dir "$artifact_dir"
+            mapfile -d '' package_files < <(find "$artifact_dir" -type f \
+              \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.apk' \) -print0)
+            if (( ${#package_files[@]} == 0 )); then
+              echo "::error::$workflow produced no distributable archives for ${RELEASE_SHA}"
+              exit 1
+            fi
+            for package in "${package_files[@]}"; do
+              if [[ ! -s "$package" ]]; then
+                echo "::error::Empty package from $workflow: ${package}"
+                exit 1
+              fi
+            done
+            printf '%s_package_count=%s\n' "${workflow%.yml}" "${#package_files[@]}" >> build-provenance.txt
           done
 
-      - name: Prepare release assets
-        run: |
-          mkdir -p release-assets
-          find artifacts -type f -size +0c \
-            \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.apk' \) \
-            -exec cp {} release-assets/ \;
-
-          if ! find release-assets -maxdepth 1 -type f -print -quit | grep -q .; then
-            echo "No non-empty release assets found"
+          if ! find artifacts/build-android -type f -name '*.apk' -size +0c -print -quit | grep -q .; then
+            echo "::error::Android release APK is missing or empty"
             exit 1
           fi
 
+      - name: Prepare release assets and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          declare -A seen_names=()
+          while IFS= read -r -d '' package; do
+            name=$(basename "$package")
+            if [[ -n "${seen_names[$name]+present}" ]]; then
+              echo "::error::Duplicate release asset basename: ${name}"
+              exit 1
+            fi
+            seen_names[$name]=1
+            cp -- "$package" "release-assets/${name}"
+          done < <(find artifacts -type f \
+            \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.apk' \) -print0 | sort -z)
+
+          required_package_assets=(
+            "app-release.apk"
+            "guardian-linux-amd64.tar.gz"
+            "guardian-linux-arm64.tar.gz"
+            "guardian-darwin-amd64.tar.gz"
+            "guardian-darwin-arm64.tar.gz"
+            "guardian-windows-amd64.zip"
+            "openppp2-android-arm64-v8a.zip"
+            "openppp2-android-armeabi-v7a.zip"
+            "openppp2-android-x86.zip"
+            "openppp2-android-x86_64.zip"
+            "openppp2-darwin-arm64.zip"
+            "openppp2-darwin-x86_64.zip"
+            "openppp2-darwin-arm64-asan.zip"
+            "openppp2-darwin-x86_64-asan.zip"
+            "openppp2-linux-aarch64-cross.zip"
+            "openppp2-linux-armv7l-cross.zip"
+            "openppp2-linux-riscv64-cross.zip"
+            "openppp2-linux-ppc64el-cross.zip"
+            "openppp2-linux-s390x-cross.zip"
+            "openppp2-linux-mipsel-cross.zip"
+            "openppp2-linux-amd64.zip"
+            "openppp2-linux-amd64-io-uring.zip"
+            "openppp2-linux-amd64-simd.zip"
+            "openppp2-linux-amd64-tc.zip"
+            "openppp2-linux-amd64-tc-io-uring.zip"
+            "openppp2-linux-amd64-tc-simd.zip"
+            "openppp2-linux-amd64-io-uring-simd.zip"
+            "openppp2-linux-amd64-tc-io-uring-simd.zip"
+            "openppp2-linux-amd64-debian10.zip"
+            "openppp2-linux-amd64-asan.zip"
+            "openppp2-windows-x64-Release.zip"
+            "openppp2-windows-ARM64-Release.zip"
+          )
+          if (( ${#required_package_assets[@]} != 32 )); then
+            echo "::error::Release package manifest must contain exactly 32 assets"
+            exit 1
+          fi
+          for name in "${required_package_assets[@]}"; do
+            if [[ ! -s "release-assets/${name}" ]]; then
+              echo "::error::Required release package is missing or empty: ${name}"
+              exit 1
+            fi
+          done
+          mapfile -t actual_package_assets < <(find release-assets -maxdepth 1 -type f \
+            \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.apk' \) -printf '%f\n' | sort)
+          if (( ${#actual_package_assets[@]} != ${#required_package_assets[@]} )); then
+            echo "::error::Expected exactly ${#required_package_assets[@]} package assets, found ${#actual_package_assets[@]}"
+            exit 1
+          fi
+
+          cp build-provenance.txt release-assets/build-provenance.txt
+          cat > release-assets/RELEASE-NOTES.txt <<'NOTES'
+          ASan archives are diagnostic builds for debugging and sanitizer analysis. They are not production binaries; use the matching non-ASan platform archive for normal use.
+          NOTES
+          (
+            cd release-assets
+            sha256sum -- * > SHA256SUMS.txt
+          )
           echo "Release assets:"
           find release-assets -maxdepth 1 -type f -printf '%f\t%s bytes\n' | sort
 
-      - name: Create Release
+      - name: Verify an existing published release
+        id: published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          releases=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --slurp)
+          release_id=$(jq -r --arg tag "$RELEASE_TAG" '.[][] | select(.tag_name == $tag and .draft == false) | .id' <<<"$releases")
+          if [[ -z "$release_id" ]]; then
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::Published release lookup returned an invalid or ambiguous ID"
+            exit 1
+          fi
+          prerelease=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" --jq '.prerelease')
+          if [[ "$prerelease" != "$RELEASE_PRERELEASE" ]]; then
+            echo "::error::Published release type differs from the requested release"
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" --paginate --slurp \
+            | jq -r '.[][] | [.name, ((.digest // "") | sub("^sha256:"; ""))] | @tsv' \
+            | sort > published-assets.tsv
+          (
+            cd release-assets
+            sha256sum -- * | awk '{print $2 "\t" $1}' | sort
+          ) > expected-assets.tsv
+          if ! diff -u expected-assets.tsv published-assets.tsv; then
+            echo "::error::Published release assets differ from the verified build artifacts"
+            exit 1
+          fi
+          echo "reuse=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release and upload verified assets
+        if: steps.published.outputs.reuse != 'true'
+        id: draft
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
           target_commitish: ${{ steps.release.outputs.tag_sha }}
           name: ${{ inputs.title }}
           prerelease: ${{ inputs.prerelease }}
+          draft: true
+          body: ASan archives are diagnostic builds for debugging and sanitizer analysis. They are not production binaries; use the matching non-ASan platform archive for normal use.
           files: release-assets/*
           generate_release_notes: true
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Recheck remote tag and publish draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_SHA: ${{ steps.release.outputs.tag_sha }}
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+          REUSE_PUBLISHED: ${{ steps.published.outputs.reuse }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_json=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")
+          object_type=$(jq -r '.object.type' <<<"$tag_json")
+          object_sha=$(jq -r '.object.sha' <<<"$tag_json")
+          depth=0
+          while [[ "$object_type" == "tag" && $depth -lt 8 ]]; do
+            tag_json=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}")
+            object_type=$(jq -r '.object.type' <<<"$tag_json")
+            object_sha=$(jq -r '.object.sha' <<<"$tag_json")
+            depth=$((depth + 1))
+          done
+          if [[ "$object_type" != "commit" || "$object_sha" != "$RELEASE_SHA" ]]; then
+            echo "::error::Remote tag changed before publication (resolved ${object_type} ${object_sha}, expected ${RELEASE_SHA})"
+            exit 1
+          fi
+          if [[ "$REUSE_PUBLISHED" == "true" ]]; then
+            echo "Verified existing published release and all asset digests"
+            exit 0
+          fi
+          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Draft release action did not provide a valid release ID"
+            exit 1
+          fi
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false

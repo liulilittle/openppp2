@@ -1,6 +1,37 @@
+diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
+--- a/include/xtcp/core/stack.h
++++ b/include/xtcp/core/stack.h
+@@ -320,6 +320,26 @@
+          */
+         UInt32 PollAckTimers(UInt32 shard_index) noexcept;
+         /**
++         * @brief Sentinel returned by NextTimerDeadlineUs() when no timer
++         *        work is pending anywhere in the stack.
++         * @note  OPENPPP2 integration patch (tools/xtcp-patches/
++         *        0001-next-timer-deadline.patch).
++         */
++        static constexpr UInt64 kNoTimerDeadline = ~static_cast<UInt64>(0);
++        /**
++         * @brief Earliest pending timer deadline across all connections
++         *        (steady-clock microseconds, the PollAckTimers clock).
++         * @return The minimum of every per-connection timer deadline and the
++         *         qdisc pacing time; a value at or below the current clock
++         *         means PollAckTimers is due now; kNoTimerDeadline when
++         *         nothing is pending (the next packet/send/close arms the
++         *         next deadline).
++         * @note  O(1) when every shard is idle (the same sweep hints the
++         *        PollAckTimers fast path uses); O(live connections) only on
++         *        shards with armed timers.
++         */
++        UInt64 NextTimerDeadlineUs() noexcept;
++        /**
+          * @brief Total live connections (all shards).
+          */
+         UInt32 ConnectionCount() const noexcept;
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -335,6 +335,56 @@
+@@ -374,6 +374,56 @@
                  std::lock_guard<std::recursive_mutex> scope(syncobj_);
                  return ack_deadline_;
              }
@@ -57,38 +88,10 @@
  
              /**
               * @brief Enables TCP-MD5 (RFC 2385) with the given key.
---- a/include/xtcp/core/stack.h
-+++ b/include/xtcp/core/stack.h
-@@ -296,6 +296,26 @@
-          */
-         UInt32 PollAckTimers() noexcept;
-         /**
-+         * @brief Sentinel returned by NextTimerDeadlineUs() when no timer
-+         *        work is pending anywhere in the stack.
-+         * @note  OPENPPP2 integration patch (tools/xtcp-patches/
-+         *        0001-next-timer-deadline.patch).
-+         */
-+        static constexpr UInt64 kNoTimerDeadline = ~static_cast<UInt64>(0);
-+        /**
-+         * @brief Earliest pending timer deadline across all connections
-+         *        (steady-clock microseconds, the PollAckTimers clock).
-+         * @return The minimum of every per-connection timer deadline and the
-+         *         qdisc pacing time; a value at or below the current clock
-+         *         means PollAckTimers is due now; kNoTimerDeadline when
-+         *         nothing is pending (the next packet/send/close arms the
-+         *         next deadline).
-+         * @note  O(1) when every shard is idle (the same sweep hints the
-+         *        PollAckTimers fast path uses); O(live connections) only on
-+         *        shards with armed timers.
-+         */
-+        UInt64 NextTimerDeadlineUs() noexcept;
-+        /**
-          * @brief Total live connections (all shards).
-          */
-         UInt32 ConnectionCount() const noexcept;
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1661,6 +1661,42 @@
+@@ -1841,6 +1841,42 @@
          return sent;
      }
  

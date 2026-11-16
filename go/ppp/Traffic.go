@@ -3,7 +3,6 @@ package ppp
 import (
 	"fmt"
 	"ppp/io"
-	"strconv"
 	"strings"
 )
 
@@ -46,13 +45,15 @@ func (my *ManagedServer) server_on_traffic_unpack_many_tasks(ws *io.WebSocket, p
 			continue
 		}
 
-		RX, err := strconv.ParseUint(task.RX, 10, 64)
-		if err != nil {
+		RX, ok := parse_traffic_counter(task.RX)
+		if !ok {
+			LOG_ERROR.Println("traffic report rejected: invalid or oversized RX counter")
 			continue
 		}
 
-		TX, err := strconv.ParseUint(task.TX, 10, 64)
-		if err != nil {
+		TX, ok := parse_traffic_counter(task.TX)
+		if !ok {
+			LOG_ERROR.Println("traffic report rejected: invalid or oversized TX counter")
 			continue
 		}
 
@@ -62,8 +63,8 @@ func (my *ManagedServer) server_on_traffic_unpack_many_tasks(ws *io.WebSocket, p
 
 		guid = strings.ToUpper(guid)
 		list = append(list, &_vpn_user_upload_traffic_task{
-			RX:   int64(RX),
-			TX:   int64(TX),
+			RX:   RX,
+			TX:   TX,
 			Guid: guid,
 		})
 	}
@@ -169,6 +170,12 @@ func (my *ManagedServer) server_on_traffic_sync_dirty_to_local(server *tb_server
 }
 
 func (my *ManagedServer) server_on_traffic(ws *io.WebSocket, packet *_Packet) int {
+	// The packet may only speak for the node bound to this websocket.
+	if !node_matches_session(ws, packet.Node) {
+		LOG_ERROR.Println("traffic packet dropped: node does not match the session")
+		return -1
+	}
+
 	// Check whether the server that the VPN user wants to login to exists!
 	server, _, err := my.server_find_server_by_server(packet.Node)
 	if err != nil {

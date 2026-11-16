@@ -15,6 +15,7 @@
 #include <sys/uio.h>
 
 #include <ppp/tap/RetainedPacketOwner.h>
+#include <ppp/tap/TunWriteDiagnostics.h>
 
 #include <endian.h>
 #include <sys/types.h>
@@ -28,13 +29,13 @@ namespace tap {
 
 class TunGsoCoalescer final {
 public:
-    static constexpr size_t kSegmentCap = 4;
+    static constexpr size_t kSegmentCap = 32;
     static constexpr size_t kMaxSegmentCap = 48;
     static constexpr size_t kMaxPacketBytes = 1500;
     // XTCP-SHARED-PATH-001 follow-up: the merge cap is runtime-tunable
-    // (OPENPPP2_TAP_GSO_SEGMENTS, default 4; up to 48 = ~64KB super-frames).
+    // (OPENPPP2_TAP_GSO_SEGMENTS, default 32; up to 48 = ~64KB super-frames).
     // The opt-in XTCP DL throughput profile selects 48 only when no explicit
-    // cap is supplied; it leaves the conservative default unchanged otherwise.
+    // cap is supplied; otherwise the default (32, see XTCP_INTEGRATION_CN.md) applies.
     static size_t SegmentCap() noexcept {
         const char* env = ::getenv("OPENPPP2_TAP_GSO_SEGMENTS");
         if (env != nullptr && env[0] != '\0') {
@@ -247,6 +248,7 @@ public:
 
     bool Flush(FlushReason reason = FlushReason::Explicit, uint64_t now_ns = NowNs()) noexcept {
         if (count_ == 0) return true;
+        TunWriteDiagnostics::Instance().flushes[static_cast<size_t>(reason)].fetch_add(1, std::memory_order_relaxed);
         const uint64_t hold_ns = now_ns >= started_ns_ ? now_ns - started_ns_ : 0;
         if (count_ == 1) {
             const bool ok = WriteOrdinaryStored(0, reason, hold_ns);

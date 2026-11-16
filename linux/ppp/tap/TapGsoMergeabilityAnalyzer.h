@@ -24,9 +24,10 @@ namespace ppp {
     namespace tap {
         class TunGsoMergeabilityAnalyzer {
         public:
-            // Production strict-v1 is capped at four segments. The 8/16 values
-            // below are retained solely as explicitly labelled theoretical upper
-            // bounds, never as producible coalescer frames.
+            // Runs are cut at the production coalescer cap read at construction
+            // (TunGsoCoalescer::SegmentCap()). The 2/4/8/16 formation thresholds
+            // below are explicitly labelled theoretical bounds, not frames the
+            // coalescer necessarily produces.
             static constexpr int kBreakReasons = 23;
             static constexpr int kRunLengthBuckets = 8;
             static constexpr int kFormationThresholds[4] = {2, 4, 8, 16};
@@ -98,7 +99,7 @@ namespace ppp {
                             FinalizeRun(reason_psh);
                             return;
                         }
-                        if (run_segments_ == TunGsoCoalescer::kSegmentCap) FinalizeRun(reason_cap);
+                        if (run_segments_ == segment_cap_) FinalizeRun(reason_cap);
                         return;
                     }
                     if (reason == reason_short_tail_completed) {
@@ -385,6 +386,8 @@ namespace ppp {
                 ip_id_prev_ = id;
                 ip_id_has_prev_ = true;
             }
+
+            size_t segment_cap_ = TunGsoCoalescer::SegmentCap();
 
             // Flow/header snapshot of the open run.
             bool run_open_ = false;

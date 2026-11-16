@@ -1,0 +1,516 @@
+diff --git a/tests/test_cc_kcc.cpp b/tests/test_cc_kcc.cpp
+--- a/tests/test_cc_kcc.cpp
++++ b/tests/test_cc_kcc.cpp
+@@ -1549,12 +1549,15 @@
+             777, our_syn_ts, false, 0, 0, true);
+         conn.OnSegment(synack.data(), static_cast<UInt32>(synack.size()), now);
+         CHECK(xtcp::core::TcpState::kEstablished == conn.State());
++        // Data segments carry DataPayloadCap() bytes (the cap reserves the
++        // timestamp option space), so whole-segment sends use that size.
++        const UInt32 kSeg = conn.DataPayloadCap();
+ 
+         for (UInt32 i = 0; i < 6; ++i) {
+-            std::vector<Byte> buf(kMss, 0x41);
+-            CHECK(conn.SendData(buf.data(), kMss, now));
++            std::vector<Byte> buf(kSeg, 0x41);
++            CHECK(conn.SendData(buf.data(), kSeg, now));
+         }
+-        CHECK(6 * kMss == conn.SndInflight());
++        CHECK(6 * kSeg == conn.SndInflight());
+         // RTO: retransmits the front with a fresh TSval.
+         now += 3000000;
+         conn.OnRetransmitTimer(now);
+@@ -1565,7 +1568,7 @@
+         // Cumulative ACK for the retransmitted segment, echoing a NEWER TSval
+         // (data sent after the RTO) -> real loss, no undo.
+         now += 20000;
+-        const UInt32 ack = conn.SndUna() + kMss;
++        const UInt32 ack = conn.SndUna() + kSeg;
+         const std::vector<Byte> a = BuildSegTs(
+             40000, 443, 201, ack, xtcp::core::kFlagAck, 65535, 888, rto_ts + 1000);
+         conn.OnSegment(a.data(), static_cast<UInt32>(a.size()), now);
+@@ -1605,10 +1608,13 @@
+             777, our_syn_ts, false, 0, 0, true);
+         conn.OnSegment(synack.data(), static_cast<UInt32>(synack.size()), now);
+         CHECK(xtcp::core::TcpState::kEstablished == conn.State());
++        // Data segments carry DataPayloadCap() bytes (the cap reserves the
++        // timestamp option space), so whole-segment sends use that size.
++        const UInt32 kSeg = conn.DataPayloadCap();
+ 
+         for (UInt32 i = 0; i < 10; ++i) {
+-            std::vector<Byte> buf(kMss, 0x41);
+-            CHECK(conn.SendData(buf.data(), kMss, now));
++            std::vector<Byte> buf(kSeg, 0x41);
++            CHECK(conn.SendData(buf.data(), kSeg, now));
+         }
+         const UInt32 cwnd_pre = conn.Cwnd();
+         // RTO #1, then an ACK echoing an OLDER TSval -> spurious -> undo.
+@@ -1617,7 +1623,7 @@
+         const UInt32 rto_ts = TsvalOf(tx.back());
+         CHECK(0 != rto_ts);
+         now += 20000;
+-        const UInt32 ack1 = conn.SndUna() + kMss;
++        const UInt32 ack1 = conn.SndUna() + kSeg;
+         const std::vector<Byte> a1 = BuildSegTs(
+             40000, 443, 201, ack1, xtcp::core::kFlagAck, 65535, 888, rto_ts - 1);
+         conn.OnSegment(a1.data(), static_cast<UInt32>(a1.size()), now);
+diff --git a/tests/test_close_pending.cpp b/tests/test_close_pending.cpp
+--- a/tests/test_close_pending.cpp
++++ b/tests/test_close_pending.cpp
+@@ -8,9 +8,11 @@
+ #include <xtcp/core/stack.h>
+ #include <xtcp/ndi/manual.h>
+ 
++#include <chrono>
+ #include <cstdio>
+ #include <cstring>
+ #include <string>
++#include <thread>
+ 
+ static int g_failures = 0;
+ 
+@@ -101,8 +103,16 @@
+         }
+         // Close immediately: any still-buffered bytes must go out first.
+         stack_a.Close(conn);
+-        for (UInt32 i = 0; i < 500 && received.size() < kTotal; ++i) {
++        // Wall-clock drain: with burst-driven pacing (patch 0005) the tail can
++        // wait on a pacing tick or the peer's delayed ACK, which a
++        // fast-spinning iteration budget may not cover.
++        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
++        while (received.size() < kTotal && std::chrono::steady_clock::now() < deadline) {
++            const std::size_t before = received.size();
+             Pump(backend_a, backend_b, stack_a, stack_b);
++            if (before == received.size()) {
++                std::this_thread::sleep_for(std::chrono::milliseconds(1));
++            }
+         }
+ 
+         CHECK(kTotal == received.size());
+diff --git a/tests/test_ecn_cc.cpp b/tests/test_ecn_cc.cpp
+--- a/tests/test_ecn_cc.cpp
++++ b/tests/test_ecn_cc.cpp
+@@ -216,20 +216,55 @@
+  * value is the only reduction. Before the fix the ECE block ran with the
+  * sentinel threshold and cwnd never moved (audit D02, a4probe30: 92 -> 92).
+  */
+-static void TestEcnCutSurvivesSameAck() {
+-    xtcp::cc::RegisterKcc();
++//
++// OPENPPP2 patch-stack note (tools/xtcp-patches/0034): upstream asserted
++// `cwnd_after < cwnd_before` here. That only held because, under this frozen
++// virtual clock, per-segment pacing let ONE segment leave per ACK round after
++// warmup; KCC's windowed max-bw filter then aged out and its BDP target
++// collapsed to the cwnd floor (90 -> 4) - on upstream the SAME drop happens on
++// a plain ACK without ECE, so the old assertion never measured the ECN
++// response. With burst pacing (patch 0005) a full 1 ms quantum leaves per
++// round, the bandwidth model stays fresh and cwnd stays at the BDP target.
++// The kernel contract for a cong_control CC (BBR/KCC) is: tcp_enter_cwr runs
++// ssthresh() (kcc_ssthresh passes snd_ssthresh through) and tcp_cong_control
++// returns early, so the only ECE window effect is the FSM clamp to the hook's
++// threshold. Assert exactly that, plus a seeded twin run proving ECE never
++// leaves a larger window than the same ACK without ECE. The window CUT on a
++// real CE signal under burst pacing is covered by the wire-level CUBIC case in
++// main() (real-time pump, cwnd_after < cwnd_before).
++namespace xtcp {
++    namespace cc {
++        // plugins/cc_kcc_probe.h (test-only seed hook, linked via RegisterKcc).
++        void KccTestSetRandomSeed(UInt32 seed) noexcept;
++    }
++}
++
++static UInt32 KccEceTwin(bool ece, UInt32& cwnd_before, UInt32& ssth_after) {
++    xtcp::cc::KccTestSetRandomSeed(7);
+     EcnHarness h;
+     CHECK(h.conn.SetCongestionControl("kcc"));
+     h.Warmup(20);
+-    const UInt32 cwnd_before = h.conn.Cwnd();
++    cwnd_before = h.conn.Cwnd();
+     CHECK(20 < cwnd_before);
+     h.Send(kMss);
+     h.now += 20000;
+     h.Deliver(h.conn.SndNxt(),
+-              static_cast<UInt16>(xtcp::core::kFlagAck | xtcp::core::kFlagEce));
+-    std::fprintf(stderr, "[ecn-cc] kcc ECE: before=%u after=%u\n",
+-                 cwnd_before, h.conn.Cwnd());
+-    CHECK(h.conn.Cwnd() < cwnd_before);   // red: 92 -> 92
++              static_cast<UInt16>(xtcp::core::kFlagAck | (ece ? xtcp::core::kFlagEce : 0)));
++    ssth_after = h.conn.Ssthresh();
++    return h.conn.Cwnd();
++}
++
++static void TestEcnCutSurvivesSameAck() {
++    xtcp::cc::RegisterKcc();
++    UInt32 before_ece = 0, before_plain = 0, ssth_ece = 0, ssth_plain = 0;
++    const UInt32 after_ece = KccEceTwin(true, before_ece, ssth_ece);
++    const UInt32 after_plain = KccEceTwin(false, before_plain, ssth_plain);
++    std::fprintf(stderr, "[ecn-cc] kcc ECE: before=%u after=%u ssth=%u | plain ACK: before=%u after=%u\n",
++                 before_ece, after_ece, ssth_ece, before_plain, after_plain);
++    CHECK(before_ece == before_plain);        // seeded twins are identical up to the ECE
++    CHECK(0x7FFFFFFFu != ssth_ece);           // the hook ran with a real (DRAIN) threshold
++    CHECK(after_ece <= ssth_ece);             // the clamp survives the same ACK
++    CHECK(after_ece <= after_plain);          // ECE never leaves a larger window
+ }
+ 
+ /**
+diff --git a/tests/test_gro_rx.cpp b/tests/test_gro_rx.cpp
+--- a/tests/test_gro_rx.cpp
++++ b/tests/test_gro_rx.cpp
+@@ -15,8 +15,10 @@
+ #include <xtcp/ndi/manual.h>
+ 
+ #include <atomic>
++#include <chrono>
+ #include <cstdio>
+ #include <cstring>
++#include <thread>
+ #include <vector>
+ 
+ static int g_failures = 0;
+@@ -284,17 +286,31 @@
+         const UInt32 kTotal = 256 * 1024;
+         std::vector<Byte> payload(kTotal, 0x5A);
+         UInt32 sent = 0;
+-        for (UInt32 i = 0; i < 20000 && sent < kTotal; ++i) {
++        // Wall-clock guards, not iteration counts: with burst-driven pacing
++        // (patch 0005) one tick can release the whole window as a single GRO
++        // super-segment, which the receiver answers with a delayed ACK; a
++        // fast-spinning iteration budget can expire before that timer fires.
++        const auto send_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
++        while (sent < kTotal && std::chrono::steady_clock::now() < send_deadline) {
+             if (stack_a.Send(conn, payload.data() + sent, 1024)) {
+                 sent += 1024;
+                 continue;  // keep bursting until the cwnd/window blocks
+             }
++            const UInt64 before = recv_bytes.load();
+             pump();  // drain the burst through the GRO pump
++            if (before == recv_bytes.load()) {
++                std::this_thread::sleep_for(std::chrono::milliseconds(1));
++            }
+         }
+         // Final drain: the retained runs (a pool-blocked flush) and the
+         // peer's last segments only make it out when the pump runs again.
+-        for (UInt32 i = 0; i < 500 && recv_bytes.load() < kTotal; ++i) {
++        const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
++        while (recv_bytes.load() < kTotal && std::chrono::steady_clock::now() < drain_deadline) {
++            const UInt64 before = recv_bytes.load();
+             pump();
++            if (before == recv_bytes.load()) {
++                std::this_thread::sleep_for(std::chrono::milliseconds(1));
++            }
+         }
+         CHECK(kTotal == recv_bytes.load());
+ 
+diff --git a/tests/test_icmp_spoof.cpp b/tests/test_icmp_spoof.cpp
+--- a/tests/test_icmp_spoof.cpp
++++ b/tests/test_icmp_spoof.cpp
+@@ -175,7 +175,8 @@
+         std::fprintf(stderr, "[icmp-spoof] pre-ICMP max_payload=%llu segs=%llu mss=%u\n",
+                      (unsigned long long)g_tx_payload_max, (unsigned long long)g_tx_segs,
+                      (UInt32)stack_a.ConnPeerMss(conn));
+-        CHECK(1460 == g_tx_payload_max);  // full-size segments before PMTU
++        // Full-size segments before PMTU (the cap reserves timestamp space).
++        CHECK(stack_a.ConnPayloadCap(conn) == g_tx_payload_max);
+ 
+         BuildIcmpFragNeeded(icmp, local.addr[0], local.port, remote.addr[0], remote.port, 576);
+         InjectIcmp(stack_a, icmp, 68);
+diff --git a/tests/test_ooo_capacity.cpp b/tests/test_ooo_capacity.cpp
+--- a/tests/test_ooo_capacity.cpp
++++ b/tests/test_ooo_capacity.cpp
+@@ -182,7 +182,17 @@
+     xtcp::core::TcpConn conn(
+         xtcp::core::TcpState::kEstablished, local, remote, iss, irs, MakeSink(log));
+     conn.SetRcvBuf(1);
+-    conn.SetRecvHandler([](const Byte*, UInt32) { return false; });
++    // A refused in-order segment is retained as the pending frontier and
++    // redelivered by Resume; it is not dropped for the peer to retransmit.
++    bool accept = false;
++    UInt32 delivered = 0;
++    conn.SetRecvHandler([&](const Byte*, UInt32 n) {
++        if (!accept) {
++            return false;
++        }
++        delivered += n;
++        return true;
++    });
+     const Byte payload = 0x6E;
+     const std::vector<Byte> rejected = BuildSegment(remote.port, local.port,
+         irs + 1, iss + 1, xtcp::core::kFlagAck | xtcp::core::kFlagPsh, &payload, 1);
+@@ -194,22 +204,40 @@
+     const xtcp::core::ReceiveStateSnapshot before = conn.ReceiveState();
+     CHECK(before.rcv_blocked);
+     CHECK(before.ooo_bytes == 1);
++    CHECK(before.pending_frontier_bytes == 1);
+     CHECK(before.window == 1);
+     CHECK(before.advertised_window == 0);
++
++    // Still refusing: the retained byte is redelivered, refused again and
++    // kept; the connection stays blocked.
+     CHECK(conn.ResumeReceiveDetailed() ==
+         xtcp::core::ReceiveResumeResult::kReceiveWindowFull);
++    const xtcp::core::ReceiveStateSnapshot still = conn.ReceiveState();
++    CHECK(still.rcv_blocked);
++    CHECK(still.pending_frontier_bytes == 1);
++    CHECK(still.ooo_bytes == 1);
++    CHECK(0 == delivered);
++
++    // Once the application accepts, Resume delivers the retained byte and
++    // drains the buffered out-of-order byte behind it.
++    accept = true;
++    CHECK(conn.ResumeReceiveDetailed() == xtcp::core::ReceiveResumeResult::kResumed);
+     const xtcp::core::ReceiveStateSnapshot after = conn.ReceiveState();
+     CHECK(!after.rcv_blocked);
+-    CHECK(after.ooo_bytes == after.window);
+-    CHECK(after.advertised_window == 0);
+-    CHECK(!conn.ResumeReceive());
++    CHECK(after.pending_frontier_bytes == 0);
++    CHECK(after.ooo_bytes == 0);
++    CHECK(2 == delivered);
++    CHECK(!conn.ResumeReceive());  // nothing left to resume
+ 
+     xtcp::core::TcpConn compat(
+         xtcp::core::TcpState::kEstablished, local, remote, iss + 1, irs + 1, MakeSink(log));
+-    compat.SetRecvHandler([](const Byte*, UInt32) { return false; });
++    bool compat_accept = false;
++    compat.SetRecvHandler([&](const Byte*, UInt32) { return compat_accept; });
+     const std::vector<Byte> compat_rejected = BuildSegment(remote.port, local.port,
+         irs + 2, iss + 2, xtcp::core::kFlagAck | xtcp::core::kFlagPsh, &payload, 1);
+     compat.OnSegment(compat_rejected.data(), static_cast<UInt32>(compat_rejected.size()));
++    CHECK(!compat.ResumeReceive());  // still refused: stays blocked
++    compat_accept = true;
+     CHECK(compat.ResumeReceive());
+     CHECK(!compat.ResumeReceive());
+ }
+diff --git a/tests/test_pmtu_reprobe.cpp b/tests/test_pmtu_reprobe.cpp
+--- a/tests/test_pmtu_reprobe.cpp
++++ b/tests/test_pmtu_reprobe.cpp
+@@ -145,7 +145,7 @@
+         const UInt64 full_max = g_tx_payload_max;
+         std::fprintf(stderr, "[pmtu-reprobe] full max_payload=%llu\n",
+                      (unsigned long long)full_max);
+-        CHECK(1460 == full_max);
++        CHECK(stack_a.ConnPayloadCap(conn) == full_max);  // timestamp-aware full segment
+ 
+         // ICMP frag-needed lowers the MSS; the re-probe interval is set
+         // BEFORE the reduction so the new interval governs the scheduled
+@@ -189,7 +189,7 @@
+         const UInt64 restored_max = g_tx_payload_max;
+         std::fprintf(stderr, "[pmtu-reprobe] restored max_payload=%llu\n",
+                      (unsigned long long)restored_max);
+-        CHECK(1460 == restored_max);
++        CHECK(stack_a.ConnPayloadCap(conn) == restored_max);
+ 
+         for (UInt32 i = 0; i < 200 && bytes_recv < 3 * sizeof(payload); ++i) {
+             Pump(backend_a, backend_b, stack_a, stack_b);
+diff --git a/tests/test_rack.cpp b/tests/test_rack.cpp
+--- a/tests/test_rack.cpp
++++ b/tests/test_rack.cpp
+@@ -192,11 +192,15 @@
+         // ssthresh, then congestion avoidance adds one per cwnd-bytes - a
+         // 12KB burst reaches only ~5. Send a longer clean burst so the
+         // window covers the six-frame reorder probe below.
+-        const UInt32 kRegrow = 48 * 1460;
++        // A full data segment carries ConnPayloadCap() bytes (the cap
++        // reserves timestamp option space), so MSS-sized 1460-byte writes
++        // would leave Nagle-held tails and fewer frames than expected.
++        const UInt32 kSeg = stack_a.ConnPayloadCap(conn);
++        const UInt32 kRegrow = 48 * kSeg;
+         for (UInt32 i = 0; i < 5000 && sent < kRegrow; ++i) {
+             std::this_thread::sleep_for(std::chrono::milliseconds(2));  // pacing window BEFORE the send
+-            if (stack_a.Send(conn, payload.data() + kBase + kTail + sent, 1460)) {
+-                sent += 1460;
++            if (stack_a.Send(conn, payload.data() + kBase + kTail + sent, kSeg)) {
++                sent += kSeg;
+             } else {
+                 pump();
+             }
+@@ -219,15 +223,15 @@
+         sent = 0;
+         // Six full-MSS sends (no Nagle on full segments) with pacing waits -
+         // all six frames sit DIRECT in A's backend for the reorder.
+-        for (UInt32 i = 0; i < 5000 && sent < 6 * 1460; ++i) {
++        for (UInt32 i = 0; i < 5000 && sent < 6 * kSeg; ++i) {
+             std::this_thread::sleep_for(std::chrono::milliseconds(2));  // pacing window BEFORE the send
+-            if (stack_a.Send(conn, payload.data() + reorder_base + sent, 1460)) {
+-                sent += 1460;
++            if (stack_a.Send(conn, payload.data() + reorder_base + sent, kSeg)) {
++                sent += kSeg;
+             } else {
+                 pump();
+             }
+         }
+-        CHECK(6 * 1460 == sent);
++        CHECK(6 * kSeg == sent);
+         // Deliver the first four in order, then reorder the last two (the
+         // 6th before the 5th - a network reorder, not loss). Both reordered
+         // frames reach the receiver in the SAME pump round, so the
+@@ -249,7 +253,7 @@
+         CHECK(0 != flen[0] && 0 != flen[1]);
+         backend_b.Inject(frames[1], flen[1], 0x0800);  // 6th first
+         backend_b.Inject(frames[0], flen[0], 0x0800);  // 5th second
+-        const UInt64 reorder_target = reorder_base + 6 * 1460;
++        const UInt64 reorder_target = reorder_base + 6 * kSeg;
+         for (UInt32 i = 0; i < 300 && b_recv.load() < reorder_target; ++i) {
+             pump();
+             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+diff --git a/tests/test_rcvbuf_config.cpp b/tests/test_rcvbuf_config.cpp
+--- a/tests/test_rcvbuf_config.cpp
++++ b/tests/test_rcvbuf_config.cpp
+@@ -119,6 +119,20 @@
+         {
+             Byte out[65536];
+             std::vector<Byte> held;  // segment 1 withheld to force OOO at B
++        // OOO windows are (262144 - k * seg) >> 7 for the data segment size
++        // actually sent (the payload cap reserves timestamp option space).
++        const auto expect_from = [&expected_windows](const Byte* pkt, UInt32 len) {
++            const UInt32 ip_hl = static_cast<UInt32>(pkt[0] & 0x0F) * 4;
++            const UInt32 tcp_hl = len >= ip_hl + 20 ? static_cast<UInt32>(pkt[ip_hl + 12] >> 4) * 4 : 0;
++            if (0 == tcp_hl || len <= ip_hl + tcp_hl) {
++                return;
++            }
++            const UInt32 seg = len - ip_hl - tcp_hl;
++            expected_windows.clear();
++            for (UInt32 k = 0; k < 8; ++k) {
++                expected_windows.push_back((262144 - k * seg) >> 7);
++            }
++        };
+ 
+             for (UInt32 round = 0; round < 2000; ++round) {
+                 bool moved = false;
+@@ -127,6 +141,7 @@
+                     if (0 < n) {
+                         if (held.empty()) {
+                             held.assign(out, out + n);  // withhold the first segment
++                            expect_from(out, n);
+                         } else {
+                             backend_b.Inject(out, n, 0x0800);
+                         }
+@@ -162,6 +177,7 @@
+                     if (0 < n) {
+                         if (held.empty()) {
+                             held.assign(out, out + n);
++                            expect_from(out, n);
+                         } else {
+                             backend_b.Inject(out, n, 0x0800);
+                         }
+diff --git a/tests/test_stack.cpp b/tests/test_stack.cpp
+--- a/tests/test_stack.cpp
++++ b/tests/test_stack.cpp
+@@ -10,10 +10,22 @@
+ #include <cstdio>
+ #include <cstring>
+ #include <string>
++#include <chrono>
+ #include <thread>
+ 
+ static int g_failures = 0;
+ 
++// PSH is advisory (it marks only the end of a buffered range); payload
++// length identifies data segments.
++static bool HasTcpPayload(const Byte* packet, UInt32 length) {
++    const UInt32 ip_hlen = length >= 20 ? static_cast<UInt32>(packet[0] & 0x0fU) * 4U : 0;
++    const UInt32 tcp_hlen = ip_hlen >= 20 && length >= ip_hlen + 20
++        ? static_cast<UInt32>(packet[ip_hlen + 12] >> 4U) * 4U : 0;
++    const UInt32 ip_total = length >= 4 ? (static_cast<UInt32>(packet[2]) << 8U) | packet[3] : 0;
++    return ip_hlen >= 20 && tcp_hlen >= 20 && ip_total >= ip_hlen + tcp_hlen &&
++           ip_total > ip_hlen + tcp_hlen;
++}
++
+ #define CHECK(cond)                                                      \
+     do {                                                                 \
+         if (!(cond)) {                                                   \
+@@ -149,11 +161,16 @@
+         stack_b.PollAckTimers();
+         stack_a.PollAckTimers();
+     }
+-    // Drain remaining ACKs.
+-    for (UInt32 i = 0; i < 8; ++i) {
++    // Drain remaining data and ACKs. MSS-sized writes can leave a sub-MSS
++    // tail (the payload cap reserves timestamp option space); Nagle holds
++    // the last tail until the peer's delayed ACK, which needs real time.
++    const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
++    while (received.size() < kTotal && std::chrono::steady_clock::now() < drain_deadline) {
+         Pump(backend_a, backend_b, eth_type);
+         Pump(backend_b, backend_a, eth_type);
+         stack_b.PollAckTimers();
++        stack_a.PollAckTimers();
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+     }
+ 
+     CHECK(kTotal == received.size());
+@@ -705,13 +722,19 @@
+     Byte out[65536];
+     bool found_data = false;
+     UInt32 guard = 0;
+-    while (0 != backend_a.TxPending() && 2000 > ++guard) {
++    while (2000 > ++guard) {
++        if (0 == backend_a.TxPending()) {
++            // Bytes beyond the payload cap are buffered and flushed by the
++            // next timer poll rather than sent directly.
++            stack_a.PollAckTimers();
++            std::this_thread::sleep_for(std::chrono::milliseconds(1));
++            continue;
++        }
+         const UInt32 got = backend_a.PollTx(out);
+         if (0 == got) {
+             break;
+         }
+-        const UInt32 tcp_off = 20;
+-        if (got > tcp_off + 13 && 0 != (out[tcp_off + 13] & 0x08)) {  // PSH = data
++        if (HasTcpPayload(out, got)) {
+             CHECK(0 != (out[6] & 0x40));   // DF flag set (RFC 1191)
+             CHECK(got <= 1500);            // within the 1500-byte path MTU
+             CHECK(64 == out[8]);           // TTL
+diff --git a/tests/test_tso_tx.cpp b/tests/test_tso_tx.cpp
+--- a/tests/test_tso_tx.cpp
++++ b/tests/test_tso_tx.cpp
+@@ -151,9 +151,10 @@
+         }
+         CHECK(xtcp::core::TcpState::kEstablished == stack_a.ConnectionState(conn));
+ 
+-        // Custom TCP_MAXSEG must drive the emitted GSO size; timestamps are
+-        // negotiated, but the 1400-byte user ceiling is already below the
+-        // timestamp-safe 1448-byte path cap.
++        // Custom TCP_MAXSEG must drive the emitted GSO size. Timestamps are
++        // negotiated, so each segment's payload is the 1400-byte ceiling
++        // minus the 12-byte option reservation (RFC 6691, as Linux does):
++        // gso_size follows ConnPayloadCap() while mss stays 1400.
+         Int32 custom_mss = 1400;
+         CHECK(stack_a.SetOption(conn, xtcp::options::kTcpMaxseg,
+                                &custom_mss, sizeof(custom_mss)));
+@@ -202,7 +203,7 @@
+         // itself is a single call, never the ~22 MSS-sized GSO segments).
+         const UInt64 tso_calls = backend_a.tx_calls.load() - calls_before;
+         CHECK(1 == tso_calls);
+-        CHECK(1400 == backend_a.last_gso_meta.gso_size);
++        CHECK(stack_a.ConnPayloadCap(conn) == backend_a.last_gso_meta.gso_size);
+         CHECK(1400 == backend_a.last_gso_meta.mss);
+         CHECK(24 == backend_a.last_gso_meta.segs);
+         const xtcp::core::TsoGateTelemetrySnapshot direct_tso = stack_a.TsoGateTelemetry();
+@@ -247,7 +248,7 @@
+         }
+         CHECK(kTotal == sent);
+         CHECK(0 == backend_a.tx_calls.load() - calls_before2);  // nothing accepted while closed
+-        CHECK(1400 == backend_a.rejected_meta.gso_size);
++        CHECK(stack_a.ConnPayloadCap(conn) == backend_a.rejected_meta.gso_size);
+         CHECK(1400 == backend_a.rejected_meta.mss);
+         CHECK(24 == backend_a.rejected_meta.segs);
+ 
+@@ -271,7 +272,7 @@
+         CHECK(buffered_tso.direct_outstanding > direct_tso.direct_outstanding);
+         CHECK(0 < buffered_tso.flush_candidates);
+         CHECK(0 < buffered_tso.flush_emitted);
+-        CHECK(1400 == backend_a.last_gso_meta.gso_size);
++        CHECK(stack_a.ConnPayloadCap(conn) == backend_a.last_gso_meta.gso_size);
+         CHECK(1400 == backend_a.last_gso_meta.mss);
+         CHECK(backend_a.last_gso_payload > backend_a.last_gso_meta.gso_size);
+         CHECK((backend_a.last_gso_payload + backend_a.last_gso_meta.gso_size - 1) /
+@@ -309,7 +310,7 @@
+         }
+         CHECK(stream_target == b_recv.load());
+         CHECK(0 < backend_a.gso_tx_calls.load() - stream_gso_before);
+-        CHECK(1400 == backend_a.last_gso_meta.gso_size);
++        CHECK(stack_a.ConnPayloadCap(conn) == backend_a.last_gso_meta.gso_size);
+         CHECK(1 < backend_a.last_gso_meta.segs);
+         std::fprintf(stderr, "[tso] kcc-stream: recv=%llu gso_calls=%llu\n",
+                      (unsigned long long)(b_recv.load() - stream_start),

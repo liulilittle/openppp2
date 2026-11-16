@@ -1,652 +1,371 @@
-# Configuration Model
+# Configuration Reference
+
 > Status: Active
 > Type: Reference
-> Last verified: 63fc030
-
-> **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
-> **Audience:** OPENPPP2 users, operators, and developers.
-> **Status:** Current.
-> **Last verified against:** Current repository structure, implementation paths, and documentation links, 2026-07-18.
-> **Parent index:** [Back to index](README.md) · **Chinese:** [配置模型](CONFIGURATION_CN.md)
-
-
-[中文版本](CONFIGURATION_CN.md)
-
-## Position
-
-This is the canonical guide to `AppConfiguration` and the launch-time shaping around it. OPENPPP2 does not treat configuration as plain JSON. It uses a staged admission flow:
-
-1. `Clear()` builds safe defaults.
-2. `Load(...)` merges JSON.
-3. `Loaded()` repairs, clamps, clears, and derives runtime values.
-4. `main.cpp` applies per-run CLI overrides for host-specific behavior.
-
-Anchors:
-
-- `ppp/configurations/AppConfiguration.h`
-- `ppp/configurations/AppConfiguration.cpp`
-- `main.cpp::LoadConfiguration(...)`
-- `main.cpp::GetNetworkInterface(...)`
-- `main.cpp::PreparedArgumentEnvironment(...)`
-
----
-
-## 1. Why This Layer Matters
-
-Configuration in OPENPPP2 is not just a bag of scalars. It is a policy object that decides:
-
-- which transport carriers exist
-- which runtime branches are enabled
-- which platform-side effects will happen
-- which values are considered safe enough to keep
-- which values must be normalized or discarded
-
-That makes configuration a control surface for the entire repository. A misconfigured node does not just fail to connect — it may expose a degraded security posture, fail to route traffic correctly, or refuse to start at all. The staged admission flow exists precisely to prevent misconfigured nodes from entering the running state silently.
-
----
-
-## 2. Staged Admission Flow
-
-```mermaid
-flowchart TD
-    A["Default construction\n(zero-initialize all fields)"] --> B["Clear()\n(safe defaults, sentinel values)"]
-    B --> C["Load(json_string)\n(parse JSON, merge into struct)"]
-    C --> D["Loaded()\n(normalize, clamp, validate, derive)"]
-    D --> E["CLI overrides\n(main.cpp GetNetworkInterface)"]
-    E --> F["Runtime object construction\n(ITransmission, VEthernet, etc.)"]
-```
-
-### Stage 1: `Clear()`
-
-`Clear()` populates every field with a known-safe sentinel. This is important because `Load()` only writes fields present in the JSON; any absent field retains its `Clear()` value, not a zero or garbage value.
-
-### Stage 2: `Load(json_string)`
-
-`Load()` parses the JSON string using the embedded `nlohmann::json` library and maps JSON keys to struct fields. Fields not present in the JSON are left at their `Clear()` values. Parsing errors do not abort — they are surfaced via the return value and by setting `SetLastErrorCode(ConfigFileMalformed)`.
-
-### Stage 3: `Loaded()`
-
-`Loaded()` is the policy compiler. It validates, clamps, repairs, and derives all runtime-ready state. The rules are documented in Section 6 below.
-
-### Stage 4: CLI Overrides
-
-After `Loaded()`, `main.cpp` reads CLI arguments and applies host-specific overrides that are not stored in `appsettings.json` because they describe the physical host environment (which NIC to use, which gateway to route through, which bypass list file to load).
-
----
-
-## 3. Configuration Shape
-
-`AppConfiguration` is organized around these top-level blocks:
-
-| Block | Runtime Concern |
-|-------|----------------|
-| `concurrent` | Worker thread pool size |
-| `cdn` | Service channel listen ports |
-| `ip` | Public and interface IP declarations |
-| `udp` | UDP socket policy, DNS, relay timeouts |
-| `tcp` | TCP socket policy, connect/inactive timeouts |
-| `mux` | MUX channel timeouts, keepalive, and scheduler mode |
-| `websocket` | WebSocket carrier configuration |
-| `key` | Protocol/transport cipher and obfuscation flags |
-| `vmem` | Virtual memory-backed file behavior |
-| `server` | Server-side node identity, IPv6, management backend |
-| `client` | Client-side identity, server target, proxy, static mappings |
-| `virr` | Automatic IP list refresh (Virtual IP Route Refresh) |
-| `vbgp` | Periodic virtual BGP route refresh |
-
-### Structural Diagram
-
-```mermaid
-graph TD
-    CFG["AppConfiguration"] --> CONC["concurrent\n(int: thread count)"]
-    CFG --> CDN["cdn\n(port array)"]
-    CFG --> IP["ip\n(public_ip, interface_ip)"]
-    CFG --> UDP["udp\n(timeout, dns, port, static)"]
-    CFG --> TCP["tcp\n(listen, connect, inactive, turbo, fast-open)"]
-    CFG --> MUX["mux\n(timeout, keepalive, mode)"]
-    CFG --> WS["websocket\n(host, path, listen, ssl, headers)"]
-    CFG --> KEY["key\n(kf,kh,kl,kx,sb, protocol, transport,\nmasked, delta_encode, shuffle_data)"]
-    CFG --> VMEM["vmem\n(path, size)"]
-    CFG --> SRV["server\n(node, log, backend, ipv6, subnet, mapping)"]
-    CFG --> CLI["client\n(guid, bandwidth, server, proxy, routes,\nmappings, static, tun, dns-rules)"]
-    CFG --> VIRR["virr\n(file, update-interval, retry-interval)"]
-    CFG --> VBGP["vbgp\n(server, update-interval)"]
-```
-
----
-
-## 4. Defaults From `Clear()`
-
-Important defaults from `Clear()` include:
-
-| Field | Default | Reason |
-|-------|---------|--------|
-| `concurrent` | `Thread::GetProcessorCount()` | Use all available CPU cores |
-| `cdn[*]` | `IPEndPoint::MinPort` (0) | Disabled until explicitly set |
-| `udp.dns.timeout` | 4000 ms | Reasonable DNS query timeout |
-| `udp.dns.ttl` | 60 s | Maximum DNS cache TTL cap; response TTLs are honored |
-| `udp.dns.cache` | `true` | Enable DNS cache writes when `udp.dns.ttl > 0` |
-| `dns.servers.domestic` | `doh.pub` | Default domestic DNS provider |
-| `dns.servers.foreign` | `cloudflare` | Default foreign DNS provider |
-| `dns.intercept-unmatched` | `true` | Resolve unmatched DNS through `foreign -> domestic -> cloudflare` |
-| `dns.fake-ip.enabled` | `false` | Clash-style fake-ip; default off |
-| `dns.fake-ip.range` | `198.18.0.1/16` | Fake-ip pool CIDR |
-| `udp.inactive.timeout` | 72 s | UDP relay idle timeout |
-| `tcp.inactive.timeout` | 300 s | TCP relay idle timeout |
-| `tcp.connect.timeout` | 5 s | TCP connect attempt timeout |
-| `tcp.listen.backlog` | 511 | Standard listen backlog |
-| `websocket.listen.ws.port` | 0 | WS disabled |
-| `websocket.listen.wss.port` | 0 | WSS disabled |
-| `key.kf` | 154 | Key-frame interval default |
-| `key.kh` | 181 | Key hash iterations default |
-| `key.kl` | 152 | Key length in bits default |
-| `key.kx` | 191 | Key exchange algorithm selector default |
-| `key.sb` | 0 | Shuffle block size default (0 = disabled) |
-| `key.masked` | `true` | Payload XOR masking on |
-| `key.delta_encode` | `true` | Delta encoding on |
-| `key.shuffle_data` | `true` | Byte shuffling on |
-| `server.subnet` | `true` | Server LAN subnet advertising on |
-| `server.mapping` | `true` | Port mapping on |
-| `server.ipv6.mode` | disabled | IPv6 off by default |
-| `client.guid` | sentinel UUID | Placeholder GUID |
-| `client.bandwidth` | 0 (unlimited) | No bandwidth cap |
-| `virr.update-interval` | 86400 s (1 day) | IP list refresh once per day |
-| `virr.retry-interval` | 300 s (5 min) | Retry after download failure |
-| `vbgp.update-interval` | 3600 s (1 hour) | Route refresh once per hour |
-
----
-
-## 5. Meaning Of The Main Blocks
-
-### `concurrent`
-
-This is the process-level concurrency hint. It directly sets the number of worker `io_context` threads spawned by `Executors::SetMaxThreads()`. Setting it to 1 creates a single-threaded event loop; setting it to the CPU core count creates a fully parallel pool. Values below 1 are reset to the CPU count by `Loaded()`.
-
-### `cdn`
-
-CDN ports define listen endpoints for additional service channels. Each entry is an `IPEndPoint`. `IPEndPoint::MinPort` (0) means that entry is disabled. These are used when the server needs to listen on multiple ports for load-balancing or CDN relay scenarios.
-
-### `ip`
-
-Holds two string fields:
-- `ip.public` — the server's publicly reachable IP address, advertised to clients in the INFO frame.
-- `ip.interface` — the local interface IP to bind listeners to. Empty string means bind to `0.0.0.0` (all interfaces).
-
-### `udp`
-
-Contains all UDP policy:
-- `udp.listen.port` — UDP relay listen port.
-- `udp.inactive.timeout` — how long a UDP relay socket is kept alive after the last packet.
-- `udp.dns.timeout` — timeout for DNS queries forwarded through the tunnel.
-- `udp.dns.ttl` — maximum TTL for client `vdns` and server namespace cache entries; actual cache TTL is `min(response TTL, udp.dns.ttl)`, and `0` disables writes/server cache creation.
-- `udp.dns.cache` — cache write switch; it still requires `udp.dns.ttl > 0`.
-- `udp.dns.redirect` — comma-separated list of DNS server IPs to redirect queries to.
-- `udp.static.port` — static UDP relay port (for fixed-port static mappings).
-
-### `tcp`
-
-Contains TCP socket policy:
-- `tcp.listen.port` — main TCP tunnel listen port.
-- `tcp.connect.timeout` — timeout for client-side outbound TCP connect attempts.
-- `tcp.inactive.timeout` — idle session timeout; sessions with no traffic for this duration are disposed.
-- `tcp.turbo` — disables Nagle algorithm (`TCP_NODELAY`) for lower latency at the cost of higher packet rate.
-- `tcp.fast-open` — enables TCP Fast Open where supported.
-- `tcp.backlog` — listen queue depth; higher values prevent connection drops under burst load.
-
-### `mux`
-
-Controls multiplexing channel behavior:
-- `mux.connect.timeout` — timeout for MUX sub-connection establishment.
-- `mux.inactive.timeout` — idle timeout for MUX sub-connections.
-- `mux.mode` — scheduler mode (`compat` | `flow` | `balance` | `stripe`). `compat`, `flow`, and `balance` send by competition (any free link takes the next frame; no per-connection binding); `stripe` prefers round-robin per-packet distribution with busy-link fallback. `compat` is the original upstream behavior (global ordering). `flow` is latency-oriented (global ordering unless paired with `mux.turbo`). `balance` adds negotiated per-flow receiver ordering (flow v2) so a connection only head-of-line blocks itself. `stripe` is experimental. An unrecognized value normalizes to `compat` with a non-fatal startup warning.
-- `mux.turbo` — flow-mode turbo (default false): best-link-first first packet plus prewarmed carrier links to widen the competition pool, with negotiated per-flow DSN when both peers support flow v2. Only meaningful under `mux.mode=flow`. CLI: `--mux-mode-turbo=[yes|no]`.
-- `mux.flow.reorder.bytes` — per-connection reorder buffer byte cap under flow v2 (strictly > 0; default 1048576). Bounds receiver memory: when a connection's buffered out-of-order bytes would exceed this, the oldest gap is skipped (the lost bytes are recovered by the tunneled TCP).
-- `mux.flow.reorder.timeout` — per-connection gap wait timeout in milliseconds under flow v2 (strictly > 0; default 400, near link RTT). If a missing frame does not arrive within this window, the gap is skipped so delivery does not stall.
-
-- `mux.tx.queue.max` — data transmit-queue high-water depth in frames (strictly > 0; default 4096). At/above it the acceleration read-pump is throttled (re-coupled to send completion) so the queue cannot grow unbounded when the carrier stalls. Control frames (SYN/heartbeat) use a separate priority queue and are never throttled.
-- `mux.tx.queue.stall` — milliseconds the data transmit-queue may stay backlogged (at/over high-water) before the session is torn down and rebuilt (strictly > 0; default 8000). Recovers a wedged session that cannot self-heal instead of hanging dead to new connections.
-- `mux.debug.key` — optional shared secret for debug-only remote scheduler control. When non-empty and identical on both peers, a peer may push a mode change via the `--mux-mode-set` CLI flag. Empty (default) disables remote control. The `--mux-mode-set` request is CLI-only and is never persisted to JSON.
-- `mux.keep-alived` — MUX keepalive interval range `[min, max]`, in seconds.
-- `mux.congestions` — MUX congestion window budget.
-
-The number of parallel MUX sub-connections is still selected by the runtime `--tun-mux=<connections>` flag, not by a `mux.max-connections` JSON key.
-
-`compat` remains the production default. `stripe` is experimental. A change to
-the default must satisfy the two-platform benchmark, compatibility, bounded
-memory, and sanitizer requirements in
-[`VMUX_VALIDATION.md`](VMUX_VALIDATION.md) through a separate pull
-request with the raw evidence attached.
-
-### `websocket`
-
-Groups WebSocket carrier configuration:
-- `websocket.host` — HTTP Host header value for the WebSocket upgrade request.
-- `websocket.path` — HTTP path for the WebSocket upgrade (e.g., `/vpn`).
-- `websocket.listen.ws.port` — plain WebSocket listen port (0 = disabled).
-- `websocket.listen.wss.port` — TLS WebSocket listen port (0 = disabled).
-- `websocket.ssl.*` — TLS certificate, private key, CA bundle, and verification settings.
-- `websocket.http.request` / `websocket.http.response` — custom HTTP header injection for the WebSocket upgrade request/response.
-
-Both listeners are disabled by `Loaded()` if `host` or `path` is empty or if required TLS files are invalid.
-
-### `key`
-
-Defines protocol identity and packet transformation policy:
-
-| Field | Type | Meaning |
-|-------|------|---------|
-| `kf` | int | Key-frame interval (packets between re-key events) |
-| `kh` | int | Key hash iterations for KDF strengthening |
-| `kl` | int | Key length in bits (e.g. 128, 256) |
-| `kx` | int | Key exchange algorithm selector |
-| `sb` | int | Shuffle block size used by `shuffle-data` mode |
-| `protocol` | string | Protocol-layer cipher name (e.g. `aes-128-cfb`) |
-| `protocol-key` | string | Protocol-layer cipher key string |
-| `transport` | string | Transport-layer cipher name (e.g. `aes-256-cfb`) |
-| `transport-key` | string | Transport-layer cipher key string |
-| `masked` | bool | Enable payload XOR masking |
-| `delta-encode` | bool | Enable delta encoding of header |
-| `shuffle-data` | bool | Enable deterministic byte shuffling |
-| `plaintext` | bool | Disable all cipher protection (debug/testing only) |
-
-Unsupported cipher names fall back to a no-op cipher (equivalent to `plaintext = true`) and a warning is set in diagnostics.
-
-### `vmem`
-
-Defines memory-backed virtual file behavior used for session scratch storage:
-- `vmem.path` — filesystem path for the virtual memory file.
-- `vmem.size` — size in bytes. Values below 1 disable vmem entirely.
-
-### `server`
-
-Defines server-side node identity and behavior:
-- `server.node` — integer node ID; clamped to ≥ 0 by `Loaded()`.
-- `server.backend` — WebSocket URL of the Go management backend (empty = disabled).
-- `server.log` — log file path (empty = disabled).
-- `server.subnet` — enable LAN subnet advertisement to clients.
-- `server.mapping` — enable static port mapping.
-- `server.ipv6` — IPv6 transit plane configuration (mode, CIDR, prefix-length, gateway, static addresses).
-
-### `client`
-
-Defines client-side identity, target server, and traffic policy:
-- `client.guid` — client identity UUID; used in session identification.
-- `client.bandwidth` — upload/download bandwidth cap in bytes/second (0 = unlimited).
-- `client.server` — VPN server URI (e.g. `ppp://host:port/`, `ppp://ws/host:port/`, `ppp://wss/host:port/`).
-- `client.server-proxy` — HTTP/SOCKS proxy used to reach the VPN server (empty = direct).
-- `client.proxy-only` — Independent top-level proxy-only flag. When `true`, suppress host-side route/DNS takeover (desktop installs no host routes; mobile keeps only its framework interface route); native policy remains active. `--mode=proxy` selects the same runtime behavior.
-- `client.http-proxy.*` — Local HTTP proxy listener settings (bind address and port).
-- `client.socks-proxy.*` — Local SOCKS5 proxy listener settings (bind address, port, username, password). The listener supports TCP `CONNECT` and SOCKS5 `UDP ASSOCIATE`; UDP datagrams are relayed through the client datagram tunnel path.
-- `client.routing` — Canonical client IP/DNS traffic policy. Its `ip.bypass`, `ip.routes`, `ip.peer-routes`, and `dns.rules` sources are consumed by native policy in both `tun` and `proxy-only`; runtime mode is controlled separately by `--mode` and `client.proxy-only`.
-- `client.routing.ip.bypass` — Inline bypass text or `file://` source strings; loaded into native route policy in both modes.
-- `client.routing.ip.routes` — Canonical ordinary route entries; loaded into native route policy, with desktop host-route projection handled separately by the active mode and platform.
-- `client.routing.ip.peer-routes` — Canonical peer-prefix gateway routes; loaded into the native peer-prefix RIB/FIB in both modes and optionally projected to desktop host routes outside proxy-only.
-- `client.routing.dns.rules` — Inline DNS rule text or `file://` source strings; loaded into native DNS policy in both modes. Normal TUN may additionally configure tunnel/system DNS, while proxy-only does not take over system DNS.
-- `client.routing.bypass`, `client.routing.routes`, `client.routing.peer-routes`, `client.routing.dns-rules` — Direct aliases accepted for compatibility.
-- `client.routes`, `client.peer-routes`, and legacy DNS/CLI sources — Legacy input accepted only when `client.routing` is absent; canonical route sources are mirrored back during migration. An old nested mode key is ignored and never serialized.
-- `client.mappings` — static port mapping declarations (array of `{local, remote}` endpoint pairs).
-- `client.static.port` — static tunnel port for server-side static mapping.
-- `client.tun.*` — virtual adapter configuration (IP, gateway, mask, name).
-
-The canonical policy is shared by both client modes: bypass and ordinary/peer routes populate native route tables (RIB/FIB), and DNS rules populate the native DNS policy. `tun` may additionally apply supported host routes or DNS settings; `proxy-only` suppresses desktop host-route/system-DNS takeover without disabling native policy. Mobile bridges retain only their minimal framework interface/subnet route in proxy-only mode.
-
-### `virr`
-
-Controls automatic IP-list (bypass list) refresh:
-- `virr.file` — source URL or file path for the IP list download.
-- `virr.update-interval` — refresh interval in seconds (clamped to ≥ 1).
-- `virr.retry-interval` — interval before retrying a failed download (clamped to ≥ 1).
-
-### `vbgp`
-
-Controls periodic vBGP route refresh from the server:
-- `vbgp.server` — vBGP server URL.
-- `vbgp.update-interval` — route refresh interval in seconds (clamped to ≥ 1).
-
----
-
-## 6. Normalization Rules From `Loaded()`
-
-`Loaded()` does the real shaping work. The rules, in category order:
-
-```mermaid
-flowchart TD
-    A["Raw JSON merged into AppConfiguration"] --> B["Trim all string fields\n(remove leading/trailing whitespace)"]
-    B --> C["Clamp numeric fields\n(concurrent ≥ 1, ports ≥ 0, timeouts > 0)"]
-    C --> D["Validate IPs and ports\n(clear invalid values)"]
-    D --> E["Validate TLS files\n(disable WS/WSS if cert/key missing)"]
-    E --> F["Validate IPv6 block\n(disable if mode/CIDR/prefix invalid)"]
-    F --> G["Rebuild client.mappings\n(filter out invalid endpoint pairs)"]
-    G --> H["Validate key material\n(fallback to no-op cipher if unsupported name)"]
-    H --> I["Validate vmem\n(disable if path empty or size < 1)"]
-    I --> J["Clamp interval fields\n(virr, vbgp: ≥ 1 second)"]
-    J --> K["Clear client.guid if empty\n(insert sentinel UUID)"]
-    K --> L["Final runtime-ready AppConfiguration"]
-```
-
-Notable normalization rules:
-
-- `concurrent < 1` resets to `Thread::GetProcessorCount()`.
-- `server.node < 0` is clamped to 0.
-- `server.ipv6.prefix_length` is clamped to `[1, 128]`.
-- Non-positive timeouts fall back to their `Clear()` defaults.
-- Invalid port numbers become `IPEndPoint::MinPort` (0 = disabled).
-- Negative keepalive counts become 0 (disabled).
-- String fields are trimmed before use (leading/trailing spaces removed).
-- Empty client GUID falls back to the sentinel GUID.
-- Invalid IP strings are cleared to empty string.
-- Unsupported cipher protocol/transport names fall back to no-op cipher.
-- WebSocket serving is disabled when host/path is empty or certificates are invalid.
-- `vmem` is cleared if path is empty or size is below 1.
-- `server.ipv6.static_addresses` is filtered: only valid, unique, in-prefix IPv6 addresses are kept.
-- `virr.update-interval` is clamped to ≥ 1.
-- `virr.retry-interval` is clamped to ≥ 1.
-- `vbgp.update-interval` is clamped to ≥ 1.
-
----
-
-## 7. Derived State Is Important
-
-`Loaded()` is not just input validation. It derives runtime-ready state.
-
-Examples:
-
-- If the websocket host/path pair is unusable, the WS and WSS listeners are disabled — the server will not attempt to bind a port that cannot function correctly.
-- If IPv6 mode is unsupported by the platform, related fields are cleared — the IPv6 code paths will not run.
-- If the client GUID is empty, a deterministic fallback is inserted — the session will have a valid identity even if the config omitted it.
-- If static addresses are invalid (not in the configured prefix), they are removed rather than preserved — the IPv6 assignment table will not contain garbage entries.
-
-This is why `AppConfiguration` is more like a configuration compiler than a passive struct.
-
----
-
-## 8. IPv6 Server Configuration
-
-IPv6 server mode is not just a boolean. `Loaded()` validates a chain of dependent fields:
-
-| Field | Validation Rule |
-|-------|----------------|
-| `server.ipv6.mode` | Must be `ula`, `gua`, or similar recognized string |
-| `server.ipv6.cidr` | Must parse as a valid IPv6 CIDR block |
-| `server.ipv6.prefix_length` | Must be in `[1, 128]` |
-| `server.ipv6.gateway` | Must be a valid IPv6 address within the CIDR |
-| `server.ipv6.static_addresses` | Each entry must be valid IPv6 and within CIDR |
-
-If any required field is invalid, the entire IPv6 server feature is disabled for that run:
-
-```mermaid
-stateDiagram-v2
-    [*] --> Disabled : Clear() default
-    Disabled --> Validating : Loaded() runs
-    Validating --> Enabled : mode + CIDR + prefix_length + gateway all valid
-    Validating --> Disabled : any field invalid or platform unsupported
-    Enabled --> Running : server starts
-    Running --> Disabled : FinalizeServerEnvironment() on shutdown
-```
-
----
-
-## 9. WebSocket Carrier Validation
-
-WebSocket serving depends on a valid host name, a valid path, and (for WSS) valid TLS certificate files:
-
-```mermaid
-flowchart TD
-    A["Loaded() websocket block"] --> B{"host empty?"}
-    B -->|"yes"| C["disable WS and WSS\n(set ports to 0)"]
-    B -->|"no"| D{"path empty?"}
-    D -->|"yes"| C
-    D -->|"no"| E{"wss.port > 0?"}
-    E -->|"yes"| F{"certificate file readable?"}
-    F -->|"no"| G["disable WSS\n(set wss.port to 0)\nclear ssl fields"]
-    F -->|"yes"| H{"private key file readable?"}
-    H -->|"no"| G
-    H -->|"yes"| I["WSS enabled"]
-    E -->|"no"| J["WS-only (no TLS)"]
-    I --> K["WebSocket subsystem active"]
-    J --> K
-```
-
----
-
-## 10. Client Route Mappings
-
-`client.mappings` is rebuilt from validated mapping entries. The loader accepts either one mapping object or an array of mappings. For each entry:
-
-1. Parse `local` as a valid `IPEndPoint` (host + port).
-2. Parse `remote` as a valid `IPEndPoint`.
-3. Reject entries where either endpoint has an invalid IP or port.
-4. Reject multicast and loopback addresses.
-5. Deduplicate by local endpoint.
-
-The result is a normalized `std::vector<MappingEntry>` where every entry is guaranteed to have valid, non-overlapping endpoints. Invalid entries are silently removed rather than causing startup failure — this ensures a partially valid mapping list still produces a functional configuration.
-
----
-
-## 11. CLI And JSON Relationship
-
-JSON config is durable node intent. CLI values are launch-local overrides.
-
-```mermaid
-flowchart LR
-    A["appsettings.json\n(persisted node shape)"] --> C["AppConfiguration"]
-    B["CLI args\n(launch-local host shape)"] --> C
-    C --> D["ITransmission factory"]
-    C --> E["VEthernet / ITap factory"]
-    C --> F["VirtualEthernetSwitcher"]
-    C --> G["IPv6 auxiliary"]
-```
-
-The CLI layer (`main.cpp::GetNetworkInterface`) writes fields into a `NetworkInterface` struct that is later applied on top of the loaded configuration. CLI-settable values:
-
-| CLI Flag | Overrides |
-|---------|-----------|
-| `--mode` | Chooses client or server branch |
-| `--dns` | `NetworkInterface::DnsAddresses` |
-| `--nic` | Physical NIC selection |
-| `--ngw` | Physical gateway |
-| `--tun-ip` / `--tun-gw` / `--tun-mask` | Virtual adapter addressing |
-| `--bypass` | Bypass IP list file(s) |
-| `--dns-rules` | DNS rules file |
-| `--firewall-rules` | Firewall rules file |
-
----
-
-## 12. Key Material And Cipher Mode Details
-
-The `key` block controls more than encryption names. The full set of flags that influence the packet transform pipeline:
-
-```mermaid
-graph TD
-    KEY["key block"] --> KF["kf: XOR mask seed\n(uint8, default 154)"]
-    KEY --> KH["kh: header shuffle seed\n(uint8, default 181)"]
-    KEY --> KL["kl: length encoding seed\n(uint8, default 152)"]
-    KEY --> KX["kx: extra mask factor\n(uint8, default 191)"]
-    KEY --> SB["sb: seed baseline\n(uint8, default 0)"]
-    KEY --> PROTO["protocol: cipher name\n+ protocol-key: cipher key"]
-    KEY --> TRANS["transport: cipher name\n+ transport-key: cipher key"]
-    KEY --> FLAGS["masked: XOR masking on/off\ndelta_encode: delta enc on/off\nshuffle_data: byte shuffle on/off\nplaintext: disable all ciphers"]
-```
-
-Setting `plaintext = true` disables all cipher protection — the `protocol_` and `transport_` slots are replaced with no-op pass-through implementations. This is useful for debugging but must never be used in production.
-
----
-
-## 13. Runtime Shape And Configuration
-
-The configuration decides the shape of the runtime:
-
-| Config Field | Runtime Effect |
-|-------------|---------------|
-| `concurrent` | Number of worker `io_context` threads |
-| `tcp.listen.port > 0` | TCP acceptor is created |
-| `websocket.listen.ws.port > 0` | WS acceptor is created |
-| `websocket.listen.wss.port > 0` | WSS acceptor with TLS is created |
-| `server.backend` non-empty | Go management backend connection is attempted |
-| `server.ipv6.mode` valid | IPv6 data plane is initialized |
-| `client.http.proxy.*` set | CONNECT-through-proxy mode for outbound connection |
-| `client.bandwidth > 0` | `ITransmissionQoS` rate limiter is attached |
-| `client.mappings` non-empty | Static port mapping table is built |
-| `vmem.path` non-empty | Memory-backed scratch file is created |
-
----
-
-## 14. What To Watch For When Reading The Code
-
-1. A field might be present in JSON but removed in `Loaded()` — always read `Loaded()` logic before assuming a field from JSON is available at runtime.
-2. A missing field may intentionally fall back to a safe default from `Clear()`.
-3. A platform-specific branch may clear or ignore fields that are otherwise valid on another OS.
-4. The runtime may treat a field as policy input rather than a direct command (e.g., `server.ipv6` enables a whole subsystem, not just one flag).
-5. `AppConfiguration` is not `const` after construction — `Loaded()` modifies it in place.
-
----
-
-## 15. Complete `appsettings.json` Template
+> Last verified: 2026-10-11 (against `Clear()` / `Load()` / `Loaded()` in `ppp/configurations/AppConfiguration.cpp`)
+>
+> **Purpose:** Type, effective value when omitted, applicable side, and validation rules for every `appsettings.json` field.
+> **Audience:** Users and operators who need the exact behavior of a field.
+> **Parent index:** [Reference](README.md) · **Chinese:** [配置文件参考](CONFIGURATION_CN.md)
+
+If you are writing a configuration for the first time, start with [Writing the configuration file](../getting-started/CONFIGURE.md); this page is for field lookup. Command-line flags are in the [CLI reference](CLI_REFERENCE.md).
+
+## 1. How a configuration is loaded
+
+1. File lookup: the readable file named by `--config=<path>` (aliases `-c`, `--c`, `-config`); otherwise `./config.json`, then `./appsettings.json`. If a candidate fails to load, the next one is tried.
+2. `Clear()` writes built-in initial values.
+3. `Load()` reads the JSON. **Note:** many fields are read unconditionally — a missing key reads as `0` / `false` / empty string, overwrites the initial value, and is then repaired by the next step. The "If omitted" column below is therefore the **effective value after omission**, not the `Clear()` initial value.
+4. `Loaded()` normalizes: trims whitespace, zeroes out-of-range ports, falls back on invalid values, and disables listeners whose prerequisites are missing. Invalid values are **silently repaired, not rejected**; only a `client.policy` conflict, invalid `transport-auth`, or a server IPv6 mode unsupported by the platform makes the file fail to load.
+5. Command-line flags override some runtime behavior (`--mux-mode`, `--mode=proxy`, `--proxy-*-port`, and others).
+
+The file must be strict JSON (no comments, no trailing commas).
+
+## XTCP runtime tuning
+
+When the client selects `--tcp-stack=xtcp` in a build with XTCP enabled, the
+runtime uses a 1 MiB per-connection `snd_buf` quota on Linux, Windows x64, and
+Android. It is a quota, not memory preallocated for every connection. macOS and
+iOS do not currently support XTCP builds. This setting is not an
+`appsettings.json` field; set the process environment before starting `ppp`:
+
+| Environment variable | Default | Meaning |
+|---|---|---|
+| `OPENPPP2_XTCP_SNDBUF_BYTES` | 1 MiB | Explicit send-buffer quota in bytes (values below 1024 are ignored). This overrides the default and throughput profile. |
+| `OPENPPP2_XTCP_DL_GSO_PERF_PROFILE` | unset | Exact value `1` selects a 2 MiB quota when `OPENPPP2_XTCP_SNDBUF_BYTES` is unset or invalid. |
+
+The 1 MiB default follows the Linux tuning introduced by #109 and applies to
+all platforms that currently support XTCP. The profile remains opt-in.
+
+## 2. Which side uses what
+
+| Block | Server | Client | Notes |
+|---|:-:|:-:|---|
+| `key` | ✔ | ✔ | Must be identical on both sides |
+| `concurrent` `tcp` `udp` `mux` `vmem` `telemetry` | ✔ | ✔ | Local to each side |
+| `websocket` | ✔ | — | Server listeners only; the client's WS path is part of the `client.server` URL |
+| `ip` `cdn` `server` | ✔ | partly | `server.ipv4-pool` in a client config opts in to requesting an assigned address |
+| `client` `dns` `routing` `geo-rules` `virr` `vbgp` | — | ✔ | |
+| `p2p` | ✔ | ✔ | |
+| `transport-auth` | ✔ | ✔ | Enabled by `server.transport-auth.enabled` / `client.transport-auth.enabled` |
+
+## 3. Top-level fields
+
+| Field | Type | If omitted | Meaning |
+|---|---|---|---|
+| `concurrent` | int | CPU count | Worker threads; `< 1` becomes the CPU count. The server also creates `concurrent-1` I/O threads; on clients it only sizes the scheduler pool. |
+| `cdn` | int[2] | `[0, 0]` | Two extra server TCP listen ports (CDN / SNI forwarding entry). `0` disables; out-of-range values become 0. |
+
+## 4. `key` — encryption and obfuscation (must match on both sides)
+
+| Field | Type | If omitted | Meaning |
+|---|---|---|---|
+| `kf` | int | `0` | Header obfuscation parameter. **Omitted means 0, not 154543927**; it only has to match, but write it explicitly. |
+| `kx` | int | `0` | Obfuscation parameter; negatives become 0. |
+| `kl` | int | `0` | Obfuscation parameter, clamped to `0..16`. |
+| `kh` | int | `0` | Obfuscation parameter, clamped to `0..16`. |
+| `sb` | int | `0` | Shuffle block size, clamped to `0..5536`. |
+| `protocol` | string | `aes-128-cfb` | Protocol-layer (handshake/control) cipher, an OpenSSL name. Unsupported names fall back to `aes-128-cfb`. |
+| `protocol-key` | string | `"ppp"` | Protocol-layer key; empty falls back to `"ppp"`. |
+| `transport` | string | `aes-256-cfb` | Transport-layer (data) cipher; unsupported names fall back to `aes-256-cfb`. |
+| `transport-key` | string | `"ppp"` | Transport-layer key; empty falls back to `"ppp"`. |
+| `plaintext` | bool | **`true`** | `true` means **no encryption**. Omitting it means plaintext; always write `false`. |
+| `masked` | bool | `true` | Payload masking. |
+| `delta-encode` | bool | `true` | Delta encoding. |
+| `shuffle-data` | bool | `true` | Byte shuffling. |
+| `simd-auto` | bool | `true` | Automatic SIMD implementation selection; local only, need not match. |
+
+Startup prints `[security] WARN` (warnings only, startup continues) when:
+
+- either key equals the default `"ppp"` or is shorter than 8 bytes;
+- `plaintext` is `true`;
+- a cipher is RC4 / DES / Blowfish / CAST5 / SEED / IDEA or has a key shorter than 128 bits.
+
+## 5. `transport-auth` — pre-shared-key transport authentication (optional)
+
+Adds connection authentication with a 32-byte pre-shared key on top of `key`. Off by default.
 
 ```json
-{
-  "concurrent": 4,
-  "cdn": [],
-  "ip": {
-    "public": "",
-    "interface": ""
-  },
-  "udp": {
-    "listen": { "port": 0 },
-    "inactive": { "timeout": 72 },
-    "dns": {
-      "timeout": 4000,
-      "ttl": 60,
-      "cache": true,
-      "turbo": false,
-      "redirect": ""
-    },
-    "static": { "port": 0 }
-  },
-  "dns": {
-    "servers": {
-      "domestic": "doh.pub",
-      "foreign": "cloudflare"
-    },
-    "intercept-unmatched": true,
-    "ecs": { "enabled": false, "override-ip": "" },
-    "tls": { "verify-peer": true }
-  },
-  "tcp": {
-    "listen": { "port": 2096, "backlog": 511 },
-    "connect": { "timeout": 15 },
-    "inactive": { "timeout": 300 },
-    "turbo": true,
-    "fast-open": false,
-    "cwnd": 0,
-    "rwnd": 0
-  },
-  "mux": {
-    "connect": { "timeout": 15 },
-    "inactive": { "timeout": 300 },
-    "congestions": 134217728,
-    "mode": "compat",
-    "keep-alived": [5, 20]
-  },
-  "websocket": {
-    "host": "",
-    "path": "",
-    "listen": {
-      "ws": { "port": 0 },
-      "wss": { "port": 0 }
-    },
-    "ssl": {
-      "certificate": "",
-      "certificate-key": "",
-      "ca-certificate": "",
-      "verify-peer": false
-    }
-  },
-  "key": {
-    "kf": 154,
-    "kh": 181,
-    "kl": 152,
-    "kx": 191,
-    "sb": 0,
-    "protocol": "aes-128-cfb",
-    "protocol-key": "ChangeThisProtocolKey",
-    "transport": "aes-256-cfb",
-    "transport-key": "ChangeThisTransportKey",
-    "masked": true,
-    "plaintext": false,
-    "delta-encode": true,
-    "shuffle-data": true
-  },
-  "server": {
-    "node": 0,
-    "log": "",
-    "backend": "",
-    "backend-key": "",
-    "subnet": true,
-    "mapping": true,
-    "ipv4-pool": {
-      "network": "",
-      "mask": ""
-    },
-    "ipv6": {
-      "mode": "",
-      "cidr": "",
-      "prefix-length": 0,
-      "gateway": "",
-      "dns1": "",
-      "dns2": "",
-      "lease-time": 300
-    }
-  },
-  "client": {
-    "guid": "00000000-0000-0000-0000-000000000000",
-    "bandwidth": 0,
-    "server": "ppp://your-server.example.com:20000/",
-    "server-proxy": "",
-    "http-proxy": {
-      "bind": "",
-      "port": 0
-    },
-    "socks-proxy": {
-      "bind": "",
-      "port": 0,
-      "username": "",
-      "password": ""
-    },
-    "proxy-only": false,
-    "routing": {
-      "ip": {
-        "bypass": [],
-        "routes": [],
-        "peer-routes": []
-      },
-      "dns": {
-        "rules": []
-      }
-    },
-    "routes": [],
-    "mappings": [],
-    "dns-rules": ""
-  },
-  "virr": {
-    "file": "",
-    "update-interval": 86400,
-    "retry-interval": 300
-  },
-  "vbgp": {
-    "server": "",
-    "update-interval": 3600
+"transport-auth": {
+  "handshake-timeout-ms": 5000,
+  "keys": [
+    { "id": "k2026a", "state": "active", "secret-file": "/etc/ppp/k2026a.hex" }
+  ]
+},
+"server": { "transport-auth": { "enabled": true } }
+```
+
+| Field | Type | If omitted | Meaning |
+|---|---|---|---|
+| `transport-auth.handshake-timeout-ms` | int | `5000` | Clamped to `1000..30000`. |
+| `transport-auth.keys[]` | array | empty | At most 8. A non-array `keys` or a non-object element fails the load. |
+| `keys[].id` | string | — | 1–63 characters, starting with a lowercase letter or digit, containing only `a-z 0-9 . _ -`; unique. |
+| `keys[].state` | string | — | `active`, `verify-only`, or `revoked`. When enabled, **exactly one** `active` key is required; at most 2 `verify-only` keys (for rotation). |
+| `keys[].secret-file` | path | — | Required for `active` / `verify-only`. Must contain exactly 64 lowercase hex characters (no newline), be a regular file owned by the current user, with no group/other permissions (`chmod 600`). **Secret files cannot be loaded on Windows.** |
+| `server.transport-auth.enabled` / `client.transport-auth.enabled` | bool | `false` | Enable on the server / client. |
+
+## 6. `tcp`
+
+| Field | Type | If omitted | Meaning |
+|---|---|---|---|
+| `listen.port` | int | `0` | Server TCP tunnel port, used by client `ppp://` / `tcp://` addresses. `0` or out of range = no listener. |
+| `backlog` | int | `511` | Listen backlog; `< 1` becomes 511. |
+| `connect.timeout` | int (s) | `5` | Outbound TCP connect timeout; `< 1` becomes 5. |
+| `connect.nexcept` | int | `4` | Connect retry counter; `< 0` becomes 4. |
+| `inactive.timeout` | int (s) | `300` | TCP relay idle timeout; `< 1` becomes 300. |
+| `turbo` | bool | `false` | Sets `TCP_NODELAY`. |
+| `fast-open` | bool | `false` | TCP Fast Open where supported. |
+| `cwnd` / `rwnd` | int | `0` | Socket send / receive buffer size; `0` = system default. |
+
+## 7. `udp`
+
+| Field | Type | If omitted | Meaning |
+|---|---|---|---|
+| `listen.port` | int | `0` | Server UDP port (used by the static UDP tunnel, `--tun-static`). |
+| `inactive.timeout` | int (s) | `72` | UDP relay idle timeout; `< 1` becomes 72. |
+| `dns.timeout` | int (s) | `4` | Timeout for DNS queries relayed through the tunnel; `< 1` becomes 4. |
+| `dns.ttl` | int (s) | `60` | DNS cache TTL cap; effective TTL is `min(response TTL, ttl)`; `0` disables cache writes. |
+| `dns.cache` | bool | `true` | DNS cache switch; still requires `ttl > 0`. |
+| `dns.turbo` | bool | `false` | Enables the built-in vdns fast resolver. |
+| `dns.redirect` | string | empty | Server redirects client DNS queries to this `IP:port` or `domain:port`; cleared if malformed. |
+| `static.keep-alived` | int[2] (s) | `[0, 0]` | Static UDP keepalive range; negatives become 0. |
+| `static.dns` / `static.quic` / `static.icmp` | bool | `true` | Whether static mode carries DNS / QUIC / ICMP. |
+| `static.aggligator` | int | `0` | Static UDP aggregated link count; negatives become 0. |
+| `static.servers` | string[] | empty | Static UDP server `IP:port` list (legacy key `static.server` is accepted). |
+| `cwnd` / `rwnd` | int | `0` | Socket buffer sizes. |
+
+## 8. `mux` — multiplexing
+
+Whether MUX is used, and how many connections, is set by the client flag `--tun-mux=<connections>` (default 0 = off). There is no connection-count JSON field.
+
+| Field | Type | If omitted | Meaning |
+|---|---|---|---|
+| `mode` | string | `compat` | Scheduler: `compat` (default, original behavior), `flow` (latency-oriented), `balance` (per-flow ordered load balancing), `stripe` (experimental). Aliases: `legacy`/`default`→compat, `flow-v1`/`primary`/`primary-link`→flow, `balanced`/`lb`/`load-balance`→balance, `striped`/`striping`→stripe. Unknown values fall back to `compat` with a warning. Overridden by `--mux-mode`. |
+| `turbo` | bool | `false` | Only meaningful with `flow`: best-link first packet plus prewarmed links. Overridden by `--mux-mode-turbo`. |
+| `connect.timeout` | int (s) | `20` | Sub-connection setup timeout. |
+| `inactive.timeout` | int (s) | `60` | Sub-connection idle timeout. |
+| `keep-alived` | int[2] (s) | `[0, 0]` | Keepalive range; negatives become 0. |
+| `congestions` | int (bytes) | `134217728` | Congestion window budget; `0` = unlimited; negatives or positives below 1 MiB fall back to the default. |
+| `flow.reorder.bytes` | int | `8388608` | Per-connection reorder buffer soft cap: above it the delivering carrier is paused (backpressure); only twice the cap resets the connection. |
+| `flow.reorder.timeout` | int (ms) | `400` | Gap wait timeout (per connection under flow_v2, session-wide under compat), counted from the last in-order progress. |
+| `flow.session_reorder.bytes` | int | `33554432` | Session-wide reorder buffer soft cap: above it the delivering carrier is paused; only twice the cap resets a connection (flow_v2) or rebuilds the session (compat). |
+| `flow.max_open` | int | `4096` | Maximum logical flows. |
+| `flow.unknown_cid.max` | int | `64` | Unknown flow-ID budget. |
+| `tx.queue.max` | int (frames) | `4096` | Transmit-queue high water; reads are throttled at this depth. |
+| `tx.queue.stall` | int (ms) | `8000` | Session is rebuilt if the queue stays backlogged this long. |
+| `tx.ctrl.budget_frames` | int | `32` | Control frames drained before data per turn. |
+| `reliability.enabled` | bool | `true` | Negotiate reliable delivery (retransmission). |
+| `reliability.rtx.bytes` | int | `33554432` | Session retransmit send window (unacked bytes); frames wait in the queue when full, only twice this fails the session. Throughput is bounded by window / RTT. |
+| `reliability.rtx.flow_bytes` | int | `8388608` | Per-flow send window under flow_v2 (clamped to `reliability.rtx.bytes`); one connection is bounded by this / RTT. |
+| `reliability.rtx.max_attempts` | int | `8` | Max retransmissions per frame. |
+| `reliability.rtx.pto` | bool | `false` | Probe-timeout retransmission. Off by default: carriers are reliable streams, so a PTO mostly re-sends frames still queued behind a slow carrier. Unacked frames of a carrier that exits are always re-sent on the remaining carriers. |
+| `reliability.rtx.fast` | bool | `false` | Dup-ACK fast retransmit. Off by default: reordering across carriers is not loss. |
+| `reliability.ack.delay` | int (ms) | `10` | Max delayed-ACK wait. |
+| `reliability.gap.timeout` | int (ms) | `3000` | Gap timeout when reliability is negotiated. |
+| `fec.enabled` | bool | `false` | XOR forward error correction. |
+| `fec.group` | int | `8` | Data frames per parity group. |
+| `fec.flush` | int (ms) | `20` | Max age of a partial group. |
+| `debug.key` | string | empty | Debug shared secret; when identical and non-empty on both peers, `--mux-mode-set` can switch the peer's scheduler. Overridden by `--debug-key`. |
+
+Except for `keep-alived` and `congestions`, numeric fields above fall back to the listed value when `<= 0`.
+
+## 9. `websocket` — server WS / WSS listeners
+
+| Field | Type | If omitted | Meaning |
+|---|---|---|---|
+| `host` | string | empty | **Must be a domain name** (not an IP). Empty or non-domain disables both WS and WSS. |
+| `path` | string | empty | Must start with `/`, e.g. `/tun`. Otherwise both WS and WSS are disabled. |
+| `listen.ws` | int | `0` | Plain WebSocket port, used by client `ws://`. |
+| `listen.wss` | int | `0` | TLS WebSocket port, used by client `wss://`. Disabled when certificate validation fails. |
+| `ssl.certificate-file` | path | empty | Certificate file. |
+| `ssl.certificate-key-file` | path | empty | Private key file. |
+| `ssl.certificate-chain-file` | path | empty | Certificate chain file. |
+| `ssl.certificate-key-password` | string | empty | Private key password. |
+| `ssl.ciphersuites` | string | built-in TLS 1.3 suites | Empty uses the built-in value. |
+| `ssl.verify-peer` | bool | `true` | Legacy location `websocket.verify-peer` is accepted. |
+| `http.error` | string | empty | Error text returned to non-WebSocket requests. |
+| `http.request` / `http.response` | object | empty | Custom HTTP headers (key/value). |
+
+When `listen.ws` is 0, `host`, `path`, and `http.*` are cleared; when `listen.wss` is 0, the certificate fields are cleared.
+
+## 10. `ip` (server)
+
+| Field | Type | If omitted | Meaning |
+|---|---|---|---|
+| `interface` | string | empty | Local address listeners bind to; empty = all addresses. Cleared if not a valid IP. |
+| `public` | string | empty | Server public IP, used for CDN forwarding loop detection and status display. |
+
+## 11. `server`
+
+| Field | Type | If omitted | Meaning |
+|---|---|---|---|
+| `node` | int | `0` | Node number; negatives become 0. |
+| `log` | path | empty | Session log file, converted to an absolute path; empty = disabled. |
+| `subnet` | bool | `true` | Allow clients to reach each other over the virtual subnet. |
+| `mapping` | bool | `true` | Allow client port mappings (`client.mappings`). |
+| `backend` | string | empty | Management backend WebSocket URL; see [Management backend](../guides/MANAGEMENT_BACKEND.md). |
+| `backend-key` | string | empty | Management backend key. |
+| `ipv4-pool.network` / `ipv4-pool.mask` | string | not configured | The presence of an `ipv4-pool` object enables it: the server assigns each session a virtual IPv4 address from this network (Windows / Linux / macOS clients apply it to the virtual adapter). An invalid network or mask is logged and nothing is assigned. |
+| `ipv6.mode` | string | off | `nat66` or `gua`; anything else = off. The file **fails to load** if the platform has no server IPv6 data plane. |
+| `ipv6.cidr` | string | empty | Prefix, e.g. `fd42:4242:4242::/64`. `nat66` uses a built-in ULA /64 when empty; `gua` requires a global unicast prefix. An invalid prefix disables IPv6. |
+| `ipv6.gateway` | string | first address in the prefix | Ignored when outside the prefix. |
+| `ipv6.dns1` / `ipv6.dns2` | string | empty | IPv6 DNS pushed to clients. |
+| `ipv6.lease-time` | int (s) | `300` | Lease time; negatives become 0. |
+| `ipv6.static-addresses` | object | empty | `{ "<client GUID>": "<IPv6 address>" }`; out-of-prefix or duplicate entries are dropped. |
+| `peer-routing.enabled` | bool | `false` | Client prefix routing; see [Peer prefix routing](../guides/PEER_PREFIX_ROUTING.md). |
+| `peer-routing.distribute` | bool | `true` | Distribute the route table to clients. |
+| `peer-routing.allowed-routes[]` | array | empty | Announcement allowlist, elements `{network, prefix, guid}`: only announcements with a matching GUID and identical prefix are accepted. **Empty rejects every announcement.** |
+| `session_resume.enabled` | bool | `false` | Allow a dropped session to resume within the grace period. |
+| `session_resume.grace_ms` | int (ms) | `60000` | Grace period, clamped to `1000..3600000`. |
+| `transport-auth.enabled` | bool | `false` | See section 5. |
+
+See [IPv6 client assignment](../guides/IPV6.md) for IPv6.
+
+## 12. `client`
+
+| Field | Type | If omitted | Meaning |
+|---|---|---|---|
+| `guid` | string | all-F sentinel GUID | Client identity, e.g. `{F4569208-BB45-4DEB-B115-0FEA1D91B85B}`. **Must differ per client**; if omitted, every client shares the same sentinel. |
+| `server` | string | empty | Server address; format in section 17. |
+| `server-proxy` | string | empty | Reach the server through a proxy; only `http://[user:pass@]host:port/` or `socks://[user:pass@]host:port/`. |
+| `bandwidth` | int (Kbps) | `0` | Rate limit; `0` = unlimited; negatives become 0. |
+| `proxy-only` | bool | `false` | Same as `--mode=proxy`: local HTTP / SOCKS proxies only, no host route or DNS takeover. |
+| `http-proxy.bind` / `http-proxy.port` | string / int | empty / `0` | Local HTTP proxy; rules below. |
+| `socks-proxy.bind` / `socks-proxy.port` | string / int | empty / `0` | Local SOCKS5 proxy (CONNECT and UDP ASSOCIATE). |
+| `socks-proxy.username` / `socks-proxy.password` | string | empty | SOCKS5 authentication. |
+| `reconnections.timeout` | int (s) | `5` | Base reconnect interval; `< 1` becomes 5. |
+| `reconnections.max_delay` | int (s) | `15` | Max backoff, never below `timeout`. |
+| `reconnections.jitter_percent` | int | `20` | Backoff jitter percent, clamped to `0..100`. |
+| `session_resume.enabled` | bool | `false` | Request session resumption (the server must enable it too). |
+| `transport-auth.enabled` | bool | `false` | See section 5. |
+| `mappings[]` | array | empty | Publish local services on server ports; see below. |
+| `routing` | object | not configured | Split-routing rules (canonical legacy-policy entry); see section 13. |
+| `routes[]` / `peer-routes[]` | array | empty | Legacy locations used when `client.routing` is absent. |
+| `peer-route-announce[]` | array | empty | Prefixes this client announces, `{network, prefix, via, guid}`. |
+| `peer-gateway-forward` | bool | `false` | Forward traffic as a gateway for peer prefixes. |
+| `policy` | object | not configured | Policy v2; see section 14. |
+| `paper-airplane.tcp` | bool | `true` | Windows only: Paper Airplane TCP acceleration (LSP). |
+
+**Local proxy rules:**
+
+- `--mode=proxy` or `proxy-only: true`: HTTP and SOCKS listen addresses are **forced to `127.0.0.1`** (configured `bind` is ignored); ports default to `8080` / `1080` when unset and can be overridden with `--proxy-http-port` / `--proxy-socks-port`. Binding is loopback-only and fails closed instead of falling back to all addresses.
+- Normal TUN client: a proxy starts only if its port is configured; an empty `bind` listens on **all addresses** (reachable from the LAN). Write `127.0.0.1` for local-only use.
+
+**`mappings[]` elements:**
+
+| Field | Meaning |
+|---|---|
+| `protocol` | `tcp` (default) or `udp` |
+| `local-ip` / `local-port` | The service on the client side being published |
+| `remote-ip` / `remote-port` | The address opened on the server; `remote-ip` `::` means all addresses |
+
+Ports must be 1–65535; addresses must be valid, non-multicast IPs. Invalid entries are dropped and entries with the same `protocol + remote` are de-duplicated. The server needs `server.mapping: true`.
+
+## 13. `client.routing` — split-routing rules (legacy policy)
+
+```json
+"client": {
+  "routing": {
+    "ip":  { "bypass": ["./ip.txt"], "routes": [], "peer-routes": [] },
+    "dns": { "rules": ["./dns-rules.txt"] }
   }
 }
 ```
 
----
+| Field | Meaning |
+|---|---|
+| `ip.bypass` | Sources of IPs that go direct (bypass the tunnel); string or string array. |
+| `dns.rules` | DNS rule sources; string or string array. |
+| `ip.routes[]` | File-based routes: `{ "path": "./cmcc.txt", "ngw": "192.168.1.1", "vbgp": "https://...", "nic": "eth1" }`. `path` and an IPv4 `ngw` are required; `vbgp` is an optional remote update URL; `nic` is Linux only. |
+| `ip.peer-routes[]` | Peer prefix routes `{network, prefix, via, guid}`. |
 
-## Related Documents
+Accepted aliases: `routing.bypass`, `routing.routes`, `routing.peer-routes`, `routing.dns-rules` (nested locations win).
 
-- [`README.md`](../../README.md) — Quick-start guide
-- [`CLI_REFERENCE.md`](CLI_REFERENCE.md) — All command-line flags
-- [`TRANSMISSION.md`](../architecture/TRANSMISSION.md) — Transport carrier and cipher details
-- [`ARCHITECTURE.md`](../architecture/ARCHITECTURE.md) — System architecture overview
-- [`SECURITY.md`](../operations/SECURITY.md) — Security architecture and threat model
-- [`DEPLOYMENT.md`](../operations/DEPLOYMENT.md) — Deployment and operational guidance
+**How a source string is interpreted:** an optional `file://` prefix is stripped; if the file exists it is read as a file, **otherwise the whole string is treated as inline rule text**. A wrong path is not an error — it silently becomes a useless inline rule.
+
+**Interaction with flags:** when `client.routing` is present, the `--bypass` and `--dns-rules` flags are **ignored**. Without it, the legacy sources apply: `--bypass` (default `./ip.txt`), `--dns-rules` (default `./dns-rules.txt`), plus `client.routes` / `client.peer-routes`.
+
+**DNS rule line format** (`#` starts a comment; `,`, `;`, and tabs act as line breaks):
+
+```text
+example.com/1.1.1.1            # suffix match, use this DNS server
+full:www.example.com/8.8.8.8   # exact match
+regexp:.*\.cn$/doh.pub         # regex match; built-in provider names allowed
+example.org/223.5.5.5/tun      # third segment starting with t/v/f/c = query through the tunnel; omitted = via the local NIC
+cloudflare                     # a lone IP or provider name = default upstream for all domains
+```
+
+Built-in DNS provider names: `doh.pub`, `alidns`, `baidu`, `360`, `114`, `tuna`, `cloudflare`, `google`, `quad9`, `adguard`, `nextdns`, `mullvad`.
+
+See [Routing and DNS](../guides/ROUTING_AND_DNS.md) for full routing / DNS behavior.
+
+## 14. `client.policy` — policy v2
+
+```json
+"client": { "policy": { "version": 2, "rules": { "path": "./policy.rules" }, "dns": { "resolvers": { } } } }
+```
+
+- `version` must be the integer `2`.
+- With `client.policy` present, **none** of the following may exist or the file fails to load: `client.routing`, `client.bypass`, `client.dns-rules`, and top-level `routing`, `geo-rules`, `dns`, `bypass`, `dns-rules`, `udp.dns`.
+- Fields, rule syntax, and the `ppp policy` subcommand are in the [Policy CLI guide](../guides/POLICY_CLI.md).
+
+## 15. Legacy client DNS and rule fields (`dns` / `routing` / `geo-rules`)
+
+These top-level blocks apply only when `client.policy` is **absent**.
+
+| Field | If omitted | Meaning |
+|---|---|---|
+| `dns.servers.domestic` | `doh.pub` | Domestic upstream: a provider name, `IP[:port]`, a structured object `{protocol, url, hostname, address, bootstrap}` (`protocol` is `udp`/`tcp`/`doh`/`dot`; `doq` maps to `dot`), or an array of these. |
+| `dns.servers.foreign` | `cloudflare` | Foreign upstream, same format. The DNS addresses pushed to the OS in TUN mode are derived from these two (foreign first); `--dns` overrides. |
+| `dns.intercept-unmatched` | `true` | Unmatched queries resolve via `foreign → domestic → cloudflare`. |
+| `dns.ecs.enabled` / `dns.ecs.override-ip` | `false` / empty | EDNS Client Subnet; an invalid `override-ip` is cleared. |
+| `dns.tls.verify-peer` | `true` | DoH / DoT certificate verification. |
+| `dns.stun.candidates` | empty | `host:port` list. |
+| `dns.fake-ip.enabled` / `dns.fake-ip.range` | `false` / `198.18.0.1/16` | Fake-IP. |
+| `routing.rules` | empty | Human-readable rules file path. |
+| `routing.tcp-domain-sniff` | `false` | TCP domain sniffing. |
+| `geo-rules.*` | `enabled: false` | Generate bypass lists and DNS rules from GeoIP / GeoSite: `country` (default `cn`), `geoip-dat`, `geosite-dat`, `geoip-download-url`, `geosite-download-url`, `geoip`, `geosite`, `dns-provider-domestic`, `dns-provider-foreign`, `output-bypass`, `output-dns-rules`, `append-bypass`, `append-dns-rules`. |
+
+## 16. Other blocks
+
+| Field | If omitted | Meaning |
+|---|---|---|
+| `p2p.enabled` | `true` | Client-to-client direct channel; `false` forces `relay`. |
+| `p2p.mode` | Linux / Android: `direct-preferred`; Windows / macOS: `relay` | Only `direct-preferred` is recognized; anything else is `relay` (via the server). |
+| `p2p.punch-timeout` / `p2p.keep-alived` | `5` / `15` (s) | Minimum 1. |
+| `p2p.stun.servers` / `p2p.stun.request-profile` | empty / `standard` | Profile is `standard` or `tailnode`. |
+| `p2p.max-probes` | `2` | Clamped to `1..10`. |
+| `p2p.probe-timeout-ms` | `2000` | Clamped to `500..10000`. |
+| `p2p.heartbeat-interval-ms` / `p2p.heartbeat-miss-max` | `1000` / `2` | Clamped to `500..5000` and `1..10`. |
+| `p2p.suspect-timeout-ms` / `p2p.migration-grace-ms` | `2000` / `5000` | Clamped to `500..10000` and `1000..30000`. |
+| `p2p.buffer-pool-count` | `64` | Clamped to `8..256`. |
+| `vmem.path` / `vmem.size` | empty / `0` | File-backed buffer pool. `size` is in **MB**, at least 32 MB in effect; disabled if either is empty / 0 (Windows only checks `size`). |
+| `virr.update-interval` / `virr.retry-interval` | `86400` / `300` (s) | IP-list auto-update interval used with `--virr`; minimum 1. |
+| `vbgp.update-interval` | `3600` (s) | Refresh interval for `ip.routes[].vbgp`; minimum 1. |
+| `telemetry.enabled` / `level` / `count` / `span` | `false` / `0` / `false` / `false` | Telemetry switches and level. |
+| `telemetry.endpoint` / `log-file` | empty | OTLP endpoint, log file. |
+| `telemetry.console-log` / `console-metric` / `console-span` | `true` | Console output. |
+
+## 17. Server address (`client.server`) format
+
+The URL is lowercased before parsing.
+
+| Form | Carrier | Default port | Server field |
+|---|---|---|---|
+| `ppp://host:port/` or `tcp://host:port/` | Native TCP | port required | `tcp.listen.port` |
+| `ws://host[:port]/path` | WebSocket | 80 | `websocket.listen.ws` + `websocket.path` |
+| `wss://host[:port]/path` | TLS WebSocket | 443 | `websocket.listen.wss` + `websocket.path` |
+
+- `host` may be a domain or an IP; write IPv6 literals as `[2001:db8::1]`.
+- `domain[IP]:port` connects to the bracketed IP while using the domain as the host name (useful with CDNs or custom resolution), e.g. `wss://vpn.example.com[203.0.113.10]:443/tun`.
+- The WS / WSS path must equal the server's `websocket.path`.
+
+## 18. Full samples
+
+The repository-root [`appsettings.json`](../../appsettings.json) shows sample values for most fields (its addresses and keys are examples only); [`appsettings-server-minimal.json`](../../appsettings-server-minimal.json) is a minimal server sample.
+
+## Related documents
+
+- [Writing the configuration file](../getting-started/CONFIGURE.md)
+- [CLI reference](CLI_REFERENCE.md)
+- [Routing and DNS](../guides/ROUTING_AND_DNS.md) · [Proxy mode](../guides/PROXY_MODE.md) · [Policy CLI](../guides/POLICY_CLI.md)
+- [Error codes](ERROR_CODES.md)

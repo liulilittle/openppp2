@@ -513,38 +513,37 @@ namespace ppp
             ppp::string cidr = line.substr(slash_index + 1);
             cidr = LTrim<ppp::string>(RTrim<ppp::string>(cidr));
 
-            int prefix = -1;
-            if (cidr.size() > 0)
+            /** @brief An explicit slash requires a valid numeric prefix; empty or out-of-range values are rejected. */
+            if (cidr.empty())
             {
-                /**
-                 * @brief Use strtol to properly validate numeric conversion.
-                 * @note atoi cannot distinguish between 0 and conversion error.
-                 */
-                char* endptr = NULLPTR;
-                long parsed = strtol(cidr.data(), &endptr, 10);
-                if (NULLPTR == endptr || endptr == cidr.data() || *endptr != '\x0' || parsed < 0 || parsed > 128)
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkMaskInvalid);
+                return false;
+            }
+
+            /**
+             * @brief Use strtol to properly validate numeric conversion.
+             * @note atoi cannot distinguish between 0 and conversion error.
+             */
+            char* endptr = NULLPTR;
+            long parsed = strtol(cidr.data(), &endptr, 10);
+            if (NULLPTR == endptr || endptr == cidr.data() || *endptr != '\x0' || parsed < 0 || parsed > 128)
+            {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkMaskInvalid);
+                return false;
+            }
+
+            int prefix = static_cast<int>(parsed);
+            if (ip.is_v4())
+            {
+                if (prefix > 32)
                 {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkMaskInvalid);
                     return false;
                 }
-
-                prefix = static_cast<int>(parsed);
-            }
-
-            /** @brief Clamp prefix to the legal range for the detected address family. */
-            if (ip.is_v4())
-            {
-                if (prefix < 0 || prefix > 32)
-                {
-                    prefix = 32;
-                }
             }
             elif(ip.is_v6())
             {
-                if (prefix < 0 || prefix > 128)
-                {
-                    prefix = 128;
-                }
+                /** @brief v6 prefix already bounded to 0..128 above. */
             }
             else
             {

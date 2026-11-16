@@ -198,6 +198,13 @@ namespace ppp {
                  */
                 typedef ppp::unordered_set<YieldContext*>               YieldContextSet;
 
+            protected:
+                /** @brief Packet buffer and byte count for one segment of a gathered write. */
+                typedef std::pair<std::shared_ptr<Byte>, int>           WriteSegment;
+                /** @brief Ordered segments passed to @ref DoWriteBytesGather. */
+                typedef ppp::vector<WriteSegment>                       WriteSegments;
+
+            private:
                 /**
                  * @brief Context for a single queued write request.
                  *
@@ -215,8 +222,10 @@ namespace ppp {
                 public:
                     /** @brief Packet buffer to be transmitted. */
                     std::shared_ptr<Byte>                               packet;
-                    /** @brief Number of bytes to write from @ref packet offset 0. */
+                    /** @brief Number of bytes to write from @ref packet offset 0 (total of @ref segments for a batch). */
                     int                                                 packet_length = 0;
+                    /** @brief Packets merged into one gathered write; empty for a single-packet context. */
+                    WriteSegments                                       segments;
                     /** @brief Completion callback and one-shot ownership token. */
                     AsynchronousWriteBytesCallback                      cb;
 
@@ -239,6 +248,7 @@ namespace ppp {
                         cb = NULLPTR;
                         packet.reset();
                         packet_length = 0;
+                        segments.clear();
                         return true;
                     }
                 };
@@ -269,6 +279,16 @@ namespace ppp {
                 bool                                                    DoTryWriteBytesUnsafe(const AsynchronousWriteIoContextPtr& context, bool callback_on_start_failure) noexcept;
 
                 /**
+                 * @brief Detaches the next waiting context and installs it in @ref in_flight_.
+                 *
+                 * When the subclass supports gathered writes and more than one packet is
+                 * waiting, consecutive packets (bounded by item and byte limits) are merged
+                 * into one batch context whose callback completes every merged packet in
+                 * FIFO order. Caller must hold @ref syncobj_ and ensure @ref queues_ is not empty.
+                 */
+                AsynchronousWriteIoContextPtr                           TakeNextLocked() noexcept;
+
+                /**
                  * @brief One-shot finalization that fails all pending operations.
                  *
                  * Uses `disposed_.exchange(true, acq_rel)` to guarantee exactly-once
@@ -283,6 +303,22 @@ namespace ppp {
                 void                                                    Finalize() noexcept;
 
             protected:
+                /**
+                 * @brief Reports whether this transport can write several queued packets at once.
+                 *
+                 * Return true only for byte-stream transports whose @ref DoWriteBytesGather
+                 * puts the same bytes on the wire as consecutive @ref DoWriteBytes calls.
+                 */
+                virtual bool                                            CanGatherWrites() noexcept { return false; }
+
+                /**
+                 * @brief Writes several packets back to back with one gathered I/O operation.
+                 * @param segments Packets in queue order.
+                 * @param cb Completion callback for the whole batch.
+                 * @return true when the write was started.
+                 */
+                virtual bool                                            DoWriteBytesGather(const WriteSegments& segments, const AsynchronousWriteBytesCallback& cb) noexcept { return false; }
+
                 /**
                  * @brief Coroutine adapter that bridges callback-based writes to yield semantics.
                  *
@@ -315,20 +351,25 @@ namespace ppp {
                     boost::asio::io_context* context = addressof(y.GetContext());
                     boost::asio::strand<boost::asio::io_context::executor_type>* strand = y.GetStrand();
 
+                    const YieldContext::Anchor anchor = y.Arm();
+                    if (!anchor) {
+                        return false;
+                    }
+
                     // Guard Suspend() behind the post result: if the executor is unavailable
                     // the lambda (and every ppp::coroutines::asio::R() inside it) will never
                     // run, so calling Suspend() would park the coroutine with no future
                     // Resume() – a permanent coroutine leak.
                     bool posted = ppp::threading::Executors::Post(context, strand,
-                        [&y, status, h, packet, packet_length]() noexcept {
+                        [anchor, status, h, packet, packet_length]() noexcept {
                             bool waiting = 
                                 h(packet, packet_length,
-                                    [&y, status](bool b) noexcept {
-                                        ppp::coroutines::asio::R(y, *status, b);
+                                    [anchor, status](bool b) noexcept {
+                                        ppp::coroutines::asio::R(anchor, *status, b);
                                     });
 
                             if (!waiting) {
-                                ppp::coroutines::asio::R(y, *status, false);
+                                ppp::coroutines::asio::R(anchor, *status, false);
                             }
                         });
 
@@ -337,7 +378,7 @@ namespace ppp {
                         return false;
                     }
 
-                    y.Suspend();
+                    y.Suspend(anchor);
                     return status->load() > 0;
                 }
 

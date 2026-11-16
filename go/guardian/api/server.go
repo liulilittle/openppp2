@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"ppp/guardian/auth"
@@ -32,8 +33,10 @@ type Server struct {
 	binaryMgr   *binary.Manager
 	httpServer  *http.Server
 	wsHub       *WSHub
+	authMu      sync.RWMutex // guards jwtSecret and authCfg.AuthEnabled/JWTSecret
 	authCfg     GuardianServerConfig
 	jwtSecret   string
+	limiter     *authLimiter
 	tokenStore  *auth.TokenStore
 	startedAt   time.Time
 	logger      *slog.Logger
@@ -60,12 +63,17 @@ func NewServer(listenAddr string, instanceMgr *instance.Manager, profileMgr *pro
 		authCfg:     cfg,
 		jwtSecret:   cfg.JWTSecret,
 		tokenStore:  auth.NewTokenStore(),
+		limiter:     newAuthLimiter(),
 		startedAt:   time.Now(),
 		logger:      slog.Default(),
 		webuiFS:     webuiFS,
 	}
 	s.wsHub = NewWSHub(instanceMgr, slog.Default())
-	s.httpServer = &http.Server{Addr: listenAddr}
+	s.httpServer = &http.Server{
+		Addr:              listenAddr,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	s.registerRoutes()
 	return s
 }

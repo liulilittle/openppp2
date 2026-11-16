@@ -161,30 +161,66 @@ namespace ppp {
                 return NULLPTR;
             }
 
-            // INIT-CTX
-            SynchronizedObjectScope scope(_syncobj);
-            if (EVP_CipherInit_ex(_encryptCTX.get(), _cipher, NULLPTR, _key.get(), _iv.get(), 1) < 1) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
-                return NULLPTR;
-            }
-
-            // ENCR-DATA
-            int feedbacklen = datalen + EVP_CIPHER_block_size(_cipher);
-            std::shared_ptr<Byte> cipherText = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, feedbacklen);
+            int capacity = datalen + EVP_CIPHER_block_size(_cipher);
+            std::shared_ptr<Byte> cipherText = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, capacity);
             if (NULLPTR == cipherText) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                 return NULLPTR;
             }
 
+            return EncryptTo(cipherText.get(), capacity, data, datalen, outlen) ? cipherText : NULLPTR;
+        }
+
+        bool EVP::EncryptTo(Byte* output, int output_capacity, Byte* data, int datalen, int& outlen) noexcept {
+            outlen = 0;
+            if (datalen < 1 || NULLPTR == data || NULLPTR == output) {
+                outlen = ~0;
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::EvpEncryptInvalidArguments);
+                return false;
+            }
+
+            if (_aes.IsAttached()) {
+                if (output_capacity < datalen || !_aes.EncryptTo(output, data, datalen)) {
+                    outlen = ~0;
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                    return false;
+                }
+
+                outlen = datalen;
+                return true;
+            }
+
+            if (NULLPTR == _cipher || NULLPTR == _encryptCTX) {
+                outlen = ~0;
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::CryptoAlgorithmUnsupported);
+                return false;
+            }
+
+            // EVP_CipherUpdate may write up to one block beyond the input length.
+            int feedbacklen = datalen + EVP_CIPHER_block_size(_cipher);
+            if (output_capacity < feedbacklen) {
+                outlen = ~0;
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::EvpEncryptInvalidArguments);
+                return false;
+            }
+
+            // INIT-CTX
+            SynchronizedObjectScope scope(_syncobj);
+            if (!resetCipher(_encryptCTX, _encryptKeyed, 1)) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                return false;
+            }
+
+            // ENCR-DATA
             if (EVP_CipherUpdate(_encryptCTX.get(),
-                cipherText.get(), &feedbacklen, data, datalen) < 1) {
+                output, &feedbacklen, data, datalen) < 1) {
                 outlen = ~0;
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
-                return NULLPTR;
+                return false;
             }
 
             outlen = feedbacklen;
-            return cipherText;
+            return true;
         }
 
         /**
@@ -220,7 +256,7 @@ namespace ppp {
 
             // INIT-CTX
             SynchronizedObjectScope scope(_syncobj);
-            if (EVP_CipherInit_ex(_decryptCTX.get(), _cipher, NULLPTR, _key.get(), _iv.get(), 0) < 1) {
+            if (!resetCipher(_decryptCTX, _decryptKeyed, 0)) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
                 return NULLPTR;
             }
@@ -242,6 +278,70 @@ namespace ppp {
 
             outlen = feedbacklen;
             return cipherText;
+        }
+
+        bool EVP::CanDecryptInPlace() const noexcept {
+            if (_aes.IsAttached()) {
+                return true;
+            }
+
+            // Block modes buffer the tail block in EVP_CipherUpdate, so only
+            // length-preserving ciphers (CFB/OFB/CTR/GCM/ChaCha20) can run in place.
+            return NULLPTR != _cipher && NULLPTR != _decryptCTX && EVP_CIPHER_block_size(_cipher) == 1;
+        }
+
+        bool EVP::DecryptInPlace(Byte* data, int datalen) noexcept {
+            if (datalen < 1 || NULLPTR == data) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::EvpDecryptInvalidArguments);
+                return false;
+            }
+
+            if (_aes.IsAttached()) {
+                if (!_aes.DecryptTo(data, data, datalen)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
+                    return false;
+                }
+
+                return true;
+            }
+
+            if (!CanDecryptInPlace()) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::CryptoAlgorithmUnsupported);
+                return false;
+            }
+
+            // INIT-CTX
+            SynchronizedObjectScope scope(_syncobj);
+            if (!resetCipher(_decryptCTX, _decryptKeyed, 0)) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
+                return false;
+            }
+
+            // DECR-DATA: OpenSSL permits out == in for an exact (non-shifted) overlap.
+            int feedbacklen = datalen;
+            if (EVP_CipherUpdate(_decryptCTX.get(), data, &feedbacklen, data, datalen) < 1 || feedbacklen != datalen) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
+                return false;
+            }
+
+            return true;
+        }
+
+        /**
+         * @brief Rewinds a cipher context to the fixed IV before processing one packet.
+         * @details Every packet restarts from the same key/IV. The key schedule only has
+         *          to be installed once per context; afterwards resetting just the IV
+         *          (key and cipher NULL, which OpenSSL documents as "retain") produces
+         *          identical output while skipping the per-packet key expansion.
+         *          Caller must hold _syncobj.
+         */
+        bool EVP::resetCipher(const std::shared_ptr<EVP_CIPHER_CTX>& context, bool& keyed, int enc) noexcept {
+            int ok = keyed
+                ? EVP_CipherInit_ex(context.get(), NULLPTR, NULLPTR, NULLPTR, _iv.get(), enc)
+                : EVP_CipherInit_ex(context.get(), _cipher, NULLPTR, _key.get(), _iv.get(), enc);
+
+            keyed = ok > 0;
+            return keyed;
         }
 
         /**

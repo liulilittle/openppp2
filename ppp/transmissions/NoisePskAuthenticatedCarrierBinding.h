@@ -32,9 +32,11 @@ public:
         const NoisePskAuthenticatedCarrierBinding&) = delete;
 
     bool IsValid() const noexcept;
+    // Lifecycle hint callable from any executor; key export remains owner-only.
     bool IsAvailable(
         const ContextPtr& context,
         const StrandPtr& strand) const noexcept;
+    // Derives keys only while executing on the bound owner strand.
     bool Export(
         const ContextPtr& context,
         const StrandPtr& strand,

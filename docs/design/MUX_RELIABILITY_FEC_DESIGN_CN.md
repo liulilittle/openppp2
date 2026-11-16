@@ -64,7 +64,11 @@ flow_v2 的 400ms 缺口超时 `fail_flow`(杀单条逻辑流)或 compat 的整�
 ## 5. 发送侧状态机
 
 `underlyin_sent` 成功入队后 `track_sent_frame` 把帧(shared_ptr,零拷贝)登记进
-`MuxRetransmitBuffer`(会话级字节上限 `mux.reliability.rtx.bytes`,默认 8 MiB)。
+`MuxRetransmitBuffer`(会话级字节上限 `mux.reliability.rtx.bytes`,默认 32 MiB)。
+
+- **发送窗口**(`MuxTxBackpressure.h`):上述上限(及 flow_v2 每流 `mux.reliability.rtx.flow_bytes`,默认 8 MiB)在帧离开 DRR 队列前作为发送窗口检查,
+  再发一帧会越过窗口时帧留在队列、所在流停放,ACK 释放字节后恢复;登记时只有超过 2 倍窗口
+  (`PPP_MUX_RTX_HARD_FACTOR`)才 `fail_flow` / 重建会话。详见 [VMUX 验证](../reference/VMUX_VALIDATION_CN.md)。
 
 - **ACK 处理**(`packet_input_ack`):释放被覆盖的表项;首个未被重传过的表项给出 RTT 样本
   (Karn 规则),`srtt = 7/8·srtt + 1/8·sample`。
@@ -100,8 +104,11 @@ flow_v2 的 400ms 缺口超时 `fail_flow`(杀单条逻辑流)或 compat 的整�
 | 配置 | 默认 | 含义 |
 | --- | --- | --- |
 | `mux.reliability.enabled` | true | 可靠性子协议开关(仍需对端协商) |
-| `mux.reliability.rtx.bytes` | 8 MiB | 会话级重传缓冲字节上限 |
+| `mux.reliability.rtx.bytes` | 32 MiB | 会话级重传发送窗口(2 倍为硬上限;吞吐约 ≤ 窗口 / RTT) |
+| `mux.reliability.rtx.flow_bytes` | 8 MiB | flow_v2 单流发送窗口(不超过会话窗口) |
 | `mux.reliability.rtx.max_attempts` | 8 | 单帧重传次数上限 |
+| `mux.reliability.rtx.pto` | false | PTO 超时重传(2026-10 起默认关闭:可靠承载链路上多为虚假重传;链路断开时总会补发其未确认帧) |
+| `mux.reliability.rtx.fast` | false | dup-ACK 快速重传(2026-10 起默认关闭:跨链路乱序不是丢包) |
 | `mux.reliability.ack.delay` | 10 ms | 延迟 ACK 等待 |
 | `mux.reliability.gap.timeout` | 3000 ms | 可靠性生效时的缺口兜底超时 |
 | `mux.fec.enabled` | false | XOR 奇偶 FEC 开关(带宽开销 1/K) |

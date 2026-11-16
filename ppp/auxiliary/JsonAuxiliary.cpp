@@ -5,6 +5,8 @@
 #include <ppp/auxiliary/JsonAuxiliary.h>
 #include <ppp/diagnostics/Error.h>
 
+#include <cmath>
+
 namespace ppp {
     namespace auxiliary {
         /**
@@ -115,11 +117,12 @@ namespace ppp {
             }
             elif(json.isDouble()) {
                 double d = json.asDouble();
-                if (IsNaN(d)) {
-                    return 0;
+                /** @brief 2^63 is exactly representable; valid range is [-2^63, 2^63). */
+                if (IsNaN(d) || !std::isfinite(d) || d < -9223372036854775808.0 || d >= 9223372036854775808.0) {
+                    return default_value;
                 }
 
-                return d;
+                return static_cast<Int64>(d);
             }
             else {
                 return default_value;

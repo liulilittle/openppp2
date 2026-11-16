@@ -119,3 +119,79 @@ BOOST_AUTO_TEST_CASE(duplicate_track_is_a_noop) {
     BOOST_TEST(rtx.size() == 1u);
     BOOST_TEST(rtx.bytes() == 10u);
 }
+
+BOOST_AUTO_TEST_CASE(take_link_inflight_returns_only_that_carriers_unacked_frames) {
+    mux::MuxRetransmitBuffer rtx;
+    BOOST_TEST(rtx.Track(0, 1, make_frame(1), 10, 1000, 1 << 20, /*link_id=*/3));
+    BOOST_TEST(rtx.Track(0, 2, make_frame(2), 10, 1001, 1 << 20, /*link_id=*/4));
+    BOOST_TEST(rtx.Track(0, 3, make_frame(3), 10, 1002, 1 << 20, /*link_id=*/3));
+    BOOST_TEST(rtx.Track(0, 4, make_frame(4), 10, 1003, 1 << 20, /*link_id=*/3));
+
+    // seq 3 was acked; seq 4 was already re-sent on carrier 4.
+    std::vector<std::uint64_t> fast;
+    std::vector<mux::MuxAckRange> ranges = { {3, 3} };
+    rtx.Ack(0, 3, ranges, 1100, 1000, 0, fast);
+    rtx.MarkRetransmitted(mux::MuxRetransmitBuffer::Key(0, 4), 1101, 4);
+
+    std::vector<std::uint64_t> lost;
+    rtx.TakeLinkInflight(3, lost);
+    BOOST_REQUIRE_EQUAL(lost.size(), 1u);
+    BOOST_TEST(lost[0] == mux::MuxRetransmitBuffer::Key(0, 1));
+
+    // Orphaned: the dead carrier's id no longer owns it, so a carrier that later
+    // reuses id 3 cannot re-claim it, and a re-send is not suppressed by the
+    // "already sent this tick" guard.
+    const mux::MuxRtxEntry* entry = rtx.Find(lost[0]);
+    BOOST_REQUIRE(entry != nullptr);
+    BOOST_TEST(entry->last_link_id == 0u);
+    BOOST_TEST(entry->last_sent_tick == 0u);
+    std::vector<std::uint64_t> again;
+    rtx.TakeLinkInflight(3, again);
+    BOOST_TEST(again.empty());
+}
+
+BOOST_AUTO_TEST_CASE(take_link_inflight_preserves_send_order_and_ignores_unknown_link) {
+    mux::MuxRetransmitBuffer rtx;
+    for (std::uint32_t seq = 10; seq < 15; ++seq) {
+        BOOST_TEST(rtx.Track(7, seq, make_frame((int)seq), 10, 1000 + seq, 1 << 20, /*link_id=*/2));
+    }
+
+    std::vector<std::uint64_t> none;
+    rtx.TakeLinkInflight(0, none);
+    BOOST_TEST(none.empty());
+
+    std::vector<std::uint64_t> lost;
+    rtx.TakeLinkInflight(2, lost);
+    BOOST_REQUIRE_EQUAL(lost.size(), 5u);
+    for (std::size_t i = 0; i < lost.size(); ++i) {
+        BOOST_TEST(lost[i] == mux::MuxRetransmitBuffer::Key(7, (std::uint32_t)(10 + i)));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(cid_bytes_follow_track_ack_and_erase) {
+    // The per-flow send window reads CidBytes(): it must shrink on ACK, or a
+    // long-lived flow_v2 flow would hit its 2 MiB budget after 2 MiB total
+    // sent and be failed even though nothing is outstanding.
+    mux::MuxRetransmitBuffer rtx;
+    BOOST_TEST(rtx.Track(7, 1, make_frame(1), 100, 1000, 1 << 20));
+    BOOST_TEST(rtx.Track(7, 2, make_frame(2), 100, 1000, 1 << 20));
+    BOOST_TEST(rtx.Track(9, 1, make_frame(3), 50, 1000, 1 << 20));
+    BOOST_TEST(rtx.CidBytes(7) == 200u);
+    BOOST_TEST(rtx.CidBytes(9) == 50u);
+    BOOST_TEST(rtx.CidBytes(42) == 0u);
+
+    std::vector<std::uint64_t> fast;
+    std::vector<mux::MuxAckRange> ranges = { {1, 2} };
+    rtx.Ack(7, 2, ranges, 1100, 3, 0, fast);
+    BOOST_TEST(rtx.CidBytes(7) == 0u);
+    BOOST_TEST(rtx.CidBytes(9) == 50u);
+    BOOST_TEST(rtx.bytes() == 50u);
+
+    BOOST_TEST(rtx.Track(7, 3, make_frame(4), 100, 1200, 1 << 20));
+    rtx.EraseCid(9);
+    BOOST_TEST(rtx.CidBytes(9) == 0u);
+    BOOST_TEST(rtx.CidBytes(7) == 100u);
+
+    rtx.Clear();
+    BOOST_TEST(rtx.CidBytes(7) == 0u);
+}

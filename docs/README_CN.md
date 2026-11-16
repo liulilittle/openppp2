@@ -6,7 +6,7 @@
 > **用途：**说明本主题的当前行为、配置或实现边界。
 > **适用对象：**OPENPPP2 用户、运维人员与开发者。
 > **当前状态：**当前有效。
-> **最后核对依据：**当前仓库结构、实现路径与文档链接，2026-07-18。
+> **最后核对依据：**当前仓库结构、实现路径与文档链接，2026-10-07。
 > **上一层索引：**[返回索引](../README_CN.md) · **English：**[Documentation by Task](README.md)
 
 
@@ -18,16 +18,18 @@
 
 | 任务 | 当前文档 |
 |---|---|
-| 安装与构建 | [构建与首次运行](getting-started/USER_MANUAL_CN.md#快速开始) |
-| 编写最小配置 | [最小客户端与服务端配置](getting-started/USER_MANUAL_CN.md#快速开始) |
-| 启动服务端或客户端 | [启动命令](getting-started/USER_MANUAL_CN.md#快速开始) |
-| 验证隧道 | [运维检查清单](operations/OPERATIONS_CN.md#运维检查清单) |
+| 安装与构建 | [下载安装与首次运行](getting-started/USER_MANUAL_CN.md) |
+| 编写配置文件 | [编写配置文件：最小配置、两端一致字段、按需扩展](getting-started/CONFIGURE_CN.md) |
+| 启动服务端或客户端 | [启动命令](reference/CLI_REFERENCE_CN.md) |
+| 验证隧道 | [运维与排障](operations/OPERATIONS_CN.md) |
 | 配置路由与 DNS | [路由与 DNS 指南](guides/ROUTING_AND_DNS_CN.md) |
+| 使用客户端策略 CLI | [策略 CLI 指南](guides/POLICY_CLI_CN.md) · [English](guides/POLICY_CLI.md) |
 | 使用纯代理模式 | [纯代理模式](guides/PROXY_MODE_CN.md) |
 | 管理订阅和后台 | [管理后端](guides/MANAGEMENT_BACKEND_CN.md) |
 | 部署为系统服务 | [部署说明](operations/DEPLOYMENT_CN.md) |
-| 排查故障 | [运维与故障排查](operations/OPERATIONS_CN.md#按阶段排障) |
+| 排查故障 | [运维与故障排查](operations/OPERATIONS_CN.md) |
 | 查找项目全部接口和已知缺口 | [项目接口全景图](reference/PROJECT_INTERFACE_MAP_CN.md) |
+| 查看本地策略实现证据与 Linux 实机结果 | [开发文档](development/README_CN.md) · [Linux 实机报告](testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md) |
 
 ## 按职责浏览
 

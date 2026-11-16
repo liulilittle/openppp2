@@ -28,6 +28,13 @@ public:
         (void)telemetry;
     }
     virtual void ClosePeerSend() noexcept = 0;
+    // Optional upload batching. When BatchesPeerSend() is true the runtime may
+    // deliver several SendToPeer() calls from one ingress batch back-to-back
+    // and then call FlushPeerSend() once, so the implementation can defer
+    // waking its writer thread until the flush (one cross-thread wake per
+    // batch instead of per segment). Accepted bytes must still be delivered.
+    virtual bool BatchesPeerSend() const noexcept { return false; }
+    virtual void FlushPeerSend() noexcept {}
 };
 
 class XtcpFirstLegHooks {
